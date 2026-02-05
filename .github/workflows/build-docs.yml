@@ -1,0 +1,123 @@
+name: Build Document SVGs
+
+on:
+  # Trigger manually
+  workflow_dispatch:
+    inputs:
+      doc_name:
+        description: 'Document name (e.g., bregman)'
+        required: true
+        default: 'bregman'
+      tex_repo:
+        description: 'TeX repo (owner/repo)'
+        required: true
+        default: 'skip/bregman-lower-bound'
+      tex_file:
+        description: 'Main tex file'
+        required: true
+        default: 'bregman-lower-bound.tex'
+
+  # Or trigger via repository_dispatch (for webhooks)
+  repository_dispatch:
+    types: [build-docs]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout claude-tldraw
+        uses: actions/checkout@v4
+
+      - name: Checkout tex repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.tex_repo || github.event.client_payload.tex_repo }}
+          path: tex-source
+          token: ${{ secrets.TEX_REPO_TOKEN }}  # If private
+
+      - name: Install TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y texlive-latex-extra texlive-fonts-recommended texlive-bibtex-extra biber
+
+      - name: Install dvisvgm
+        run: |
+          sudo apt-get install -y dvisvgm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set variables
+        id: vars
+        run: |
+          DOC_NAME="${{ github.event.inputs.doc_name || github.event.client_payload.doc_name || 'bregman' }}"
+          TEX_FILE="${{ github.event.inputs.tex_file || github.event.client_payload.tex_file || 'bregman-lower-bound.tex' }}"
+          echo "doc_name=$DOC_NAME" >> $GITHUB_OUTPUT
+          echo "tex_file=$TEX_FILE" >> $GITHUB_OUTPUT
+          echo "tex_base=${TEX_FILE%.tex}" >> $GITHUB_OUTPUT
+
+      - name: Compile LaTeX
+        working-directory: tex-source
+        run: |
+          TEX_FILE="${{ steps.vars.outputs.tex_file }}"
+          # First pass
+          pdflatex -synctex=1 -interaction=nonstopmode "$TEX_FILE" || true
+          # Biber for bibliography
+          biber "${{ steps.vars.outputs.tex_base }}" || true
+          # Second and third pass
+          pdflatex -synctex=1 -interaction=nonstopmode "$TEX_FILE" || true
+          pdflatex -synctex=1 -interaction=nonstopmode "$TEX_FILE"
+
+      - name: Generate DVI and SVGs
+        working-directory: tex-source
+        run: |
+          TEX_FILE="${{ steps.vars.outputs.tex_file }}"
+          TEX_BASE="${{ steps.vars.outputs.tex_base }}"
+
+          # Generate DVI
+          latex -interaction=nonstopmode "$TEX_FILE" || true
+          latex -interaction=nonstopmode "$TEX_FILE"
+
+          # Create output directory
+          mkdir -p svg-output
+
+          # Convert to SVG
+          dvisvgm --bbox=papersize --no-fonts=1 --page=1- --output="svg-output/%2p" "$TEX_BASE.dvi"
+
+          # Rename to .svg extension
+          cd svg-output
+          for f in *; do
+            if [[ ! "$f" =~ \.svg$ ]]; then
+              mv "$f" "$f.svg"
+            fi
+          done
+
+      - name: Extract synctex lookup table
+        run: |
+          DOC_NAME="${{ steps.vars.outputs.doc_name }}"
+          TEX_FILE="${{ steps.vars.outputs.tex_file }}"
+
+          node scripts/extract-synctex-lookup.mjs \
+            "tex-source/$TEX_FILE" \
+            "tex-source/svg-output/lookup.json"
+
+      - name: Copy to public/docs
+        run: |
+          DOC_NAME="${{ steps.vars.outputs.doc_name }}"
+          mkdir -p "public/docs/$DOC_NAME"
+          cp -r tex-source/svg-output/* "public/docs/$DOC_NAME/"
+
+          # List what we built
+          echo "Built files:"
+          ls -la "public/docs/$DOC_NAME/"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/docs/
+          git commit -m "Build docs: ${{ steps.vars.outputs.doc_name }}" || echo "No changes to commit"
+          git push
