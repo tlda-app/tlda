@@ -454,6 +454,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'reply_annotation',
+      description: 'Reply inside an existing annotation. Appends your reply to the note text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          id: { type: 'string', description: 'Shape ID to reply to (e.g. "shape:abc123")' },
+          text: { type: 'string', description: 'Reply text (supports $math$)' },
+        },
+        required: ['doc', 'id', 'text'],
+      },
+    },
+    {
       name: 'delete_annotation',
       description: 'Delete an annotation by its shape ID.',
       inputSchema: {
@@ -739,6 +752,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'reply_annotation') {
+    const { doc, id, text } = args;
+    if (!doc || !id || !text) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
+    }
+
+    const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
+
+    try {
+      const entry = await connectYjs(doc);
+      const record = entry.yRecords.get(fullId);
+      if (!record) {
+        return { content: [{ type: 'text', text: `Annotation not found: ${fullId}` }], isError: true };
+      }
+
+      const existing = record.props?.text || '';
+      const updated = existing + '\n\n—Claude: ' + text;
+
+      // Update the shape with appended reply
+      const newRecord = { ...record, props: { ...record.props, text: updated } };
+      entry.doc.transact(() => {
+        entry.yRecords.set(fullId, newRecord);
+      });
+      sendYjsUpdate(entry);
+
+      return { content: [{ type: 'text', text: `Replied to ${fullId}:\n"${text}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
