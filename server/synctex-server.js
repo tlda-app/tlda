@@ -143,6 +143,96 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // GET /content?doc=name&file=main.tex&line=123 → line content
+  if (url.pathname === '/content') {
+    const docName = url.searchParams.get('doc')
+    const file = url.searchParams.get('file')
+    const line = parseInt(url.searchParams.get('line'))
+    const context = parseInt(url.searchParams.get('context')) || 0  // lines before/after
+
+    const doc = documents.get(docName)
+    if (!doc) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Document not registered' }))
+      return
+    }
+
+    const fullPath = file.startsWith('/') ? file : join(doc.dir, file)
+    try {
+      const content = readFileSync(fullPath, 'utf8')
+      const lines = content.split('\n')
+      const startLine = Math.max(0, line - 1 - context)
+      const endLine = Math.min(lines.length, line + context)
+      const result = {
+        line,
+        content: lines[line - 1] || '',
+        context: lines.slice(startLine, endLine).join('\n'),
+        startLine: startLine + 1,
+        endLine
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: e.message }))
+    }
+    return
+  }
+
+  // GET /find?doc=name&file=main.tex&content=... → find line by content
+  if (url.pathname === '/find') {
+    const docName = url.searchParams.get('doc')
+    const file = url.searchParams.get('file')
+    const searchContent = url.searchParams.get('content')
+    const startHint = parseInt(url.searchParams.get('hint')) || 0  // hint for where to start looking
+
+    const doc = documents.get(docName)
+    if (!doc) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Document not registered' }))
+      return
+    }
+
+    const fullPath = file.startsWith('/') ? file : join(doc.dir, file)
+    try {
+      const content = readFileSync(fullPath, 'utf8')
+      const lines = content.split('\n')
+
+      // Search for exact match first, then fuzzy
+      let matches = []
+
+      // Exact substring match
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(searchContent)) {
+          matches.push({ line: i + 1, content: lines[i], type: 'exact' })
+        }
+      }
+
+      // If no exact match, try normalized (collapse whitespace)
+      if (matches.length === 0) {
+        const normalizedSearch = searchContent.replace(/\s+/g, ' ').trim()
+        for (let i = 0; i < lines.length; i++) {
+          const normalizedLine = lines[i].replace(/\s+/g, ' ').trim()
+          if (normalizedLine.includes(normalizedSearch)) {
+            matches.push({ line: i + 1, content: lines[i], type: 'normalized' })
+          }
+        }
+      }
+
+      // Sort by proximity to hint
+      if (startHint > 0) {
+        matches.sort((a, b) => Math.abs(a.line - startHint) - Math.abs(b.line - startHint))
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ matches: matches.slice(0, 5) }))
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: e.message }))
+    }
+    return
+  }
+
   // POST /register { name, texPath }
   if (url.pathname === '/register' && req.method === 'POST') {
     let body = ''

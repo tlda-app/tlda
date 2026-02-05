@@ -76,7 +76,8 @@ function App() {
     const params = new URLSearchParams(window.location.search)
     const pdfUrl = params.get('pdf')
     const docName = params.get('doc')
-    const roomId = params.get('room') || generateRoomId()
+    // Use doc name as room ID for persistence, or explicit room param, or random
+    const roomId = params.get('room') || (docName ? `doc-${docName}` : generateRoomId())
 
     if (!params.get('room')) {
       const newUrl = new URL(window.location.href)

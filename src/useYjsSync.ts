@@ -10,6 +10,7 @@ interface YjsSyncOptions {
   editor: Editor
   roomId: string
   serverUrl?: string
+  onInitialSync?: () => void
 }
 
 // Check if a record is a page background (should not be synced)
@@ -18,11 +19,13 @@ function isPageBackground(record: TLRecord): boolean {
   return record.id.includes('-page-')
 }
 
-export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176' }: YjsSyncOptions) {
+export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', onInitialSync }: YjsSyncOptions) {
+  console.log(`[Yjs] useYjsSync called with roomId=${roomId}, serverUrl=${serverUrl}`)
   const docRef = useRef<Y.Doc | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
+    console.log(`[Yjs] Setting up sync for room ${roomId}`)
     const doc = new Y.Doc()
     docRef.current = doc
 
@@ -59,6 +62,33 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176' }
           if (msg.type === 'sync' && !hasReceivedInitialSync) {
             hasReceivedInitialSync = true
             console.log(`[Yjs] Initial sync received (${yRecords.size} records from server)`)
+            yRecords.forEach((r, id) => console.log(`[Yjs]   Record: ${id} (${r.typeName}) meta:`, (r as any).meta))
+
+            // Apply all existing records from server to editor
+            const toApply: TLRecord[] = []
+            yRecords.forEach((record, key) => {
+              if (!key.includes('-page-')) {
+                toApply.push(record)
+              }
+            })
+            if (toApply.length > 0) {
+              console.log(`[Yjs] Applying ${toApply.length} records to editor:`)
+              toApply.forEach(r => console.log(`[Yjs]   Applying: ${r.id} meta:`, (r as any).meta))
+              editor.store.mergeRemoteChanges(() => {
+                editor.store.put(toApply)
+              })
+              // Check what's in the store after applying
+              const shapes = editor.getCurrentPageShapes()
+              const nonPage = shapes.filter(s => !s.id.includes('-page-'))
+              console.log(`[Yjs] After apply, non-page shapes:`, nonPage.map(s => ({ id: s.id, meta: s.meta })))
+            }
+
+            // Call onInitialSync callback if provided
+            if (onInitialSync) {
+              console.log('[Yjs] Calling onInitialSync callback')
+              onInitialSync()
+            }
+
             try {
               setupBidirectionalSync()
             } catch (e) {
@@ -141,10 +171,13 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176' }
         if (ws.readyState === WebSocket.OPEN) {
           try {
             const update = Y.encodeStateAsUpdate(doc)
+            console.log(`[Yjs] Sending update (${update.length} bytes, ${yRecords.size} records)`)
             ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
           } catch (e) {
             console.error('[Yjs] Failed to send update:', e)
           }
+        } else {
+          console.warn(`[Yjs] Cannot send - WebSocket state: ${ws.readyState}`)
         }
         pendingSend = false
       }
@@ -163,8 +196,18 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176' }
       }
 
       // Now listen for local changes and sync to server
+      console.log('[Yjs] Setting up store listener for local changes')
       unsubscribe = editor.store.listen(({ changes }) => {
         if (isRemoteUpdate) return
+
+        const added = Object.values(changes.added).filter(r => !isPageBackground(r))
+        const updated = Object.values(changes.updated).filter(([,to]) => !isPageBackground(to))
+        const removed = Object.values(changes.removed).filter(r => !isPageBackground(r))
+
+        if (added.length || updated.length || removed.length) {
+          console.log(`[Yjs] Local change: +${added.length} ~${updated.length} -${removed.length}`)
+          added.forEach(r => console.log(`[Yjs]   Added: ${r.id} (${r.typeName}) meta:`, (r as any).meta))
+        }
 
         try {
           doc.transact(() => {
