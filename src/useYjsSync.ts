@@ -55,6 +55,14 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     const ws = new WebSocket(`${serverUrl}/${roomId}`)
     wsRef.current = ws
 
+    // Send any doc update to the server (catches direct yRecords writes like ping signals)
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === 'remote') return  // don't echo back remote updates
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
+      }
+    })
+
     ws.onopen = () => {
       console.log(`[Yjs] Connected to ${roomId}`)
     }
@@ -66,7 +74,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           isRemoteUpdate = true
           try {
             const update = new Uint8Array(msg.data)
-            Y.applyUpdate(doc, update)
+            Y.applyUpdate(doc, update, 'remote')
           } catch (e) {
             console.error('[Yjs] Failed to apply update:', e)
           }
