@@ -13,18 +13,22 @@ export function Canvas({ roomId: _roomId, onLoadPdf: _onLoadPdf }: CanvasProps) 
   useEffect(() => {
     console.log('[Canvas] Mounted')
 
-    // Monitor for DOM changes
-    const container = document.querySelector('.tl-container')
-    if (container) {
-      const observer = new MutationObserver((mutations) => {
-        console.log('[Canvas] DOM mutation:', mutations.length, 'changes')
-        if (container.children.length === 0) {
-          console.log('[Canvas] CONTAINER EMPTIED!')
+    // Monitor canvas context loss
+    const checkCanvas = () => {
+      const canvases = document.querySelectorAll('canvas')
+      canvases.forEach((canvas, i) => {
+        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
+        if (gl) {
+          canvas.addEventListener('webglcontextlost', (e) => {
+            console.log('[Canvas] WebGL CONTEXT LOST!', i, e)
+          })
+          console.log('[Canvas] Monitoring WebGL canvas', i)
         }
       })
-      observer.observe(container, { childList: true, subtree: true })
-      return () => observer.disconnect()
     }
+
+    // Check after TLDraw creates canvases
+    setTimeout(checkCanvas, 1000)
 
     return () => console.log('[Canvas] UNMOUNTING!')
   }, [])
