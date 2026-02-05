@@ -28,6 +28,10 @@ function isPageBackground(record: TLRecord): boolean {
   return !shouldSync(record)
 }
 
+// Module-level ref so other components can write signals into Yjs
+let activeYRecords: Y.Map<TLRecord> | null = null
+export function getYRecords() { return activeYRecords }
+
 export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', onInitialSync }: YjsSyncOptions) {
   console.log(`[Yjs] useYjsSync called with roomId=${roomId}, serverUrl=${serverUrl}`)
   const docRef = useRef<Y.Doc | null>(null)
@@ -40,6 +44,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
     // Y.Map to hold TLDraw records keyed by id
     const yRecords = doc.getMap<TLRecord>('tldraw')
+    activeYRecords = yRecords
 
     // Track sync state
     let isRemoteUpdate = false
@@ -245,6 +250,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     }
 
     return () => {
+      activeYRecords = null
       if (unsubscribe) unsubscribe()
       ws.close()
       doc.destroy()

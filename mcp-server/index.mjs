@@ -470,6 +470,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 // Track last checked time for check_feedback
 let lastCheckedTime = 0;
+let lastPingTimestamp = 0;
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -477,47 +478,104 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'wait_for_feedback') {
     const timeout = (args?.timeout || 300) * 1000;
-
-    // Wait for new snapshot
-    const waitPromise = new Promise(resolve => {
-      waitingResolvers.push(resolve);
-    });
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Timeout waiting for feedback')), timeout);
-    });
+    const docName = args?.doc || 'bregman';
 
     try {
-      await Promise.race([waitPromise, timeoutPromise]);
+      const entry = await connectYjs(docName);
 
-      // Return the viewer output (includes diff info and screenshot paths)
+      // Check if there's already a ping newer than what we've seen
+      const existingPing = entry.yRecords.get('signal:ping');
+      if (existingPing?.timestamp > lastPingTimestamp) {
+        lastPingTimestamp = existingPing.timestamp;
+        const annotations = [];
+        entry.yRecords.forEach((record, id) => {
+          if (record.type === 'math-note') {
+            annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
+          }
+        });
+        return {
+          content: [{ type: 'text', text: `Ping received! Viewport: (${existingPing.viewport?.x?.toFixed(0)}, ${existingPing.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
+        };
+      }
+
+      // Watch for new ping via Yjs observe
+      const waitPromise = new Promise(resolve => {
+        const observer = (event) => {
+          event.changes.keys.forEach((change, key) => {
+            if (key === 'signal:ping') {
+              const ping = entry.yRecords.get('signal:ping');
+              if (ping?.timestamp > lastPingTimestamp) {
+                lastPingTimestamp = ping.timestamp;
+                entry.yRecords.unobserve(observer);
+                resolve(ping);
+              }
+            }
+          });
+        };
+        entry.yRecords.observe(observer);
+
+        // Also resolve on HTTP snapshot (backward compat)
+        waitingResolvers.push(() => {
+          entry.yRecords.unobserve(observer);
+          resolve({ type: 'http-snapshot' });
+        });
+      });
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout waiting for feedback')), timeout);
+      });
+
+      const result = await Promise.race([waitPromise, timeoutPromise]);
+
+      if (result?.type === 'http-snapshot') {
+        return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
+      }
+
+      // Yjs ping
+      const annotations = [];
+      entry.yRecords.forEach((record, id) => {
+        if (record.type === 'math-note') {
+          annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
+        }
+      });
       return {
-        content: [{
-          type: 'text',
-          text: `New feedback received!\n\n${lastRenderOutput}`,
-        }],
+        content: [{ type: 'text', text: `Ping received! Viewport: (${result.viewport?.x?.toFixed(0)}, ${result.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
       };
     } catch (e) {
-      return {
-        content: [{ type: 'text', text: `Error: ${e.message}` }],
-        isError: true,
-      };
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
   if (name === 'check_feedback') {
-    if (lastSnapshotTime > lastCheckedTime) {
-      lastCheckedTime = Date.now();
-      return {
-        content: [{
-          type: 'text',
-          text: `New feedback available!\n\n${lastRenderOutput}`,
-        }],
-      };
-    } else {
-      return {
-        content: [{ type: 'text', text: 'No new feedback since last check.' }],
-      };
+    const docName = args?.doc || 'bregman';
+
+    try {
+      const entry = await connectYjs(docName);
+      const ping = entry.yRecords.get('signal:ping');
+
+      // Check Yjs ping first
+      if (ping?.timestamp > lastPingTimestamp) {
+        lastPingTimestamp = ping.timestamp;
+        const annotations = [];
+        entry.yRecords.forEach((record, id) => {
+          if (record.type === 'math-note') {
+            annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
+          }
+        });
+        return {
+          content: [{ type: 'text', text: `New ping! Viewport: (${ping.viewport?.x?.toFixed(0)}, ${ping.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
+        };
+      }
+
+      // Fall back to HTTP snapshot check
+      if (lastSnapshotTime > lastCheckedTime) {
+        lastCheckedTime = Date.now();
+        return { content: [{ type: 'text', text: `New feedback available!\n\n${lastRenderOutput}` }] };
+      }
+
+      return { content: [{ type: 'text', text: 'No new feedback since last check.' }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 

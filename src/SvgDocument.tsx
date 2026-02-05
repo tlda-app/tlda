@@ -15,7 +15,7 @@ import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
 import { setActiveMacros } from './katexMacros'
-import { useYjsSync } from './useYjsSync'
+import { useYjsSync, getYRecords } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 
 // Sync server URL - use env var, or auto-detect based on environment
@@ -602,9 +602,6 @@ function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: stri
   const editor = useEditor()
   const [shareState, setShareState] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
 
-  // MCP server URL - always try localhost (where Claude Code's MCP server runs)
-  const mcpServerUrl = import.meta.env.VITE_SNAPSHOT_SERVER || 'http://localhost:5174/snapshot'
-
   const shareSnapshot = useCallback(async () => {
     if (shareState === 'sending') return
 
@@ -612,28 +609,36 @@ function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: stri
     setShareState('sending')
 
     try {
-      const snapshot = editor.store.getStoreSnapshot()
-      console.log('Share: sending snapshot to MCP server', mcpServerUrl)
-      const resp = await fetch(mcpServerUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(snapshot),
-      })
-      console.log('Share: response', resp.status)
+      const yRecords = getYRecords()
+      if (!yRecords) throw new Error('Yjs not connected')
 
-      if (resp.ok) {
-        setShareState('success')
-        setTimeout(() => setShareState('idle'), 1500)
-      } else {
-        setShareState('error')
-        setTimeout(() => setShareState('idle'), 2000)
-      }
+      // Write a ping signal into Yjs — Claude's MCP server sees it via the sync channel
+      const pingId = `signal:ping`
+      const doc = yRecords.doc!
+      doc.transact(() => {
+        yRecords.set(pingId, {
+          id: pingId,
+          typeName: 'signal',
+          type: 'ping',
+          timestamp: Date.now(),
+          // Include viewport center so Claude knows where you're looking
+          viewport: (() => {
+            const center = editor.getViewportScreenCenter()
+            const pagePoint = editor.screenToPage(center)
+            return { x: pagePoint.x, y: pagePoint.y }
+          })(),
+        } as any)
+      })
+
+      console.log('Share: ping written to Yjs')
+      setShareState('success')
+      setTimeout(() => setShareState('idle'), 1500)
     } catch (e) {
       console.error('Share error:', e)
       setShareState('error')
       setTimeout(() => setShareState('idle'), 2000)
     }
-  }, [editor, shareState, mcpServerUrl])
+  }, [editor, shareState])
 
   return (
     <div className="RoomInfo">
