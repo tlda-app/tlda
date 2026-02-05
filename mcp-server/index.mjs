@@ -521,16 +521,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
       }
 
-      // Watch for new ping via Yjs observe
+      // Watch for pings OR annotation changes
       const waitPromise = new Promise(resolve => {
         const observer = (event) => {
           event.changes.keys.forEach((change, key) => {
+            // Ping signal
             if (key === 'signal:ping') {
               const ping = entry.yRecords.get('signal:ping');
               if (ping?.timestamp > lastPingTimestamp) {
                 lastPingTimestamp = ping.timestamp;
                 entry.yRecords.unobserve(observer);
-                resolve(ping);
+                resolve({ type: 'ping', ping });
+              }
+              return;
+            }
+            // Annotation created or edited (skip our own replies by checking for —Claude:)
+            if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
+              const record = entry.yRecords.get(key);
+              if (record?.type === 'math-note') {
+                const text = record.props?.text || '';
+                // Skip if the last change is just our reply
+                if (text.endsWith('—Claude:')) return;
+                entry.yRecords.unobserve(observer);
+                resolve({ type: 'annotation', key, action: change.action, record });
               }
             }
           });
@@ -554,8 +567,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
       }
 
-      // Yjs ping
-      return { content: [{ type: 'text', text: formatPing(result, entry) }] };
+      if (result?.type === 'ping') {
+        return { content: [{ type: 'text', text: formatPing(result.ping, entry) }] };
+      }
+
+      // Annotation change
+      const r = result.record;
+      const anchor = r.meta?.sourceAnchor;
+      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
+      return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
