@@ -521,29 +521,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
       }
 
-      // Watch for pings OR annotation changes
+      // Watch for pings OR annotation changes (with debounce for edits)
+      const DEBOUNCE_MS = 5000;
       const waitPromise = new Promise(resolve => {
+        let debounceTimer = null;
+        let pendingResult = null;
+
         const observer = (event) => {
           event.changes.keys.forEach((change, key) => {
-            // Ping signal
+            // Ping signal — resolve immediately, no debounce
             if (key === 'signal:ping') {
               const ping = entry.yRecords.get('signal:ping');
               if (ping?.timestamp > lastPingTimestamp) {
                 lastPingTimestamp = ping.timestamp;
+                if (debounceTimer) clearTimeout(debounceTimer);
                 entry.yRecords.unobserve(observer);
                 resolve({ type: 'ping', ping });
               }
               return;
             }
-            // Annotation created or edited (skip our own replies by checking for —Claude:)
+            // Annotation created or edited — debounce to wait for typing to finish
             if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
               const record = entry.yRecords.get(key);
               if (record?.type === 'math-note') {
                 const text = record.props?.text || '';
-                // Skip if the last change is just our reply
-                if (text.endsWith('—Claude:')) return;
-                entry.yRecords.unobserve(observer);
-                resolve({ type: 'annotation', key, action: change.action, record });
+                // Skip if the last line is our reply
+                if (text.trimEnd().endsWith('—Claude:')) return;
+                // Reset debounce timer on each edit
+                pendingResult = { type: 'annotation', key, action: change.action, record };
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                  // Re-read the record for the latest text
+                  const latest = entry.yRecords.get(key);
+                  if (latest) pendingResult.record = latest;
+                  entry.yRecords.unobserve(observer);
+                  resolve(pendingResult);
+                }, DEBOUNCE_MS);
               }
             }
           });
@@ -552,6 +565,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Also resolve on HTTP snapshot (backward compat)
         waitingResolvers.push(() => {
+          if (debounceTimer) clearTimeout(debounceTimer);
           entry.yRecords.unobserve(observer);
           resolve({ type: 'http-snapshot' });
         });
