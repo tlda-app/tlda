@@ -18,12 +18,134 @@ import fs from 'fs';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket as WsClient } from 'ws';
+import * as Y from 'yjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
+
+// ---- Lookup.json support ----
+
+const lookupCache = new Map();
+
+function loadLookup(docName) {
+  if (lookupCache.has(docName)) return lookupCache.get(docName);
+  const lookupPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'lookup.json');
+  if (!fs.existsSync(lookupPath)) {
+    lookupCache.set(docName, null);
+    return null;
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(lookupPath, 'utf8'));
+    lookupCache.set(docName, data);
+    return data;
+  } catch {
+    lookupCache.set(docName, null);
+    return null;
+  }
+}
+
+function lookupLine(docName, lineNum) {
+  const lookup = loadLookup(docName);
+  if (!lookup?.lines) return null;
+  const entry = lookup.lines[lineNum.toString()];
+  if (!entry) return null;
+  return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
+}
+
+// PDF → canvas coordinate conversion (matching synctexAnchor.ts)
+const PDF_WIDTH = 612;
+const PDF_HEIGHT = 792;
+const VIEWBOX_OFFSET = -72;
+const PAGE_WIDTH = 800;
+const PAGE_HEIGHT = 1035.294; // 792 * (800/612)
+const PAGE_GAP = 20;
+
+function pdfToCanvas(page, pdfX, pdfY) {
+  const pageY = (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
+  const scaleX = PAGE_WIDTH / PDF_WIDTH;
+  const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
+  return {
+    x: (pdfX - VIEWBOX_OFFSET) * scaleX,
+    y: pageY + (pdfY - VIEWBOX_OFFSET) * scaleY,
+  };
+}
+
+// ---- Yjs connection management ----
+
+const SYNC_SERVER = process.env.SYNC_SERVER || 'ws://localhost:5176';
+const yjsDocs = new Map(); // docName → { doc, yRecords, ws, ready }
+
+function connectYjs(docName) {
+  if (yjsDocs.has(docName)) {
+    const entry = yjsDocs.get(docName);
+    if (entry.ready) return Promise.resolve(entry);
+    return entry.promise;
+  }
+
+  const doc = new Y.Doc();
+  const yRecords = doc.getMap('tldraw');
+  const roomId = `doc-${docName}`;
+
+  const entry = { doc, yRecords, ws: null, ready: false };
+
+  entry.promise = new Promise((resolve, reject) => {
+    const ws = new WsClient(`${SYNC_SERVER}/${roomId}`);
+    entry.ws = ws;
+
+    const timeout = setTimeout(() => {
+      reject(new Error('Yjs connection timeout'));
+      ws.close();
+    }, 10000);
+
+    ws.on('open', () => {
+      console.error(`[Yjs] Connected to ${roomId}`);
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'sync') {
+          Y.applyUpdate(doc, new Uint8Array(msg.data));
+          entry.ready = true;
+          clearTimeout(timeout);
+          console.error(`[Yjs] Synced ${yRecords.size} records for ${docName}`);
+          resolve(entry);
+        } else if (msg.type === 'update') {
+          Y.applyUpdate(doc, new Uint8Array(msg.data));
+        }
+      } catch (e) {
+        console.error('[Yjs] Message error:', e.message);
+      }
+    });
+
+    ws.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(new Error(`Yjs connection error: ${err.message}`));
+    });
+
+    ws.on('close', () => {
+      console.error(`[Yjs] Disconnected from ${roomId}`);
+      yjsDocs.delete(docName);
+    });
+  });
+
+  yjsDocs.set(docName, entry);
+  return entry.promise;
+}
+
+function sendYjsUpdate(entry) {
+  if (entry.ws?.readyState === WsClient.OPEN) {
+    const update = Y.encodeStateAsUpdate(entry.doc);
+    entry.ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }));
+  }
+}
+
+function generateShapeId() {
+  return 'shape:' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+}
 
 // Track snapshot state
 let lastSnapshotTime = 0;
@@ -300,6 +422,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['file', 'line'],
       },
     },
+    {
+      name: 'add_annotation',
+      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          line: { type: 'number', description: 'Source line number to anchor the note to' },
+          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
+          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
+          width: { type: 'number', description: 'Note width in pixels (default: 200)' },
+          height: { type: 'number', description: 'Note height in pixels (default: 150)' },
+        },
+        required: ['doc', 'line', 'text'],
+      },
+    },
+    {
+      name: 'list_annotations',
+      description: 'List all annotations in a document.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'delete_annotation',
+      description: 'Delete an annotation by its shape ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          id: { type: 'string', description: 'Shape ID (e.g. "shape:abc123")' },
+        },
+        required: ['doc', 'id'],
+      },
+    },
   ],
 }));
 
@@ -380,7 +541,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Run reverse synctex lookup
+    // Try lookup.json first (works without synctex binary)
+    // Guess doc name from file path
+    const docName = path.basename(file, '.tex').replace(/-lower-bound$/, '').replace(/^\.\//, '');
+    const knownDocs = ['bregman']; // extend as needed
+    const doc = knownDocs.find(d => file.includes(d)) || docName;
+
+    const linePos = lookupLine(doc, line);
+    if (linePos) {
+      const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+      broadcastHighlight(canvasPos.x, canvasPos.y, linePos.page);
+      return {
+        content: [{
+          type: 'text',
+          text: `Highlighted page ${linePos.page} at (${canvasPos.x.toFixed(0)}, ${canvasPos.y.toFixed(0)})`,
+        }],
+      };
+    }
+
+    // Fall back to synctex-reverse.mjs
     try {
       const result = execSync(
         `node "${path.join(PROJECT_ROOT, 'synctex-reverse.mjs')}" "${file}" ${line}`,
@@ -393,7 +572,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `Highlighted page ${coords.page} at TLDraw coords (${coords.tldrawX.toFixed(0)}, ${coords.tldrawY.toFixed(0)})`,
+            text: `Highlighted page ${coords.page} at (${coords.tldrawX.toFixed(0)}, ${coords.tldrawY.toFixed(0)})`,
           }],
         };
       }
@@ -403,9 +582,134 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (e) {
       return {
-        content: [{ type: 'text', text: `Synctex error: ${e.message}` }],
+        content: [{ type: 'text', text: `Line ${line} not found in lookup or synctex` }],
         isError: true,
       };
+    }
+  }
+
+  if (name === 'add_annotation') {
+    const { doc, line, text, color = 'violet', width = 200, height = 150 } = args;
+    if (!doc || !line || !text) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
+    }
+
+    // Look up position from lookup.json
+    const linePos = lookupLine(doc, line);
+    if (!linePos) {
+      return { content: [{ type: 'text', text: `Line ${line} not found in lookup.json for doc "${doc}"` }], isError: true };
+    }
+
+    const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+    const x = Math.min(canvasPos.x + 100, PAGE_WIDTH - width - 20);
+    const y = canvasPos.y - height / 2;
+
+    // Connect to Yjs and create the shape
+    try {
+      const entry = await connectYjs(doc);
+      const shapeId = generateShapeId();
+      const shape = {
+        id: shapeId,
+        type: 'math-note',
+        typeName: 'shape',
+        x, y,
+        rotation: 0,
+        isLocked: false,
+        opacity: 1,
+        props: { w: width, h: height, text, color },
+        meta: {
+          sourceAnchor: {
+            file: `./${linePos.texFile || doc + '.tex'}`,
+            line,
+            column: -1,
+            content: linePos.content,
+          },
+        },
+        parentId: 'page:page',
+        index: 'a1',
+      };
+
+      entry.doc.transact(() => {
+        entry.yRecords.set(shapeId, shape);
+      });
+      sendYjsUpdate(entry);
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Created annotation ${shapeId}\n  line ${line} → page ${linePos.page}, canvas (${x.toFixed(0)}, ${y.toFixed(0)})\n  text: "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"`,
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'list_annotations') {
+    const { doc } = args;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    }
+
+    try {
+      const entry = await connectYjs(doc);
+      const annotations = [];
+
+      entry.yRecords.forEach((record, id) => {
+        if (record.type === 'math-note') {
+          const anchor = record.meta?.sourceAnchor;
+          annotations.push({
+            id,
+            x: Math.round(record.x),
+            y: Math.round(record.y),
+            color: record.props?.color,
+            text: record.props?.text || '',
+            anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
+            content: anchor?.content || null,
+          });
+        }
+      });
+
+      if (annotations.length === 0) {
+        return { content: [{ type: 'text', text: 'No annotations found.' }] };
+      }
+
+      let summary = `${annotations.length} annotation(s):\n\n`;
+      annotations.forEach((a, i) => {
+        summary += `${i + 1}. ${a.id}\n`;
+        summary += `   pos: (${a.x}, ${a.y}) color: ${a.color}\n`;
+        if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
+        summary += `   text: "${a.text.slice(0, 80)}${a.text.length > 80 ? '...' : ''}"\n\n`;
+      });
+
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'delete_annotation') {
+    const { doc, id } = args;
+    if (!doc || !id) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
+    }
+
+    const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
+
+    try {
+      const entry = await connectYjs(doc);
+      if (!entry.yRecords.has(fullId)) {
+        return { content: [{ type: 'text', text: `Annotation not found: ${fullId}` }], isError: true };
+      }
+
+      entry.doc.transact(() => {
+        entry.yRecords.delete(fullId);
+      });
+      sendYjsUpdate(entry);
+
+      return { content: [{ type: 'text', text: `Deleted: ${fullId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
   }
 
