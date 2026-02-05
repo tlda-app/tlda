@@ -41,6 +41,7 @@ export function Canvas({ roomId: _roomId, onLoadPdf: _onLoadPdf }: CanvasProps) 
     }
   }, [])
 
-  // Absolute minimal - no props
-  return <Tldraw />
+  const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
+
+  return <Tldraw licenseKey={licenseKey} />
 }
