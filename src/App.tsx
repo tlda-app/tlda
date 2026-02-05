@@ -59,7 +59,8 @@ function generateRoomId(): string {
 // Fetch document manifest at runtime
 async function fetchManifest(): Promise<Record<string, DocConfig>> {
   try {
-    const resp = await fetch('/docs/manifest.json')
+    const base = import.meta.env.BASE_URL || '/'
+    const resp = await fetch(`${base}docs/manifest.json`)
     if (!resp.ok) return {}
     const data = await resp.json()
     return data.documents || {}
@@ -107,9 +108,12 @@ function App() {
     setState(s => s ? { ...s, message: `Loading ${config.name}...` } : s)
 
     try {
+      const base = import.meta.env.BASE_URL || '/'
       const urls = Array.from({ length: config.pages }, (_, i) => {
         const pageNum = String(i + 1).padStart(2, '0')
-        return `${config.basePath}page-${pageNum}.svg`
+        // basePath starts with /, so we need to handle base URL properly
+        const basePath = config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath
+        return `${base}${basePath}page-${pageNum}.svg`
       })
 
       const document = await loadSvgDocument(config.name, urls)
