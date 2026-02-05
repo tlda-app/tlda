@@ -472,6 +472,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 let lastCheckedTime = 0;
 let lastPingTimestamp = 0;
 
+function summarizeAnnotations(entry) {
+  const annotations = [];
+  entry.yRecords.forEach((record, id) => {
+    if (record.type === 'math-note') {
+      const anchor = record.meta?.sourceAnchor;
+      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${record.x?.toFixed(0)}, ${record.y?.toFixed(0)})`;
+      annotations.push(`- [${record.props?.color || '?'}] ${loc}: ${record.props?.text || '(empty)'}`);
+    }
+  });
+  if (annotations.length === 0) return 'No annotations.';
+  return `${annotations.length} annotation(s):\n${annotations.join('\n')}`;
+}
+
+function formatPing(ping, entry) {
+  const vp = ping.viewport ? `Viewport: (${ping.viewport.x?.toFixed(0)}, ${ping.viewport.y?.toFixed(0)})` : '';
+  return `Ping received! ${vp}\n\n${summarizeAnnotations(entry)}`;
+}
+
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -487,15 +505,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const existingPing = entry.yRecords.get('signal:ping');
       if (existingPing?.timestamp > lastPingTimestamp) {
         lastPingTimestamp = existingPing.timestamp;
-        const annotations = [];
-        entry.yRecords.forEach((record, id) => {
-          if (record.type === 'math-note') {
-            annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
-          }
-        });
-        return {
-          content: [{ type: 'text', text: `Ping received! Viewport: (${existingPing.viewport?.x?.toFixed(0)}, ${existingPing.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
-        };
+        return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
       }
 
       // Watch for new ping via Yjs observe
@@ -532,15 +542,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // Yjs ping
-      const annotations = [];
-      entry.yRecords.forEach((record, id) => {
-        if (record.type === 'math-note') {
-          annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
-        }
-      });
-      return {
-        content: [{ type: 'text', text: `Ping received! Viewport: (${result.viewport?.x?.toFixed(0)}, ${result.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
-      };
+      return { content: [{ type: 'text', text: formatPing(result, entry) }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -556,15 +558,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Check Yjs ping first
       if (ping?.timestamp > lastPingTimestamp) {
         lastPingTimestamp = ping.timestamp;
-        const annotations = [];
-        entry.yRecords.forEach((record, id) => {
-          if (record.type === 'math-note') {
-            annotations.push({ id, text: record.props?.text, x: record.x, y: record.y });
-          }
-        });
-        return {
-          content: [{ type: 'text', text: `New ping! Viewport: (${ping.viewport?.x?.toFixed(0)}, ${ping.viewport?.y?.toFixed(0)})\n${annotations.length} annotations on canvas.` }],
-        };
+        return { content: [{ type: 'text', text: formatPing(ping, entry) }] };
       }
 
       // Fall back to HTTP snapshot check
