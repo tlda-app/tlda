@@ -17,8 +17,11 @@ import { MathNoteTool } from './MathNoteTool'
 import { setActiveMacros } from './katexMacros'
 import { useYjsSync } from './useYjsSync'
 
-// Sync server URL - use env var for production, localhost for dev
-const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER || 'ws://localhost:5176'
+// Sync server URL - use env var, or auto-detect based on environment
+const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? 'wss://tldraw-sync-skip.fly.dev'
+    : 'ws://localhost:5176')
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
@@ -167,7 +170,8 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   // Only connect on local network, not in production
   const forwardSyncUrl = import.meta.env.VITE_FORWARD_SYNC_SERVER
   useEffect(() => {
-    if (!forwardSyncUrl) return // Skip in production
+    // Skip in production - only use forward sync on localhost
+    if (!forwardSyncUrl || window.location.hostname !== 'localhost') return
 
     const ws = new WebSocket(forwardSyncUrl)
 
@@ -510,9 +514,10 @@ function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: stri
 
   // Snapshot sharing is for local dev only (sharing to iPad)
   const snapshotServerUrl = import.meta.env.VITE_SNAPSHOT_SERVER
+  const isLocalDev = typeof window !== 'undefined' && window.location.hostname === 'localhost'
 
   const shareSnapshot = useCallback(async () => {
-    if (shareState === 'sending' || !snapshotServerUrl) return
+    if (shareState === 'sending' || !snapshotServerUrl || !isLocalDev) return
 
     console.log('Share clicked')
     setShareState('sending')
