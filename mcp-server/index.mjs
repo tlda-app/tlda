@@ -75,7 +75,8 @@ function pdfToCanvas(page, pdfX, pdfY) {
 
 // ---- Yjs connection management ----
 
-const SYNC_SERVER = process.env.SYNC_SERVER || 'ws://localhost:5176';
+const SYNC_SERVER = process.env.SYNC_SERVER || 'wss://tldraw-sync-skip.fly.dev';
+console.error(`[Yjs] SYNC_SERVER = ${SYNC_SERVER}`);
 const yjsDocs = new Map(); // docName → { doc, yRecords, ws, ready }
 
 function connectYjs(docName) {
@@ -88,15 +89,17 @@ function connectYjs(docName) {
   const doc = new Y.Doc();
   const yRecords = doc.getMap('tldraw');
   const roomId = `doc-${docName}`;
+  const url = `${SYNC_SERVER}/${roomId}`;
 
+  console.error(`[Yjs] Connecting to ${url}`);
   const entry = { doc, yRecords, ws: null, ready: false };
 
   entry.promise = new Promise((resolve, reject) => {
-    const ws = new WsClient(`${SYNC_SERVER}/${roomId}`);
+    const ws = new WsClient(url);
     entry.ws = ws;
 
     const timeout = setTimeout(() => {
-      reject(new Error('Yjs connection timeout'));
+      reject(new Error(`Yjs connection timeout connecting to ${url}`));
       ws.close();
     }, 10000);
 
@@ -123,11 +126,12 @@ function connectYjs(docName) {
 
     ws.on('error', (err) => {
       clearTimeout(timeout);
-      reject(new Error(`Yjs connection error: ${err.message}`));
+      console.error(`[Yjs] WebSocket error:`, err);
+      reject(new Error(`Yjs connection error: ${err.message || err.code || JSON.stringify(err)}`));
     });
 
-    ws.on('close', () => {
-      console.error(`[Yjs] Disconnected from ${roomId}`);
+    ws.on('close', (code, reason) => {
+      console.error(`[Yjs] Disconnected from ${roomId} (code=${code}, reason=${reason})`);
       yjsDocs.delete(docName);
     });
   });

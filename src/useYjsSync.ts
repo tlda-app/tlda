@@ -13,10 +13,19 @@ interface YjsSyncOptions {
   onInitialSync?: () => void
 }
 
-// Check if a record is a page background (should not be synced)
-// Page images have IDs like "shape:docname-page-0" or "asset:docname-page-0"
+// Record types that should be synced between clients
+// Session-specific records (instance, camera, pointer, instance_page_state) must NOT be synced
+// Page backgrounds (SVG images) are created locally and must NOT be synced
+const SYNC_TYPES = new Set(['shape', 'asset', 'page', 'document'])
+
+function shouldSync(record: TLRecord): boolean {
+  if (record.id.includes('-page-')) return false  // page background images
+  return SYNC_TYPES.has(record.typeName)
+}
+
+// Legacy name kept for compatibility
 function isPageBackground(record: TLRecord): boolean {
-  return record.id.includes('-page-')
+  return !shouldSync(record)
 }
 
 export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', onInitialSync }: YjsSyncOptions) {
@@ -64,10 +73,10 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
             console.log(`[Yjs] Initial sync received (${yRecords.size} records from server)`)
             yRecords.forEach((r, id) => console.log(`[Yjs]   Record: ${id} (${r.typeName}) meta:`, (r as any).meta))
 
-            // Apply all existing records from server to editor
+            // Apply syncable records from server to editor
             const toApply: TLRecord[] = []
-            yRecords.forEach((record, key) => {
-              if (!key.includes('-page-')) {
+            yRecords.forEach((record) => {
+              if (shouldSync(record)) {
                 toApply.push(record)
               }
             })
@@ -119,17 +128,17 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           const toRemove: TLRecord['id'][] = []
 
           event.changes.keys.forEach((change, key) => {
-            // Skip page backgrounds
-            if (key.includes('-page-')) return
-
             if (change.action === 'add') {
               const record = yRecords.get(key)
-              if (record) toAdd.push(record)
+              if (record && shouldSync(record)) toAdd.push(record)
             } else if (change.action === 'update') {
               const record = yRecords.get(key)
-              if (record) toUpdate.push(record)
+              if (record && shouldSync(record)) toUpdate.push(record)
             } else if (change.action === 'delete') {
-              toRemove.push(key as TLRecord['id'])
+              // Only remove shapes/assets/pages/documents
+              if (SYNC_TYPES.has(key.split(':')[0])) {
+                toRemove.push(key as TLRecord['id'])
+              }
             }
           })
 
