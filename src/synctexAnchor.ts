@@ -9,6 +9,9 @@ import {
 
 const SYNCTEX_SERVER = import.meta.env.VITE_SYNCTEX_SERVER || 'http://localhost:5177'
 
+// On HTTPS pages, skip server (browser blocks mixed content http://localhost from https://)
+const USE_SERVER = typeof window === 'undefined' || window.location.protocol !== 'https:'
+
 // Standard PDF page dimensions in points (US Letter)
 const PDF_WIDTH = 612
 const PDF_HEIGHT = 792
@@ -40,8 +43,8 @@ export async function getSourceAnchor(
   x: number,
   y: number
 ): Promise<SourceAnchor | null> {
-  // Try server first
-  try {
+  // Try server first (only on HTTP, not HTTPS)
+  if (USE_SERVER) try {
     const url = `${SYNCTEX_SERVER}/edit?doc=${docName}&page=${page}&x=${x}&y=${y}`
     const resp = await fetch(url, { signal: AbortSignal.timeout(2000) })
     const data = await resp.json()
@@ -82,8 +85,8 @@ export async function resolvAnchor(
   docName: string,
   anchor: SourceAnchor
 ): Promise<PdfPosition | null> {
-  // Try server first
-  try {
+  // Try server first (only on HTTP, not HTTPS)
+  if (USE_SERVER) try {
     let resolvedLine = anchor.line
 
     // If we have a content fingerprint, try to find the current line
