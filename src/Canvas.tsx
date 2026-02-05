@@ -1,6 +1,5 @@
-import { useMemo } from 'react'
+import { useEffect } from 'react'
 import { Tldraw } from 'tldraw'
-import type { TLComponents } from 'tldraw'
 import 'tldraw/tldraw.css'
 
 interface CanvasProps {
@@ -8,20 +7,14 @@ interface CanvasProps {
   onLoadPdf: () => void
 }
 
-export function Canvas({ roomId, onLoadPdf }: CanvasProps) {
-  const components = useMemo<TLComponents>(
-    () => ({
-      SharePanel: () => (
-        <div className="CanvasControls">
-          <button onClick={onLoadPdf} className="load-pdf-btn">
-            Load PDF
-          </button>
-          <span className="room-id">Room: {roomId}</span>
-        </div>
-      ),
-    }),
-    [roomId, onLoadPdf]
-  )
+export function Canvas({ roomId: _roomId, onLoadPdf: _onLoadPdf }: CanvasProps) {
+  console.log('[Canvas] Render')
 
-  return <Tldraw components={components} />
+  useEffect(() => {
+    console.log('[Canvas] Mounted')
+    return () => console.log('[Canvas] UNMOUNTING!')
+  }, [])
+
+  // Absolute minimal - no props
+  return <Tldraw />
 }

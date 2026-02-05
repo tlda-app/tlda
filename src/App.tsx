@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Component, type ReactNode } from 'react'
 import { loadPdf } from './PdfPicker'
 import type { Pdf } from './PdfPicker'
 import { PdfEditor } from './PdfEditor'
@@ -6,13 +6,42 @@ import { SvgDocumentEditor, loadSvgDocument } from './SvgDocument'
 import { Canvas } from './Canvas'
 import './App.css'
 
-// Document configs - maps doc names to their SVG page URLs
-const DOCUMENTS: Record<string, { name: string; pages: number; basePath: string }> = {
-  'bregman': {
-    name: 'Bregman Lower Bound',
-    pages: 43,
-    basePath: '/docs/page-',
-  },
+// Error boundary to prevent blank screen on errors
+class ErrorBoundary extends Component<
+  { children: ReactNode; onError?: () => void },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: ReactNode; onError?: () => void }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('ErrorBoundary caught:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="ErrorScreen">
+          <h2>Something went wrong</h2>
+          <p>{this.state.error?.message}</p>
+          <button onClick={() => window.location.reload()}>Reload</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+interface DocConfig {
+  name: string
+  pages: number
+  basePath: string
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -27,47 +56,67 @@ function generateRoomId(): string {
   return `room-${Math.random().toString(36).slice(2, 10)}`
 }
 
-function App() {
-  const [state, setState] = useState<State | null>(null)
+// Fetch document manifest at runtime
+async function fetchManifest(): Promise<Record<string, DocConfig>> {
+  try {
+    const resp = await fetch('/docs/manifest.json')
+    if (!resp.ok) return {}
+    const data = await resp.json()
+    return data.documents || {}
+  } catch {
+    return {}
+  }
+}
 
-  // Check URL params on mount
+function App() {
+  console.log('[App] Render start')
+  const [state, setState] = useState<State | null>(null)
+  console.log('[App] State:', state?.phase || 'null')
+
   useEffect(() => {
+    return () => console.log('[App] UNMOUNTING!')
+  }, [])
+
+  useEffect(() => {
+    console.log('[App] useEffect running')
     const params = new URLSearchParams(window.location.search)
     const pdfUrl = params.get('pdf')
     const docName = params.get('doc')
     const roomId = params.get('room') || generateRoomId()
 
-    // Update URL with room ID if not present
     if (!params.get('room')) {
       const newUrl = new URL(window.location.href)
       newUrl.searchParams.set('room', roomId)
       window.history.replaceState({}, '', newUrl.toString())
     }
 
-    if (docName && DOCUMENTS[docName]) {
-      setState({ phase: 'loading', message: `Loading ${DOCUMENTS[docName].name}...`, roomId })
+    if (docName) {
+      setState({ phase: 'loading', message: 'Loading document...', roomId })
       loadDocument(docName, roomId)
     } else if (pdfUrl) {
       setState({ phase: 'loading', message: 'Loading PDF...', roomId })
       loadPdfFromUrl(pdfUrl, roomId)
     } else {
-      // Start with blank canvas
       setState({ phase: 'canvas', roomId })
     }
   }, [])
 
   async function loadDocument(docName: string, roomId: string) {
-    const config = DOCUMENTS[docName]
+    const manifest = await fetchManifest()
+    const config = manifest[docName]
+
     if (!config) {
+      console.error(`Document "${docName}" not found in manifest`)
       setState({ phase: 'canvas', roomId })
       return
     }
 
+    setState(s => s ? { ...s, message: `Loading ${config.name}...` } : s)
+
     try {
-      // Generate URLs for all pages
       const urls = Array.from({ length: config.pages }, (_, i) => {
         const pageNum = String(i + 1).padStart(2, '0')
-        return `${config.basePath}${pageNum}.svg`
+        return `${config.basePath}page-${pageNum}.svg`
       })
 
       const document = await loadSvgDocument(config.name, urls)
@@ -118,17 +167,22 @@ function App() {
   }
 
   if (!state) {
+    console.log('[App] Rendering: initial loading')
     return <div className="App loading">Loading...</div>
   }
 
+  console.log('[App] Rendering phase:', state.phase)
+
   switch (state.phase) {
     case 'canvas':
+      console.log('[App] Rendering Canvas')
       return (
         <div className="App">
           <Canvas roomId={state.roomId} onLoadPdf={handleLoadPdf} />
         </div>
       )
     case 'loading':
+      console.log('[App] Rendering loading screen')
       return (
         <div className="App">
           <div className="LoadingScreen">
@@ -145,7 +199,9 @@ function App() {
     case 'svg':
       return (
         <div className="App">
-          <SvgDocumentEditor document={state.document} roomId={state.roomId} />
+          <ErrorBoundary>
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} />
+          </ErrorBoundary>
         </div>
       )
   }

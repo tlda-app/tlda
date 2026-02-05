@@ -1,0 +1,9 @@
+{
+  "documents": {
+    "bregman": {
+      "name": "Bregman Lower Bound",
+      "pages": 43,
+      "basePath": "/docs/bregman/"
+    }
+  }
+}

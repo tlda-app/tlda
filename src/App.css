@@ -192,3 +192,56 @@
 .highlight-marker {
   z-index: 9999;
 }
+
+/* KaTeX container - force proper font stack, allow clicks through */
+.katex-container {
+  font-family: KaTeX_Main, "Times New Roman", serif;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.katex-container .katex {
+  font-size: 1em;
+}
+
+.katex-container .katex-display {
+  margin: 0.5em 0;
+}
+
+/* Error screen */
+.ErrorScreen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #334155;
+  gap: 1rem;
+}
+
+.ErrorScreen h2 {
+  margin: 0;
+  color: #dc2626;
+}
+
+.ErrorScreen p {
+  margin: 0;
+  color: #64748b;
+  max-width: 400px;
+  text-align: center;
+}
+
+.ErrorScreen button {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: #2563eb;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.ErrorScreen button:hover {
+  background: #1d4ed8;
+}

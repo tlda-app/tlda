@@ -1,0 +1,12 @@
+{
+  "name": "tldraw-sync-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node sync-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "yjs": "^13.6.29"
+  }
+}

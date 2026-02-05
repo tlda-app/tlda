@@ -1,19 +1,39 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import {
   Box,
-  SVGContainer,
   Tldraw,
   AssetRecordType,
   createShapeId,
   getIndicesBetween,
   react,
   sortByIndex,
-  track,
   useEditor,
   DefaultToolbar,
 } from 'tldraw'
 import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLAssetId, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
+import { MathNoteShapeUtil } from './MathNoteShape'
+import { MathNoteTool } from './MathNoteTool'
+import { setActiveMacros } from './katexMacros'
+// import { useYjsSync } from './useYjsSync'
+
+// Sync server URL - use env var for production, localhost for dev
+// const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER || 'ws://localhost:5176'
+
+// Global document info for synctex anchoring
+export let currentDocumentInfo: {
+  name: string
+  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
+} | null = null
+
+// Inner component to set up Yjs sync (needs useEditor context)
+// TEMPORARILY DISABLED - debugging crash
+function YjsSyncProvider({ roomId }: { roomId: string }) {
+  console.log('[Yjs] Sync disabled for debugging, room:', roomId)
+  // const editor = useEditor()
+  // useYjsSync({ editor, roomId, serverUrl: SYNC_SERVER })
+  return null
+}
 
 interface SvgPage {
   src: string
@@ -27,6 +47,7 @@ interface SvgPage {
 interface SvgDocument {
   name: string
   pages: SvgPage[]
+  macros?: Record<string, string>
 }
 
 interface SvgDocumentEditorProps {
@@ -40,13 +61,29 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
   // Fetch all SVGs in parallel
   console.log(`Loading ${svgUrls.length} SVG pages...`)
 
-  const svgTexts = await Promise.all(
-    svgUrls.map(async (url) => {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`Failed to fetch ${url}`)
-      return response.text()
-    })
-  )
+  // Derive macros.json path from first SVG URL
+  const basePath = svgUrls[0].replace(/page-\d+\.svg$/, '')
+  const macrosUrl = basePath + 'macros.json'
+
+  // Fetch SVGs and macros in parallel
+  const [svgTexts, macrosData] = await Promise.all([
+    Promise.all(
+      svgUrls.map(async (url) => {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`Failed to fetch ${url}`)
+        return response.text()
+      })
+    ),
+    fetch(macrosUrl)
+      .then(r => r.ok ? r.json() : null)
+      .catch(() => null)
+  ])
+
+  // Set active macros if loaded
+  if (macrosData?.macros) {
+    console.log(`Loaded ${Object.keys(macrosData.macros).length} macros from preamble`)
+    setActiveMacros(macrosData.macros)
+  }
 
   console.log('All SVGs fetched, processing...')
 
@@ -97,11 +134,14 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
     // Convert SVG to base64 data URL (TLDraw doesn't accept blob URLs)
     const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
 
+    // Use deterministic IDs based on document name + page index
+    // This prevents duplicates when Yjs syncs existing shapes
+    const pageId = `${name}-page-${i}`
     pages.push({
       src: dataUrl,
       bounds: new Box(0, top, width, height),
-      assetId: AssetRecordType.createId(),
-      shapeId: createShapeId(),
+      assetId: AssetRecordType.createId(pageId),
+      shapeId: createShapeId(pageId),
       width,
       height,
     })
@@ -122,11 +162,14 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
 export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) {
   // Skip sync for now - just use local store
   const editorRef = useRef<Editor | null>(null)
-  const [highlightMarker, setHighlightMarker] = useState<{ x: number; y: number } | null>(null)
 
   // WebSocket connection for forward sync (Claude → iPad)
+  // Only connect on local network, not in production
+  const forwardSyncUrl = import.meta.env.VITE_FORWARD_SYNC_SERVER
   useEffect(() => {
-    const ws = new WebSocket('ws://10.0.0.18:5175')
+    if (!forwardSyncUrl) return // Skip in production
+
+    const ws = new WebSocket(forwardSyncUrl)
 
     ws.onopen = () => {
       console.log('WebSocket connected for forward sync')
@@ -266,57 +309,74 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   const components = useMemo<TLComponents>(
     () => ({
       PageMenu: null,
-      Overlays: () => <HighlightOverlay marker={highlightMarker} />,
       SharePanel: () => <RoomInfo roomId={roomId} name={document.name} />,
       Toolbar: (props) => <DefaultToolbar {...props} orientation="vertical" />,
     }),
-    [document, roomId, highlightMarker]
+    [document, roomId]
   )
 
-  const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
+  const shapeUtils = useMemo(() => [MathNoteShapeUtil], [])
+  const tools = useMemo(() => [MathNoteTool], [])
+
+  // Override toolbar to replace note with math-note
+  const overrides = useMemo(() => ({
+    tools: (_editor: Editor, tools: any) => {
+      // Add math-note tool definition
+      tools['math-note'] = {
+        id: 'math-note',
+        icon: 'tool-note',
+        label: 'Math Note',
+        kbd: 'm',
+        onSelect: () => _editor.setCurrentTool('math-note'),
+      }
+      // Override the 'note' tool to activate math-note instead
+      if (tools['note']) {
+        tools['note'] = {
+          ...tools['note'],
+          onSelect: () => _editor.setCurrentTool('math-note'),
+        }
+      }
+      return tools
+    },
+  }), [])
 
   return (
     <Tldraw
-      licenseKey={licenseKey}
-      onMount={(editor) => {
-        // Expose editor for debugging/puppeteer access
-        (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
-        editorRef.current = editor
-        setupSvgEditor(editor, document)
-      }}
-      components={components}
-      forceMobile
-    />
+        shapeUtils={shapeUtils}
+        tools={tools}
+        overrides={overrides}
+        onMount={(editor) => {
+          // Expose editor for debugging/puppeteer access
+          (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
+          editorRef.current = editor
+          setupSvgEditor(editor, document)
+
+          // Set global document info for synctex anchoring
+          currentDocumentInfo = {
+            name: document.name,
+            pages: document.pages.map(p => ({
+              bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+              width: p.width,
+              height: p.height
+            }))
+          }
+
+          // Keyboard shortcut: 'm' for math note
+          const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              if (editor.getEditingShapeId()) return // Don't trigger while editing
+              editor.setCurrentTool('math-note')
+            }
+          }
+          window.addEventListener('keydown', handleKeyDown)
+        }}
+        components={components}
+        forceMobile
+    >
+      <YjsSyncProvider roomId={roomId} />
+    </Tldraw>
   )
 }
-
-// Overlay component to show highlight marker
-const HighlightOverlay = track(function HighlightOverlay({ marker }: { marker: { x: number; y: number } | null }) {
-  const editor = useEditor()
-
-  if (!marker) return null
-
-  // Convert page coordinates to screen coordinates
-  const screenPoint = editor.pageToViewport({ x: marker.x, y: marker.y })
-
-  return (
-    <div
-      className="highlight-marker"
-      style={{
-        position: 'absolute',
-        left: screenPoint.x - 20,
-        top: screenPoint.y - 20,
-        width: 40,
-        height: 40,
-        borderRadius: '50%',
-        border: '3px solid #ff6b6b',
-        backgroundColor: 'rgba(255, 107, 107, 0.2)',
-        pointerEvents: 'none',
-        animation: 'pulse 1s ease-in-out infinite',
-      }}
-    />
-  )
-})
 
 function setupSvgEditor(editor: Editor, document: SvgDocument) {
   // Check if assets already exist (from sync)
@@ -417,7 +477,7 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
     document.pages[0].bounds.clone()
   )
 
-  function updateCameraBounds(isMobile: boolean) {
+  function updateCameraBounds(_isMobile: boolean) {
     editor.setCameraOptions({
       constraints: {
         bounds: targetBounds,
@@ -443,52 +503,15 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
   updateCameraBounds(isMobile)
 }
 
-const PageOverlayScreen = track(function PageOverlayScreen({ document }: { document: SvgDocument }) {
-  const editor = useEditor()
-  const viewportPageBounds = editor.getViewportPageBounds()
-
-  const relevantPageBounds = document.pages
-    .map((page) => {
-      if (!viewportPageBounds.collides(page.bounds)) return null
-      return page.bounds
-    })
-    .filter((bounds): bounds is Box => bounds !== null)
-
-  function pathForPageBounds(bounds: Box) {
-    return `M ${bounds.x} ${bounds.y} L ${bounds.maxX} ${bounds.y} L ${bounds.maxX} ${bounds.maxY} L ${bounds.x} ${bounds.maxY} Z`
-  }
-
-  const viewportPath = `M ${viewportPageBounds.x} ${viewportPageBounds.y} L ${viewportPageBounds.maxX} ${viewportPageBounds.y} L ${viewportPageBounds.maxX} ${viewportPageBounds.maxY} L ${viewportPageBounds.x} ${viewportPageBounds.maxY} Z`
-
-  return (
-    <>
-      <SVGContainer className="PageOverlayScreen-screen">
-        <path
-          d={`${viewportPath} ${relevantPageBounds.map(pathForPageBounds).join(' ')}`}
-          fillRule="evenodd"
-        />
-      </SVGContainer>
-      {relevantPageBounds.map((bounds, i) => (
-        <div
-          key={i}
-          className="PageOverlayScreen-outline"
-          style={{
-            width: bounds.w,
-            height: bounds.h,
-            transform: `translate(${bounds.x}px, ${bounds.y}px)`,
-          }}
-        />
-      ))}
-    </>
-  )
-})
-
-function RoomInfo({ roomId, name }: { roomId: string; name: string }) {
+function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: string }) {
   const editor = useEditor()
   const [shareState, setShareState] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
 
+  // Snapshot sharing is for local dev only (sharing to iPad)
+  const snapshotServerUrl = import.meta.env.VITE_SNAPSHOT_SERVER
+
   const shareSnapshot = useCallback(async () => {
-    if (shareState === 'sending') return
+    if (shareState === 'sending' || !snapshotServerUrl) return
 
     console.log('Share clicked')
     setShareState('sending')
@@ -496,7 +519,7 @@ function RoomInfo({ roomId, name }: { roomId: string; name: string }) {
     try {
       const snapshot = editor.store.getStoreSnapshot()
       console.log('Got snapshot, size:', JSON.stringify(snapshot).length)
-      const resp = await fetch('http://10.0.0.18:5174/snapshot', {
+      const resp = await fetch(snapshotServerUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(snapshot),
@@ -515,7 +538,12 @@ function RoomInfo({ roomId, name }: { roomId: string; name: string }) {
       setShareState('error')
       setTimeout(() => setShareState('idle'), 2000)
     }
-  }, [editor, shareState])
+  }, [editor, shareState, snapshotServerUrl])
+
+  // Don't render share button in production (when no snapshot server configured)
+  if (!snapshotServerUrl) {
+    return null
+  }
 
   return (
     <div className="RoomInfo">
