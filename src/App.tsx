@@ -69,16 +69,9 @@ async function fetchManifest(): Promise<Record<string, DocConfig>> {
 }
 
 function App() {
-  console.log('[App] Render start')
   const [state, setState] = useState<State | null>(null)
-  console.log('[App] State:', state?.phase || 'null')
 
   useEffect(() => {
-    return () => console.log('[App] UNMOUNTING!')
-  }, [])
-
-  useEffect(() => {
-    console.log('[App] useEffect running')
     const params = new URLSearchParams(window.location.search)
     const pdfUrl = params.get('pdf')
     const docName = params.get('doc')
@@ -167,22 +160,17 @@ function App() {
   }
 
   if (!state) {
-    console.log('[App] Rendering: initial loading')
     return <div className="App loading">Loading...</div>
   }
 
-  console.log('[App] Rendering phase:', state.phase)
-
   switch (state.phase) {
     case 'canvas':
-      console.log('[App] Rendering Canvas')
       return (
         <div className="App">
           <Canvas roomId={state.roomId} onLoadPdf={handleLoadPdf} />
         </div>
       )
     case 'loading':
-      console.log('[App] Rendering loading screen')
       return (
         <div className="App">
           <div className="LoadingScreen">

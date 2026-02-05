@@ -15,10 +15,12 @@ import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
 import { setActiveMacros } from './katexMacros'
-// import { useYjsSync } from './useYjsSync'
+import { useYjsSync } from './useYjsSync'
 
 // Sync server URL - use env var for production, localhost for dev
-// const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER || 'ws://localhost:5176'
+const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER || 'ws://localhost:5176'
+
+const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
@@ -27,11 +29,9 @@ export let currentDocumentInfo: {
 } | null = null
 
 // Inner component to set up Yjs sync (needs useEditor context)
-// TEMPORARILY DISABLED - debugging crash
 function YjsSyncProvider({ roomId }: { roomId: string }) {
-  console.log('[Yjs] Sync disabled for debugging, room:', roomId)
-  // const editor = useEditor()
-  // useYjsSync({ editor, roomId, serverUrl: SYNC_SERVER })
+  const editor = useEditor()
+  useYjsSync({ editor, roomId, serverUrl: SYNC_SERVER })
   return null
 }
 
@@ -342,6 +342,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
 
   return (
     <Tldraw
+        licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
         tools={tools}
         overrides={overrides}
