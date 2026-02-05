@@ -13,24 +13,32 @@ export function Canvas({ roomId: _roomId, onLoadPdf: _onLoadPdf }: CanvasProps) 
   useEffect(() => {
     console.log('[Canvas] Mounted')
 
-    // Monitor canvas context loss
-    const checkCanvas = () => {
-      const canvases = document.querySelectorAll('canvas')
-      canvases.forEach((canvas, i) => {
-        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
-        if (gl) {
-          canvas.addEventListener('webglcontextlost', (e) => {
-            console.log('[Canvas] WebGL CONTEXT LOST!', i, e)
-          })
-          console.log('[Canvas] Monitoring WebGL canvas', i)
-        }
-      })
+    // Heartbeat every 500ms to see when things die
+    let count = 0
+    const heartbeat = setInterval(() => {
+      const container = document.querySelector('.tl-container')
+      const canvas = document.querySelector('.tl-canvas')
+      const hasContent = container && container.innerHTML.length > 100
+      console.log(`[Heartbeat ${count++}] container=${!!container} canvas=${!!canvas} content=${hasContent}`)
+
+      if (container && !hasContent) {
+        console.log('[Heartbeat] CONTENT GONE! innerHTML length:', container.innerHTML.length)
+        console.log('[Heartbeat] innerHTML preview:', container.innerHTML.substring(0, 200))
+      }
+    }, 500)
+
+    // Global error catcher
+    window.onerror = (msg, src, line, col, err) => {
+      console.log('[GlobalError]', msg, src, line, col, err)
+    }
+    window.onunhandledrejection = (e) => {
+      console.log('[UnhandledRejection]', e.reason)
     }
 
-    // Check after TLDraw creates canvases
-    setTimeout(checkCanvas, 1000)
-
-    return () => console.log('[Canvas] UNMOUNTING!')
+    return () => {
+      clearInterval(heartbeat)
+      console.log('[Canvas] UNMOUNTING!')
+    }
   }, [])
 
   // Absolute minimal - no props
