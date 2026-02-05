@@ -16,6 +16,7 @@ import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
 import { setActiveMacros } from './katexMacros'
 import { useYjsSync } from './useYjsSync'
+import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 
 // Sync server URL - use env var, or auto-detect based on environment
 const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
@@ -34,8 +35,95 @@ export let currentDocumentInfo: {
 // Inner component to set up Yjs sync (needs useEditor context)
 function YjsSyncProvider({ roomId }: { roomId: string }) {
   const editor = useEditor()
-  useYjsSync({ editor, roomId, serverUrl: SYNC_SERVER })
+  useYjsSync({
+    editor,
+    roomId,
+    serverUrl: SYNC_SERVER,
+    onInitialSync: () => {
+      // Remap annotations after Yjs applies initial data
+      if (currentDocumentInfo) {
+        remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
+      }
+    }
+  })
   return null
+}
+
+/**
+ * Remap annotations with source anchors to their new positions
+ * Called after document SVGs are loaded/updated
+ */
+async function remapAnnotations(
+  editor: Editor,
+  docName: string,
+  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
+) {
+  const allShapes = editor.getCurrentPageShapes()
+
+  // Debug: log all shapes and their meta
+  console.log(`[SyncTeX] Total shapes: ${allShapes.length}`)
+  console.log(`[SyncTeX] All shapes:`, allShapes.map(s => ({ id: s.id, type: s.type, hasMeta: !!s.meta, metaKeys: Object.keys(s.meta || {}) })))
+
+  // Find shapes with source anchors
+  const anchored = allShapes.filter(shape => {
+    const meta = shape.meta as { sourceAnchor?: SourceAnchor }
+    return meta?.sourceAnchor?.file && meta?.sourceAnchor?.line
+  })
+
+  if (anchored.length === 0) {
+    console.log('[SyncTeX] No anchored annotations to remap')
+    return
+  }
+
+  console.log(`[SyncTeX] Remapping ${anchored.length} anchored annotations...`)
+
+  // Resolve each anchor and update position
+  const updates: Array<{ id: TLShapeId, x: number, y: number }> = []
+
+  for (const shape of anchored) {
+    const meta = shape.meta as unknown as { sourceAnchor: SourceAnchor }
+    const anchor = meta.sourceAnchor
+
+    try {
+      // Get new PDF position from synctex
+      const pdfPos = await resolvAnchor(docName, anchor)
+      if (!pdfPos) {
+        console.warn(`[SyncTeX] Could not resolve anchor for ${anchor.file}:${anchor.line}`)
+        continue
+      }
+
+      // Convert to canvas coordinates
+      const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
+      if (!canvasPos) {
+        console.warn(`[SyncTeX] Could not convert PDF pos to canvas for page ${pdfPos.page}`)
+        continue
+      }
+
+      // Only update if position actually changed
+      const dx = Math.abs(shape.x - (canvasPos.x - 100))
+      const dy = Math.abs(shape.y - (canvasPos.y - 100))
+      if (dx > 1 || dy > 1) {
+        updates.push({
+          id: shape.id,
+          x: canvasPos.x - 100, // Offset for note centering (matches MathNoteTool)
+          y: canvasPos.y - 100,
+        })
+        console.log(`[SyncTeX] Moving ${shape.id} to (${canvasPos.x}, ${canvasPos.y}) from ${anchor.file}:${anchor.line}`)
+      }
+    } catch (e) {
+      console.warn(`[SyncTeX] Error resolving anchor:`, e)
+    }
+  }
+
+  if (updates.length > 0) {
+    console.log(`[SyncTeX] Applying ${updates.length} position updates`)
+    editor.updateShapes(updates.map(u => ({
+      id: u.id,
+      type: 'math-note' as const,
+      x: u.x,
+      y: u.y,
+    })) as any)
+  }
 }
 
 interface SvgPage {
@@ -366,6 +454,8 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
             }))
           }
 
+          // Remapping is triggered by YjsSyncProvider after initial sync
+
           // Keyboard shortcut: 'm' for math note
           const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -512,25 +602,24 @@ function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: stri
   const editor = useEditor()
   const [shareState, setShareState] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
 
-  // Snapshot sharing is for local dev only (sharing to iPad)
-  const snapshotServerUrl = import.meta.env.VITE_SNAPSHOT_SERVER
-  const isLocalDev = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+  // MCP server URL - always try localhost (where Claude Code's MCP server runs)
+  const mcpServerUrl = import.meta.env.VITE_SNAPSHOT_SERVER || 'http://localhost:5174/snapshot'
 
   const shareSnapshot = useCallback(async () => {
-    if (shareState === 'sending' || !snapshotServerUrl || !isLocalDev) return
+    if (shareState === 'sending') return
 
     console.log('Share clicked')
     setShareState('sending')
 
     try {
       const snapshot = editor.store.getStoreSnapshot()
-      console.log('Got snapshot, size:', JSON.stringify(snapshot).length)
-      const resp = await fetch(snapshotServerUrl, {
+      console.log('Share: sending snapshot to MCP server', mcpServerUrl)
+      const resp = await fetch(mcpServerUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(snapshot),
       })
-      console.log('Fetch response:', resp.status)
+      console.log('Share: response', resp.status)
 
       if (resp.ok) {
         setShareState('success')
@@ -544,12 +633,7 @@ function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: stri
       setShareState('error')
       setTimeout(() => setShareState('idle'), 2000)
     }
-  }, [editor, shareState, snapshotServerUrl])
-
-  // Don't render share button in production (when no snapshot server configured)
-  if (!snapshotServerUrl) {
-    return null
-  }
+  }, [editor, shareState, mcpServerUrl])
 
   return (
     <div className="RoomInfo">
