@@ -185,6 +185,58 @@ function getDrawShapeBBox(shape) {
   return { minX, minY, maxX, maxY };
 }
 
+// ---- Arrow shape helpers ----
+
+function getArrowEndpoints(shape) {
+  const start = shape.props?.start;
+  const end = shape.props?.end;
+  if (!start || !end) return null;
+  return {
+    start: { x: shape.x + start.x, y: shape.y + start.y },
+    end: { x: shape.x + end.x, y: shape.y + end.y },
+  };
+}
+
+function getArrowBBox(shape) {
+  const ep = getArrowEndpoints(shape);
+  if (!ep) return null;
+  return {
+    minX: Math.min(ep.start.x, ep.end.x),
+    minY: Math.min(ep.start.y, ep.end.y),
+    maxX: Math.max(ep.start.x, ep.end.x),
+    maxY: Math.max(ep.start.y, ep.end.y),
+  };
+}
+
+// ---- Geo / text / line shape helpers ----
+
+function getGeoBBox(shape) {
+  const w = shape.props?.w;
+  const h = shape.props?.h;
+  if (w == null || h == null) return null;
+  return {
+    minX: shape.x,
+    minY: shape.y,
+    maxX: shape.x + w,
+    maxY: shape.y + h,
+  };
+}
+
+function getTextBBox(shape) {
+  const w = shape.props?.w || 200;
+  // Rough height estimate from text content
+  const text = shape.props?.text || '';
+  const lineCount = Math.max(1, text.split('\n').length);
+  const fontSize = shape.props?.size === 's' ? 16 : shape.props?.size === 'l' ? 28 : 22;
+  const h = lineCount * fontSize * 1.4;
+  return {
+    minX: shape.x,
+    minY: shape.y,
+    maxX: shape.x + w,
+    maxY: shape.y + h,
+  };
+}
+
 // ---- Yjs connection management ----
 
 const SYNC_SERVER = process.env.SYNC_SERVER || 'ws://localhost:5176';
@@ -612,7 +664,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'read_pen_annotations',
-      description: 'Read freehand pen and highlighter strokes from the TLDraw canvas. Returns each stroke with: tool type (pen/highlighter), color, bounding box, gesture classification (strikethrough/circle/bracket/etc.), and the document lines it overlaps. Use this to interpret the user\'s drawn annotations without needing a screenshot.',
+      description: 'Read drawn annotations from the TLDraw canvas: pen strokes, highlighter strokes, arrows, rectangles/ellipses, text labels, and lines. Returns each shape with its type, color, position, and the document lines it covers. Arrows include start/end source lines and direction. Geo shapes (rectangles, ellipses) report the region they enclose. Use this to interpret the user\'s visual annotations without needing a screenshot.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -699,6 +751,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               return;
             }
+            // Text selection — debounce briefly (user may still be adjusting)
+            if (key === 'signal:text-selection') {
+              const sel = entry.yRecords.get('signal:text-selection');
+              if (sel?.text) {
+                pendingResult = { type: 'text-selection', sel };
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                  const latest = entry.yRecords.get('signal:text-selection');
+                  if (latest) pendingResult.sel = latest;
+                  entry.yRecords.unobserve(observer);
+                  resolve(pendingResult);
+                }, 2000); // shorter debounce for text selection
+              }
+              return;
+            }
             // Annotation created or edited — debounce to wait for typing/drawing to finish
             if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
               const record = entry.yRecords.get(key);
@@ -715,8 +782,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   resolve(pendingResult);
                 }, DEBOUNCE_MS);
               }
-              // Draw or highlight stroke completed
-              if (record?.type === 'draw' || record?.type === 'highlight') {
+              // Draw, highlight, arrow, geo, text, or line shape
+              if (record?.type === 'draw' || record?.type === 'highlight' ||
+                  record?.type === 'arrow' || record?.type === 'geo' ||
+                  record?.type === 'text' || record?.type === 'line') {
                 pendingResult = { type: 'stroke', key, action: change.action, record };
                 if (debounceTimer) clearTimeout(debounceTimer);
                 debounceTimer = setTimeout(() => {
@@ -749,18 +818,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
       }
 
+      if (result?.type === 'text-selection') {
+        const sel = result.sel;
+        return { content: [{ type: 'text', text: `Text selected (page ${sel.page}):\n  "${sel.text}"` }] };
+      }
+
       if (result?.type === 'ping') {
         return { content: [{ type: 'text', text: formatPing(result.ping, entry) }] };
       }
 
-      // Stroke (draw/highlight)
+      // Shape drawn (draw/highlight/arrow/geo/text/line)
       if (result?.type === 'stroke') {
         const r = result.record;
+        const color = r.props?.color || 'black';
+
+        // Arrow
+        if (r.type === 'arrow') {
+          const ep = getArrowEndpoints(r);
+          if (ep) {
+            const pdfStart = canvasToPdf(ep.start.x, ep.start.y);
+            const pdfEnd = canvasToPdf(ep.end.x, ep.end.y);
+            const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+            const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+            const label = r.props?.text || '';
+            let text = `Arrow (${color})`;
+            if (label) text += ` "${label}"`;
+            if (startLines.length > 0) text += `\n  from: page ${pdfStart.page}, line ${startLines[0].line} "${startLines[0].content}"`;
+            else text += `\n  from: page ${pdfStart.page}`;
+            if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
+            else text += `\n  to:   page ${pdfEnd.page}`;
+            return { content: [{ type: 'text', text }] };
+          }
+        }
+
+        // Geo shape
+        if (r.type === 'geo') {
+          const bbox = getGeoBBox(r);
+          const geo = r.props?.geo || 'rectangle';
+          const label = r.props?.text || '';
+          let text = `${geo} (${color})`;
+          if (label) text += ` "${label}"`;
+          if (bbox) {
+            const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+            const nearbyLines = findNearbyLines(docName, bbox);
+            text += `\n  page ${pdfPos.page}`;
+            if (nearbyLines.length > 0) {
+              const lineRange = nearbyLines.length === 1
+                ? `line ${nearbyLines[0].line}`
+                : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+              text += `\n  encloses ${lineRange}`;
+              text += `\n  first: "${nearbyLines[0].content}"`;
+              if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+            }
+          }
+          return { content: [{ type: 'text', text }] };
+        }
+
+        // Text shape
+        if (r.type === 'text') {
+          const textContent = r.props?.text || '';
+          const bbox = getTextBBox(r);
+          const pdfPos = canvasToPdf(bbox.minX, bbox.minY);
+          const nearbyLines = findNearbyLines(docName, bbox);
+          let text = `Text (${color}): "${textContent}"`;
+          text += `\n  page ${pdfPos.page}`;
+          if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
+          return { content: [{ type: 'text', text }] };
+        }
+
+        // Draw / highlight (original path)
         const bbox = getDrawShapeBBox(r);
         const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
         const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
         const gesture = bbox ? classifyGesture(bbox) : 'unknown';
-        const color = r.props?.color || 'black';
         const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
         const pdfPos = bbox ? canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
 
@@ -1047,47 +1177,186 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     try {
       const entry = await connectYjs(doc);
-      const strokes = [];
+      const shapes = [];
 
       entry.yRecords.forEach((record, id) => {
         if (record.typeName !== 'shape') return;
-        if (record.type !== 'draw' && record.type !== 'highlight') return;
+        if (id.startsWith('signal:')) return;
 
-        const bbox = getDrawShapeBBox(record);
-        if (!bbox) return;
-
-        const tool = record.type === 'highlight' ? 'highlighter' : 'pen';
-        const gesture = classifyGesture(bbox);
+        const shapeType = record.type;
         const color = record.props?.color || 'black';
-        const nearbyLines = findNearbyLines(doc, bbox);
-        const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
 
-        strokes.push({ id, tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines });
+        // --- Draw / Highlight strokes ---
+        if (shapeType === 'draw' || shapeType === 'highlight') {
+          const bbox = getDrawShapeBBox(record);
+          if (!bbox) return;
+          const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
+          const gesture = classifyGesture(bbox);
+          const nearbyLines = findNearbyLines(doc, bbox);
+          const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines });
+          return;
+        }
+
+        // --- Arrow ---
+        if (shapeType === 'arrow') {
+          const ep = getArrowEndpoints(record);
+          const bbox = getArrowBBox(record);
+          if (!ep || !bbox) return;
+          const pdfStart = canvasToPdf(ep.start.x, ep.start.y);
+          const pdfEnd = canvasToPdf(ep.end.x, ep.end.y);
+          const startLines = findNearbyLines(doc, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+          const endLines = findNearbyLines(doc, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+          const label = record.props?.text || '';
+          const startBound = record.props?.start?.boundShapeId || null;
+          const endBound = record.props?.end?.boundShapeId || null;
+          shapes.push({
+            id, shapeType: 'arrow', color, label,
+            page: pdfStart.page, bbox,
+            startPage: pdfStart.page, endPage: pdfEnd.page,
+            startLines, endLines, startBound, endBound,
+          });
+          return;
+        }
+
+        // --- Geo (rectangle, ellipse, diamond, etc.) ---
+        if (shapeType === 'geo') {
+          const bbox = getGeoBBox(record);
+          if (!bbox) return;
+          const geo = record.props?.geo || 'rectangle';
+          const nearbyLines = findNearbyLines(doc, bbox);
+          const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          const label = record.props?.text || '';
+          shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines });
+          return;
+        }
+
+        // --- Text ---
+        if (shapeType === 'text') {
+          const bbox = getTextBBox(record);
+          const text = record.props?.text || '';
+          if (!text.trim()) return;
+          const pdfPos = canvasToPdf(bbox.minX, bbox.minY);
+          const nearbyLines = findNearbyLines(doc, bbox);
+          shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines });
+          return;
+        }
+
+        // --- Line ---
+        if (shapeType === 'line') {
+          // Line shapes use handles for vertices
+          const handles = record.props?.handles;
+          if (!handles) return;
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const h of Object.values(handles)) {
+            const ax = record.x + (h.x || 0);
+            const ay = record.y + (h.y || 0);
+            if (ax < minX) minX = ax;
+            if (ay < minY) minY = ay;
+            if (ax > maxX) maxX = ax;
+            if (ay > maxY) maxY = ay;
+          }
+          if (!isFinite(minX)) return;
+          const bbox = { minX, minY, maxX, maxY };
+          const nearbyLines = findNearbyLines(doc, bbox);
+          const pdfPos = canvasToPdf((minX + maxX) / 2, (minY + maxY) / 2);
+          shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines });
+          return;
+        }
       });
 
-      if (strokes.length === 0) {
-        return { content: [{ type: 'text', text: 'No pen or highlighter strokes found.' }] };
+      // Check for text selection signal
+      const textSel = entry.yRecords.get('signal:text-selection');
+      const hasTextSel = textSel?.text && (Date.now() - (textSel.timestamp || 0)) < 300000; // within 5 min
+
+      if (shapes.length === 0 && !hasTextSel) {
+        return { content: [{ type: 'text', text: 'No drawn annotations found.' }] };
       }
 
-      let summary = `${strokes.length} stroke(s):\n\n`;
-      for (const s of strokes) {
-        const sentiment = s.tool === 'highlighter' ? 'attention' : 'correction';
+      let summary = '';
+      if (hasTextSel) {
+        summary += `Text selection (page ${textSel.page}):\n  "${textSel.text}"\n\n`;
+      }
+      summary += `${shapes.length} annotation(s):\n\n`;
+      for (const s of shapes) {
         summary += `${s.id}\n`;
-        summary += `  ${s.tool} (${s.color}) → ${s.gesture} [${sentiment}]\n`;
-        summary += `  page ${s.page}, bbox: (${s.bbox.minX.toFixed(0)},${s.bbox.minY.toFixed(0)})-(${s.bbox.maxX.toFixed(0)},${s.bbox.maxY.toFixed(0)})\n`;
-        if (s.lines.length > 0) {
-          const lineRange = s.lines.length === 1
-            ? `line ${s.lines[0].line}`
-            : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
-          summary += `  covers ${lineRange}\n`;
-          // Show first and last line content
-          summary += `  first: "${s.lines[0].content}"\n`;
-          if (s.lines.length > 1) {
-            summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+
+        if (s.shapeType === 'pen' || s.shapeType === 'highlighter') {
+          const sentiment = s.shapeType === 'highlighter' ? 'attention' : 'correction';
+          summary += `  ${s.shapeType} (${s.color}) → ${s.gesture} [${sentiment}]\n`;
+          summary += `  page ${s.page}\n`;
+          if (s.lines.length > 0) {
+            const lineRange = s.lines.length === 1
+              ? `line ${s.lines[0].line}`
+              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+            summary += `  covers ${lineRange}\n`;
+            summary += `  first: "${s.lines[0].content}"\n`;
+            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+          } else {
+            summary += `  (no matching document lines)\n`;
           }
-        } else {
-          summary += `  (no matching document lines)\n`;
         }
+
+        else if (s.shapeType === 'arrow') {
+          summary += `  arrow (${s.color})`;
+          if (s.label) summary += ` label: "${s.label}"`;
+          summary += '\n';
+          // Start
+          if (s.startLines.length > 0) {
+            summary += `  from: page ${s.startPage}, line ${s.startLines[0].line} "${s.startLines[0].content}"\n`;
+          } else if (s.startBound) {
+            summary += `  from: ${s.startBound}\n`;
+          } else {
+            summary += `  from: page ${s.startPage} (no matching line)\n`;
+          }
+          // End
+          if (s.endLines.length > 0) {
+            summary += `  to:   page ${s.endPage}, line ${s.endLines[0].line} "${s.endLines[0].content}"\n`;
+          } else if (s.endBound) {
+            summary += `  to:   ${s.endBound}\n`;
+          } else {
+            summary += `  to:   page ${s.endPage} (no matching line)\n`;
+          }
+        }
+
+        else if (s.shapeType === 'geo') {
+          summary += `  ${s.geo} (${s.color})`;
+          if (s.label) summary += ` label: "${s.label}"`;
+          summary += '\n';
+          summary += `  page ${s.page}\n`;
+          if (s.lines.length > 0) {
+            const lineRange = s.lines.length === 1
+              ? `line ${s.lines[0].line}`
+              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+            summary += `  encloses ${lineRange}\n`;
+            summary += `  first: "${s.lines[0].content}"\n`;
+            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+          } else {
+            summary += `  (no matching document lines)\n`;
+          }
+        }
+
+        else if (s.shapeType === 'text') {
+          summary += `  text (${s.color}): "${s.text}"\n`;
+          summary += `  page ${s.page}\n`;
+          if (s.lines.length > 0) {
+            summary += `  near line ${s.lines[0].line}: "${s.lines[0].content}"\n`;
+          }
+        }
+
+        else if (s.shapeType === 'line') {
+          summary += `  line (${s.color})\n`;
+          summary += `  page ${s.page}\n`;
+          if (s.lines.length > 0) {
+            const lineRange = s.lines.length === 1
+              ? `line ${s.lines[0].line}`
+              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+            summary += `  covers ${lineRange}\n`;
+            summary += `  first: "${s.lines[0].content}"\n`;
+            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+          }
+        }
+
         summary += '\n';
       }
 

@@ -10,6 +10,9 @@ import {
   DefaultToolbar,
   DefaultColorStyle,
   DefaultSizeStyle,
+  TldrawUiMenuToolItem,
+  useTools,
+  useIsToolSelected,
 } from 'tldraw'
 import {
   SelectToolbarItem,
@@ -19,18 +22,17 @@ import {
   EraserToolbarItem,
   ArrowToolbarItem,
   TextToolbarItem,
-  NoteToolbarItem,
   AssetToolbarItem,
   RectangleToolbarItem,
   EllipseToolbarItem,
   LineToolbarItem,
   LaserToolbarItem,
-  FrameToolbarItem,
 } from 'tldraw'
 import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
+import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, getYRecords } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { DocumentPanel, PingButton } from './DocumentPanel'
@@ -229,6 +231,18 @@ function TextSelectionOverlay() {
   return <TextSelectionLayer pages={ctx.pages} />
 }
 
+function MathNoteToolbarItem() {
+  const tools = useTools()
+  const isSelected = useIsToolSelected(tools['math-note'])
+  return <TldrawUiMenuToolItem toolId="math-note" isSelected={isSelected} />
+}
+
+function TextSelectToolbarItem() {
+  const tools = useTools()
+  const isSelected = useIsToolSelected(tools['text-select'])
+  return <TldrawUiMenuToolItem toolId="text-select" isSelected={isSelected} />
+}
+
 function ExitPenModeButton() {
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
@@ -419,15 +433,15 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           <DrawToolbarItem />
           <HighlightToolbarItem />
           <EraserToolbarItem />
+          <TextSelectToolbarItem />
           <ArrowToolbarItem />
           <TextToolbarItem />
-          <NoteToolbarItem />
+          <MathNoteToolbarItem />
           <AssetToolbarItem />
           <RectangleToolbarItem />
           <EllipseToolbarItem />
           <LineToolbarItem />
           <LaserToolbarItem />
-          <FrameToolbarItem />
         </DefaultToolbar>
       ),
       HelperButtons: ExitPenModeButton,
@@ -448,7 +462,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   }), [docKey, document])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil], [])
-  const tools = useMemo(() => [MathNoteTool], [])
+  const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -467,6 +481,16 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           ...tools['note'],
           onSelect: () => _editor.setCurrentTool('math-note'),
         }
+      }
+      // Register text-select tool (kbd 't') with I-beam icon
+      tools['text-select'] = {
+        id: 'text-select',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          <path d="M7 3h4M7 15h4M9 3v12" />
+        </svg>) as any,
+        label: 'Select Text',
+        kbd: 't',
+        onSelect: () => _editor.setCurrentTool('text-select'),
       }
       return tools
     },
