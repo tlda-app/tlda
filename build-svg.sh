@@ -41,11 +41,12 @@ echo "  Title: $DOC_TITLE"
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# Build DVI with latexmk (handles biber, multiple passes, etc.)
+# Build DVI + synctex with latexmk (handles biber, multiple passes, etc.)
+# Uses pdflatex in DVI output mode so we get synctex in the same pass
 echo ""
 echo "Running latexmk..."
 cd "$TEX_DIR"
-latexmk -dvi -interaction=nonstopmode "$TEX_BASE.tex"
+latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=nonstopmode "$TEX_BASE.tex"
 
 DVI_FILE="$TEX_DIR/$TEX_BASE.dvi"
 if [ ! -f "$DVI_FILE" ]; then
@@ -56,8 +57,8 @@ fi
 # Convert to SVG
 echo ""
 echo "Converting DVI to SVG..."
-dvisvgm --page=1- --font-format=woff2 --exact-bbox \
-  --output="$OUTPUT_DIR/page-%02p.svg" \
+dvisvgm --page=1- --font-format=woff2 --bbox=papersize \
+  --output="$OUTPUT_DIR/page-%p.svg" \
   "$DVI_FILE"
 
 # Count pages
@@ -69,6 +70,13 @@ echo ""
 echo "Extracting preamble macros..."
 cd "$SCRIPT_DIR"
 node scripts/extract-preamble.js "$TEX_FILE" "$OUTPUT_DIR/macros.json"
+
+# Extract synctex lookup (line → page/coords mapping)
+if [ -f "$TEX_DIR/$TEX_BASE.synctex.gz" ]; then
+  echo ""
+  echo "Extracting synctex lookup..."
+  node scripts/extract-synctex-lookup.mjs "$TEX_FILE" "$OUTPUT_DIR/lookup.json"
+fi
 
 # Update manifest
 echo ""

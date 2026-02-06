@@ -32,6 +32,17 @@ function isPageBackground(record: TLRecord): boolean {
 let activeYRecords: Y.Map<TLRecord> | null = null
 export function getYRecords() { return activeYRecords }
 
+// Reload signal callback registration
+type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
+  | { type: 'full', timestamp: number }
+type ReloadCallback = (signal: ReloadSignal) => void
+const reloadCallbacks = new Set<ReloadCallback>()
+export function onReloadSignal(cb: ReloadCallback) {
+  reloadCallbacks.add(cb)
+  return () => { reloadCallbacks.delete(cb) }
+}
+let lastReloadTimestamp = 0
+
 export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', onInitialSync }: YjsSyncOptions) {
   console.log(`[Yjs] useYjsSync called with roomId=${roomId}, serverUrl=${serverUrl}`)
   const docRef = useRef<Y.Doc | null>(null)
@@ -133,6 +144,18 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
     // Sync Y.Map changes to TLDraw
     yRecords.observe((event) => {
+      // Check for reload signals (from any source — remote or local MCP)
+      event.changes.keys.forEach((change, key) => {
+        if (key === 'signal:reload' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as ReloadSignal & Record<string, unknown>
+          if (signal?.timestamp && signal.timestamp > lastReloadTimestamp) {
+            lastReloadTimestamp = signal.timestamp
+            console.log(`[Yjs] Reload signal: ${signal.type}`, signal)
+            for (const cb of reloadCallbacks) cb(signal)
+          }
+        }
+      })
+
       if (isRemoteUpdate) {
         try {
           // Apply remote changes to TLDraw
@@ -141,6 +164,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           const toRemove: TLRecord['id'][] = []
 
           event.changes.keys.forEach((change, key) => {
+            if (key.startsWith('signal:')) return  // skip signals
             if (change.action === 'add') {
               const record = yRecords.get(key)
               if (record && shouldSync(record)) toAdd.push(record)

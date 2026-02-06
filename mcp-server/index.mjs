@@ -73,9 +73,121 @@ function pdfToCanvas(page, pdfX, pdfY) {
   };
 }
 
+function canvasToPdf(canvasX, canvasY) {
+  const page = Math.floor(canvasY / (PAGE_HEIGHT + PAGE_GAP)) + 1;
+  const localY = canvasY - (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
+  const scaleX = PAGE_WIDTH / PDF_WIDTH;
+  const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
+  return {
+    page,
+    pdfX: canvasX / scaleX + VIEWBOX_OFFSET,
+    pdfY: localY / scaleY + VIEWBOX_OFFSET,
+  };
+}
+
+function findNearbyLines(docName, canvasBBox) {
+  const lookup = loadLookup(docName);
+  if (!lookup?.lines) return [];
+
+  // Convert bbox corners to PDF
+  const topLeft = canvasToPdf(canvasBBox.minX, canvasBBox.minY);
+  const bottomRight = canvasToPdf(canvasBBox.maxX, canvasBBox.maxY);
+  const page = topLeft.page; // assume stroke doesn't span pages
+
+  // Y margin: generous to catch lines near the stroke
+  const yMargin = 15; // PDF points
+  // X matching: only require overlap if stroke is wide (horizontal).
+  // For vertical strokes (brackets, margin marks), match by Y only.
+  const strokeW = bottomRight.pdfX - topLeft.pdfX;
+  const useXFilter = strokeW > 50; // only filter X for wide horizontal strokes
+
+  const matches = [];
+  for (const [lineNum, entry] of Object.entries(lookup.lines)) {
+    if (entry.page !== page) continue;
+    if (entry.y < topLeft.pdfY - yMargin || entry.y > bottomRight.pdfY + yMargin) continue;
+    if (useXFilter && (entry.x > bottomRight.pdfX + 20 || entry.x < topLeft.pdfX - 20)) continue;
+    matches.push({ line: parseInt(lineNum), content: entry.content, x: entry.x, y: entry.y });
+  }
+  matches.sort((a, b) => a.line - b.line);
+  return matches;
+}
+
+function classifyGesture(bbox) {
+  const w = bbox.maxX - bbox.minX;
+  const h = bbox.maxY - bbox.minY;
+  const ratio = w / Math.max(h, 1);
+
+  if (w < 20 && h < 20) return 'dot';
+  if (ratio > 4) return 'strikethrough';
+  if (ratio > 2) return 'underline';
+  if (ratio < 0.3) return 'vertical-line';
+  if (ratio < 0.5) return 'bracket';
+  return 'circle';
+}
+
+// Decode TLDraw v4 delta-encoded base64 path into points.
+// Format: first point = 3 Float32 LE (12 bytes), deltas = 3 Float16 LE (6 bytes each).
+function decodeB64Path(b64) {
+  if (!b64 || b64.length === 0) return [];
+  const buf = Buffer.from(b64, 'base64');
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (buf.length < 12) return [];
+
+  const points = [];
+  // First point: Float32 LE
+  let x = dv.getFloat32(0, true);
+  let y = dv.getFloat32(4, true);
+  let z = dv.getFloat32(8, true);
+  points.push({ x, y, z });
+
+  // Subsequent points: Float16 LE deltas
+  for (let off = 12; off + 5 < buf.length; off += 6) {
+    x += float16(dv.getUint16(off, true));
+    y += float16(dv.getUint16(off + 2, true));
+    z += float16(dv.getUint16(off + 4, true));
+    points.push({ x, y, z });
+  }
+  return points;
+}
+
+// Decode a 16-bit float (IEEE 754 half-precision)
+function float16(bits) {
+  const sign = bits >> 15;
+  const exp = (bits >> 10) & 0x1f;
+  const frac = bits & 0x3ff;
+  if (exp === 0) {
+    const val = frac * (Math.pow(2, -14) / 1024);
+    return sign ? -val : val;
+  }
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity);
+  const val = Math.pow(2, exp - 15) * (1 + frac / 1024);
+  return sign ? -val : val;
+}
+
+function getDrawShapeBBox(shape) {
+  const segments = shape.props?.segments;
+  if (!segments || segments.length === 0) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const seg of segments) {
+    // TLDraw v4: segments have .path (base64 string), not .points
+    const points = seg.path ? decodeB64Path(seg.path) : (seg.points || []);
+    for (const pt of points) {
+      const absX = shape.x + pt.x;
+      const absY = shape.y + pt.y;
+      if (absX < minX) minX = absX;
+      if (absY < minY) minY = absY;
+      if (absX > maxX) maxX = absX;
+      if (absY > maxY) maxY = absY;
+    }
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 // ---- Yjs connection management ----
 
-const SYNC_SERVER = process.env.SYNC_SERVER || 'wss://tldraw-sync-skip.fly.dev';
+const SYNC_SERVER = process.env.SYNC_SERVER || 'ws://localhost:5176';
 console.error(`[Yjs] SYNC_SERVER = ${SYNC_SERVER}`);
 const yjsDocs = new Map(); // docName → { doc, yRecords, ws, ready }
 
@@ -213,6 +325,25 @@ const httpServer = http.createServer(async (req, res) => {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Viewport screenshot from frontend ping
+  if (req.method === 'POST' && req.url === '/viewport-screenshot') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const buf = Buffer.concat(chunks);
+        fs.writeFileSync(SCREENSHOT_PATH, buf);
+        console.error(`[Screenshot] Saved ${buf.length} bytes to ${SCREENSHOT_PATH}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, bytes: buf.length }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -438,6 +569,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
           width: { type: 'number', description: 'Note width in pixels (default: 200)' },
           height: { type: 'number', description: 'Note height in pixels (default: 150)' },
+          side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
         },
         required: ['doc', 'line', 'text'],
       },
@@ -476,6 +608,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           id: { type: 'string', description: 'Shape ID (e.g. "shape:abc123")' },
         },
         required: ['doc', 'id'],
+      },
+    },
+    {
+      name: 'read_pen_annotations',
+      description: 'Read freehand pen and highlighter strokes from the TLDraw canvas. Returns each stroke with: tool type (pen/highlighter), color, bounding box, gesture classification (strikethrough/circle/bracket/etc.), and the document lines it overlaps. Use this to interpret the user\'s drawn annotations without needing a screenshot.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'signal_reload',
+      description: 'Signal the viewer to reload SVG pages. Use after rebuilding SVGs from DVI. Partial reload refreshes specific pages (~0.5s), full reload refreshes everything and remaps annotations.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          pages: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'Page numbers to reload (1-indexed). Omit for full reload.',
+          },
+        },
+        required: ['doc'],
       },
     },
   ],
@@ -540,18 +699,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               return;
             }
-            // Annotation created or edited — debounce to wait for typing to finish
+            // Annotation created or edited — debounce to wait for typing/drawing to finish
             if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
               const record = entry.yRecords.get(key);
               if (record?.type === 'math-note') {
                 const text = record.props?.text || '';
                 // Skip if the last line is our reply
                 if (text.trimEnd().endsWith('—Claude:')) return;
-                // Reset debounce timer on each edit
                 pendingResult = { type: 'annotation', key, action: change.action, record };
                 if (debounceTimer) clearTimeout(debounceTimer);
                 debounceTimer = setTimeout(() => {
-                  // Re-read the record for the latest text
+                  const latest = entry.yRecords.get(key);
+                  if (latest) pendingResult.record = latest;
+                  entry.yRecords.unobserve(observer);
+                  resolve(pendingResult);
+                }, DEBOUNCE_MS);
+              }
+              // Draw or highlight stroke completed
+              if (record?.type === 'draw' || record?.type === 'highlight') {
+                pendingResult = { type: 'stroke', key, action: change.action, record };
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
                   const latest = entry.yRecords.get(key);
                   if (latest) pendingResult.record = latest;
                   entry.yRecords.unobserve(observer);
@@ -585,7 +753,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: formatPing(result.ping, entry) }] };
       }
 
-      // Annotation change
+      // Stroke (draw/highlight)
+      if (result?.type === 'stroke') {
+        const r = result.record;
+        const bbox = getDrawShapeBBox(r);
+        const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
+        const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
+        const gesture = bbox ? classifyGesture(bbox) : 'unknown';
+        const color = r.props?.color || 'black';
+        const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
+        const pdfPos = bbox ? canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+
+        let text = `Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
+        if (pdfPos) text += `\n  page ${pdfPos.page}`;
+        if (nearbyLines.length > 0) {
+          const lineRange = nearbyLines.length === 1
+            ? `line ${nearbyLines[0].line}`
+            : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+          text += `\n  covers ${lineRange}`;
+          text += `\n  first: "${nearbyLines[0].content}"`;
+          if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+        }
+        return { content: [{ type: 'text', text }] };
+      }
+
+      // Annotation change (math-note)
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
@@ -692,7 +884,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'add_annotation') {
-    const { doc, line, text, color = 'violet', width = 200, height = 150 } = args;
+    const { doc, line, text, color = 'violet', width = 200, height = 150, side = 'right' } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
@@ -704,7 +896,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
-    const x = Math.min(canvasPos.x + 100, PAGE_WIDTH - width - 20);
+    const x = side === 'left' ? -width - 20 : 690;
     const y = canvasPos.y - height / 2;
 
     // Connect to Yjs and create the shape
@@ -842,6 +1034,91 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       sendYjsUpdate(entry);
 
       return { content: [{ type: 'text', text: `Deleted: ${fullId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'read_pen_annotations') {
+    const { doc } = args;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    }
+
+    try {
+      const entry = await connectYjs(doc);
+      const strokes = [];
+
+      entry.yRecords.forEach((record, id) => {
+        if (record.typeName !== 'shape') return;
+        if (record.type !== 'draw' && record.type !== 'highlight') return;
+
+        const bbox = getDrawShapeBBox(record);
+        if (!bbox) return;
+
+        const tool = record.type === 'highlight' ? 'highlighter' : 'pen';
+        const gesture = classifyGesture(bbox);
+        const color = record.props?.color || 'black';
+        const nearbyLines = findNearbyLines(doc, bbox);
+        const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+
+        strokes.push({ id, tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines });
+      });
+
+      if (strokes.length === 0) {
+        return { content: [{ type: 'text', text: 'No pen or highlighter strokes found.' }] };
+      }
+
+      let summary = `${strokes.length} stroke(s):\n\n`;
+      for (const s of strokes) {
+        const sentiment = s.tool === 'highlighter' ? 'attention' : 'correction';
+        summary += `${s.id}\n`;
+        summary += `  ${s.tool} (${s.color}) → ${s.gesture} [${sentiment}]\n`;
+        summary += `  page ${s.page}, bbox: (${s.bbox.minX.toFixed(0)},${s.bbox.minY.toFixed(0)})-(${s.bbox.maxX.toFixed(0)},${s.bbox.maxY.toFixed(0)})\n`;
+        if (s.lines.length > 0) {
+          const lineRange = s.lines.length === 1
+            ? `line ${s.lines[0].line}`
+            : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+          summary += `  covers ${lineRange}\n`;
+          // Show first and last line content
+          summary += `  first: "${s.lines[0].content}"\n`;
+          if (s.lines.length > 1) {
+            summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+          }
+        } else {
+          summary += `  (no matching document lines)\n`;
+        }
+        summary += '\n';
+      }
+
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'signal_reload') {
+    const { doc, pages } = args;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    }
+
+    try {
+      const entry = await connectYjs(doc);
+      const timestamp = Date.now();
+      const signal = pages && pages.length > 0
+        ? { type: 'partial', pages, timestamp }
+        : { type: 'full', timestamp };
+
+      entry.doc.transact(() => {
+        entry.yRecords.set('signal:reload', signal);
+      });
+      sendYjsUpdate(entry);
+
+      const desc = signal.type === 'partial'
+        ? `Partial reload signaled for pages ${pages.join(', ')}`
+        : 'Full reload signaled';
+      return { content: [{ type: 'text', text: `${desc} (doc: ${doc}, t=${timestamp})` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }

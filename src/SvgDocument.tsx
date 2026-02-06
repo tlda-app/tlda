@@ -39,10 +39,12 @@ import { TextSelectionLayer, extractTextFromSvgAsync } from './TextSelectionLaye
 import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, type SvgDocument, type SvgPage } from './svgDocumentLoader'
 
 // Sync server URL - use env var, or auto-detect based on environment
+// In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
+// In production (GitHub Pages), use Fly.io
 const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
-  (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-    ? 'wss://tldraw-sync-skip.fly.dev'
-    : 'ws://localhost:5176')
+  (import.meta.env.DEV
+    ? `ws://${window.location.hostname}:5176`
+    : 'wss://tldraw-sync-skip.fly.dev')
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
@@ -556,26 +558,30 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           }
           window.addEventListener('keydown', handleKeyDown)
 
-          // Pen double-tap to cycle draw → highlight → eraser
+          // Pen double-tap in right edge (panel zone) to cycle draw → highlight → eraser
           const penCycle = ['draw', 'highlight', 'eraser']
           let lastPenTap = 0
           const container = window.document.querySelector('.tl-container') as HTMLElement | null
           if (container) {
             container.addEventListener('pointerdown', (e: PointerEvent) => {
               if (e.pointerType !== 'pen') return
-              // Only trigger on button 5 (barrel button / eraser tip)
-              // or detect double-tap: two pen-downs within 300ms
+              // Only in the rightmost 250px (doc panel x-span)
+              const threshold = window.innerWidth - 250
+              if (e.clientX < threshold) {
+                lastPenTap = 0
+                return
+              }
               const now = Date.now()
               if (now - lastPenTap < 300) {
                 const current = editor.getCurrentToolId()
                 const idx = penCycle.indexOf(current)
                 const next = penCycle[(idx + 1) % penCycle.length]
                 editor.setCurrentTool(next)
-                lastPenTap = 0 // reset so triple-tap doesn't re-trigger
+                lastPenTap = 0
               } else {
                 lastPenTap = now
               }
-            }, true) // capture phase so it fires before tldraw
+            }, true)
           }
         }}
         components={components}

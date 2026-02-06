@@ -53,9 +53,9 @@ echo "Converting pages to SVG with dvisvgm..."
 dvisvgm \
   --page=1- \
   --bbox=papersize \
-  --no-fonts=1 \
+  --font-format=woff2 \
   --precision=2 \
-  --output="$OUTPUT_DIR/page-%2p.svg" \
+  --output="$OUTPUT_DIR/page-%p.svg" \
   "$DVI_FILE" 2>&1 | grep -E '(processing|output written)' || true
 
 # Count generated files

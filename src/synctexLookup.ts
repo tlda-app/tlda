@@ -3,14 +3,14 @@
 
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
 
-interface LookupEntry {
+export interface LookupEntry {
   page: number
   x: number
   y: number
   content: string
 }
 
-interface LookupData {
+export interface LookupData {
   meta: {
     texFile: string
     generated: string
@@ -25,13 +25,16 @@ const lookupCache = new Map<string, LookupData | null>()
 /**
  * Load lookup table for a document
  */
-async function loadLookup(docName: string): Promise<LookupData | null> {
+export async function loadLookup(docName: string): Promise<LookupData | null> {
   if (lookupCache.has(docName)) {
-    return lookupCache.get(docName)!
+    const cached = lookupCache.get(docName)!
+    console.log(`[SyncTeX] loadLookup cache hit for ${docName}:`, !!cached)
+    return cached
   }
 
   try {
-    const resp = await fetch(`/docs/${docName}/lookup.json`)
+    const base = import.meta.env.BASE_URL || '/'
+    const resp = await fetch(`${base}docs/${docName}/lookup.json`)
     if (!resp.ok) {
       lookupCache.set(docName, null)
       return null

@@ -13,7 +13,14 @@
     "start": "npm run sync & npm run dev"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.1",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.5.4",
+    "@codemirror/view": "^6.39.12",
+    "@replit/codemirror-vim": "^6.3.0",
     "@tldraw/sync": "^4.3.1",
+    "codemirror": "^6.0.2",
+    "codemirror-lang-latex": "^0.2.0",
     "katex": "^0.16.28",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",

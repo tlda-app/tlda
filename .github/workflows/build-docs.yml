@@ -85,7 +85,7 @@ jobs:
           mkdir -p svg-output
 
           # Convert to SVG
-          dvisvgm --bbox=papersize --no-fonts=1 --page=1- --output="svg-output/%2p" "$TEX_BASE.dvi"
+          dvisvgm --bbox=papersize --font-format=woff2 --page=1- --output="svg-output/%2p" "$TEX_BASE.dvi"
 
           # Rename to .svg extension
           cd svg-output

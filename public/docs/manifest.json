@@ -2,8 +2,13 @@
   "documents": {
     "bregman": {
       "name": "Bregman Lower Bound",
-      "pages": 43,
+      "pages": 47,
       "basePath": "/docs/bregman/"
+    },
+    "bregman-lower-bound": {
+      "name": "bregman-lower-bound",
+      "pages": 47,
+      "basePath": "/docs/bregman-lower-bound/"
     }
   }
 }
