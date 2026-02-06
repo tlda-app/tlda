@@ -43,6 +43,51 @@ export function onReloadSignal(cb: ReloadCallback) {
 }
 let lastReloadTimestamp = 0
 
+/**
+ * Load static annotations from annotations.json when no sync server is available.
+ * Used in production (GitHub Pages) where annotations were baked in by publish-snapshot.
+ */
+async function loadStaticAnnotations(editor: Editor, onInitialSync?: () => void) {
+  // Derive the annotations URL from the current document
+  const params = new URLSearchParams(window.location.search)
+  const docName = params.get('doc')
+  if (!docName) return
+
+  const base = import.meta.env.BASE_URL || '/'
+  const url = `${base}docs/${docName}/annotations.json`
+
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) {
+      console.log('[Yjs] No static annotations available')
+      return
+    }
+
+    const data = await resp.json()
+    const records = data.records || {}
+    const toApply: TLRecord[] = []
+
+    for (const [id, record] of Object.entries(records)) {
+      if ((id as string).startsWith('signal:')) continue
+      const rec = record as TLRecord
+      if (rec.typeName && SYNC_TYPES.has(rec.typeName) && !(rec.id as string).includes('-page-')) {
+        toApply.push(rec)
+      }
+    }
+
+    if (toApply.length > 0) {
+      console.log(`[Yjs] Loaded ${toApply.length} static annotations from ${url}`)
+      editor.store.mergeRemoteChanges(() => {
+        editor.store.put(toApply)
+      })
+    }
+
+    if (onInitialSync) onInitialSync()
+  } catch (e) {
+    console.log('[Yjs] Failed to load static annotations:', e)
+  }
+}
+
 export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', onInitialSync }: YjsSyncOptions) {
   console.log(`[Yjs] useYjsSync called with roomId=${roomId}, serverUrl=${serverUrl}`)
   const docRef = useRef<Y.Doc | null>(null)
@@ -140,6 +185,11 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
     ws.onerror = (err) => {
       console.error('[Yjs] WebSocket error:', err)
+
+      // Fallback: load static annotations if sync server unavailable
+      if (!hasReceivedInitialSync) {
+        loadStaticAnnotations(editor, onInitialSync)
+      }
     }
 
     // Sync Y.Map changes to TLDraw

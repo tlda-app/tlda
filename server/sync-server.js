@@ -138,7 +138,8 @@ wss.on('close', () => {
   clearInterval(pingInterval)
 })
 
-server.listen(PORT, () => {
-  console.log(`Yjs sync server running on ws://localhost:${PORT}`)
+const HOST = process.env.HOST || '0.0.0.0'
+server.listen(PORT, HOST, () => {
+  console.log(`Yjs sync server running on ws://${HOST}:${PORT}`)
   console.log(`Persistence dir: ${PERSISTENCE_DIR}`)
 })

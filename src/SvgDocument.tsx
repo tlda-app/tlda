@@ -31,7 +31,7 @@ import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLSha
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
-import { useYjsSync, onReloadSignal } from './useYjsSync'
+import { useYjsSync, onReloadSignal, getYRecords } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
@@ -263,12 +263,12 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
     })
   }, [document])
 
-  // WebSocket connection for forward sync (Claude → iPad)
-  // Only connect on local network, not in production
-  const forwardSyncUrl = import.meta.env.VITE_FORWARD_SYNC_SERVER
+  // WebSocket connection for forward sync (Claude → viewer)
+  // In dev mode, auto-detect from hostname; in production, use env var or skip
+  const forwardSyncUrl = import.meta.env.VITE_FORWARD_SYNC_SERVER ||
+    (import.meta.env.DEV ? `ws://${window.location.hostname}:5175` : '')
   useEffect(() => {
-    // Skip in production - only use forward sync on localhost
-    if (!forwardSyncUrl || window.location.hostname !== 'localhost') return
+    if (!forwardSyncUrl) return
 
     const ws = new WebSocket(forwardSyncUrl)
 
@@ -540,7 +540,24 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
             react('save-camera', () => {
               editor.getCamera() // subscribe
               if (cameraTimer) clearTimeout(cameraTimer)
-              cameraTimer = setTimeout(saveSession, 500)
+              cameraTimer = setTimeout(() => {
+                saveSession()
+                // Report visible pages to Yjs (for watcher priority rebuild)
+                const yRecords = getYRecords()
+                if (yRecords && document.pages.length > 0) {
+                  const vb = editor.getViewportScreenBounds()
+                  const cam = editor.getCamera()
+                  // Convert screen bounds to canvas coords
+                  const top = -cam.y + vb.y / cam.z
+                  const bottom = top + vb.h / cam.z
+                  const pageH = document.pages[0].height + pageSpacing
+                  const firstPage = Math.max(1, Math.floor(top / pageH) + 1)
+                  const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
+                  const pages: number[] = []
+                  for (let p = firstPage; p <= lastPage; p++) pages.push(p)
+                  yRecords.set('signal:viewport' as any, { pages, timestamp: Date.now() } as any)
+                }
+              }, 500)
             })
 
             react('save-tool', () => {

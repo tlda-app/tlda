@@ -10,6 +10,9 @@
     "preview": "vite preview",
     "sync": "node server/sync-server.js",
     "synctex": "node server/synctex-server.js",
+    "watch": "node scripts/watch.mjs",
+    "collab": "node scripts/collab.mjs",
+    "publish-snapshot": "node scripts/publish-snapshot.mjs",
     "start": "npm run sync & npm run dev"
   },
   "dependencies": {
