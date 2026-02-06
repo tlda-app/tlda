@@ -1,22 +1,42 @@
-import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { useMemo, useEffect, useRef, useContext } from 'react'
 import {
-  Box,
   Tldraw,
-  AssetRecordType,
   createShapeId,
   getIndicesBetween,
   react,
   sortByIndex,
   useEditor,
+  useValue,
   DefaultToolbar,
+  DefaultColorStyle,
+  DefaultSizeStyle,
 } from 'tldraw'
-import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLAssetId, TLShapeId } from 'tldraw'
+import {
+  SelectToolbarItem,
+  HandToolbarItem,
+  DrawToolbarItem,
+  HighlightToolbarItem,
+  EraserToolbarItem,
+  ArrowToolbarItem,
+  TextToolbarItem,
+  NoteToolbarItem,
+  AssetToolbarItem,
+  RectangleToolbarItem,
+  EllipseToolbarItem,
+  LineToolbarItem,
+  LaserToolbarItem,
+  FrameToolbarItem,
+} from 'tldraw'
+import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
-import { setActiveMacros } from './katexMacros'
-import { useYjsSync, getYRecords } from './useYjsSync'
+import { useYjsSync, onReloadSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
+import { DocumentPanel, PingButton } from './DocumentPanel'
+import { PanelContext } from './PanelContext'
+import { TextSelectionLayer, extractTextFromSvgAsync } from './TextSelectionLayer'
+import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, type SvgDocument, type SvgPage } from './svgDocumentLoader'
 
 // Sync server URL - use env var, or auto-detect based on environment
 const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
@@ -25,12 +45,6 @@ const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
     : 'ws://localhost:5176')
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
-
-// Global document info for synctex anchoring
-export let currentDocumentInfo: {
-  name: string
-  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
-} | null = null
 
 // Inner component to set up Yjs sync (needs useEditor context)
 function YjsSyncProvider({ roomId }: { roomId: string }) {
@@ -126,19 +140,79 @@ async function remapAnnotations(
   }
 }
 
-interface SvgPage {
-  src: string
-  bounds: Box
-  assetId: TLAssetId
-  shapeId: TLShapeId
-  width: number
-  height: number
-}
+/**
+ * Re-fetch SVG pages and hot-swap their TLDraw assets.
+ * Called when a reload signal arrives from the MCP server after a rebuild.
+ */
+async function reloadPages(
+  editor: Editor,
+  document: SvgDocument,
+  pageNumbers: number[] | null, // null = all pages
+) {
+  const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  const pages = document.pages
+  const indices = pageNumbers
+    ? pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
+    : pages.map((_, i) => i)
 
-interface SvgDocument {
-  name: string
-  pages: SvgPage[]
-  macros?: Record<string, string>
+  if (indices.length === 0) return
+
+  console.log(`[Reload] Fetching ${indices.length} page(s): ${indices.map(i => i + 1).join(', ')}`)
+
+  const timestamp = Date.now()
+
+  // Fetch SVGs in parallel with cache-bust
+  const results = await Promise.all(
+    indices.map(async (i) => {
+      const pageNum = String(i + 1).padStart(2, '0')
+      const url = `${basePath}page-${pageNum}.svg?t=${timestamp}`
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) {
+          console.warn(`[Reload] Failed to fetch page ${i + 1}: ${resp.status}`)
+          return null
+        }
+        return { index: i, svgText: await resp.text() }
+      } catch (e) {
+        console.warn(`[Reload] Error fetching page ${i + 1}:`, e)
+        return null
+      }
+    })
+  )
+
+  // Process and hot-swap each fetched page
+  for (const result of results) {
+    if (!result) continue
+    const { index, svgText } = result
+    const page = pages[index]
+
+    // Re-encode as base64 data URL
+    const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
+
+    // Update the asset src (this triggers TLDraw to re-render the image)
+    const asset = editor.getAsset(page.assetId)
+    if (asset && asset.type === 'image') {
+      editor.updateAssets([{
+        ...asset,
+        props: { ...asset.props, src: dataUrl },
+      }])
+      console.log(`[Reload] Updated asset for page ${index + 1}`)
+    }
+
+    // Re-extract text for selection overlay
+    const parser = new DOMParser()
+    const svgDoc = parser.parseFromString(svgText, 'image/svg+xml')
+    page.textData = await extractTextFromSvgAsync(svgDoc)
+  }
+
+  // After a full reload, remap annotations
+  if (!pageNumbers) {
+    if (currentDocumentInfo) {
+      await remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
+    }
+  }
+
+  console.log(`[Reload] Done — ${indices.length} page(s) updated`)
 }
 
 interface SvgDocumentEditorProps {
@@ -146,113 +220,46 @@ interface SvgDocumentEditorProps {
   roomId: string
 }
 
-const pageSpacing = 32
+// Wrapper to connect TextSelectionLayer to PanelContext
+function TextSelectionOverlay() {
+  const ctx = useContext(PanelContext)
+  if (!ctx) return null
+  return <TextSelectionLayer pages={ctx.pages} />
+}
 
-export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<SvgDocument> {
-  // Fetch all SVGs in parallel
-  console.log(`Loading ${svgUrls.length} SVG pages...`)
-
-  // Derive macros.json path from first SVG URL
-  const basePath = svgUrls[0].replace(/page-\d+\.svg$/, '')
-  const macrosUrl = basePath + 'macros.json'
-
-  // Fetch SVGs and macros in parallel
-  const [svgTexts, macrosData] = await Promise.all([
-    Promise.all(
-      svgUrls.map(async (url) => {
-        const response = await fetch(url)
-        if (!response.ok) throw new Error(`Failed to fetch ${url}`)
-        return response.text()
-      })
-    ),
-    fetch(macrosUrl)
-      .then(r => r.ok ? r.json() : null)
-      .catch(() => null)
-  ])
-
-  // Set active macros if loaded
-  if (macrosData?.macros) {
-    console.log(`Loaded ${Object.keys(macrosData.macros).length} macros from preamble`)
-    setActiveMacros(macrosData.macros)
-  }
-
-  console.log('All SVGs fetched, processing...')
-
-  const pages: SvgPage[] = []
-  let top = 0
-  let widest = 0
-
-  for (let i = 0; i < svgTexts.length; i++) {
-    const svgText = svgTexts[i]
-
-    // Parse SVG to get dimensions
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(svgText, 'image/svg+xml')
-    const svgEl = doc.querySelector('svg')
-
-    let width = 600
-    let height = 800
-
-    if (svgEl) {
-      // Try to get dimensions from viewBox or width/height attributes
-      const viewBox = svgEl.getAttribute('viewBox')
-      const widthAttr = svgEl.getAttribute('width')
-      const heightAttr = svgEl.getAttribute('height')
-
-      if (viewBox) {
-        const parts = viewBox.split(/\s+/)
-        if (parts.length === 4) {
-          width = parseFloat(parts[2]) || width
-          height = parseFloat(parts[3]) || height
-        }
-      }
-
-      if (widthAttr) {
-        const w = parseFloat(widthAttr)
-        if (!isNaN(w)) width = w
-      }
-      if (heightAttr) {
-        const h = parseFloat(heightAttr)
-        if (!isNaN(h)) height = h
-      }
-    }
-
-    // Scale to reasonable size (target ~800px wide)
-    const scale = 800 / width
-    width = width * scale
-    height = height * scale
-
-    // Convert SVG to base64 data URL (TLDraw doesn't accept blob URLs)
-    const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
-
-    // Use deterministic IDs based on document name + page index
-    // This prevents duplicates when Yjs syncs existing shapes
-    const pageId = `${name}-page-${i}`
-    pages.push({
-      src: dataUrl,
-      bounds: new Box(0, top, width, height),
-      assetId: AssetRecordType.createId(pageId),
-      shapeId: createShapeId(pageId),
-      width,
-      height,
-    })
-
-    top += height + pageSpacing
-    widest = Math.max(widest, width)
-  }
-
-  // Center pages
-  for (const page of pages) {
-    page.bounds.x = (widest - page.bounds.width) / 2
-  }
-
-  console.log('SVG document ready')
-  return { name, pages }
+function ExitPenModeButton() {
+  const editor = useEditor()
+  const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
+  if (!isPenMode) return null
+  return (
+    <button
+      className="exit-pen-mode-btn"
+      onClick={() => editor.updateInstanceState({ isPenMode: false })}
+    >
+      <span className="exit-pen-mode-stack">
+        <span className="exit-pen-mode-pen">{'\u270F\uFE0E'}</span>
+        <span className="exit-pen-mode-x">{'\u2715'}</span>
+      </span>
+    </button>
+  )
 }
 
 export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) {
   // Skip sync for now - just use local store
   const editorRef = useRef<Editor | null>(null)
+
+  // Subscribe to Yjs reload signals
+  useEffect(() => {
+    return onReloadSignal((signal) => {
+      const editor = editorRef.current
+      if (!editor) return
+      if (signal.type === 'partial') {
+        reloadPages(editor, document, signal.pages)
+      } else {
+        reloadPages(editor, document, null)
+      }
+    })
+  }, [document])
 
   // WebSocket connection for forward sync (Claude → iPad)
   // Only connect on local network, not in production
@@ -401,11 +408,42 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   const components = useMemo<TLComponents>(
     () => ({
       PageMenu: null,
-      SharePanel: () => <RoomInfo roomId={roomId} name={document.name} />,
-      Toolbar: (props) => <DefaultToolbar {...props} orientation="vertical" />,
+      SharePanel: null,
+      MainMenu: null,
+      Toolbar: (props) => (
+        <DefaultToolbar {...props} orientation="vertical">
+          <SelectToolbarItem />
+          <HandToolbarItem />
+          <DrawToolbarItem />
+          <HighlightToolbarItem />
+          <EraserToolbarItem />
+          <ArrowToolbarItem />
+          <TextToolbarItem />
+          <NoteToolbarItem />
+          <AssetToolbarItem />
+          <RectangleToolbarItem />
+          <EllipseToolbarItem />
+          <LineToolbarItem />
+          <LaserToolbarItem />
+          <FrameToolbarItem />
+        </DefaultToolbar>
+      ),
+      HelperButtons: ExitPenModeButton,
+      InFrontOfTheCanvas: () => <><TextSelectionOverlay /><DocumentPanel /><PingButton /></>,
     }),
     [document, roomId]
   )
+
+  const docKey = new URLSearchParams(window.location.search).get('doc') || document.name
+  const panelContextValue = useMemo(() => ({
+    docName: docKey,
+    pages: document.pages.map(p => ({
+      bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+      width: p.width,
+      height: p.height,
+      textData: p.textData,
+    })),
+  }), [docKey, document])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool], [])
@@ -433,6 +471,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   }), [])
 
   return (
+    <PanelContext.Provider value={panelContextValue}>
     <Tldraw
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
@@ -444,17 +483,69 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           editorRef.current = editor
           setupSvgEditor(editor, document)
 
+          // Default drawing style: purple, 70% opacity, small size
+          editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
+          editor.setStyleForNextShapes(DefaultSizeStyle, 's')
+          editor.setOpacityForNextShapes(0.7)
+
           // Set global document info for synctex anchoring
-          currentDocumentInfo = {
+          setCurrentDocumentInfo({
             name: document.name,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,
               height: p.height
             }))
-          }
+          })
 
           // Remapping is triggered by YjsSyncProvider after initial sync
+
+          // --- Session persistence ---
+          const sessionKey = `tldraw-session:${roomId}`
+
+          function saveSession() {
+            try {
+              const cam = editor.getCamera()
+              const tool = editor.getCurrentToolId()
+              localStorage.setItem(sessionKey, JSON.stringify({
+                camera: { x: cam.x, y: cam.y, z: cam.z },
+                tool,
+              }))
+            } catch { /* quota exceeded etc */ }
+          }
+
+          function loadSession() {
+            try {
+              const raw = localStorage.getItem(sessionKey)
+              if (!raw) return null
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string }
+            } catch { return null }
+          }
+
+          // Restore session after constraints and Yjs sync settle,
+          // then start watching for changes
+          const session = loadSession()
+          setTimeout(() => {
+            if (session?.camera) {
+              editor.setCamera(session.camera)
+            }
+            if (session?.tool) {
+              try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
+            }
+
+            // Start save watchers only after restore
+            let cameraTimer: ReturnType<typeof setTimeout> | null = null
+            react('save-camera', () => {
+              editor.getCamera() // subscribe
+              if (cameraTimer) clearTimeout(cameraTimer)
+              cameraTimer = setTimeout(saveSession, 500)
+            })
+
+            react('save-tool', () => {
+              editor.getCurrentToolId() // subscribe
+              saveSession()
+            })
+          }, 500)
 
           // Keyboard shortcut: 'm' for math note
           const handleKeyDown = (e: KeyboardEvent) => {
@@ -464,12 +555,35 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
             }
           }
           window.addEventListener('keydown', handleKeyDown)
+
+          // Pen double-tap to cycle draw → highlight → eraser
+          const penCycle = ['draw', 'highlight', 'eraser']
+          let lastPenTap = 0
+          const container = window.document.querySelector('.tl-container') as HTMLElement | null
+          if (container) {
+            container.addEventListener('pointerdown', (e: PointerEvent) => {
+              if (e.pointerType !== 'pen') return
+              // Only trigger on button 5 (barrel button / eraser tip)
+              // or detect double-tap: two pen-downs within 300ms
+              const now = Date.now()
+              if (now - lastPenTap < 300) {
+                const current = editor.getCurrentToolId()
+                const idx = penCycle.indexOf(current)
+                const next = penCycle[(idx + 1) % penCycle.length]
+                editor.setCurrentTool(next)
+                lastPenTap = 0 // reset so triple-tap doesn't re-trigger
+              } else {
+                lastPenTap = now
+              }
+            }, true) // capture phase so it fires before tldraw
+          }
         }}
         components={components}
         forceMobile
     >
       <YjsSyncProvider roomId={roomId} />
     </Tldraw>
+    </PanelContext.Provider>
   )
 }
 
@@ -598,58 +712,3 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
   updateCameraBounds(isMobile)
 }
 
-function RoomInfo({ roomId: _roomId, name: _name }: { roomId: string; name: string }) {
-  const editor = useEditor()
-  const [shareState, setShareState] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
-
-  const shareSnapshot = useCallback(async () => {
-    if (shareState === 'sending') return
-
-    console.log('Share clicked')
-    setShareState('sending')
-
-    try {
-      const yRecords = getYRecords()
-      if (!yRecords) throw new Error('Yjs not connected')
-
-      // Write a ping signal into Yjs — Claude's MCP server sees it via the sync channel
-      const pingId = `signal:ping`
-      const doc = yRecords.doc!
-      doc.transact(() => {
-        yRecords.set(pingId, {
-          id: pingId,
-          typeName: 'signal',
-          type: 'ping',
-          timestamp: Date.now(),
-          // Include viewport center so Claude knows where you're looking
-          viewport: (() => {
-            const center = editor.getViewportScreenCenter()
-            const pagePoint = editor.screenToPage(center)
-            return { x: pagePoint.x, y: pagePoint.y }
-          })(),
-        } as any)
-      })
-
-      console.log('Share: ping written to Yjs')
-      setShareState('success')
-      setTimeout(() => setShareState('idle'), 1500)
-    } catch (e) {
-      console.error('Share error:', e)
-      setShareState('error')
-      setTimeout(() => setShareState('idle'), 2000)
-    }
-  }, [editor, shareState])
-
-  return (
-    <div className="RoomInfo">
-      <button
-        onClick={shareSnapshot}
-        className={`share-btn share-btn--${shareState}`}
-        disabled={shareState === 'sending'}
-        aria-label="Share"
-      >
-        ✳
-      </button>
-    </div>
-  )
-}

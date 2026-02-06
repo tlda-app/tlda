@@ -8,10 +8,42 @@
   background-color: white !important;
 }
 
-/* Shrink and fade toolbar controls */
+/* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
-  opacity: 0.3;
   zoom: 0.6;
+  --tl-color-text-1: rgba(0, 0, 0, 0.15);
+  --tl-color-text: rgba(0, 0, 0, 0.15);
+  --tl-color-text-3: rgba(0, 0, 0, 0.08);
+  --tl-color-selected: rgba(0, 0, 0, 0.04);
+  --tl-color-selected-contrast: rgba(0, 0, 0, 0.1);
+  --tl-color-low: rgba(255, 255, 255, 0.3);
+  --tl-color-panel: rgba(255, 255, 255, 0.3);
+  --tl-shadow-2: none;
+  --tl-shadow-3: none;
+}
+
+/* Compensate popup position for toolbar zoom (popups portal outside the zoomed container) */
+/* Zoom the wrapper for correct positioning, counter-zoom content for working interactions */
+[data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
+  zoom: 0.6;
+}
+
+[data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
+  zoom: calc(1 / 0.6);
+  --tl-color-text-1: rgba(0, 0, 0, 0.15);
+  --tl-color-text: rgba(0, 0, 0, 0.15);
+  --tl-color-text-3: rgba(0, 0, 0, 0.08);
+  --tl-color-selected: rgba(0, 0, 0, 0.04);
+  --tl-color-selected-contrast: rgba(0, 0, 0, 0.1);
+  --tl-color-low: rgba(255, 255, 255, 0.3);
+  --tl-color-panel: rgba(255, 255, 255, 0.3);
+  --tl-shadow-2: none;
+  --tl-shadow-3: none;
+}
+
+/* Fade the color picker button (has inline style="color: ...") */
+.tlui-main-toolbar__mobile-style-panel .tlui-button {
+  color: rgba(0, 0, 0, 0.15) !important;
 }
 
 [class*="tlui-"][class*="actions"],
@@ -20,7 +52,7 @@
 [class*="tlui-"][class*="panel"],
 [class*="tlui-"][class*="menu"],
 .tlui-toolbar {
-  background: white !important;
+  background: rgba(255, 255, 255, 0.3) !important;
   border-radius: 8px !important;
   border: none !important;
   box-shadow: none !important;
@@ -244,4 +276,105 @@
 
 .ErrorScreen button:hover {
   background: #1d4ed8;
+}
+
+/* Text selection layer */
+.text-selection-layer span::selection {
+  background: rgba(59, 130, 246, 0.3);
+}
+
+.text-selection-layer.active {
+  cursor: text;
+}
+
+/* Exit pen mode — faint stacked icon */
+.exit-pen-mode-btn {
+  pointer-events: all;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.15;
+  padding: 4px 6px;
+  line-height: 1;
+  transition: opacity 0.2s;
+}
+
+.exit-pen-mode-btn:hover {
+  opacity: 0.4;
+}
+
+.exit-pen-mode-stack {
+  position: relative;
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+}
+
+.exit-pen-mode-pen {
+  position: absolute;
+  inset: 0;
+  font-size: 25px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.exit-pen-mode-x {
+  position: absolute;
+  inset: 0;
+  font-size: 28px;
+  line-height: 20px;
+  text-align: center;
+  font-weight: 300;
+}
+
+@media (pointer: coarse) {
+  .exit-pen-mode-stack {
+    width: 28px;
+    height: 28px;
+  }
+
+  .exit-pen-mode-pen {
+    font-size: 34px;
+    line-height: 28px;
+  }
+
+  .exit-pen-mode-x {
+    font-size: 37px;
+    line-height: 28px;
+  }
+
+  .exit-pen-mode-btn {
+    opacity: 0.2;
+    padding: 8px 10px;
+  }
+}
+
+/* iPad / touch-device overrides */
+@media (pointer: coarse) {
+  .tlui-layout__bottom {
+    zoom: 0.85;
+    --tl-color-text-1: rgba(0, 0, 0, 0.25);
+    --tl-color-text: rgba(0, 0, 0, 0.25);
+    --tl-color-text-3: rgba(0, 0, 0, 0.12);
+  }
+
+  [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
+    zoom: 0.85;
+  }
+
+  [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
+    zoom: calc(1 / 0.85);
+    --tl-color-text-1: rgba(0, 0, 0, 0.25);
+    --tl-color-text: rgba(0, 0, 0, 0.25);
+    --tl-color-text-3: rgba(0, 0, 0, 0.12);
+  }
+
+  .tlui-main-toolbar__mobile-style-panel .tlui-button {
+    color: rgba(0, 0, 0, 0.25) !important;
+  }
+
+  [class*="tlui-"][class*="menu"] {
+    opacity: 0.4;
+    zoom: 0.85;
+  }
 }

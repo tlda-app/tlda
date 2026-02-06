@@ -1,5 +1,5 @@
 import { StateNode, createShapeId, type JsonObject } from 'tldraw'
-import { currentDocumentInfo } from './SvgDocument'
+import { currentDocumentInfo } from './svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from './synctexAnchor'
 
 export class MathNoteTool extends StateNode {
@@ -35,7 +35,6 @@ export class MathNoteTool extends StateNode {
         w: 200,
         h: 200,
         text: '',
-        color: 'yellow',
       },
     })
 
