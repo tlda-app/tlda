@@ -46,7 +46,7 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "Running latexmk..."
 cd "$TEX_DIR"
-latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=nonstopmode "$TEX_BASE.tex"
+latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "$TEX_BASE.tex"
 
 DVI_FILE="$TEX_DIR/$TEX_BASE.dvi"
 if [ ! -f "$DVI_FILE" ]; then
@@ -92,7 +92,8 @@ const manifest = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
 manifest.documents['$DOC_NAME'] = {
   name: '$DOC_TITLE',
   pages: $PAGE_COUNT,
-  basePath: '/docs/$DOC_NAME/'
+  basePath: '/docs/$DOC_NAME/',
+  texFile: '$TEX_DIR/$TEX_BASE.tex'
 };
 fs.writeFileSync('$MANIFEST', JSON.stringify(manifest, null, 2));
 console.log('Manifest updated');

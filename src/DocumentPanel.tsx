@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
+import { createPortal } from 'react-dom'
 import { useEditor } from 'tldraw'
 import type { Editor, TLShape } from 'tldraw'
 import katex from 'katex'
@@ -6,13 +7,14 @@ import { getActiveMacros } from './katexMacros'
 import { loadLookup, type LookupEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
 import { PanelContext } from './PanelContext'
-import { getYRecords } from './useYjsSync'
+import { getYRecords, getLiveUrl } from './useYjsSync'
 import './DocumentPanel.css'
 
 // --- Navigation helper ---
 
-function navigateTo(editor: Editor, canvasX: number, canvasY: number) {
-  editor.centerOnPoint({ x: canvasX, y: canvasY }, { animation: { duration: 300 } })
+function navigateTo(editor: Editor, canvasX: number, canvasY: number, pageCenterX?: number) {
+  const x = pageCenterX ?? canvasX
+  editor.centerOnPoint({ x, y: canvasY }, { animation: { duration: 300 } })
 }
 
 // --- Heading parsing ---
@@ -188,7 +190,11 @@ function TocTab() {
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!ctx) return
     const pos = pdfToCanvas(entry.page, entry.x, entry.y, ctx.pages)
-    if (pos) navigateTo(editor, pos.x, pos.y)
+    if (!pos) return
+    const pageIndex = entry.page - 1
+    const page = ctx.pages[pageIndex]
+    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
+    navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, ctx])
 
   const toggleSection = useCallback((idx: number) => {
@@ -204,11 +210,23 @@ function TocTab() {
     return <div className="panel-empty">No headings found</div>
   }
 
+  const liveUrl = getLiveUrl()
+
   // Build visibility: children hidden if their parent is collapsed
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
   return (
     <div className="doc-panel-content">
+      {liveUrl && (
+        <a
+          href={liveUrl}
+          className="toc-live-link"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Join live session
+        </a>
+      )}
       {headings.map((h, i) => {
         if (h.level === 'section') {
           currentSectionIdx = i
@@ -316,7 +334,11 @@ function SearchTab() {
   const handleDocClick = useCallback((entry: LookupEntry) => {
     if (!ctx) return
     const pos = pdfToCanvas(entry.page, entry.x, entry.y, ctx.pages)
-    if (pos) navigateTo(editor, pos.x, pos.y)
+    if (!pos) return
+    const pageIndex = entry.page - 1
+    const page = ctx.pages[pageIndex]
+    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
+    navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, ctx])
 
   const handleNoteClick = useCallback((shape: TLShape) => {
@@ -452,7 +474,7 @@ export function PingButton() {
         } as any)
       })
 
-      // Capture viewport screenshot and POST to MCP server
+      // Capture viewport screenshot and write to Yjs
       try {
         const viewportBounds = editor.getViewportPageBounds()
         const { blob } = await editor.toImage([], {
@@ -461,11 +483,21 @@ export function PingButton() {
           scale: 1,
           pixelRatio: 1,
         })
-        const mcpHost = window.location.hostname || 'localhost'
-        await fetch(`http://${mcpHost}:5174/viewport-screenshot`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'image/png' },
-          body: blob,
+        const buf = await blob.arrayBuffer()
+        const reader = new FileReader()
+        const base64 = await new Promise<string>((resolve) => {
+          reader.onload = () => {
+            const result = reader.result as string
+            resolve(result.split(',')[1]) // strip data:...;base64, prefix
+          }
+          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
+        })
+        doc.transact(() => {
+          yRecords.set('signal:screenshot' as any, {
+            data: base64,
+            mimeType: 'image/png',
+            timestamp: Date.now(),
+          } as any)
         })
       } catch (e) {
         console.warn('[Ping] Screenshot capture failed:', e)
@@ -479,7 +511,16 @@ export function PingButton() {
     }
   }, [editor, state])
 
-  return (
+  const portalRef = useRef<HTMLDivElement | null>(null)
+  if (!portalRef.current) {
+    portalRef.current = document.createElement('div')
+    document.body.appendChild(portalRef.current)
+  }
+  useEffect(() => {
+    return () => { portalRef.current?.remove(); portalRef.current = null }
+  }, [])
+
+  return createPortal(
     <button
       className={`ping-button-standalone ping-button-standalone--${state}`}
       onClick={ping}
@@ -491,7 +532,8 @@ export function PingButton() {
       title="Ping Claude"
     >
       {'\u2733\uFE0E'}
-    </button>
+    </button>,
+    portalRef.current,
   )
 }
 
@@ -510,30 +552,40 @@ const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: co
 
 export function DocumentPanel() {
   const [tab, setTab] = useState<Tab>('toc')
-  return (
-    <>
-      <div
-        className={`doc-panel ${isTouch ? 'panel-open' : ''}`}
-        onPointerDown={stopTldrawEvents}
-        onPointerUp={stopTldrawEvents}
-        onTouchStart={stopTldrawEvents}
-        onTouchEnd={stopTldrawEvents}
-      >
-        <div className="doc-panel-tabs">
-          <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-            TOC
-          </button>
-          <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-            Search
-          </button>
-          <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-            Notes
-          </button>
-        </div>
-        {tab === 'toc' && <TocTab />}
-        {tab === 'search' && <SearchTab />}
-        {tab === 'notes' && <NotesTab />}
+
+  // Portal outside TLDraw's DOM tree to avoid event capture interference
+  const portalRef = useRef<HTMLDivElement | null>(null)
+  if (!portalRef.current) {
+    portalRef.current = document.createElement('div')
+    document.body.appendChild(portalRef.current)
+  }
+  useEffect(() => {
+    return () => { portalRef.current?.remove(); portalRef.current = null }
+  }, [])
+
+  return createPortal(
+    <div
+      className={`doc-panel ${isTouch ? 'panel-open' : ''}`}
+      onPointerDown={stopTldrawEvents}
+      onPointerUp={stopTldrawEvents}
+      onTouchStart={stopTldrawEvents}
+      onTouchEnd={stopTldrawEvents}
+    >
+      <div className="doc-panel-tabs">
+        <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+          TOC
+        </button>
+        <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
+          Search
+        </button>
+        <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+          Notes
+        </button>
       </div>
-    </>
+      {tab === 'toc' && <TocTab />}
+      {tab === 'search' && <SearchTab />}
+      {tab === 'notes' && <NotesTab />}
+    </div>,
+    portalRef.current,
   )
 }

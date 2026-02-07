@@ -19,6 +19,7 @@ interface YjsSyncOptions {
 const SYNC_TYPES = new Set(['shape', 'asset', 'page', 'document'])
 
 function shouldSync(record: TLRecord): boolean {
+  if (!record?.id || !record?.typeName) return false  // skip signals and non-TLDraw records
   if (record.id.includes('-page-')) return false  // page background images
   return SYNC_TYPES.has(record.typeName)
 }
@@ -32,6 +33,10 @@ function isPageBackground(record: TLRecord): boolean {
 let activeYRecords: Y.Map<TLRecord> | null = null
 export function getYRecords() { return activeYRecords }
 
+// Live URL from static annotations (set when loading annotations.json)
+let staticLiveUrl: string | null = null
+export function getLiveUrl() { return staticLiveUrl }
+
 // Reload signal callback registration
 type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
@@ -42,6 +47,28 @@ export function onReloadSignal(cb: ReloadCallback) {
   return () => { reloadCallbacks.delete(cb) }
 }
 let lastReloadTimestamp = 0
+
+// Forward sync signal callback registration (scroll, highlight from Claude)
+export type ForwardSyncSignal =
+  | { type: 'scroll', x: number, y: number, timestamp: number }
+  | { type: 'highlight', x: number, y: number, page: number, timestamp: number }
+type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
+const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
+export function onForwardSync(cb: ForwardSyncCallback) {
+  forwardSyncCallbacks.add(cb)
+  return () => { forwardSyncCallbacks.delete(cb) }
+}
+let lastScrollTimestamp = 0
+let lastHighlightTimestamp = 0
+
+// Screenshot request callback (MCP asks viewer to capture viewport)
+type ScreenshotCallback = () => void
+const screenshotCallbacks = new Set<ScreenshotCallback>()
+export function onScreenshotRequest(cb: ScreenshotCallback) {
+  screenshotCallbacks.add(cb)
+  return () => { screenshotCallbacks.delete(cb) }
+}
+let lastScreenshotRequestTimestamp = 0
 
 /**
  * Load static annotations from annotations.json when no sync server is available.
@@ -64,6 +91,9 @@ async function loadStaticAnnotations(editor: Editor, onInitialSync?: () => void)
     }
 
     const data = await resp.json()
+    if (data.liveUrl) {
+      staticLiveUrl = data.liveUrl
+    }
     const records = data.records || {}
     const toApply: TLRecord[] = []
 
@@ -194,7 +224,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
     // Sync Y.Map changes to TLDraw
     yRecords.observe((event) => {
-      // Check for reload signals (from any source — remote or local MCP)
+      // Check for signals (reload, forward sync)
       event.changes.keys.forEach((change, key) => {
         if (key === 'signal:reload' && (change.action === 'add' || change.action === 'update')) {
           const signal = yRecords.get(key) as unknown as ReloadSignal & Record<string, unknown>
@@ -202,6 +232,43 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
             lastReloadTimestamp = signal.timestamp
             console.log(`[Yjs] Reload signal: ${signal.type}`, signal)
             for (const cb of reloadCallbacks) cb(signal)
+          }
+        }
+
+        // Forward sync: scroll
+        if (key === 'signal:forward-scroll' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as ForwardSyncSignal & { x: number, y: number, timestamp: number }
+          if (!hasReceivedInitialSync) {
+            // During initial sync, just record timestamp to skip stale signals
+            if (signal?.timestamp) lastScrollTimestamp = signal.timestamp
+          } else if (signal?.timestamp && signal.timestamp > lastScrollTimestamp) {
+            lastScrollTimestamp = signal.timestamp
+            console.log(`[Yjs] Forward scroll: (${signal.x}, ${signal.y})`)
+            for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...signal })
+          }
+        }
+
+        // Screenshot request from MCP
+        if (key === 'signal:screenshot-request' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as { timestamp: number }
+          if (!hasReceivedInitialSync) {
+            if (signal?.timestamp) lastScreenshotRequestTimestamp = signal.timestamp
+          } else if (signal?.timestamp && signal.timestamp > lastScreenshotRequestTimestamp) {
+            lastScreenshotRequestTimestamp = signal.timestamp
+            console.log('[Yjs] Screenshot request received')
+            for (const cb of screenshotCallbacks) cb()
+          }
+        }
+
+        // Forward sync: highlight
+        if (key === 'signal:forward-highlight' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as ForwardSyncSignal & { x: number, y: number, page: number, timestamp: number }
+          if (!hasReceivedInitialSync) {
+            if (signal?.timestamp) lastHighlightTimestamp = signal.timestamp
+          } else if (signal?.timestamp && signal.timestamp > lastHighlightTimestamp) {
+            lastHighlightTimestamp = signal.timestamp
+            console.log(`[Yjs] Forward highlight: page ${signal.page} (${signal.x}, ${signal.y})`)
+            for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...signal })
           }
         }
       })

@@ -33,7 +33,8 @@ import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, onReloadSignal, getYRecords } from './useYjsSync'
+import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, getYRecords } from './useYjsSync'
+import type { ForwardSyncSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
@@ -153,6 +154,9 @@ async function reloadPages(
   document: SvgDocument,
   pageNumbers: number[] | null, // null = all pages
 ) {
+  // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
+  if (document.format === 'png') return
+
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
   const indices = pageNumbers
@@ -277,148 +281,81 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
     })
   }, [document])
 
-  // WebSocket connection for forward sync (Claude → viewer)
-  // In dev mode, auto-detect from hostname; in production, use env var or skip
-  const forwardSyncUrl = import.meta.env.VITE_FORWARD_SYNC_SERVER ||
-    (import.meta.env.DEV ? `ws://${window.location.hostname}:5175` : '')
+  // Subscribe to Yjs forward sync signals (scroll, highlight from Claude)
   useEffect(() => {
-    if (!forwardSyncUrl) return
+    return onForwardSync((signal: ForwardSyncSignal) => {
+      const editor = editorRef.current
+      if (!editor) return
 
-    const ws = new WebSocket(forwardSyncUrl)
-
-    ws.onopen = () => {
-      console.log('WebSocket connected for forward sync')
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        const editor = editorRef.current
-        if (!editor) return
-
-        if (data.type === 'highlight') {
-          console.log('Received highlight:', data)
-
-          // Scroll to the highlighted location
-          editor.centerOnPoint({ x: data.x, y: data.y }, { animation: { duration: 300 } })
-
-          // Create a temporary highlight shape (unless noMarker is set)
-          if (!data.noMarker) {
-            const markerId = createShapeId()
-            editor.createShape({
-              id: markerId,
-              type: 'geo',
-              x: data.x - 30,
-              y: data.y - 30,
-              props: {
-                geo: 'ellipse',
-                w: 60,
-                h: 60,
-                fill: 'none',
-                color: 'red',
-                size: 'm',
-              },
-            })
-
-            // Remove after 3 seconds
-            setTimeout(() => {
-              if (editor.getShape(markerId)) {
-                editor.deleteShape(markerId)
-              }
-            }, 3000)
+      // Find horizontal center of page containing a canvas y coordinate
+      function pageCenterX(canvasY: number): number {
+        for (const page of document.pages) {
+          if (canvasY >= page.bounds.y && canvasY <= page.bounds.y + page.bounds.h) {
+            return page.bounds.x + page.bounds.w / 2
           }
         }
-
-        // Just scroll, no marker
-        if (data.type === 'scroll') {
-          editor.centerOnPoint({ x: data.x, y: data.y }, { animation: { duration: 300 } })
-        }
-
-        if (data.type === 'note') {
-          console.log('Received note:', data)
-
-          // Scroll to the location
-          editor.centerOnPoint({ x: data.x, y: data.y }, { animation: { duration: 300 } })
-
-          // Create a note shape (sticky) - TLDraw 4.x uses richText
-          editor.createShape({
-            id: createShapeId(),
-            type: 'note',
-            x: data.x,
-            y: data.y,
-            props: {
-              color: 'violet',  // Purple for Claude
-              size: 'm',
-              font: 'sans',
-              align: 'start',
-              verticalAlign: 'start',
-              richText: {
-                type: 'doc',
-                content: [
-                  {
-                    type: 'paragraph',
-                    content: [{ type: 'text', text: data.text || '' }],
-                  },
-                ],
-              },
-            },
-          })
-        }
-
-        // Reply to an existing note - append with highlight mark
-        if (data.type === 'reply') {
-          console.log('Received reply:', data)
-          const targetId = data.shapeId as TLShapeId
-          const shape = editor.getShape(targetId)
-
-          if (shape && shape.type === 'note') {
-            const noteShape = shape as TLShape & { props: { richText: { content: unknown[] } } }
-            const existingRichText = noteShape.props.richText
-
-            // Append with highlight mark using TLDraw color name
-            const newContent = [
-              ...existingRichText.content,
-              { type: 'paragraph', content: [] },
-              {
-                type: 'paragraph',
-                content: [{
-                  type: 'text',
-                  text: 'Claude: ' + (data.text || ''),
-                  marks: [{ type: 'highlight', attrs: { color: 'violet' } }]
-                }]
-              }
-            ]
-
-            editor.updateShape({
-              id: targetId,
-              type: 'note',
-              props: {
-                richText: {
-                  type: 'doc',
-                  content: newContent,
-                },
-              },
-            })
-
-            editor.centerOnPoint({ x: shape.x, y: shape.y }, { animation: { duration: 300 } })
-          }
-        }
-      } catch (e) {
-        console.error('WebSocket message error:', e)
+        return document.pages.length > 0
+          ? document.pages[0].bounds.x + document.pages[0].bounds.w / 2
+          : 400
       }
-    }
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected')
-    }
+      if (signal.type === 'scroll') {
+        editor.centerOnPoint({ x: pageCenterX(signal.y), y: signal.y }, { animation: { duration: 300 } })
+      }
 
-    ws.onerror = (e) => {
-      console.error('WebSocket error:', e)
-    }
+      if (signal.type === 'highlight') {
+        editor.centerOnPoint({ x: pageCenterX(signal.y), y: signal.y }, { animation: { duration: 300 } })
+        const markerId = createShapeId()
+        editor.createShape({
+          id: markerId,
+          type: 'geo',
+          x: signal.x - 30,
+          y: signal.y - 30,
+          props: { geo: 'ellipse', w: 60, h: 60, fill: 'none', color: 'red', size: 'm' },
+        })
+        setTimeout(() => {
+          if (editor.getShape(markerId)) editor.deleteShape(markerId)
+        }, 3000)
+      }
+    })
+  }, [document])
 
-    return () => {
-      ws.close()
-    }
+  // Handle screenshot requests from MCP
+  useEffect(() => {
+    return onScreenshotRequest(async () => {
+      const editor = editorRef.current
+      const yRecords = getYRecords()
+      if (!editor || !yRecords) return
+      try {
+        const viewportBounds = editor.getViewportPageBounds()
+        const { blob } = await editor.toImage([], {
+          bounds: viewportBounds,
+          background: true,
+          scale: 1,
+          pixelRatio: 1,
+        })
+        const buf = await blob.arrayBuffer()
+        const reader = new FileReader()
+        const base64 = await new Promise<string>((resolve) => {
+          reader.onload = () => {
+            const result = reader.result as string
+            resolve(result.split(',')[1])
+          }
+          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
+        })
+        const ydoc = yRecords.doc!
+        ydoc.transact(() => {
+          yRecords.set('signal:screenshot' as any, {
+            data: base64,
+            mimeType: 'image/png',
+            timestamp: Date.now(),
+          } as any)
+        })
+        console.log(`[Screenshot] Captured ${Math.round(base64.length / 1024)}KB`)
+      } catch (e) {
+        console.warn('[Screenshot] Capture failed:', e)
+      }
+    })
   }, [])
 
   const components = useMemo<TLComponents>(
@@ -641,6 +578,7 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
 
   if (!hasAssets) {
     // Create assets for each page
+    const mimeType = document.format === 'png' ? 'image/png' : 'image/svg+xml'
     editor.createAssets(
       document.pages.map((page) => ({
         id: page.assetId,
@@ -650,7 +588,7 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
         props: {
           w: page.width,
           h: page.height,
-          mimeType: 'image/svg+xml',
+          mimeType,
           src: page.src,
           name: 'svg-page',
           isAnimated: false,

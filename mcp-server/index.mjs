@@ -20,6 +20,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import * as Y from 'yjs';
+import { findRenderedText } from './svg-text.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -28,21 +29,19 @@ const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
 // ---- Lookup.json support ----
 
-const lookupCache = new Map();
+const lookupCache = new Map(); // docName → { data, mtime }
 
 function loadLookup(docName) {
-  if (lookupCache.has(docName)) return lookupCache.get(docName);
   const lookupPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'lookup.json');
-  if (!fs.existsSync(lookupPath)) {
-    lookupCache.set(docName, null);
-    return null;
-  }
   try {
+    const stat = fs.statSync(lookupPath);
+    const cached = lookupCache.get(docName);
+    if (cached && cached.mtime >= stat.mtimeMs) return cached.data;
+
     const data = JSON.parse(fs.readFileSync(lookupPath, 'utf8'));
-    lookupCache.set(docName, data);
+    lookupCache.set(docName, { data, mtime: stat.mtimeMs });
     return data;
   } catch {
-    lookupCache.set(docName, null);
     return null;
   }
 }
@@ -61,7 +60,7 @@ const PDF_HEIGHT = 792;
 const VIEWBOX_OFFSET = -72;
 const PAGE_WIDTH = 800;
 const PAGE_HEIGHT = 1035.294; // 792 * (800/612)
-const PAGE_GAP = 20;
+const PAGE_GAP = 32;
 
 function pdfToCanvas(page, pdfX, pdfY) {
   const pageY = (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
@@ -110,6 +109,15 @@ function findNearbyLines(docName, canvasBBox) {
   }
   matches.sort((a, b) => a.line - b.line);
   return matches;
+}
+
+function getRenderedText(docName, bbox) {
+  const texts = findRenderedText(docName, bbox, PROJECT_ROOT);
+  if (texts.length === 0) return '';
+  // Truncate to ~200 chars total for readability
+  let joined = texts.join(' | ');
+  if (joined.length > 200) joined = joined.slice(0, 200) + '…';
+  return joined;
 }
 
 function classifyGesture(bbox) {
@@ -315,6 +323,187 @@ function generateShapeId() {
   return 'shape:' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
 }
 
+// ---- Shared action functions (used by both HTTP and MCP) ----
+
+async function scrollToLine(doc, line) {
+  const linePos = lookupLine(doc, line);
+  if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
+
+  const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+
+  // Write Yjs signal — works regardless of HTTP/WS server state
+  try {
+    const entry = await connectYjs(doc);
+    entry.doc.transact(() => {
+      entry.yRecords.set('signal:forward-scroll', {
+        x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
+      });
+    });
+    sendYjsUpdate(entry);
+  } catch (e) {
+    // Fallback to WS broadcast if Yjs unavailable
+    broadcast({ type: 'scroll', x: canvasPos.x, y: canvasPos.y });
+  }
+
+  return { ok: true, page: linePos.page, x: canvasPos.x, y: canvasPos.y };
+}
+
+async function highlightLine(doc, file, line) {
+  // If no doc given, infer from manifest texFile paths
+  if (!doc) {
+    const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      for (const [name, entry] of Object.entries(manifest.documents)) {
+        if (entry.texFile && file.includes(path.basename(entry.texFile, '.tex'))) {
+          doc = name;
+          break;
+        }
+      }
+    } catch {}
+    if (!doc) doc = path.basename(file, '.tex');
+  }
+
+  async function sendHighlightSignal(x, y, page) {
+    try {
+      const entry = await connectYjs(doc);
+      entry.doc.transact(() => {
+        entry.yRecords.set('signal:forward-highlight', {
+          x, y, page, timestamp: Date.now(),
+        });
+      });
+      sendYjsUpdate(entry);
+    } catch {
+      broadcastHighlight(x, y, page);
+    }
+  }
+
+  const linePos = lookupLine(doc, line);
+  if (linePos) {
+    const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+    await sendHighlightSignal(canvasPos.x, canvasPos.y, linePos.page);
+    return { ok: true, page: linePos.page, x: canvasPos.x, y: canvasPos.y };
+  }
+
+  // Fall back to synctex-reverse.mjs
+  try {
+    const result = execSync(
+      `node "${path.join(PROJECT_ROOT, 'synctex-reverse.mjs')}" "${file}" ${line}`,
+      { encoding: 'utf8', cwd: PROJECT_ROOT, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    const jsonMatch = result.match(/JSON: ({.*})/);
+    if (jsonMatch) {
+      const coords = JSON.parse(jsonMatch[1]);
+      await sendHighlightSignal(coords.tldrawX, coords.tldrawY, coords.page);
+      return { ok: true, page: coords.page, x: coords.tldrawX, y: coords.tldrawY };
+    }
+  } catch {}
+
+  return { ok: false, error: `Line ${line} not found in lookup or synctex` };
+}
+
+async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right' } = {}) {
+  const linePos = lookupLine(doc, line);
+  if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
+
+  const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+  const x = side === 'left' ? -width - 20 : 690;
+  const y = canvasPos.y - height / 2;
+
+  const entry = await connectYjs(doc);
+  const shapeId = generateShapeId();
+  const shape = {
+    id: shapeId,
+    type: 'math-note',
+    typeName: 'shape',
+    x, y,
+    rotation: 0,
+    isLocked: false,
+    opacity: 1,
+    props: { w: width, h: height, text, color },
+    meta: {
+      sourceAnchor: {
+        file: `./${linePos.texFile || doc + '.tex'}`,
+        line,
+        column: -1,
+        content: linePos.content,
+      },
+    },
+    parentId: 'page:page',
+    index: 'a1',
+  };
+
+  entry.doc.transact(() => {
+    entry.yRecords.set(shapeId, shape);
+  });
+  sendYjsUpdate(entry);
+
+  return { ok: true, shapeId, page: linePos.page, x, y };
+}
+
+async function sendNote(doc, line, text, color = 'violet') {
+  // Create persistent math-note via Yjs — syncs to all viewers automatically
+  const result = await addAnnotation(doc, line, text, { color });
+  if (!result.ok) return result;
+
+  // Also scroll viewer to the note location
+  await scrollToLine(doc, line);
+
+  return { ok: true, shapeId: result.shapeId, page: result.page, x: result.x, y: result.y };
+}
+
+async function listAnnotations(doc) {
+  const entry = await connectYjs(doc);
+  const annotations = [];
+
+  entry.yRecords.forEach((record, id) => {
+    if (!record || record.type !== 'math-note') return;
+    const anchor = record.meta?.sourceAnchor;
+    annotations.push({
+      id,
+      x: Math.round(record.x || 0),
+      y: Math.round(record.y || 0),
+      color: record.props?.color,
+      text: record.props?.text || '',
+      anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
+      content: anchor?.content || null,
+    });
+  });
+
+  return { ok: true, annotations };
+}
+
+async function replyAnnotation(doc, id, text) {
+  const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
+  const entry = await connectYjs(doc);
+  const record = entry.yRecords.get(fullId);
+  if (!record) return { ok: false, error: `Annotation not found: ${fullId}` };
+
+  const existing = record.props?.text || '';
+  const updated = existing + '\n\n—Claude: ' + text;
+
+  const newRecord = { ...record, props: { ...record.props, text: updated } };
+  entry.doc.transact(() => {
+    entry.yRecords.set(fullId, newRecord);
+  });
+  sendYjsUpdate(entry);
+
+  return { ok: true, id: fullId };
+}
+
+async function deleteAnnotation(doc, id) {
+  const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
+  const entry = await connectYjs(doc);
+  if (!entry.yRecords.has(fullId)) return { ok: false, error: `Annotation not found: ${fullId}` };
+
+  entry.doc.transact(() => {
+    entry.yRecords.delete(fullId);
+  });
+  sendYjsUpdate(entry);
+
+  return { ok: true, id: fullId };
+}
+
 // Track snapshot state
 let lastSnapshotTime = 0;
 let waitingResolvers = [];
@@ -344,12 +533,39 @@ async function renderSnapshot() {
 // HTTP server for receiving snapshots
 const httpServer = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
+    return;
+  }
+
+  // GET /health — service status + available docs
+  if (req.method === 'GET' && req.url === '/health') {
+    let docs = {};
+    try {
+      const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      docs = manifest.documents || {};
+    } catch {}
+
+    const status = {
+      ok: true,
+      http: { port: HTTP_PORT },
+      websocket: { port: WS_PORT, clients: wsClients.size },
+      yjs: { syncServer: SYNC_SERVER, connections: yjsDocs.size },
+      docs: Object.fromEntries(
+        Object.entries(docs).map(([name, config]) => [name, {
+          name: config.name,
+          pages: config.pages,
+          format: config.format || 'svg',
+        }])
+      ),
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status, null, 2));
     return;
   }
 
@@ -482,75 +698,251 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ---- Line-level endpoints (shared logic with MCP tools) ----
+
+  // POST /scroll-to-line { doc, line }
+  if (req.method === 'POST' && req.url === '/scroll-to-line') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, line } = JSON.parse(body);
+        const result = await scrollToLine(doc, line);
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /highlight-line { doc, file, line }
+  if (req.method === 'POST' && req.url === '/highlight-line') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, file, line } = JSON.parse(body);
+        const result = await highlightLine(doc, file, line);
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /send-note { doc, line, text, color? }
+  if (req.method === 'POST' && req.url === '/send-note') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, line, text, color } = JSON.parse(body);
+        const result = await sendNote(doc, line, text, color);
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /add-annotation { doc, line, text, color?, width?, height?, side? }
+  if (req.method === 'POST' && req.url === '/add-annotation') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, line, text, color, width, height, side } = JSON.parse(body);
+        const result = await addAnnotation(doc, line, text, { color, width, height, side });
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /reply-annotation { doc, id, text }
+  if (req.method === 'POST' && req.url === '/reply-annotation') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, id, text } = JSON.parse(body);
+        const result = await replyAnnotation(doc, id, text);
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /delete-annotation { doc, id }
+  if (req.method === 'POST' && req.url === '/delete-annotation') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { doc, id } = JSON.parse(body);
+        const result = await deleteAnnotation(doc, id);
+        res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // GET /annotations?doc=<name>
+  if (req.method === 'GET' && req.url?.startsWith('/annotations')) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const doc = url.searchParams.get('doc');
+    if (!doc) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      return;
+    }
+    try {
+      const result = await listAnnotations(doc);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // GET /shapes?doc=<name> — read all shapes + signals from Yjs
+  if (req.method === 'GET' && req.url?.startsWith('/shapes')) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const docName = url.searchParams.get('doc');
+    if (!docName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      return;
+    }
+    try {
+      const entry = await connectYjs(docName);
+      const shapes = [];
+      const signals = {};
+      const other = [];
+      entry.yRecords.forEach((record, id) => {
+        if (id.startsWith('signal:')) {
+          signals[id] = record;
+        } else if (id.startsWith('shape:') || id.startsWith('binding:')) {
+          shapes.push({ id, ...(typeof record === 'object' ? record : { value: record }) });
+        } else {
+          other.push(id);
+        }
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ shapes, signals, other, total: entry.yRecords.size }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
 
-// Start HTTP server
+// Start HTTP server (skip if port in use — collab mode may already have it)
 const HTTP_PORT = 5174;
+let httpRunning = false;
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${HTTP_PORT} in use — skipping HTTP server (collab instance likely running)`);
+    return;
+  }
+  throw err;
+});
 httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+  httpRunning = true;
   console.error(`Feedback HTTP server running on port ${HTTP_PORT}`);
 });
 
 // WebSocket server for forward sync (Claude → iPad)
 const WS_PORT = 5175;
-const wss = new WebSocketServer({ port: WS_PORT });
+let wss = null;
 const wsClients = new Set();
 
-wss.on('connection', (ws) => {
-  console.error('TLDraw client connected via WebSocket');
-  wsClients.add(ws);
-
-  ws.on('close', () => {
-    wsClients.delete(ws);
-    console.error('TLDraw client disconnected');
+try {
+  wss = new WebSocketServer({ port: WS_PORT });
+  wss.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${WS_PORT} in use — skipping WebSocket server (collab instance likely running)`);
+      wss = null;
+      return;
+    }
+    throw err;
   });
-});
+} catch {
+  console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+}
 
-console.error(`WebSocket server running on port ${WS_PORT}`);
+if (wss) {
+  wss.on('connection', (ws) => {
+    console.error('TLDraw client connected via WebSocket');
+    wsClients.add(ws);
 
-// Broadcast highlight to all connected TLDraw clients
+    ws.on('close', () => {
+      wsClients.delete(ws);
+      console.error('TLDraw client disconnected');
+    });
+  });
+
+  console.error(`WebSocket server running on port ${WS_PORT}`);
+}
+
+// Send a WebSocket message to connected viewers, or proxy via HTTP if no local WS
+function broadcast(message) {
+  const msg = typeof message === 'object' ? JSON.stringify(message) : message;
+  if (wsClients.size > 0) {
+    for (const client of wsClients) {
+      if (client.readyState === 1) client.send(msg);
+    }
+  } else if (!httpRunning) {
+    // Proxy to collab instance's HTTP raw endpoint
+    const data = typeof message === 'object' ? message : JSON.parse(message);
+    const endpoint = `/${data.type}`; // /scroll, /highlight, /note, /reply
+    const body = JSON.stringify(data);
+    const req = http.request({
+      hostname: 'localhost', port: HTTP_PORT, path: endpoint, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    });
+    req.on('error', () => {});
+    req.end(body);
+  }
+}
+
 function broadcastHighlight(tldrawX, tldrawY, page) {
-  const message = JSON.stringify({
-    type: 'highlight',
-    x: tldrawX,
-    y: tldrawY,
-    page,
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) { // OPEN
-      client.send(message);
-    }
-  }
+  broadcast({ type: 'highlight', x: tldrawX, y: tldrawY, page });
 }
 
-// Broadcast note (text) to all connected TLDraw clients
 function broadcastNote(tldrawX, tldrawY, text) {
-  const message = JSON.stringify({
-    type: 'note',
-    x: tldrawX,
-    y: tldrawY,
-    text,
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) { // OPEN
-      client.send(message);
-    }
-  }
+  broadcast({ type: 'note', x: tldrawX, y: tldrawY, text });
 }
 
-// Broadcast reply (append to existing note)
 function broadcastReply(shapeId, text) {
-  const message = JSON.stringify({
-    type: 'reply',
-    shapeId,
-    text,
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) { // OPEN
-      client.send(message);
-    }
-  }
+  broadcast({ type: 'reply', shapeId, text });
 }
 
 // MCP Server
@@ -568,11 +960,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
+          doc: {
+            type: 'string',
+            description: 'Document name (e.g. "bregman")',
+          },
           timeout: {
             type: 'number',
             description: 'Max seconds to wait (default: 300)',
           },
         },
+        required: ['doc'],
       },
     },
     {
@@ -580,7 +977,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Check if there is new feedback since last check. Non-blocking.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          doc: {
+            type: 'string',
+            description: 'Document name (e.g. "bregman")',
+          },
+        },
+        required: ['doc'],
       },
     },
     {
@@ -588,7 +991,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'Get the latest feedback screenshot, regardless of whether it is new.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          doc: {
+            type: 'string',
+            description: 'Document name (e.g. "bregman")',
+          },
+        },
+      },
+    },
+    {
+      name: 'screenshot',
+      description: 'Take a screenshot of the viewer on demand. Sends a request via Yjs and waits for the viewer to capture and return the viewport image.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: {
+            type: 'string',
+            description: 'Document name (e.g. "bregman")',
+          },
+        },
+        required: ['doc'],
       },
     },
     {
@@ -597,6 +1019,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
+          doc: {
+            type: 'string',
+            description: 'Document name (e.g. "bregman"). If omitted, inferred from file path.',
+          },
           file: {
             type: 'string',
             description: 'Path to the TeX file',
@@ -689,6 +1115,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
+    {
+      name: 'scroll_to_line',
+      description: 'Scroll the viewer to a source line. Looks up the line position and broadcasts a scroll command to all connected viewers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          line: { type: 'number', description: 'Source line number to scroll to' },
+        },
+        required: ['doc', 'line'],
+      },
+    },
+    {
+      name: 'send_note',
+      description: 'Drop a quick note at a source line. Creates a persistent math-note in Yjs and broadcasts via WebSocket for immediate visibility on all viewers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          line: { type: 'number', description: 'Source line number to place the note at' },
+          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
+          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
+        },
+        required: ['doc', 'line', 'text'],
+      },
+    },
   ],
 }));
 
@@ -699,11 +1151,10 @@ let lastPingTimestamp = 0;
 function summarizeAnnotations(entry) {
   const annotations = [];
   entry.yRecords.forEach((record, id) => {
-    if (record.type === 'math-note') {
-      const anchor = record.meta?.sourceAnchor;
-      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${record.x?.toFixed(0)}, ${record.y?.toFixed(0)})`;
-      annotations.push(`- [${record.props?.color || '?'}] ${loc}: ${record.props?.text || '(empty)'}`);
-    }
+    if (!record || record.type !== 'math-note') return;
+    const anchor = record.meta?.sourceAnchor;
+    const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${record.x?.toFixed(0)}, ${record.y?.toFixed(0)})`;
+    annotations.push(`- [${record.props?.color || '?'}] ${loc}: ${record.props?.text || '(empty)'}`);
   });
   if (annotations.length === 0) return 'No annotations.';
   return `${annotations.length} annotation(s):\n${annotations.join('\n')}`;
@@ -720,7 +1171,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'wait_for_feedback') {
     const timeout = (args?.timeout || 300) * 1000;
-    const docName = args?.doc || 'bregman';
+    const docName = args?.doc;
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    }
 
     try {
       const entry = await connectYjs(docName);
@@ -847,6 +1301,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             else text += `\n  from: page ${pdfStart.page}`;
             if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
             else text += `\n  to:   page ${pdfEnd.page}`;
+            const arrowBBox = getArrowBBox(r);
+            if (arrowBBox) {
+              const rendered = getRenderedText(docName, arrowBBox);
+              if (rendered) text += `\n  rendered: "${rendered}"`;
+            }
             return { content: [{ type: 'text', text }] };
           }
         }
@@ -870,6 +1329,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text += `\n  first: "${nearbyLines[0].content}"`;
               if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
             }
+            const rendered = getRenderedText(docName, bbox);
+            if (rendered) text += `\n  rendered: "${rendered}"`;
           }
           return { content: [{ type: 'text', text }] };
         }
@@ -883,6 +1344,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           let text = `Text (${color}): "${textContent}"`;
           text += `\n  page ${pdfPos.page}`;
           if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
+          const rendered = getRenderedText(docName, bbox);
+          if (rendered) text += `\n  rendered: "${rendered}"`;
           return { content: [{ type: 'text', text }] };
         }
 
@@ -904,6 +1367,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text += `\n  first: "${nearbyLines[0].content}"`;
           if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
         }
+        const rendered = bbox ? getRenderedText(docName, bbox) : '';
+        if (rendered) text += `\n  rendered: "${rendered}"`;
         return { content: [{ type: 'text', text }] };
       }
 
@@ -918,7 +1383,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'check_feedback') {
-    const docName = args?.doc || 'bregman';
+    const docName = args?.doc;
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    }
 
     try {
       const entry = await connectYjs(docName);
@@ -943,128 +1411,136 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'get_latest_feedback') {
-    if (!fs.existsSync(SCREENSHOT_PATH)) {
+    const docName = args?.doc;
+    // Try Yjs screenshot signal first
+    if (docName) {
+      try {
+        const entry = await connectYjs(docName);
+        const screenshot = entry.yRecords.get('signal:screenshot');
+        if (screenshot?.data) {
+          return {
+            content: [
+              { type: 'text', text: `Viewport screenshot (${Math.round(screenshot.data.length / 1024)}KB)` },
+              { type: 'image', data: screenshot.data, mimeType: screenshot.mimeType || 'image/png' },
+            ],
+          };
+        }
+      } catch {}
+    }
+    // Fallback to file
+    if (fs.existsSync(SCREENSHOT_PATH)) {
       return {
-        content: [{ type: 'text', text: 'No feedback screenshot available.' }],
+        content: [
+          { type: 'text', text: `Viewport screenshot: ${SCREENSHOT_PATH}` },
+          { type: 'image', data: fs.readFileSync(SCREENSHOT_PATH).toString('base64'), mimeType: 'image/png' },
+        ],
       };
     }
-    const summary = await getAnnotationSummary();
+    // Request screenshot on demand
+    if (docName) {
+      try {
+        const entry = await connectYjs(docName);
+        entry.doc.transact(() => {
+          entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
+        });
+        sendYjsUpdate(entry);
+        // Wait up to 5s for the viewer to respond
+        const result = await new Promise((resolve) => {
+          const timeout = setTimeout(() => resolve(null), 5000);
+          const observer = (event) => {
+            event.changes.keys.forEach((change, key) => {
+              if (key === 'signal:screenshot') {
+                const ss = entry.yRecords.get('signal:screenshot');
+                if (ss?.data) {
+                  clearTimeout(timeout);
+                  entry.yRecords.unobserve(observer);
+                  resolve(ss);
+                }
+              }
+            });
+          };
+          entry.yRecords.observe(observer);
+        });
+        if (result?.data) {
+          return {
+            content: [
+              { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
+              { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
+            ],
+          };
+        }
+      } catch {}
+    }
     return {
-      content: [{
-        type: 'text',
-        text: `Latest feedback:\n\n${summary}\n\nScreenshot: ${SCREENSHOT_PATH}`,
-      }],
+      content: [{ type: 'text', text: 'No screenshot available. Ask the user to tap the ping button to capture one.' }],
     };
   }
 
-  if (name === 'highlight_location') {
-    const { file, line } = args;
-    if (!file || !line) {
-      return {
-        content: [{ type: 'text', text: 'Missing file or line parameter' }],
-        isError: true,
-      };
+  if (name === 'screenshot') {
+    const docName = args?.doc;
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
-
-    // Try lookup.json first (works without synctex binary)
-    // Guess doc name from file path
-    const docName = path.basename(file, '.tex').replace(/-lower-bound$/, '').replace(/^\.\//, '');
-    const knownDocs = ['bregman']; // extend as needed
-    const doc = knownDocs.find(d => file.includes(d)) || docName;
-
-    const linePos = lookupLine(doc, line);
-    if (linePos) {
-      const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
-      broadcastHighlight(canvasPos.x, canvasPos.y, linePos.page);
-      return {
-        content: [{
-          type: 'text',
-          text: `Highlighted page ${linePos.page} at (${canvasPos.x.toFixed(0)}, ${canvasPos.y.toFixed(0)})`,
-        }],
-      };
-    }
-
-    // Fall back to synctex-reverse.mjs
     try {
-      const result = execSync(
-        `node "${path.join(PROJECT_ROOT, 'synctex-reverse.mjs')}" "${file}" ${line}`,
-        { encoding: 'utf8', cwd: PROJECT_ROOT, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-      const jsonMatch = result.match(/JSON: ({.*})/);
-      if (jsonMatch) {
-        const coords = JSON.parse(jsonMatch[1]);
-        broadcastHighlight(coords.tldrawX, coords.tldrawY, coords.page);
+      const entry = await connectYjs(docName);
+      // Clear any old screenshot so we know the response is fresh
+      entry.doc.transact(() => {
+        entry.yRecords.delete('signal:screenshot');
+        entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
+      });
+      sendYjsUpdate(entry);
+      // Wait up to 5s for the viewer to respond
+      const result = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 5000);
+        const observer = (event) => {
+          event.changes.keys.forEach((change, key) => {
+            if (key === 'signal:screenshot') {
+              const ss = entry.yRecords.get('signal:screenshot');
+              if (ss?.data) {
+                clearTimeout(timeout);
+                entry.yRecords.unobserve(observer);
+                resolve(ss);
+              }
+            }
+          });
+        };
+        entry.yRecords.observe(observer);
+      });
+      if (result?.data) {
         return {
-          content: [{
-            type: 'text',
-            text: `Highlighted page ${coords.page} at (${coords.tldrawX.toFixed(0)}, ${coords.tldrawY.toFixed(0)})`,
-          }],
+          content: [
+            { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
+            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
+          ],
         };
       }
-      return {
-        content: [{ type: 'text', text: 'Could not find location in PDF' }],
-        isError: true,
-      };
+      return { content: [{ type: 'text', text: 'Screenshot request timed out. Is the viewer open?' }] };
     } catch (e) {
-      return {
-        content: [{ type: 'text', text: `Line ${line} not found in lookup or synctex` }],
-        isError: true,
-      };
+      return { content: [{ type: 'text', text: `Screenshot error: ${e.message}` }], isError: true };
     }
   }
 
+  if (name === 'highlight_location') {
+    const { doc, file, line } = args;
+    if (!file || !line) {
+      return { content: [{ type: 'text', text: 'Missing file or line parameter' }], isError: true };
+    }
+    const result = await highlightLine(doc, file, line);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+    return { content: [{ type: 'text', text: `Highlighted page ${result.page} at (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
+  }
+
   if (name === 'add_annotation') {
-    const { doc, line, text, color = 'violet', width = 200, height = 150, side = 'right' } = args;
+    const { doc, line, text, color, width, height, side } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
-
-    // Look up position from lookup.json
-    const linePos = lookupLine(doc, line);
-    if (!linePos) {
-      return { content: [{ type: 'text', text: `Line ${line} not found in lookup.json for doc "${doc}"` }], isError: true };
-    }
-
-    const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
-    const x = side === 'left' ? -width - 20 : 690;
-    const y = canvasPos.y - height / 2;
-
-    // Connect to Yjs and create the shape
     try {
-      const entry = await connectYjs(doc);
-      const shapeId = generateShapeId();
-      const shape = {
-        id: shapeId,
-        type: 'math-note',
-        typeName: 'shape',
-        x, y,
-        rotation: 0,
-        isLocked: false,
-        opacity: 1,
-        props: { w: width, h: height, text, color },
-        meta: {
-          sourceAnchor: {
-            file: `./${linePos.texFile || doc + '.tex'}`,
-            line,
-            column: -1,
-            content: linePos.content,
-          },
-        },
-        parentId: 'page:page',
-        index: 'a1',
-      };
-
-      entry.doc.transact(() => {
-        entry.yRecords.set(shapeId, shape);
-      });
-      sendYjsUpdate(entry);
-
-      return {
-        content: [{
-          type: 'text',
-          text: `Created annotation ${shapeId}\n  line ${line} → page ${linePos.page}, canvas (${x.toFixed(0)}, ${y.toFixed(0)})\n  text: "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"`,
-        }],
-      };
+      const result = await addAnnotation(doc, line, text, { color, width, height, side });
+      if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  line ${line} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
@@ -1072,33 +1548,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'list_annotations') {
     const { doc } = args;
-    if (!doc) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    }
-
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
-      const entry = await connectYjs(doc);
-      const annotations = [];
-
-      entry.yRecords.forEach((record, id) => {
-        if (record.type === 'math-note') {
-          const anchor = record.meta?.sourceAnchor;
-          annotations.push({
-            id,
-            x: Math.round(record.x),
-            y: Math.round(record.y),
-            color: record.props?.color,
-            text: record.props?.text || '',
-            anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
-            content: anchor?.content || null,
-          });
-        }
-      });
-
-      if (annotations.length === 0) {
-        return { content: [{ type: 'text', text: 'No annotations found.' }] };
-      }
-
+      const result = await listAnnotations(doc);
+      const { annotations } = result;
+      if (annotations.length === 0) return { content: [{ type: 'text', text: 'No annotations found.' }] };
       let summary = `${annotations.length} annotation(s):\n\n`;
       annotations.forEach((a, i) => {
         summary += `${i + 1}. ${a.id}\n`;
@@ -1106,7 +1560,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
         summary += `   text: "${a.text.slice(0, 80)}${a.text.length > 80 ? '...' : ''}"\n\n`;
       });
-
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
@@ -1115,30 +1568,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'reply_annotation') {
     const { doc, id, text } = args;
-    if (!doc || !id || !text) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
-    }
-
-    const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
-
+    if (!doc || !id || !text) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
     try {
-      const entry = await connectYjs(doc);
-      const record = entry.yRecords.get(fullId);
-      if (!record) {
-        return { content: [{ type: 'text', text: `Annotation not found: ${fullId}` }], isError: true };
-      }
-
-      const existing = record.props?.text || '';
-      const updated = existing + '\n\n—Claude: ' + text;
-
-      // Update the shape with appended reply
-      const newRecord = { ...record, props: { ...record.props, text: updated } };
-      entry.doc.transact(() => {
-        entry.yRecords.set(fullId, newRecord);
-      });
-      sendYjsUpdate(entry);
-
-      return { content: [{ type: 'text', text: `Replied to ${fullId}:\n"${text}"` }] };
+      const result = await replyAnnotation(doc, id, text);
+      if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+      return { content: [{ type: 'text', text: `Replied to ${result.id}:\n"${text}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
@@ -1146,24 +1580,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'delete_annotation') {
     const { doc, id } = args;
-    if (!doc || !id) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
-    }
-
-    const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
-
+    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
     try {
-      const entry = await connectYjs(doc);
-      if (!entry.yRecords.has(fullId)) {
-        return { content: [{ type: 'text', text: `Annotation not found: ${fullId}` }], isError: true };
-      }
-
-      entry.doc.transact(() => {
-        entry.yRecords.delete(fullId);
-      });
-      sendYjsUpdate(entry);
-
-      return { content: [{ type: 'text', text: `Deleted: ${fullId}` }] };
+      const result = await deleteAnnotation(doc, id);
+      if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
+      return { content: [{ type: 'text', text: `Deleted: ${result.id}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
@@ -1180,7 +1601,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const shapes = [];
 
       entry.yRecords.forEach((record, id) => {
-        if (record.typeName !== 'shape') return;
+        if (!record || record.typeName !== 'shape') return;
         if (id.startsWith('signal:')) return;
 
         const shapeType = record.type;
@@ -1194,7 +1615,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const gesture = classifyGesture(bbox);
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
-          shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines });
+          const rendered = getRenderedText(doc, bbox);
+          shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;
         }
 
@@ -1210,11 +1632,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const label = record.props?.text || '';
           const startBound = record.props?.start?.boundShapeId || null;
           const endBound = record.props?.end?.boundShapeId || null;
+          const rendered = getRenderedText(doc, bbox);
           shapes.push({
             id, shapeType: 'arrow', color, label,
             page: pdfStart.page, bbox,
             startPage: pdfStart.page, endPage: pdfEnd.page,
-            startLines, endLines, startBound, endBound,
+            startLines, endLines, startBound, endBound, rendered,
           });
           return;
         }
@@ -1227,7 +1650,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           const label = record.props?.text || '';
-          shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines });
+          const rendered = getRenderedText(doc, bbox);
+          shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;
         }
 
@@ -1238,7 +1662,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (!text.trim()) return;
           const pdfPos = canvasToPdf(bbox.minX, bbox.minY);
           const nearbyLines = findNearbyLines(doc, bbox);
-          shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines });
+          const rendered = getRenderedText(doc, bbox);
+          shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;
         }
 
@@ -1260,7 +1685,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const bbox = { minX, minY, maxX, maxY };
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToPdf((minX + maxX) / 2, (minY + maxY) / 2);
-          shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines });
+          const rendered = getRenderedText(doc, bbox);
+          shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;
         }
       });
@@ -1295,6 +1721,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           } else {
             summary += `  (no matching document lines)\n`;
           }
+          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
 
         else if (s.shapeType === 'arrow') {
@@ -1317,6 +1744,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           } else {
             summary += `  to:   page ${s.endPage} (no matching line)\n`;
           }
+          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
 
         else if (s.shapeType === 'geo') {
@@ -1334,6 +1762,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           } else {
             summary += `  (no matching document lines)\n`;
           }
+          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
 
         else if (s.shapeType === 'text') {
@@ -1342,6 +1771,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (s.lines.length > 0) {
             summary += `  near line ${s.lines[0].line}: "${s.lines[0].content}"\n`;
           }
+          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
 
         else if (s.shapeType === 'line') {
@@ -1355,6 +1785,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             summary += `  first: "${s.lines[0].content}"\n`;
             if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
           }
+          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
 
         summary += '\n';
@@ -1364,6 +1795,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
+  }
+
+  if (name === 'scroll_to_line') {
+    const { doc, line } = args;
+    if (!doc || !line) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, line' }], isError: true };
+    }
+    const result = await scrollToLine(doc, line);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+    return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
+  }
+
+  if (name === 'send_note') {
+    const { doc, line, text, color } = args;
+    if (!doc || !line || !text) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
+    }
+    const result = await sendNote(doc, line, text, color);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+    let msg = `Note sent at line ${line} → page ${result.page} (${result.shapeId || 'broadcast only'})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"`;
+    if (result.warning) msg += `\n  Warning: ${result.warning}`;
+    return { content: [{ type: 'text', text: msg }] };
   }
 
   if (name === 'signal_reload') {

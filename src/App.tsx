@@ -3,7 +3,7 @@ import { loadPdf } from './PdfPicker'
 import type { Pdf } from './PdfPicker'
 import { PdfEditor } from './PdfEditor'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument } from './svgDocumentLoader'
+import { loadSvgDocument, loadImageDocument } from './svgDocumentLoader'
 import { Canvas } from './Canvas'
 import './App.css'
 
@@ -43,6 +43,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
+  format?: 'svg' | 'png'
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -50,6 +51,7 @@ type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
 type State =
   | { phase: 'canvas'; roomId: string }
   | { phase: 'loading'; message: string; roomId: string }
+  | { phase: 'picker'; manifest: Record<string, DocConfig>; roomId: string }
   | { phase: 'pdf'; pdf: Pdf; roomId: string }
   | { phase: 'svg'; document: SvgDoc; roomId: string }
 
@@ -93,7 +95,24 @@ function App() {
       setState({ phase: 'loading', message: 'Loading PDF...', roomId })
       loadPdfFromUrl(pdfUrl, roomId)
     } else {
-      setState({ phase: 'canvas', roomId })
+      // No doc specified — show document picker
+      setState({ phase: 'loading', message: 'Loading...', roomId })
+      fetchManifest().then(manifest => {
+        const docs = Object.keys(manifest)
+        if (docs.length === 1) {
+          // Only one doc — just load it
+          const name = docs[0]
+          const newUrl = new URL(window.location.href)
+          newUrl.searchParams.set('doc', name)
+          newUrl.searchParams.set('room', `doc-${name}`)
+          window.history.replaceState({}, '', newUrl.toString())
+          loadDocument(name, `doc-${name}`)
+        } else if (docs.length > 1) {
+          setState({ phase: 'picker', manifest, roomId })
+        } else {
+          setState({ phase: 'canvas', roomId })
+        }
+      })
     }
   }, [])
 
@@ -111,14 +130,17 @@ function App() {
 
     try {
       const base = import.meta.env.BASE_URL || '/'
+      const ext = config.format === 'png' ? 'png' : 'svg'
+      const basePath = config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath
+      const fullBasePath = `${base}${basePath}`
       const urls = Array.from({ length: config.pages }, (_, i) => {
         const pageNum = String(i + 1).padStart(2, '0')
-        // basePath starts with /, so we need to handle base URL properly
-        const basePath = config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath
-        return `${base}${basePath}page-${pageNum}.svg`
+        return `${fullBasePath}page-${pageNum}.${ext}`
       })
 
-      const document = await loadSvgDocument(config.name, urls)
+      const document = config.format === 'png'
+        ? await loadImageDocument(config.name, urls, fullBasePath)
+        : await loadSvgDocument(config.name, urls)
       setState({ phase: 'svg', document, roomId })
     } catch (e) {
       console.error('Failed to load document:', e)
@@ -181,6 +203,32 @@ function App() {
         <div className="App">
           <div className="LoadingScreen">
             <p>{state.message}</p>
+          </div>
+        </div>
+      )
+    case 'picker':
+      return (
+        <div className="App">
+          <div className="LoadingScreen">
+            <h2>Choose a document</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
+              {Object.entries(state.manifest).map(([key, config]) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    const newUrl = new URL(window.location.href)
+                    newUrl.searchParams.set('doc', key)
+                    newUrl.searchParams.set('room', `doc-${key}`)
+                    window.history.replaceState({}, '', newUrl.toString())
+                    setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId: `doc-${key}` })
+                    loadDocument(key, `doc-${key}`)
+                  }}
+                  style={{ padding: '12px 24px', fontSize: '16px', cursor: 'pointer' }}
+                >
+                  {config.name || key}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )

@@ -10,6 +10,7 @@
 
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
+  z-index: 1000 !important;
   zoom: 0.6;
   --tl-color-text-1: rgba(0, 0, 0, 0.15);
   --tl-color-text: rgba(0, 0, 0, 0.15);
@@ -57,6 +58,7 @@
   border: none !important;
   box-shadow: none !important;
 }
+
 
 [class*="tlui-"][class*="menu"] {
   opacity: 0.3;

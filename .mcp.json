@@ -2,7 +2,7 @@
   "mcpServers": {
     "tldraw-feedback": {
       "type": "stdio",
-      "command": "node",
+      "command": "/opt/homebrew/bin/node",
       "args": [
         "/Users/skip/work/claude-tldraw/mcp-server/index.mjs"
       ]

@@ -1,6 +1,6 @@
 /* Standalone ping button — matches .share-btn circle style */
 .ping-button-standalone {
-  position: absolute;
+  position: fixed;
   bottom: 16px;
   right: 16px;
   width: 32px;
@@ -18,7 +18,7 @@
   align-items: center;
   justify-content: center;
   opacity: 0.5;
-  z-index: 999;
+  z-index: 1001;
 }
 
 .ping-button-standalone:hover {
@@ -52,7 +52,7 @@
 }
 
 .doc-panel {
-  position: absolute;
+  position: fixed;
   top: 0;
   right: 0;
   width: 200px;
@@ -68,15 +68,10 @@
   transition: background 0.3s, color 0.3s;
 }
 
-/* Thin hover strip at right edge — mouse only */
+/* Panel content always clickable — hovering activates full visibility */
 @media (pointer: fine) {
-  .doc-panel::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 12px;
-    height: 100%;
+  .doc-panel-tabs,
+  .doc-panel-content {
     pointer-events: all;
   }
 
@@ -191,6 +186,34 @@
   flex-shrink: 0;
   width: 10px;
   margin-right: 3px;
+}
+
+/* Live session link (shown in static/read-only mode) */
+.toc-live-link {
+  display: block;
+  padding: 6px 8px;
+  margin: 4px 8px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  text-align: center;
+  color: #2563eb;
+  text-decoration: none;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 4px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.toc-live-link:hover {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.4);
+}
+
+@media (pointer: coarse) {
+  .toc-live-link {
+    padding: 10px 12px;
+    font-size: 14px;
+    margin: 6px 10px 8px;
+  }
 }
 
 /* Search tab */

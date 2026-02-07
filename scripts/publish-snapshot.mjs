@@ -19,6 +19,7 @@
 import { WebSocket } from 'ws'
 import * as Y from 'yjs'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import { networkInterfaces } from 'os'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { execSync } from 'child_process'
@@ -35,6 +36,30 @@ if (!DOC_NAME) {
 
 const SYNC_URL = process.env.SYNC_SERVER || 'ws://localhost:5176'
 const roomId = `doc-${DOC_NAME}`
+
+// Detect Tailscale or LAN IP for live URL
+function detectLiveHost() {
+  const ifaces = networkInterfaces()
+  for (const [name, nets] of Object.entries(ifaces)) {
+    if (!nets) continue
+    for (const net of nets) {
+      if (net.family !== 'IPv4' || net.internal) continue
+      // Prefer Tailscale (100.x.y.z or utun interface)
+      if (name.includes('utun') || net.address.startsWith('100.'))
+        return net.address
+    }
+  }
+  // Fall back to LAN
+  for (const nets of Object.values(ifaces)) {
+    if (!nets) continue
+    for (const net of nets) {
+      if (net.family !== 'IPv4' || net.internal) continue
+      if (net.address.startsWith('10.') || net.address.startsWith('192.168.') || net.address.startsWith('172.'))
+        return net.address
+    }
+  }
+  return null
+}
 
 console.log(`[publish] Exporting annotations for ${DOC_NAME} from ${SYNC_URL}/${roomId}`)
 
@@ -91,11 +116,19 @@ try {
     mkdirSync(snapshotDir, { recursive: true })
   }
 
+  // Detect live session URL
+  const liveHost = detectLiveHost()
+  const liveUrl = liveHost ? `http://${liveHost}:5173/?doc=${DOC_NAME}` : null
+  if (liveUrl) {
+    console.log(`[publish] Live session URL: ${liveUrl}`)
+  }
+
   const snapshotPath = join(snapshotDir, 'annotations.json')
   writeFileSync(snapshotPath, JSON.stringify({
     room: roomId,
     doc: DOC_NAME,
     exportedAt: new Date().toISOString(),
+    liveUrl,
     records: annotations,
   }, null, 2))
   console.log(`[publish] Wrote ${snapshotPath}`)

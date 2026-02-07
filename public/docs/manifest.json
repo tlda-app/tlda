@@ -5,10 +5,11 @@
       "pages": 47,
       "basePath": "/docs/bregman/"
     },
-    "bregman-lower-bound": {
-      "name": "bregman-lower-bound",
-      "pages": 47,
-      "basePath": "/docs/bregman-lower-bound/"
+    "lecture2-prose": {
+      "name": "Point and Interval Estimates",
+      "pages": 13,
+      "basePath": "/docs/lecture2-prose/",
+      "format": "png"
     }
   }
 }

@@ -26,3 +26,9 @@ dist-ssr
 
 # Local Yjs persistence
 server/data/
+
+# Test artifacts
+test-results/
+
+# Scratch / debug scripts
+*.local.mjs
