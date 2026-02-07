@@ -31,6 +31,7 @@ import {
 import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
+import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, getYRecords } from './useYjsSync'
@@ -398,7 +399,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
     })),
   }), [docKey, document])
 
-  const shapeUtils = useMemo(() => [MathNoteShapeUtil], [])
+  const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
 
   // Override toolbar to replace note with math-note
@@ -572,47 +573,66 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
 }
 
 function setupSvgEditor(editor: Editor, document: SvgDocument) {
-  // Check if assets already exist (from sync)
+  // Check if page shapes already exist (from sync)
   const existingAssets = editor.getAssets()
-  const hasAssets = existingAssets.some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
+  const hasAssets = document.format === 'html'
+    ? editor.getCurrentPageShapes().some(s => s.type === 'html-page')
+    : existingAssets.some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
 
   if (!hasAssets) {
-    // Create assets for each page
-    const mimeType = document.format === 'png' ? 'image/png' : 'image/svg+xml'
-    editor.createAssets(
-      document.pages.map((page) => ({
-        id: page.assetId,
-        typeName: 'asset',
-        type: 'image',
-        meta: {},
-        props: {
-          w: page.width,
-          h: page.height,
-          mimeType,
-          src: page.src,
-          name: 'svg-page',
-          isAnimated: false,
-        },
-      }))
-    )
-
-    // Create shapes for each page
-    editor.createShapes(
-      document.pages.map(
-        (page): TLShapePartial<TLImageShape> => ({
+    if (document.format === 'html') {
+      // Create html-page custom shapes (no assets needed)
+      editor.createShapes(
+        document.pages.map((page) => ({
           id: page.shapeId,
-          type: 'image',
+          type: 'html-page' as any,
           x: page.bounds.x,
           y: page.bounds.y,
           isLocked: true,
           props: {
-            assetId: page.assetId,
             w: page.bounds.w,
             h: page.bounds.h,
+            url: page.src,
           },
-        })
+        }))
       )
-    )
+    } else {
+      // Create image assets + shapes for SVG/PNG pages
+      const mimeType = document.format === 'png' ? 'image/png' : 'image/svg+xml'
+      editor.createAssets(
+        document.pages.map((page) => ({
+          id: page.assetId,
+          typeName: 'asset',
+          type: 'image',
+          meta: {},
+          props: {
+            w: page.width,
+            h: page.height,
+            mimeType,
+            src: page.src,
+            name: 'svg-page',
+            isAnimated: false,
+          },
+        }))
+      )
+
+      editor.createShapes(
+        document.pages.map(
+          (page): TLShapePartial<TLImageShape> => ({
+            id: page.shapeId,
+            type: 'image',
+            x: page.bounds.x,
+            y: page.bounds.y,
+            isLocked: true,
+            props: {
+              assetId: page.assetId,
+              w: page.bounds.w,
+              h: page.bounds.h,
+            },
+          })
+        )
+      )
+    }
   }
 
   const shapeIds = document.pages.map((page) => page.shapeId)

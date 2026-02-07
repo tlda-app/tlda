@@ -84,13 +84,175 @@ function canvasToPdf(canvasX, canvasY) {
   };
 }
 
+// ---- HTML document layout support ----
+
+const pageInfoCache = new Map(); // docName → { layout, mtime }
+const HTML_PAGE_SPACING = 32;
+const HTML_TAB_SPACING = 24;
+
+function loadHtmlLayout(docName) {
+  const piPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'page-info.json');
+  try {
+    const stat = fs.statSync(piPath);
+    const cached = pageInfoCache.get(docName);
+    if (cached && cached.mtime >= stat.mtimeMs) return cached.layout;
+
+    const pageInfos = JSON.parse(fs.readFileSync(piPath, 'utf8'));
+    const layout = computeHtmlLayout(pageInfos);
+    pageInfoCache.set(docName, { layout, mtime: stat.mtimeMs });
+    return layout;
+  } catch {
+    return null;
+  }
+}
+
+function computeHtmlLayout(pageInfos) {
+  // Replicates svgDocumentLoader.ts layout algorithm
+  const pages = []; // { x, y, width, height } per page (0-indexed)
+  let top = 0;
+  let widest = 0;
+  let i = 0;
+
+  while (i < pageInfos.length) {
+    const info = pageInfos[i];
+    if (!info.group) {
+      pages.push({ x: 0, y: top, width: info.width, height: info.height });
+      top += info.height + HTML_PAGE_SPACING;
+      widest = Math.max(widest, info.width);
+      i++;
+    } else {
+      const groupId = info.group;
+      let left = 0;
+      let tallest = 0;
+      while (i < pageInfos.length && pageInfos[i].group === groupId) {
+        const gp = pageInfos[i];
+        pages.push({ x: left, y: top, width: gp.width, height: gp.height });
+        left += gp.width + HTML_TAB_SPACING;
+        tallest = Math.max(tallest, gp.height);
+        i++;
+      }
+      const groupWidth = left - HTML_TAB_SPACING;
+      widest = Math.max(widest, groupWidth);
+      top += tallest + HTML_PAGE_SPACING;
+    }
+  }
+
+  // Center: single pages individually, tab groups as units
+  for (let j = 0; j < pages.length; j++) {
+    if (!pageInfos[j].group) {
+      pages[j].x = (widest - pages[j].width) / 2;
+    }
+  }
+  const groupOffsets = new Map();
+  for (let j = 0; j < pageInfos.length; j++) {
+    const g = pageInfos[j].group;
+    if (!g || groupOffsets.has(g)) continue;
+    let gw = 0, k = j;
+    while (k < pageInfos.length && pageInfos[k].group === g) {
+      gw += pageInfos[k].width + HTML_TAB_SPACING;
+      k++;
+    }
+    gw -= HTML_TAB_SPACING;
+    groupOffsets.set(g, { startIdx: j, totalWidth: gw });
+  }
+  for (const [, { startIdx, totalWidth }] of groupOffsets) {
+    const offset = (widest - totalWidth) / 2;
+    let k = startIdx;
+    while (k < pageInfos.length && pageInfos[k].group === pageInfos[startIdx].group) {
+      pages[k].x += offset;
+      k++;
+    }
+  }
+
+  return { pages, widest };
+}
+
+function isHtmlDoc(docName) {
+  const lookup = loadLookup(docName);
+  if (lookup?.meta?.format === 'html') return true;
+  // Also check manifest
+  const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    return manifest.documents?.[docName]?.format === 'html';
+  } catch {
+    return false;
+  }
+}
+
+function htmlToCanvas(docName, page, localX, localY) {
+  const layout = loadHtmlLayout(docName);
+  if (!layout || page < 1 || page > layout.pages.length) return null;
+  const p = layout.pages[page - 1];
+  return { x: p.x + localX, y: p.y + localY };
+}
+
+function canvasToHtml(docName, canvasX, canvasY) {
+  const layout = loadHtmlLayout(docName);
+  if (!layout) return null;
+  // Find which page contains this point (check both X and Y for tab groups)
+  let bestMatch = null;
+  let bestDist = Infinity;
+  for (let i = 0; i < layout.pages.length; i++) {
+    const p = layout.pages[i];
+    if (canvasY >= p.y && canvasY < p.y + p.height + HTML_PAGE_SPACING) {
+      if (canvasX >= p.x && canvasX < p.x + p.width) {
+        // Exact hit
+        return { page: i + 1, localX: canvasX - p.x, localY: canvasY - p.y };
+      }
+      // Track closest page in this Y band
+      const dx = canvasX < p.x ? p.x - canvasX : canvasX - (p.x + p.width);
+      if (dx < bestDist) {
+        bestDist = dx;
+        bestMatch = i;
+      }
+    }
+  }
+  if (bestMatch !== null) {
+    const p = layout.pages[bestMatch];
+    return { page: bestMatch + 1, localX: canvasX - p.x, localY: canvasY - p.y };
+  }
+  // Past the last page — assign to last
+  const last = layout.pages.length;
+  const lp = layout.pages[last - 1];
+  return { page: last, localX: canvasX - lp.x, localY: canvasY - lp.y };
+}
+
+// Format-aware coordinate conversion
+function docToCanvas(docName, page, x, y) {
+  if (isHtmlDoc(docName)) {
+    const result = htmlToCanvas(docName, page, x, y);
+    if (result) return result;
+    // Fallback: treat as simple vertical stack
+    return { x, y: (page - 1) * 432 + y };
+  }
+  return pdfToCanvas(page, x, y);
+}
+
+function canvasToDoc(docName, canvasX, canvasY) {
+  if (isHtmlDoc(docName)) {
+    const result = canvasToHtml(docName, canvasX, canvasY);
+    if (!result) return { page: 1, pdfX: canvasX, pdfY: canvasY };
+    return { page: result.page, pdfX: result.localX, pdfY: result.localY };
+  }
+  return canvasToPdf(canvasX, canvasY);
+}
+
+function getPageWidth(docName) {
+  if (isHtmlDoc(docName)) {
+    const layout = loadHtmlLayout(docName);
+    return layout?.pages?.[0]?.width || 800;
+  }
+  return PAGE_WIDTH;
+}
+
 function findNearbyLines(docName, canvasBBox) {
   const lookup = loadLookup(docName);
   if (!lookup?.lines) return [];
 
-  // Convert bbox corners to PDF
-  const topLeft = canvasToPdf(canvasBBox.minX, canvasBBox.minY);
-  const bottomRight = canvasToPdf(canvasBBox.maxX, canvasBBox.maxY);
+  // Convert bbox corners to doc-local coordinates
+  const topLeft = canvasToDoc(docName, canvasBBox.minX, canvasBBox.minY);
+  const bottomRight = canvasToDoc(docName, canvasBBox.maxX, canvasBBox.maxY);
   const page = topLeft.page; // assume stroke doesn't span pages
 
   // Y margin: generous to catch lines near the stroke
@@ -111,7 +273,56 @@ function findNearbyLines(docName, canvasBBox) {
   return matches;
 }
 
+// ---- HTML search index text extraction ----
+
+const searchIndexCache = new Map(); // docName → { data, mtime }
+
+function loadSearchIndex(docName) {
+  const siPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'search-index.json');
+  try {
+    const stat = fs.statSync(siPath);
+    const cached = searchIndexCache.get(docName);
+    if (cached && cached.mtime >= stat.mtimeMs) return cached.data;
+
+    const data = JSON.parse(fs.readFileSync(siPath, 'utf8'));
+    searchIndexCache.set(docName, { data, mtime: stat.mtimeMs });
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function findHtmlRenderedText(docName, canvasBBox) {
+  const searchIndex = loadSearchIndex(docName);
+  if (!searchIndex) return [];
+
+  // Find which page the bbox center is on
+  const centerX = (canvasBBox.minX + canvasBBox.maxX) / 2;
+  const centerY = (canvasBBox.minY + canvasBBox.maxY) / 2;
+  const pos = canvasToHtml(docName, centerX, centerY);
+  if (!pos) return [];
+
+  // Find the search index entry for this page
+  const entry = searchIndex.find(e => e.page === pos.page);
+  if (!entry?.text) return [];
+
+  // Return a ~200-char excerpt from the page text
+  const text = entry.text.replace(/\s+/g, ' ').trim();
+  if (text.length <= 200) return [text];
+  // Try to return the portion near the vertical position
+  const fraction = Math.max(0, Math.min(1, pos.localY / 600));
+  const start = Math.floor(fraction * Math.max(0, text.length - 200));
+  return [text.slice(start, start + 200)];
+}
+
 function getRenderedText(docName, bbox) {
+  if (isHtmlDoc(docName)) {
+    const texts = findHtmlRenderedText(docName, bbox);
+    if (texts.length === 0) return '';
+    let joined = texts.join(' | ');
+    if (joined.length > 200) joined = joined.slice(0, 200) + '…';
+    return joined;
+  }
   const texts = findRenderedText(docName, bbox, PROJECT_ROOT);
   if (texts.length === 0) return '';
   // Truncate to ~200 chars total for readability
@@ -329,7 +540,7 @@ async function scrollToLine(doc, line) {
   const linePos = lookupLine(doc, line);
   if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
 
-  const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+  const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
 
   // Write Yjs signal — works regardless of HTTP/WS server state
   try {
@@ -380,7 +591,7 @@ async function highlightLine(doc, file, line) {
 
   const linePos = lookupLine(doc, line);
   if (linePos) {
-    const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
+    const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
     await sendHighlightSignal(canvasPos.x, canvasPos.y, linePos.page);
     return { ok: true, page: linePos.page, x: canvasPos.x, y: canvasPos.y };
   }
@@ -406,8 +617,18 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   const linePos = lookupLine(doc, line);
   if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
 
-  const canvasPos = pdfToCanvas(linePos.page, linePos.x, linePos.y);
-  const x = side === 'left' ? -width - 20 : 690;
+  const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
+  // Position note at left or right margin of the page
+  let x;
+  if (isHtmlDoc(doc)) {
+    const layout = loadHtmlLayout(doc);
+    const p = layout?.pages?.[linePos.page - 1];
+    const pageRight = p ? p.x + p.width : canvasPos.x + 800;
+    const pageLeft = p ? p.x : 0;
+    x = side === 'left' ? pageLeft - width - 20 : pageRight + 10;
+  } else {
+    x = side === 'left' ? -width - 20 : 690;
+  }
   const y = canvasPos.y - height / 2;
 
   const entry = await connectYjs(doc);
@@ -1290,8 +1511,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (r.type === 'arrow') {
           const ep = getArrowEndpoints(r);
           if (ep) {
-            const pdfStart = canvasToPdf(ep.start.x, ep.start.y);
-            const pdfEnd = canvasToPdf(ep.end.x, ep.end.y);
+            const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
+            const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
             const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
             const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
             const label = r.props?.text || '';
@@ -1318,7 +1539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           let text = `${geo} (${color})`;
           if (label) text += ` "${label}"`;
           if (bbox) {
-            const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+            const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
             const nearbyLines = findNearbyLines(docName, bbox);
             text += `\n  page ${pdfPos.page}`;
             if (nearbyLines.length > 0) {
@@ -1339,7 +1560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (r.type === 'text') {
           const textContent = r.props?.text || '';
           const bbox = getTextBBox(r);
-          const pdfPos = canvasToPdf(bbox.minX, bbox.minY);
+          const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
           const nearbyLines = findNearbyLines(docName, bbox);
           let text = `Text (${color}): "${textContent}"`;
           text += `\n  page ${pdfPos.page}`;
@@ -1355,7 +1576,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
         const gesture = bbox ? classifyGesture(bbox) : 'unknown';
         const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
-        const pdfPos = bbox ? canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+        const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
 
         let text = `Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
         if (pdfPos) text += `\n  page ${pdfPos.page}`;
@@ -1614,7 +1835,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
           const gesture = classifyGesture(bbox);
           const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;
@@ -1625,8 +1846,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const ep = getArrowEndpoints(record);
           const bbox = getArrowBBox(record);
           if (!ep || !bbox) return;
-          const pdfStart = canvasToPdf(ep.start.x, ep.start.y);
-          const pdfEnd = canvasToPdf(ep.end.x, ep.end.y);
+          const pdfStart = canvasToDoc(doc, ep.start.x, ep.start.y);
+          const pdfEnd = canvasToDoc(doc, ep.end.x, ep.end.y);
           const startLines = findNearbyLines(doc, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
           const endLines = findNearbyLines(doc, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
           const label = record.props?.text || '';
@@ -1648,7 +1869,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (!bbox) return;
           const geo = record.props?.geo || 'rectangle';
           const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToPdf((bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           const label = record.props?.text || '';
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
@@ -1660,7 +1881,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const bbox = getTextBBox(record);
           const text = record.props?.text || '';
           if (!text.trim()) return;
-          const pdfPos = canvasToPdf(bbox.minX, bbox.minY);
+          const pdfPos = canvasToDoc(doc, bbox.minX, bbox.minY);
           const nearbyLines = findNearbyLines(doc, bbox);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
@@ -1684,7 +1905,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (!isFinite(minX)) return;
           const bbox = { minX, minY, maxX, maxY };
           const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToPdf((minX + maxX) / 2, (minY + maxY) / 2);
+          const pdfPos = canvasToDoc(doc, (minX + maxX) / 2, (minY + maxY) / 2);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
           return;

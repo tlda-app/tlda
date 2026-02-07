@@ -32,7 +32,7 @@ export interface SvgDocument {
   pages: SvgPage[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png'
+  format?: 'svg' | 'png' | 'html'
 }
 
 export const pageSpacing = 32
@@ -233,4 +233,118 @@ export async function loadImageDocument(
 
   console.log('Image document ready')
   return { name, pages, basePath, format: 'png' }
+}
+
+interface HtmlPageEntry {
+  file: string
+  width: number
+  height: number
+  group?: string
+  groupIndex?: number
+  tabLabel?: string
+}
+
+const tabSpacing = 24  // horizontal gap between side-by-side tabs
+
+export async function loadHtmlDocument(
+  name: string,
+  basePath: string,
+): Promise<SvgDocument> {
+  console.log(`Loading HTML document from ${basePath}`)
+
+  // Fetch page-info.json for page dimensions
+  const infoUrl = basePath + 'page-info.json'
+  const pageInfos: HtmlPageEntry[] = await fetch(infoUrl).then(r => r.json())
+
+  console.log(`Found ${pageInfos.length} HTML pages`)
+
+  const pages: SvgPage[] = []
+  let top = 0
+  let widest = 0
+
+  let i = 0
+  while (i < pageInfos.length) {
+    const info = pageInfos[i]
+
+    if (!info.group) {
+      // Normal page: stack vertically
+      const pageId = `${name}-page-${i}`
+      pages.push({
+        src: basePath + info.file,
+        bounds: new Box(0, top, info.width, info.height),
+        assetId: AssetRecordType.createId(pageId),
+        shapeId: createShapeId(pageId),
+        width: info.width,
+        height: info.height,
+      })
+      top += info.height + pageSpacing
+      widest = Math.max(widest, info.width)
+      i++
+    } else {
+      // Tab group: collect consecutive pages with same group
+      const groupId = info.group
+      const groupStart = i
+      let left = 0
+      let tallest = 0
+
+      while (i < pageInfos.length && pageInfos[i].group === groupId) {
+        const gp = pageInfos[i]
+        const pageId = `${name}-page-${i}`
+        pages.push({
+          src: basePath + gp.file,
+          bounds: new Box(left, top, gp.width, gp.height),
+          assetId: AssetRecordType.createId(pageId),
+          shapeId: createShapeId(pageId),
+          width: gp.width,
+          height: gp.height,
+        })
+        left += gp.width + tabSpacing
+        tallest = Math.max(tallest, gp.height)
+        i++
+      }
+
+      const groupWidth = left - tabSpacing
+      widest = Math.max(widest, groupWidth)
+      top += tallest + pageSpacing
+
+      console.log(`  Tab group "${groupId}": ${i - groupStart} tabs, width=${groupWidth}px`)
+    }
+  }
+
+  // Center: single pages center within widest; tab groups center as a unit
+  for (let j = 0; j < pages.length; j++) {
+    const info = pageInfos[j]
+    if (!info.group) {
+      // Single page — center individually
+      pages[j].bounds.x = (widest - pages[j].bounds.width) / 2
+    }
+  }
+  // Center tab groups as units
+  const groupOffsets = new Map<string, { startIdx: number, totalWidth: number }>()
+  for (let j = 0; j < pageInfos.length; j++) {
+    const g = pageInfos[j].group
+    if (!g) continue
+    if (!groupOffsets.has(g)) {
+      // Find total width of this group
+      let gw = 0
+      let k = j
+      while (k < pageInfos.length && pageInfos[k].group === g) {
+        gw += pageInfos[k].width + tabSpacing
+        k++
+      }
+      gw -= tabSpacing
+      groupOffsets.set(g, { startIdx: j, totalWidth: gw })
+    }
+  }
+  for (const [groupId, { startIdx, totalWidth }] of groupOffsets) {
+    const offset = (widest - totalWidth) / 2
+    let k = startIdx
+    while (k < pageInfos.length && pageInfos[k].group === groupId) {
+      pages[k].bounds.x += offset
+      k++
+    }
+  }
+
+  console.log(`HTML document ready (${pageInfos.length} pages, widest=${widest}px)`)
+  return { name, pages, basePath, format: 'html' }
 }

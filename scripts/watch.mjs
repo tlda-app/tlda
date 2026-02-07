@@ -2,7 +2,10 @@
 /**
  * File watcher for auto-rebuild.
  *
- * Watches .tex/.bib/.sty files and does incremental rebuilds:
+ * Supports both TeX and Quarto/HTML sources:
+ *
+ * TeX (.tex):
+ *   Watches .tex/.bib/.sty files and does incremental rebuilds:
  *   1. Precompiled preamble (.fmt via mylatexformat) — built once on startup,
  *      rebuilt when preamble changes. Body-only .tex edits use fast single-pass
  *      pdflatex with the format; .bib/.sty/.cls changes fall back to latexmk.
@@ -10,8 +13,13 @@
  *   3. dvisvgm for remaining pages → full reload (background)
  *   4. synctex extraction on long debounce
  *
+ * Quarto/HTML (.qmd, .html):
+ *   Watches .qmd/.html/.R/.py/.css/.scss files and rebuilds via build-html-doc.mjs.
+ *   Simpler pipeline — single command, full reload on every change.
+ *
  * Usage:
  *   node scripts/watch.mjs /path/to/main.tex doc-name ["Document Title"]
+ *   node scripts/watch.mjs /path/to/lecture.qmd doc-name ["Document Title"]
  *
  * Environment:
  *   SYNC_SERVER  - Yjs sync server URL (default: ws://localhost:5176)
@@ -30,15 +38,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
 
 const args = process.argv.slice(2)
-const TEX_FILE = args.find(a => !a.startsWith('--'))
-if (!TEX_FILE) {
-  console.error('Usage: node scripts/watch.mjs <tex-file> [doc-name] ["Document Title"]')
+const SOURCE_FILE = args.find(a => !a.startsWith('--'))
+if (!SOURCE_FILE) {
+  console.error('Usage: node scripts/watch.mjs <tex-or-qmd-file> [doc-name] ["Document Title"]')
   process.exit(1)
 }
 
 const positional = args.filter(a => !a.startsWith('--'))
-const DOC_NAME = positional[1] || basename(TEX_FILE, '.tex')
+const sourceExt = SOURCE_FILE.split('.').pop().toLowerCase()
+const IS_HTML_MODE = sourceExt === 'qmd' || sourceExt === 'html'
+const DOC_NAME = positional[1] || basename(SOURCE_FILE, '.' + sourceExt)
 const DOC_TITLE = positional[2] || DOC_NAME
+// Keep TEX_FILE alias for TeX-mode code paths
+const TEX_FILE = SOURCE_FILE
 const SYNC_URL = process.env.SYNC_SERVER || 'ws://localhost:5176'
 const DEBOUNCE_MS = parseInt(process.env.DEBOUNCE_MS || '200', 10)
 const SYNCTEX_DEBOUNCE_MS = parseInt(process.env.SYNCTEX_DEBOUNCE_MS || '30000', 10)
@@ -110,9 +122,10 @@ function detectPageCount() {
       return manifest.documents[DOC_NAME].pages
     }
   } catch {}
-  // Count existing SVG files
+  // Count existing page files (SVG or HTML)
+  const ext = IS_HTML_MODE ? 'html' : 'svg'
   let n = 0
-  while (existsSync(join(OUTPUT_DIR, `page-${String(n + 1).padStart(2, '0')}.svg`))) n++
+  while (existsSync(join(OUTPUT_DIR, `page-${String(n + 1).padStart(2, '0')}.${ext}`))) n++
   return n
 }
 
@@ -194,10 +207,42 @@ function triggerBuild(full = false) {
     if (isBuilding) {
       buildQueued = true
     } else {
-      doBuild()
+      IS_HTML_MODE ? doHtmlBuild() : doBuild()
     }
   }, DEBOUNCE_MS)
 }
+
+// ---- HTML/Quarto build path ----
+
+async function doHtmlBuild() {
+  isBuilding = true
+  buildQueued = false
+  const start = Date.now()
+  console.log(`\n[watch] Rebuilding ${DOC_NAME} (HTML)...`)
+
+  try {
+    execSync(
+      `node scripts/build-html-doc.mjs "${texPath}" "${DOC_NAME}" "${DOC_TITLE}"`,
+      { cwd: PROJECT_ROOT, stdio: 'inherit' }
+    )
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+    console.log(`[watch] HTML build done in ${elapsed}s`)
+
+    // Signal full reload
+    signalReload(null)
+  } catch (e) {
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+    console.error(`[watch] HTML build failed in ${elapsed}s: ${e.message}`)
+  }
+
+  isBuilding = false
+  if (buildQueued) {
+    console.log('[watch] Changes detected during build, rebuilding...')
+    doHtmlBuild()
+  }
+}
+
+// ---- TeX build path ----
 
 async function doBuild() {
   isBuilding = true
@@ -414,45 +459,63 @@ function signalReload(pages) {
   console.log(`[watch] Reload signal (${desc}) sent to ${ROOM_ID}`)
 }
 
-// Watch the tex directory
-const WATCH_EXTENSIONS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.def'])
+// Watch the source directory
+const TEX_EXTENSIONS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.def'])
+const HTML_EXTENSIONS = new Set(['.qmd', '.html', '.css', '.scss', '.R', '.py', '.js', '.lua'])
+const WATCH_EXTENSIONS = IS_HTML_MODE ? HTML_EXTENSIONS : TEX_EXTENSIONS
+
+const TEX_JUNK = ['.aux', '.log', '.out', '.synctex', '.fls', '.fdb', '.bbl', '.blg',
+  '.bcf', '.run.xml', '.toc', '.lof', '.lot', '.nav', '.snm', '.vrb', '.dvi', '.pdf', '.fmt', '_fmt.']
 
 console.log(`[watch] Watching ${texDir}`)
-console.log(`[watch] Doc: ${DOC_NAME}, Tex: ${texPath}`)
+console.log(`[watch] Mode: ${IS_HTML_MODE ? 'HTML/Quarto' : 'TeX'}`)
+console.log(`[watch] Doc: ${DOC_NAME}, Source: ${texPath}`)
 console.log(`[watch] Sync server: ${SYNC_URL}`)
-console.log(`[watch] Synctex debounce: ${SYNCTEX_DEBOUNCE_MS / 1000}s`)
+if (!IS_HTML_MODE) console.log(`[watch] Synctex debounce: ${SYNCTEX_DEBOUNCE_MS / 1000}s`)
 console.log(`[watch] Debounce: ${DEBOUNCE_MS}ms`)
 console.log()
 
 watch(texDir, { recursive: true }, (_eventType, filename) => {
   if (!filename) return
-  if (filename.includes('.aux') || filename.includes('.log') || filename.includes('.out') ||
-      filename.includes('.synctex') || filename.includes('.fls') || filename.includes('.fdb') ||
-      filename.includes('.bbl') || filename.includes('.blg') || filename.includes('.bcf') ||
-      filename.includes('.run.xml') || filename.includes('.toc') || filename.includes('.lof') ||
-      filename.includes('.lot') || filename.includes('.nav') || filename.includes('.snm') ||
-      filename.includes('.vrb') || filename.includes('.dvi') || filename.includes('.pdf') ||
-      filename.includes('.fmt') || filename.includes('_fmt.')) {
-    return
-  }
+  // Skip build artifacts
+  if (!IS_HTML_MODE && TEX_JUNK.some(j => filename.includes(j))) return
+  // Skip node_modules, _site, _book, .git
+  if (filename.includes('node_modules') || filename.includes('_site') ||
+      filename.includes('_book') || filename.includes('.git')) return
+
   const ext = '.' + filename.split('.').pop()
   if (!WATCH_EXTENSIONS.has(ext)) return
 
   console.log(`[watch] Changed: ${filename}`)
-  const isTex = filename.endsWith('.tex')
-  triggerBuild(!isTex) // .bib/.sty/.cls → full rebuild with latexmk
+  if (IS_HTML_MODE) {
+    triggerBuild() // HTML mode: always full rebuild
+  } else {
+    const isTex = filename.endsWith('.tex')
+    triggerBuild(!isTex) // .bib/.sty/.cls → full rebuild with latexmk
+  }
 })
 
-// Build format file on startup
-ensureFormat()
-
-// Do an initial build on startup
-totalPages = detectPageCount()
-if (totalPages > 0) {
-  console.log(`[watch] Existing doc has ${totalPages} pages, skipping initial build`)
-  console.log('[watch] Waiting for changes...')
+if (IS_HTML_MODE) {
+  // HTML mode: simpler startup
+  totalPages = detectPageCount()
+  if (totalPages > 0) {
+    console.log(`[watch] Existing doc has ${totalPages} pages, skipping initial build`)
+    console.log('[watch] Waiting for changes...')
+  } else {
+    console.log('[watch] No existing pages, running initial build...')
+    doHtmlBuild()
+  }
 } else {
-  console.log('[watch] No existing pages, running initial build...')
-  needFullRebuild = true // first build always full
-  doBuild()
+  // TeX mode: build format file on startup
+  ensureFormat()
+
+  totalPages = detectPageCount()
+  if (totalPages > 0) {
+    console.log(`[watch] Existing doc has ${totalPages} pages, skipping initial build`)
+    console.log('[watch] Waiting for changes...')
+  } else {
+    console.log('[watch] No existing pages, running initial build...')
+    needFullRebuild = true // first build always full
+    doBuild()
+  }
 }

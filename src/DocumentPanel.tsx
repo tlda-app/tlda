@@ -4,9 +4,9 @@ import { useEditor } from 'tldraw'
 import type { Editor, TLShape } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from './katexMacros'
-import { loadLookup, type LookupEntry } from './synctexLookup'
+import { loadLookup, loadHtmlToc, loadHtmlSearch, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
-import { PanelContext } from './PanelContext'
+import { PanelContext, type PanelContextValue } from './PanelContext'
 import { getYRecords, getLiveUrl } from './useYjsSync'
 import './DocumentPanel.css'
 
@@ -159,10 +159,18 @@ const COLOR_HEX: Record<string, string> = {
 // Tab components
 // ======================
 
+function navigateToPage(editor: Editor, ctx: PanelContextValue, pageNum: number) {
+  const pageIndex = pageNum - 1
+  if (pageIndex < 0 || pageIndex >= ctx.pages.length) return
+  const page = ctx.pages[pageIndex]
+  navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
+}
+
 function TocTab() {
   const editor = useEditor()
   const ctx = useContext(PanelContext)
   const [headings, setHeadings] = useState<TocEntry[]>([])
+  const [htmlToc, setHtmlToc] = useState<HtmlTocEntry[] | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
 
   useEffect(() => {
@@ -183,6 +191,24 @@ function TocTab() {
           }
         }
         setCollapsed(foldedSet)
+      } else {
+        // Fallback: try HTML TOC
+        loadHtmlToc(ctx.docName).then(toc => {
+          if (toc) {
+            setHtmlToc(toc)
+            const foldedSet = new Set<number>()
+            for (let i = 0; i < toc.length; i++) {
+              const next = toc[i + 1]
+              if (!next) continue
+              if (toc[i].level === 'section' && (next.level === 'subsection' || next.level === 'subsubsection')) {
+                foldedSet.add(i)
+              } else if (toc[i].level === 'subsection' && next.level === 'subsubsection') {
+                foldedSet.add(i)
+              }
+            }
+            setCollapsed(foldedSet)
+          }
+        })
       }
     })
   }, [ctx?.docName])
@@ -197,6 +223,11 @@ function TocTab() {
     navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, ctx])
 
+  const handleHtmlNav = useCallback((pageNum: number) => {
+    if (!ctx) return
+    navigateToPage(editor, ctx, pageNum)
+  }, [editor, ctx])
+
   const toggleSection = useCallback((idx: number) => {
     setCollapsed(prev => {
       const next = new Set(prev ?? [])
@@ -206,11 +237,20 @@ function TocTab() {
     })
   }, [])
 
-  if (headings.length === 0) {
+  // Use HTML TOC if no TeX headings
+  const tocItems = htmlToc || null
+  const useHtml = headings.length === 0 && tocItems !== null
+
+  if (headings.length === 0 && !useHtml) {
     return <div className="panel-empty">No headings found</div>
   }
 
   const liveUrl = getLiveUrl()
+
+  // Unified render for both TeX and HTML TOC entries
+  const items: Array<{ level: TocLevel; title: string; nav: () => void }> = useHtml
+    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page) }))
+    : headings.map(h => ({ level: h.level, title: renderTocTitle(h.title), nav: () => handleNav(h.entry) }))
 
   // Build visibility: children hidden if their parent is collapsed
   let currentSectionIdx = -1
@@ -227,12 +267,12 @@ function TocTab() {
           Join live session
         </a>
       )}
-      {headings.map((h, i) => {
+      {items.map((h, i) => {
         if (h.level === 'section') {
           currentSectionIdx = i
           currentSubsectionIdx = -1
           const isCollapsed = collapsed?.has(i) ?? false
-          const next = headings[i + 1]
+          const next = items[i + 1]
           const hasChildren = next && (next.level === 'subsection' || next.level === 'subsubsection')
           return (
             <div key={i} className="toc-item section">
@@ -244,7 +284,7 @@ function TocTab() {
               ) : (
                 <span className="toc-fold-spacer" />
               )}
-              <span onClick={() => handleNav(h.entry)} dangerouslySetInnerHTML={{ __html: renderTocTitle(h.title) }} />
+              <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
             </div>
           )
         }
@@ -253,7 +293,7 @@ function TocTab() {
         if (h.level === 'subsection') {
           currentSubsectionIdx = i
           const isCollapsed = collapsed?.has(i) ?? false
-          const next = headings[i + 1]
+          const next = items[i + 1]
           const hasChildren = next && next.level === 'subsubsection'
           return (
             <div key={i} className="toc-item subsection">
@@ -265,15 +305,15 @@ function TocTab() {
               ) : (
                 <span className="toc-fold-spacer" />
               )}
-              <span onClick={() => handleNav(h.entry)} dangerouslySetInnerHTML={{ __html: renderTocTitle(h.title) }} />
+              <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
             </div>
           )
         }
         // subsubsection: hidden if parent subsection is collapsed
         if (collapsed?.has(currentSubsectionIdx)) return null
         return (
-          <div key={i} className="toc-item subsubsection" onClick={() => handleNav(h.entry)}
-            dangerouslySetInnerHTML={{ __html: renderTocTitle(h.title) }} />
+          <div key={i} className="toc-item subsubsection" onClick={h.nav}
+            dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
         )
       })}
     </div>
@@ -285,13 +325,21 @@ function SearchTab() {
   const ctx = useContext(PanelContext)
   const [query, setQuery] = useState('')
   const [lookupLines, setLookupLines] = useState<Record<string, LookupEntry> | null>(null)
+  const [htmlSearchIndex, setHtmlSearchIndex] = useState<HtmlSearchEntry[] | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(null)
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
   useEffect(() => {
     if (!ctx) return
     loadLookup(ctx.docName).then(data => {
-      if (data) setLookupLines(data.lines)
+      if (data) {
+        setLookupLines(data.lines)
+      } else {
+        // Fallback: try HTML search index
+        loadHtmlSearch(ctx.docName).then(index => {
+          if (index) setHtmlSearchIndex(index)
+        })
+      }
     })
   }, [ctx?.docName])
 
@@ -303,17 +351,40 @@ function SearchTab() {
   }, [query])
 
   const docResults = useMemo(() => {
-    if (!debouncedQuery || !lookupLines) return []
+    if (!debouncedQuery) return []
     const q = debouncedQuery.toLowerCase()
-    const results: Array<{ line: string; entry: LookupEntry }> = []
-    for (const [line, entry] of Object.entries(lookupLines)) {
-      if (entry.content.toLowerCase().includes(q)) {
-        results.push({ line, entry })
-        if (results.length >= 50) break
+
+    // TeX lookup path
+    if (lookupLines) {
+      const results: Array<{ line: string; entry: LookupEntry }> = []
+      for (const [line, entry] of Object.entries(lookupLines)) {
+        if (entry.content.toLowerCase().includes(q)) {
+          results.push({ line, entry })
+          if (results.length >= 50) break
+        }
       }
+      return results
     }
-    return results
-  }, [debouncedQuery, lookupLines])
+
+    // HTML search index path
+    if (htmlSearchIndex) {
+      const results: Array<{ page: number; snippet: string; label?: string }> = []
+      for (const entry of htmlSearchIndex) {
+        const idx = entry.text.toLowerCase().indexOf(q)
+        if (idx >= 0) {
+          // Extract snippet around the match
+          const start = Math.max(0, idx - 30)
+          const end = Math.min(entry.text.length, idx + q.length + 50)
+          const snippet = (start > 0 ? '...' : '') + entry.text.slice(start, end) + (end < entry.text.length ? '...' : '')
+          results.push({ page: entry.page, snippet, label: entry.label })
+          if (results.length >= 50) break
+        }
+      }
+      return results
+    }
+
+    return []
+  }, [debouncedQuery, lookupLines, htmlSearchIndex])
 
   const noteResults = useMemo(() => {
     if (!debouncedQuery) return []
@@ -341,9 +412,16 @@ function SearchTab() {
     navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, ctx])
 
+  const handlePageClick = useCallback((pageNum: number) => {
+    if (!ctx) return
+    navigateToPage(editor, ctx, pageNum)
+  }, [editor, ctx])
+
   const handleNoteClick = useCallback((shape: TLShape) => {
     navigateTo(editor, shape.x, shape.y)
   }, [editor])
+
+  const isHtmlSearch = !lookupLines && !!htmlSearchIndex
 
   return (
     <>
@@ -364,12 +442,20 @@ function SearchTab() {
         {docResults.length > 0 && (
           <>
             <div className="search-group-label">Document</div>
-            {docResults.map((r, i) => (
-              <div key={`d-${i}`} className="search-result" onClick={() => handleDocClick(r.entry)}>
-                <span className="line-num">L{r.line}</span>
-                {stripTex(r.entry.content).slice(0, 80)}
-              </div>
-            ))}
+            {isHtmlSearch
+              ? (docResults as Array<{ page: number; snippet: string; label?: string }>).map((r, i) => (
+                  <div key={`d-${i}`} className="search-result" onClick={() => handlePageClick(r.page)}>
+                    <span className="line-num">p{r.page}</span>
+                    {r.snippet}
+                  </div>
+                ))
+              : (docResults as Array<{ line: string; entry: LookupEntry }>).map((r, i) => (
+                  <div key={`d-${i}`} className="search-result" onClick={() => handleDocClick(r.entry)}>
+                    <span className="line-num">L{r.line}</span>
+                    {stripTex(r.entry.content).slice(0, 80)}
+                  </div>
+                ))
+            }
           </>
         )}
         {noteResults.length > 0 && (

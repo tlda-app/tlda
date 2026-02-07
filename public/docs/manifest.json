@@ -7,9 +7,27 @@
     },
     "lecture2-prose": {
       "name": "Point and Interval Estimates",
-      "pages": 13,
+      "pages": 33,
       "basePath": "/docs/lecture2-prose/",
-      "format": "png"
+      "format": "html"
+    },
+    "test-html": {
+      "name": "Test HTML Document",
+      "pages": 7,
+      "basePath": "/docs/test-html/",
+      "format": "html"
+    },
+    "r4ds-transform": {
+      "name": "Data Transformation (R4DS)",
+      "pages": 8,
+      "basePath": "/docs/r4ds-transform/",
+      "format": "html"
+    },
+    "lecture3-prose": {
+      "name": "Calibrating Interval Estimates with Binary Observations",
+      "pages": 27,
+      "basePath": "/docs/lecture3-prose/",
+      "format": "html"
     }
   }
 }

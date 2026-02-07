@@ -3,7 +3,7 @@ import { loadPdf } from './PdfPicker'
 import type { Pdf } from './PdfPicker'
 import { PdfEditor } from './PdfEditor'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument, loadImageDocument } from './svgDocumentLoader'
+import { loadSvgDocument, loadImageDocument, loadHtmlDocument } from './svgDocumentLoader'
 import { Canvas } from './Canvas'
 import './App.css'
 
@@ -43,7 +43,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png'
+  format?: 'svg' | 'png' | 'html'
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -130,17 +130,22 @@ function App() {
 
     try {
       const base = import.meta.env.BASE_URL || '/'
-      const ext = config.format === 'png' ? 'png' : 'svg'
       const basePath = config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath
       const fullBasePath = `${base}${basePath}`
-      const urls = Array.from({ length: config.pages }, (_, i) => {
-        const pageNum = String(i + 1).padStart(2, '0')
-        return `${fullBasePath}page-${pageNum}.${ext}`
-      })
 
-      const document = config.format === 'png'
-        ? await loadImageDocument(config.name, urls, fullBasePath)
-        : await loadSvgDocument(config.name, urls)
+      let document
+      if (config.format === 'html') {
+        document = await loadHtmlDocument(config.name, fullBasePath)
+      } else {
+        const ext = config.format === 'png' ? 'png' : 'svg'
+        const urls = Array.from({ length: config.pages }, (_, i) => {
+          const pageNum = String(i + 1).padStart(2, '0')
+          return `${fullBasePath}page-${pageNum}.${ext}`
+        })
+        document = config.format === 'png'
+          ? await loadImageDocument(config.name, urls, fullBasePath)
+          : await loadSvgDocument(config.name, urls)
+      }
       setState({ phase: 'svg', document, roomId })
     } catch (e) {
       console.error('Failed to load document:', e)

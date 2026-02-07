@@ -181,7 +181,58 @@ export async function resolveAnchorStatic(
 export function clearLookupCache(docName?: string) {
   if (docName) {
     lookupCache.delete(docName)
+    htmlTocCache.delete(docName)
+    htmlSearchCache.delete(docName)
   } else {
     lookupCache.clear()
+    htmlTocCache.clear()
+    htmlSearchCache.clear()
+  }
+}
+
+// --- HTML document TOC and search ---
+
+export interface HtmlTocEntry {
+  title: string
+  level: 'section' | 'subsection' | 'subsubsection'
+  page: number
+}
+
+export interface HtmlSearchEntry {
+  page: number
+  text: string
+  label?: string
+}
+
+const htmlTocCache = new Map<string, HtmlTocEntry[] | null>()
+const htmlSearchCache = new Map<string, HtmlSearchEntry[] | null>()
+
+export async function loadHtmlToc(docName: string): Promise<HtmlTocEntry[] | null> {
+  if (htmlTocCache.has(docName)) return htmlTocCache.get(docName)!
+  try {
+    const base = import.meta.env.BASE_URL || '/'
+    const resp = await fetch(`${base}docs/${docName}/toc.json`)
+    if (!resp.ok) { htmlTocCache.set(docName, null); return null }
+    const data = await resp.json()
+    htmlTocCache.set(docName, data)
+    return data
+  } catch {
+    htmlTocCache.set(docName, null)
+    return null
+  }
+}
+
+export async function loadHtmlSearch(docName: string): Promise<HtmlSearchEntry[] | null> {
+  if (htmlSearchCache.has(docName)) return htmlSearchCache.get(docName)!
+  try {
+    const base = import.meta.env.BASE_URL || '/'
+    const resp = await fetch(`${base}docs/${docName}/search-index.json`)
+    if (!resp.ok) { htmlSearchCache.set(docName, null); return null }
+    const data = await resp.json()
+    htmlSearchCache.set(docName, data)
+    return data
+  } catch {
+    htmlSearchCache.set(docName, null)
+    return null
   }
 }
