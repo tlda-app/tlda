@@ -1,25 +1,72 @@
 #!/bin/bash
-# Usage: ./scripts/open.sh <doc-name>
-# Opens the viewer for a document. Starts services if needed.
-# Builds diff automatically if the doc has a texFile but no diff entry.
+# Usage: ./scripts/open.sh <tex-file | project-dir | doc-name>
+#
+# Accepts:
+#   /path/to/paper.tex       — tex file (doc name = filename stem)
+#   /path/to/project/        — folder (finds main .tex file)
+#   my-doc                   — doc name already in manifest
+#
+# Handles everything: builds SVGs if needed, starts services + watcher,
+# builds diff, opens browser.
 
 set -e
 
-DOC="${1:?Usage: open.sh <doc-name>}"
+ARG="${1:?Usage: open.sh <tex-file | project-dir | doc-name>}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$DIR/public/docs/manifest.json"
 
-# Resolve texFile from manifest (used for --watch and diff)
+# --- Resolve ARG into TEX_FILE and DOC ---
+
 TEX_FILE=""
+DOC=""
+
+if [ -f "$ARG" ] && [[ "$ARG" == *.tex ]]; then
+  # Given a .tex file directly
+  TEX_FILE="$(cd "$(dirname "$ARG")" && pwd)/$(basename "$ARG")"
+  DOC="$(basename "$ARG" .tex)"
+
+elif [ -d "$ARG" ]; then
+  # Given a project directory — find main .tex file
+  MAIN_TEX=$(grep -rl '\\documentclass' "$ARG"/*.tex 2>/dev/null | head -1)
+  if [ -z "$MAIN_TEX" ]; then
+    echo "Error: no .tex file with \\documentclass found in $ARG"
+    exit 1
+  fi
+  TEX_FILE="$(cd "$(dirname "$MAIN_TEX")" && pwd)/$(basename "$MAIN_TEX")"
+  DOC="$(basename "$MAIN_TEX" .tex)"
+
+else
+  # Assume it's a doc name — look up in manifest
+  DOC="$ARG"
+  if [ -f "$MANIFEST" ]; then
+    TEX_FILE=$(node -e "
+      const m = require('$MANIFEST');
+      const doc = m.documents['$DOC'];
+      if (doc && doc.texFile) console.log(doc.texFile);
+    " 2>/dev/null)
+  fi
+fi
+
+echo "Doc: $DOC"
+[ -n "$TEX_FILE" ] && echo "TeX: $TEX_FILE"
+
+# --- Build SVGs if doc not in manifest ---
+
+IN_MANIFEST=""
 if [ -f "$MANIFEST" ]; then
-  TEX_FILE=$(node -e "
+  IN_MANIFEST=$(node -e "
     const m = require('$MANIFEST');
-    const doc = m.documents['$DOC'];
-    if (doc && doc.texFile) console.log(doc.texFile);
+    if (m.documents['$DOC']) console.log('yes');
   " 2>/dev/null)
 fi
 
-# Check if dev server is running
+if [ -z "$IN_MANIFEST" ] && [ -n "$TEX_FILE" ]; then
+  echo "Building SVGs (first time)..."
+  "$DIR/build-svg.sh" "$TEX_FILE" "$DOC"
+fi
+
+# --- Start services if not running ---
+
 if ! lsof -i :5173 -sTCP:LISTEN >/dev/null 2>&1; then
   COLLAB_ARGS=""
   if [ -n "$TEX_FILE" ]; then
@@ -40,7 +87,8 @@ if ! lsof -i :5173 -sTCP:LISTEN >/dev/null 2>&1; then
   done
 fi
 
-# Build diff if needed (source doc has texFile but no -diff entry)
+# --- Build diff if needed ---
+
 if [ -n "$TEX_FILE" ] && [ -f "$MANIFEST" ]; then
   HAS_DIFF=$(node -e "
     const m = require('$MANIFEST');
@@ -53,9 +101,12 @@ if [ -n "$TEX_FILE" ] && [ -f "$MANIFEST" ]; then
   fi
 fi
 
+# --- Open browser ---
+
 open "http://localhost:5173/?doc=${DOC}"
 
-# If diff is building, wait for it and signal reload
+# --- Wait for background builds ---
+
 if [ -n "${DIFF_PID:-}" ]; then
   echo "Diff building in background (pid $DIFF_PID)..."
   wait "$DIFF_PID" 2>/dev/null && echo "Diff ready — reload the page to see it." || echo "Diff build failed."
