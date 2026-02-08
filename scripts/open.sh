@@ -91,6 +91,13 @@ if ! lsof -i :5173 -sTCP:LISTEN >/dev/null 2>&1; then
     fi
     sleep 1
   done
+elif [ -n "$TEX_FILE" ]; then
+  # Services running — check if a watcher for this doc exists
+  if ! pgrep -f "watch.mjs.*$DOC" >/dev/null 2>&1; then
+    echo "Starting watcher for $DOC..."
+    nohup node "$DIR/scripts/watch.mjs" "$TEX_FILE" "$DOC" </dev/null >>"$DIR/collab.log" 2>&1 &
+    disown
+  fi
 fi
 
 # --- Build diff if needed ---
