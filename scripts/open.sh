@@ -27,7 +27,13 @@ if [ -f "$ARG" ] && [[ "$ARG" == *.tex ]]; then
 
 elif [ -d "$ARG" ]; then
   # Given a project directory — find main .tex file
-  MAIN_TEX=$(grep -rl '\\documentclass' "$ARG"/*.tex 2>/dev/null | head -1)
+  # Prefer a .tex file matching the directory name
+  DIRNAME="$(basename "$(cd "$ARG" && pwd)")"
+  if [ -f "$ARG/$DIRNAME.tex" ]; then
+    MAIN_TEX="$ARG/$DIRNAME.tex"
+  else
+    MAIN_TEX=$(grep -rl '\\documentclass' "$ARG"/*.tex 2>/dev/null | head -1)
+  fi
   if [ -z "$MAIN_TEX" ]; then
     echo "Error: no .tex file with \\documentclass found in $ARG"
     exit 1
@@ -96,7 +102,7 @@ if [ -n "$TEX_FILE" ] && [ -f "$MANIFEST" ]; then
   " 2>/dev/null)
   if [ -z "$HAS_DIFF" ]; then
     echo "Building diff (first time)..."
-    "$DIR/build-diff.sh" "$TEX_FILE" "$DOC" HEAD~1 &
+    "$DIR/build-diff.sh" "$TEX_FILE" "$DOC" HEAD &
     DIFF_PID=$!
   fi
 fi
