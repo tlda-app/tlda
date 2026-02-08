@@ -280,6 +280,110 @@
   margin-right: 2px;
 }
 
+/* Changes tab (diff TOC) */
+.changes-header {
+  padding: 5px 8px 1px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.45;
+}
+
+.change-item {
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  line-height: 1.25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px 4px;
+}
+
+.change-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.change-summary {
+  width: 100%;
+  font-size: 9px;
+  opacity: 0.45;
+  padding-left: 4px;
+  line-height: 1.3;
+  white-space: pre-line;
+}
+
+.change-page {
+  font-weight: 600;
+  min-width: 28px;
+}
+
+.change-old {
+  opacity: 0.4;
+  font-size: 10px;
+}
+
+.change-new {
+  opacity: 0.4;
+  font-size: 9px;
+  font-style: italic;
+}
+
+.change-status-dots {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.status-dot {
+  cursor: pointer;
+  font-size: 9px;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+  line-height: 1;
+  padding: 0 1px;
+}
+
+.status-dot.status-new { color: #3b82f6; }
+.status-dot.status-old { color: #ef4444; }
+.status-dot.status-discuss { color: #8b5cf6; }
+
+.doc-panel:hover .status-dot {
+  opacity: 0.55;
+}
+
+.status-dot:hover {
+  opacity: 1 !important;
+}
+
+.status-dot.active {
+  opacity: 1 !important;
+}
+
+.change-item.reviewed .change-page,
+.change-item.reviewed .change-old,
+.change-item.reviewed .change-new {
+  opacity: 0.4;
+}
+
+.change-item.reviewed .status-dot:not(.active) {
+  opacity: 0.12 !important;
+}
+
+.change-item.reviewed .status-dot:not(.active):hover {
+  opacity: 0.5 !important;
+}
+
+.changes-hint {
+  padding: 8px 8px 4px;
+  font-size: 9px;
+  opacity: 0.3;
+  text-align: center;
+  line-height: 1.4;
+}
+
 /* Notes tab */
 .note-item {
   padding: 4px 8px;
@@ -354,3 +458,34 @@
     padding: 6px 8px;
   }
 }
+
+/* Subtle diff link at bottom of TOC — aligned with toc-item bullets */
+.toc-diff-hint {
+  padding: 6px 8px;
+  font-size: 9px;
+  opacity: 0.2;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: baseline;
+}
+
+.doc-panel:hover .toc-diff-hint {
+  opacity: 0.35;
+}
+
+.toc-diff-hint:hover {
+  opacity: 0.6 !important;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.toc-diff-hint kbd {
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 0 3px;
+  margin-right: 4px;
+  font-family: monospace;
+  font-size: 8px;
+  opacity: 0.5;
+}
+

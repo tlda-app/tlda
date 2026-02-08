@@ -26,7 +26,7 @@
  *   DEBOUNCE_MS  - Rebuild debounce in ms (default: 2000)
  */
 
-import { watch, existsSync, readFileSync, writeFileSync } from 'fs'
+import { watch, existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { execSync, spawn } from 'child_process'
 import { dirname, resolve, basename, join } from 'path'
@@ -399,7 +399,10 @@ fs.writeFileSync(p, JSON.stringify(m, null, 2));
     // Full reload signal
     signalReload(null)
 
-    // Schedule synctex extraction
+    // Rebuild diff doc immediately with existing lookup (synctex may be delayed)
+    rebuildDiffDoc()
+
+    // Schedule synctex extraction (will rebuild diff again with updated lookup)
     scheduleSynctex()
 
     const totalElapsed = ((Date.now() - buildStart) / 1000).toFixed(1)
@@ -439,11 +442,109 @@ function scheduleSynctex() {
       if (code === 0) {
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
         console.log(`[watch] Synctex extraction done in ${elapsed}s`)
+        // Rebuild dependent diff doc (needs updated lookup.json)
+        rebuildDiffDoc()
       } else if (code !== null) {
         console.error(`[watch] Synctex extraction failed (code ${code})`)
       }
     })
   }, SYNCTEX_DEBOUNCE_MS)
+}
+
+// ---- Diff doc rebuild (if a diff doc depends on this doc) ----
+
+let diffDocName = null
+let diffDocInfo = null
+
+function detectDiffDoc() {
+  try {
+    const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'public', 'docs', 'manifest.json'), 'utf8'))
+    for (const [name, info] of Object.entries(manifest.documents)) {
+      if (info.format === 'diff' && info.sourceDoc === DOC_NAME) {
+        diffDocName = name
+        diffDocInfo = info
+        console.log(`[watch] Found dependent diff doc: ${name}`)
+        return
+      }
+    }
+  } catch {}
+}
+
+function rebuildDiffDoc() {
+  if (!diffDocName || !diffDocInfo) return
+  const diffDir = join(PROJECT_ROOT, 'public', 'docs', diffDocName)
+  if (!existsSync(diffDir)) return
+
+  const diffStart = Date.now()
+  console.log(`[watch] Rebuilding diff doc ${diffDocName}...`)
+
+  try {
+    // Copy current SVGs to diff output dir
+    for (let i = 1; i <= totalPages; i++) {
+      const f = `page-${String(i).padStart(2, '0')}.svg`
+      const src = join(OUTPUT_DIR, f)
+      const dst = join(diffDir, f)
+      if (existsSync(src)) copyFileSync(src, dst)
+    }
+
+    // Copy current lookup.json
+    const lookupSrc = join(OUTPUT_DIR, 'lookup.json')
+    const lookupDst = join(diffDir, 'lookup.json')
+    if (existsSync(lookupSrc)) copyFileSync(lookupSrc, lookupDst)
+
+    // Copy macros.json
+    const macrosSrc = join(OUTPUT_DIR, 'macros.json')
+    const macrosDst = join(diffDir, 'macros.json')
+    if (existsSync(macrosSrc)) copyFileSync(macrosSrc, macrosDst)
+
+    // Count old pages
+    let oldPageCount = 0
+    while (existsSync(join(diffDir, `old-page-${oldPageCount + 1}.svg`))) oldPageCount++
+
+    // Extract git ref from diff-info.json
+    let gitRef = 'HEAD~1'
+    try {
+      const diffInfo = JSON.parse(readFileSync(join(diffDir, 'diff-info.json'), 'utf8'))
+      gitRef = diffInfo.meta?.gitRef || 'HEAD~1'
+    } catch {}
+
+    // Re-run diff pairing
+    execSync(
+      `node scripts/compute-diff-pairing.mjs "${texDir}" "${texBase}.tex" "${gitRef}" "${lookupDst}" "${join(diffDir, 'old-lookup.json')}" "${join(diffDir, 'diff-info.json')}" "${totalPages}" "${oldPageCount}"`,
+      { cwd: PROJECT_ROOT, stdio: 'pipe' }
+    )
+
+    // Signal reload on diff doc's Yjs room
+    const diffRoomId = `doc-${diffDocName}`
+    const diffSignal = { type: 'full', timestamp: Date.now() }
+    // Write to a temporary Y.Doc for the diff room
+    const diffYDoc = new Y.Doc()
+    const diffYRecords = diffYDoc.getMap('tldraw')
+    const diffWs = new WebSocket(`${SYNC_URL}/${diffRoomId}`)
+    diffWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString())
+        if (msg.type === 'sync' || msg.type === 'update') {
+          Y.applyUpdate(diffYDoc, new Uint8Array(msg.data), 'remote')
+        }
+      } catch {}
+    })
+    diffWs.on('open', () => {
+      setTimeout(() => {
+        diffYDoc.transact(() => {
+          diffYRecords.set('signal:reload', diffSignal)
+        })
+        console.log(`[watch] Diff reload signal sent to ${diffRoomId}`)
+        setTimeout(() => diffWs.close(), 500)
+      }, 500)
+    })
+    diffWs.on('error', () => {})
+
+    const elapsed = ((Date.now() - diffStart) / 1000).toFixed(1)
+    console.log(`[watch] Diff doc rebuilt in ${elapsed}s`)
+  } catch (e) {
+    console.error(`[watch] Diff rebuild failed: ${e.message}`)
+  }
 }
 
 function signalReload(pages) {
@@ -494,6 +595,9 @@ watch(texDir, { recursive: true }, (_eventType, filename) => {
     triggerBuild(!isTex) // .bib/.sty/.cls → full rebuild with latexmk
   }
 })
+
+// Detect dependent diff docs on startup
+if (!IS_HTML_MODE) detectDiffDoc()
 
 if (IS_HTML_MODE) {
   // HTML mode: simpler startup

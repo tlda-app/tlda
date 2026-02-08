@@ -3,7 +3,7 @@ import { loadPdf } from './PdfPicker'
 import type { Pdf } from './PdfPicker'
 import { PdfEditor } from './PdfEditor'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument, loadImageDocument, loadHtmlDocument } from './svgDocumentLoader'
+import { loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
 import { Canvas } from './Canvas'
 import './App.css'
 
@@ -43,17 +43,22 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html'
+  format?: 'svg' | 'png' | 'html' | 'diff'
+  sourceDoc?: string
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
+
+interface DiffConfig {
+  basePath: string
+}
 
 type State =
   | { phase: 'canvas'; roomId: string }
   | { phase: 'loading'; message: string; roomId: string }
   | { phase: 'picker'; manifest: Record<string, DocConfig>; roomId: string }
   | { phase: 'pdf'; pdf: Pdf; roomId: string }
-  | { phase: 'svg'; document: SvgDoc; roomId: string }
+  | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
 
 function generateRoomId(): string {
   return `room-${Math.random().toString(36).slice(2, 10)}`
@@ -134,7 +139,9 @@ function App() {
       const fullBasePath = `${base}${basePath}`
 
       let document
-      if (config.format === 'html') {
+      if (config.format === 'diff') {
+        document = await loadDiffDocument(docName, fullBasePath)
+      } else if (config.format === 'html') {
         document = await loadHtmlDocument(config.name, fullBasePath)
       } else {
         const ext = config.format === 'png' ? 'png' : 'svg'
@@ -146,7 +153,21 @@ function App() {
           ? await loadImageDocument(config.name, urls, fullBasePath)
           : await loadSvgDocument(config.name, urls)
       }
-      setState({ phase: 'svg', document, roomId })
+      // For non-diff docs, check if a matching diff doc exists
+      let diffConfig: DiffConfig | undefined
+      if (config.format !== 'diff') {
+        const diffEntry = Object.values(manifest).find(
+          c => c.format === 'diff' && c.sourceDoc === docName
+        )
+        if (diffEntry) {
+          const diffBasePath = diffEntry.basePath.startsWith('/')
+            ? diffEntry.basePath.slice(1)
+            : diffEntry.basePath
+          diffConfig = { basePath: `${base}${diffBasePath}` }
+        }
+      }
+
+      setState({ phase: 'svg', document, roomId, diffConfig })
     } catch (e) {
       console.error('Failed to load document:', e)
       setState({ phase: 'canvas', roomId })
@@ -247,7 +268,7 @@ function App() {
       return (
         <div className="App">
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} />
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} />
           </ErrorBoundary>
         </div>
       )

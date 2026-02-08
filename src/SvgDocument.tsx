@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useContext } from 'react'
+import { useMemo, useEffect, useRef, useContext, useState, useCallback } from 'react'
 import {
   Tldraw,
   createShapeId,
@@ -13,6 +13,7 @@ import {
   TldrawUiMenuToolItem,
   useTools,
   useIsToolSelected,
+  toRichText,
 } from 'tldraw'
 import {
   SelectToolbarItem,
@@ -37,10 +38,11 @@ import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, getYRecords } from './useYjsSync'
 import type { ForwardSyncSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
+import { clearLookupCache } from './synctexLookup'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
 import { TextSelectionLayer, extractTextFromSvgAsync } from './TextSelectionLayer'
-import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, type SvgDocument, type SvgPage } from './svgDocumentLoader'
+import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight } from './svgDocumentLoader'
 
 // Sync server URL - use env var, or auto-detect based on environment
 // In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
@@ -156,7 +158,7 @@ async function reloadPages(
   pageNumbers: number[] | null, // null = all pages
 ) {
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
-  if (document.format === 'png') return
+  if (document.format === 'png' || document.format === 'diff') return
 
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
@@ -227,6 +229,7 @@ async function reloadPages(
 interface SvgDocumentEditorProps {
   document: SvgDocument
   roomId: string
+  diffConfig?: { basePath: string }
 }
 
 // Wrapper to connect TextSelectionLayer to PanelContext
@@ -265,9 +268,245 @@ function ExitPenModeButton() {
   )
 }
 
-export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) {
-  // Skip sync for now - just use local store
+export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
   const editorRef = useRef<Editor | null>(null)
+
+  // --- Diff toggle state ---
+  const hasDiffBuiltin = !!document.diffLayout  // standalone diff doc
+  const hasDiffToggle = !hasDiffBuiltin && !!diffConfig  // normal doc with diff available
+  const [diffMode, setDiffMode] = useState(false)
+  const diffDataRef = useRef<DiffData | null>(null)
+  const diffShapeIdsRef = useRef<Set<TLShapeId>>(new Set())
+  const diffEffectCleanupRef = useRef<(() => void) | null>(null)
+  const diffLoadingRef = useRef(false)
+  const [diffLoading, setDiffLoading] = useState(false)
+  const diffModeRef = useRef(false)
+  const toggleDiffRef = useRef<() => void>(() => {})
+  const [diffFetchSeq, setDiffFetchSeq] = useState(0)  // bumped on reload to re-trigger pre-fetch
+  // Refs for setupSvgEditor's mutable sets — populated in onMount
+  const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
+  const shapeIdsArrayRef = useRef<TLShapeId[]>([])
+  const updateCameraBoundsRef = useRef<((bounds: any) => void) | null>(null)
+
+  // Pulse highlight boxes when navigating to a change (works for both standalone diff and toggle)
+  const focusChangeRef = useRef<((currentPage: number) => void) | null>(null)
+
+  // Keep refs in sync with state for access in closures
+  useEffect(() => { diffModeRef.current = diffMode }, [diffMode])
+
+  const toggleDiff = useCallback(async () => {
+    const editor = editorRef.current
+    if (!editor || !diffConfig || diffLoadingRef.current) return
+
+    if (!diffMode) {
+      // Turning ON
+      if (!diffDataRef.current) {
+        diffLoadingRef.current = true
+        setDiffLoading(true)
+        try {
+          diffDataRef.current = await loadDiffData(document.name, diffConfig.basePath, document.pages)
+        } catch (e) {
+          console.error('[Diff Toggle] Failed to load diff data:', e)
+          diffLoadingRef.current = false
+          setDiffLoading(false)
+          return
+        }
+        diffLoadingRef.current = false
+        setDiffLoading(false)
+      }
+
+      const dd = diffDataRef.current
+      const createdIds = new Set<TLShapeId>()
+
+      // Create overlay shapes as local-only (mergeRemoteChanges → source:'remote' → skipped by Yjs sync)
+      // Using editor.createAssets/createShapes inside mergeRemoteChanges so defaults are filled in
+      // (store.put bypasses default-filling and fails validation for missing props like 'playing')
+      editor.store.mergeRemoteChanges(() => {
+        // Create old page assets + shapes
+        const mimeType = 'image/svg+xml'
+        editor.createAssets(
+          dd.pages.map(oldPage => ({
+            id: oldPage.assetId,
+            typeName: 'asset' as const,
+            type: 'image' as const,
+            meta: {},
+            props: {
+              w: oldPage.width,
+              h: oldPage.height,
+              mimeType,
+              src: oldPage.src,
+              name: 'diff-old-page',
+              isAnimated: false,
+            },
+          }))
+        )
+
+        // Old page image shapes
+        editor.createShapes(
+          dd.pages.map((oldPage): TLShapePartial<TLImageShape> => ({
+            id: oldPage.shapeId,
+            type: 'image',
+            x: oldPage.bounds.x,
+            y: oldPage.bounds.y,
+            isLocked: true,
+            opacity: 0.5,
+            props: {
+              assetId: oldPage.assetId,
+              w: oldPage.bounds.w,
+              h: oldPage.bounds.h,
+            },
+          }))
+        )
+        for (const oldPage of dd.pages) {
+          createdIds.add(oldPage.shapeId)
+        }
+
+        // Labels above old pages
+        const labelShapes: any[] = []
+        for (const oldPage of dd.pages) {
+          const match = (oldPage.shapeId as string).match(/old-page-(\d+)/)
+          if (!match) continue
+          const labelId = createShapeId(`${document.name}-old-label-${match[1]}`)
+          labelShapes.push({
+            id: labelId,
+            type: 'text',
+            x: oldPage.bounds.x,
+            y: oldPage.bounds.y - 26,
+            isLocked: true,
+            opacity: 0.3,
+            props: {
+              richText: toRichText(`Old p.${match[1]}`),
+              font: 'sans',
+              size: 's',
+              color: 'grey',
+              scale: 0.8,
+            },
+          })
+          createdIds.add(labelId)
+        }
+        if (labelShapes.length > 0) editor.createShapes(labelShapes)
+
+        // Highlight rectangles
+        editor.createShapes(
+          dd.highlights.map((hl, i) => {
+            const hlId = createShapeId(`${document.name}-diff-hl-${i}`)
+            createdIds.add(hlId)
+            return {
+              id: hlId,
+              type: 'geo' as const,
+              x: hl.x,
+              y: hl.y,
+              isLocked: true,
+              opacity: 0.07,
+              props: {
+                geo: 'rectangle',
+                w: hl.w,
+                h: hl.h,
+                fill: 'solid',
+                color: hl.side === 'current' ? 'light-blue' : 'light-red',
+                dash: 'draw',
+                size: 's',
+              },
+            }
+          })
+        )
+
+        // Arrows
+        editor.createShapes(
+          dd.arrows.map((a, i) => {
+            const arrowId = createShapeId(`${document.name}-diff-arrow-${i}`)
+            createdIds.add(arrowId)
+            return {
+              id: arrowId,
+              type: 'arrow' as const,
+              x: a.startX,
+              y: a.startY,
+              isLocked: true,
+              opacity: 0.2,
+              props: {
+                color: 'grey',
+                size: 's',
+                dash: 'solid',
+                start: { x: 0, y: 0 },
+                end: { x: a.endX - a.startX, y: a.endY - a.startY },
+                arrowheadStart: 'none',
+                arrowheadEnd: 'arrow',
+              },
+            }
+          })
+        )
+      })
+
+      // Track created IDs
+      diffShapeIdsRef.current = createdIds
+      // Add to the lock-prevention set
+      for (const id of createdIds) {
+        shapeIdSetRef.current.add(id)
+        shapeIdsArrayRef.current.push(id)
+      }
+
+      // Set up hover + review effects
+      const hoverCleanup = setupDiffHoverEffectFromData(editor, document.name, dd)
+      const reviewCleanup = setupDiffReviewEffectFromData(editor, document.name, dd)
+      diffEffectCleanupRef.current = () => { hoverCleanup(); reviewCleanup() }
+
+      // Set up pulse effect for this diff data
+      setupPulseForDiffData(editor, document.name, dd, focusChangeRef)
+
+      // Expand camera bounds
+      if (updateCameraBoundsRef.current && dd.pages.length > 0) {
+        const allBounds = document.pages.reduce(
+          (acc, page) => acc.union(page.bounds),
+          document.pages[0].bounds.clone()
+        )
+        for (const oldPage of dd.pages) {
+          allBounds.union(oldPage.bounds)
+        }
+        updateCameraBoundsRef.current(allBounds)
+      }
+
+      setDiffMode(true)
+      console.log(`[Diff Toggle] ON — ${createdIds.size} overlay shapes created`)
+    } else {
+      // Turning OFF
+      diffEffectCleanupRef.current?.()
+      diffEffectCleanupRef.current = null
+      focusChangeRef.current = null
+
+      const idsToRemove = diffShapeIdsRef.current
+      if (idsToRemove.size > 0) {
+        // Also collect asset IDs for old pages
+        const assetIds = diffDataRef.current?.pages.map(p => p.assetId) || []
+
+        editor.store.mergeRemoteChanges(() => {
+          const allIds = [...idsToRemove, ...assetIds] as any[]
+          editor.store.remove(allIds)
+        })
+
+        // Remove from lock-prevention set
+        for (const id of idsToRemove) {
+          shapeIdSetRef.current.delete(id)
+        }
+        shapeIdsArrayRef.current = shapeIdsArrayRef.current.filter(id => !idsToRemove.has(id))
+      }
+      diffShapeIdsRef.current = new Set()
+
+      // Contract camera bounds back to current pages only
+      if (updateCameraBoundsRef.current) {
+        const currentBounds = document.pages.reduce(
+          (acc, page) => acc.union(page.bounds),
+          document.pages[0].bounds.clone()
+        )
+        updateCameraBoundsRef.current(currentBounds)
+      }
+
+      setDiffMode(false)
+      console.log('[Diff Toggle] OFF — overlay shapes removed')
+    }
+  }, [diffMode, diffConfig, document])
+
+  // Keep toggleDiff ref current for session restore
+  useEffect(() => { toggleDiffRef.current = toggleDiff }, [toggleDiff])
 
   // Subscribe to Yjs reload signals
   useEffect(() => {
@@ -277,6 +516,9 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
       if (signal.type === 'partial') {
         reloadPages(editor, document, signal.pages)
       } else {
+        clearLookupCache(document.name)
+        diffDataRef.current = null  // invalidate so next toggle re-fetches
+        setDiffFetchSeq(s => s + 1)  // re-trigger pre-fetch
         reloadPages(editor, document, null)
       }
     })
@@ -359,6 +601,93 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
     })
   }, [])
 
+  // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
+  function isInputFocused() {
+    const tag = window.document.activeElement?.tagName
+    return tag === 'INPUT' || tag === 'TEXTAREA' || (window.document.activeElement as HTMLElement)?.isContentEditable
+  }
+
+  // Pre-fetch diff data in background for instant first toggle
+  // Re-runs when diffFetchSeq bumps (after reload invalidation)
+  useEffect(() => {
+    if (!diffConfig) return
+    loadDiffData(document.name, diffConfig.basePath, document.pages)
+      .then(data => { if (!diffDataRef.current) diffDataRef.current = data })
+      .catch(e => console.warn('[Diff] Pre-fetch failed:', e))
+  }, [diffConfig, document, diffFetchSeq])
+
+  // Keyboard shortcut: 'd' for diff toggle
+  useEffect(() => {
+    if (!hasDiffToggle) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (isInputFocused()) return
+        const editor = editorRef.current
+        if (!editor) return
+        if (editor.getEditingShapeId()) return
+        toggleDiff()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hasDiffToggle, toggleDiff])
+
+  // n/p keyboard shortcuts for diff change navigation (global, not tied to ChangesTab)
+  useEffect(() => {
+    const changes = hasDiffBuiltin
+      ? document.diffLayout?.changes
+      : (diffMode ? diffDataRef.current?.changes : undefined)
+    if (!changes || changes.length === 0) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isInputFocused()) return
+      const editor = editorRef.current
+      if (!editor) return
+      if (editor.getEditingShapeId()) return
+      if (e.key !== 'n' && e.key !== 'p') return
+
+      e.preventDefault()
+      const cam = editor.getCamera()
+      const vb = editor.getViewportScreenBounds()
+      const centerY = -cam.y + (vb.y + vb.h / 2) / cam.z
+      let closest = 0
+      let closestDist = Infinity
+      for (let i = 0; i < document.pages.length; i++) {
+        const p = document.pages[i]
+        const pageCenterY = p.bounds.y + p.bounds.h / 2
+        const dist = Math.abs(centerY - pageCenterY)
+        if (dist < closestDist) {
+          closestDist = dist
+          closest = i + 1
+        }
+      }
+      const currentPage = closest
+      const changePages = changes.map(c => c.currentPage)
+
+      let target: number | undefined
+      if (e.key === 'n') {
+        target = changePages.find(p => p > currentPage) ?? changePages[0]
+      } else {
+        target = [...changePages].reverse().find(p => p < currentPage) ?? changePages[changePages.length - 1]
+      }
+      if (target) {
+        const pageIndex = target - 1
+        if (pageIndex >= 0 && pageIndex < document.pages.length) {
+          const page = document.pages[pageIndex]
+          editor.centerOnPoint(
+            { x: page.bounds.x + page.bounds.w / 2, y: page.bounds.y },
+            { animation: { duration: 300 } }
+          )
+        }
+        focusChangeRef.current?.(target)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [document, hasDiffBuiltin, diffMode])
+
   const components = useMemo<TLComponents>(
     () => ({
       PageMenu: null,
@@ -389,6 +718,14 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   )
 
   const docKey = new URLSearchParams(window.location.search).get('doc') || document.name
+
+  // Pulse effect for standalone diff docs
+  useEffect(() => {
+    if (!document.diffLayout) return
+    const diff = document.diffLayout
+    setupPulseForDiffLayout(editorRef, document.name, diff, focusChangeRef)
+  }, [document])
+
   const panelContextValue = useMemo(() => ({
     docName: docKey,
     pages: document.pages.map(p => ({
@@ -397,7 +734,13 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
       height: p.height,
       textData: p.textData,
     })),
-  }), [docKey, document])
+    diffChanges: hasDiffBuiltin ? document.diffLayout?.changes : (diffMode ? diffDataRef.current?.changes : undefined),
+    onFocusChange: (page: number) => focusChangeRef.current?.(page),
+    diffAvailable: hasDiffToggle,
+    diffMode,
+    onToggleDiff: hasDiffToggle ? toggleDiff : undefined,
+    diffLoading,
+  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -445,7 +788,10 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
-          setupSvgEditor(editor, document)
+          const editorSetup = setupSvgEditor(editor, document)
+          shapeIdSetRef.current = editorSetup.shapeIdSet
+          shapeIdsArrayRef.current = editorSetup.shapeIds
+          updateCameraBoundsRef.current = editorSetup.updateBounds
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -474,6 +820,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
               localStorage.setItem(sessionKey, JSON.stringify({
                 camera: { x: cam.x, y: cam.y, z: cam.z },
                 tool,
+                diffMode: diffModeRef.current,
               }))
             } catch { /* quota exceeded etc */ }
           }
@@ -482,7 +829,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean }
             } catch { return null }
           }
 
@@ -495,6 +842,10 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
             }
             if (session?.tool) {
               try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
+            }
+            // Restore diff mode if it was active
+            if (session?.diffMode && hasDiffToggle) {
+              toggleDiffRef.current()
             }
 
             // Start save watchers only after restore
@@ -531,6 +882,7 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
           // Keyboard shortcut: 'm' for math note
           const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              if (isInputFocused()) return
               if (editor.getEditingShapeId()) return // Don't trigger while editing
               editor.setCurrentTool('math-note')
             }
@@ -572,7 +924,333 @@ export function SvgDocumentEditor({ document, roomId }: SvgDocumentEditorProps) 
   )
 }
 
-function setupSvgEditor(editor: Editor, document: SvgDocument) {
+/**
+ * Create diff overlay shapes: old page opacity styling, labels, and highlight rectangles.
+ * Adds created shape IDs to extraShapeIds so they get locked/bottom-sorted with page shapes.
+ */
+function setupDiffOverlays(editor: Editor, document: SvgDocument, extraShapeIds: TLShapeId[]) {
+  const diff = document.diffLayout!
+
+  // Create labels above old pages
+  for (const idx of diff.oldPageIndices) {
+    const page = document.pages[idx]
+    if (!page) continue
+    const match = page.shapeId.match(/old-page-(\d+)/)
+    if (!match) continue
+    const oldPageNum = match[1]
+    const labelId = createShapeId(`${document.name}-old-label-${oldPageNum}`)
+    editor.createShapes([{
+      id: labelId,
+      type: 'text',
+      x: page.bounds.x,
+      y: page.bounds.y - 26,
+      isLocked: true,
+      opacity: 0.3,
+      props: {
+        richText: toRichText(`Old p.${oldPageNum}`),
+        font: 'sans',
+        size: 's',
+        color: 'grey',
+        scale: 0.8,
+      },
+    }])
+    extraShapeIds.push(labelId)
+  }
+
+  // Create highlight overlay rectangles
+  for (let i = 0; i < diff.highlights.length; i++) {
+    const hl = diff.highlights[i]
+    const hlId = createShapeId(`${document.name}-diff-hl-${i}`)
+    editor.createShapes([{
+      id: hlId,
+      type: 'geo',
+      x: hl.x,
+      y: hl.y,
+      isLocked: true,
+      opacity: 0.07,
+      props: {
+        geo: 'rectangle',
+        w: hl.w,
+        h: hl.h,
+        fill: 'solid',
+        color: hl.side === 'current' ? 'light-blue' : 'light-red',
+        dash: 'draw',
+        size: 's',
+      },
+    }])
+    extraShapeIds.push(hlId)
+  }
+
+  // Create connector arrows between corresponding highlight boxes
+  for (let i = 0; i < diff.arrows.length; i++) {
+    const a = diff.arrows[i]
+    const arrowId = createShapeId(`${document.name}-diff-arrow-${i}`)
+
+    editor.createShapes([{
+      id: arrowId,
+      type: 'arrow',
+      x: a.startX,
+      y: a.startY,
+      isLocked: true,
+      opacity: 0.2,
+      props: {
+        color: 'grey',
+        size: 's',
+        dash: 'solid',
+        start: { x: 0, y: 0 },
+        end: { x: a.endX - a.startX, y: a.endY - a.startY },
+        arrowheadStart: 'none',
+        arrowheadEnd: 'arrow',
+      },
+    }])
+    extraShapeIds.push(arrowId)
+  }
+
+  console.log(`[Diff] Created ${diff.highlights.length} highlights, ${diff.arrows.length} arrows for ${diff.oldPageIndices.size} old pages`)
+}
+
+/**
+ * Set up hover effect: arrows become more visible when pointer is over a connected highlight box.
+ * Works regardless of whether shapes were just created or came from Yjs sync.
+ */
+function setupDiffHoverEffect(editor: Editor, document: SvgDocument) {
+  setupDiffHoverEffectFromData(editor, document.name, {
+    highlights: document.diffLayout!.highlights,
+    arrows: document.diffLayout!.arrows,
+  } as DiffData)
+}
+
+/**
+ * Hover effect that works with DiffData directly. Returns cleanup function.
+ */
+function setupDiffHoverEffectFromData(
+  editor: Editor,
+  docName: string,
+  dd: Pick<DiffData, 'highlights' | 'arrows'>,
+): () => void {
+  const highlightShapeIds = dd.highlights.map((_, i) =>
+    createShapeId(`${docName}-diff-hl-${i}`)
+  )
+  const arrowShapeIds = dd.arrows.map((_, i) =>
+    createShapeId(`${docName}-diff-arrow-${i}`)
+  )
+
+  const highlightToArrows = new Map<TLShapeId, TLShapeId[]>()
+  for (let i = 0; i < dd.arrows.length; i++) {
+    const a = dd.arrows[i]
+    const arrowId = arrowShapeIds[i]
+    for (const hlId of [highlightShapeIds[a.oldHighlightIdx], highlightShapeIds[a.currentHighlightIdx]]) {
+      if (!hlId) continue
+      if (!highlightToArrows.has(hlId)) highlightToArrows.set(hlId, [])
+      highlightToArrows.get(hlId)!.push(arrowId)
+    }
+  }
+
+  let activeArrowIds = new Set<TLShapeId>()
+
+  const handlePointerMove = (e: PointerEvent) => {
+    const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+
+    let hoveredHlId: TLShapeId | null = null
+    for (const hlId of highlightShapeIds) {
+      const bounds = editor.getShapePageBounds(hlId)
+      if (bounds && bounds.containsPoint(point)) {
+        hoveredHlId = hlId
+        break
+      }
+    }
+
+    const newActive = new Set<TLShapeId>(
+      hoveredHlId ? (highlightToArrows.get(hoveredHlId) || []) : []
+    )
+
+    if (newActive.size === activeArrowIds.size &&
+        [...newActive].every(id => activeArrowIds.has(id))) return
+
+    const updates: Array<{ id: TLShapeId; type: 'arrow'; opacity: number }> = []
+    for (const aid of activeArrowIds) {
+      if (!newActive.has(aid)) updates.push({ id: aid, type: 'arrow', opacity: 0.2 })
+    }
+    for (const aid of newActive) {
+      if (!activeArrowIds.has(aid)) updates.push({ id: aid, type: 'arrow', opacity: 0.6 })
+    }
+
+    if (updates.length > 0) editor.updateShapes(updates)
+    activeArrowIds = newActive
+  }
+
+  const container = window.document.querySelector('.tl-container')
+  if (container) {
+    container.addEventListener('pointermove', handlePointerMove as EventListener)
+  }
+
+  return () => {
+    if (container) {
+      container.removeEventListener('pointermove', handlePointerMove as EventListener)
+    }
+  }
+}
+
+/**
+ * Watch Yjs review state and adjust highlight box opacity.
+ * Chosen side becomes more opaque, rejected side fades.
+ */
+function setupDiffReviewEffect(editor: Editor, document: SvgDocument) {
+  setupDiffReviewEffectFromData(editor, document.name, {
+    highlights: document.diffLayout!.highlights,
+  } as DiffData)
+}
+
+/**
+ * Review effect that works with DiffData directly. Returns cleanup function.
+ */
+function setupDiffReviewEffectFromData(
+  editor: Editor,
+  docName: string,
+  dd: Pick<DiffData, 'highlights'>,
+): () => void {
+  const yRecords = getYRecords()
+  if (!yRecords) return () => {}
+
+  const pageHighlights = new Map<number, { current: TLShapeId[], old: TLShapeId[] }>()
+  for (let i = 0; i < dd.highlights.length; i++) {
+    const hl = dd.highlights[i]
+    const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+    if (!pageHighlights.has(hl.currentPage)) {
+      pageHighlights.set(hl.currentPage, { current: [], old: [] })
+    }
+    pageHighlights.get(hl.currentPage)![hl.side === 'current' ? 'current' : 'old'].push(hlId)
+  }
+
+  const BASE_OPACITY = 0.07
+  const CHOSEN_OPACITY = 0.15
+  const REJECTED_OPACITY = 0.03
+
+  let lastReviews: Record<number, string> = {}
+
+  function applyReviewState() {
+    const signal = yRecords!.get('signal:diff-review' as any) as any
+    const reviews: Record<number, string> = signal?.reviews || {}
+
+    const updates: Array<{ id: TLShapeId; type: 'geo'; opacity: number }> = []
+
+    for (const [page, { current, old }] of pageHighlights) {
+      const status = reviews[page] || null
+      const prevStatus = lastReviews[page] || null
+      if (status === prevStatus) continue
+
+      let currentOpacity = BASE_OPACITY
+      let oldOpacity = BASE_OPACITY
+
+      if (status === 'new') {
+        currentOpacity = CHOSEN_OPACITY
+        oldOpacity = REJECTED_OPACITY
+      } else if (status === 'old') {
+        currentOpacity = REJECTED_OPACITY
+        oldOpacity = CHOSEN_OPACITY
+      } else if (status === 'discuss') {
+        currentOpacity = BASE_OPACITY
+        oldOpacity = BASE_OPACITY
+      }
+
+      for (const id of current) updates.push({ id, type: 'geo', opacity: currentOpacity })
+      for (const id of old) updates.push({ id, type: 'geo', opacity: oldOpacity })
+    }
+
+    if (updates.length > 0) editor.updateShapes(updates)
+    lastReviews = reviews
+  }
+
+  applyReviewState()
+  yRecords.observe(applyReviewState)
+
+  return () => {
+    yRecords.unobserve(applyReviewState)
+  }
+}
+
+/**
+ * Set up pulse effect for DiffData (used in diff toggle mode).
+ */
+function setupPulseForDiffData(
+  editor: Editor,
+  docName: string,
+  dd: DiffData,
+  focusChangeRef: React.MutableRefObject<((currentPage: number) => void) | null>,
+) {
+  let delayTimer: ReturnType<typeof setTimeout> | null = null
+  let pulseTimer: ReturnType<typeof setTimeout> | null = null
+
+  focusChangeRef.current = (currentPage: number) => {
+    const hlIds: TLShapeId[] = []
+    const baseOpacities: number[] = []
+    for (let i = 0; i < dd.highlights.length; i++) {
+      if (dd.highlights[i].currentPage === currentPage) {
+        const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+        const shape = editor.getShape(hlId)
+        hlIds.push(hlId)
+        baseOpacities.push(shape?.opacity ?? 0.07)
+      }
+    }
+    if (hlIds.length === 0) return
+
+    if (delayTimer) clearTimeout(delayTimer)
+    if (pulseTimer) clearTimeout(pulseTimer)
+
+    delayTimer = setTimeout(() => {
+      editor.updateShapes(hlIds.map(id => ({ id, type: 'geo' as const, opacity: 0.4 })))
+      pulseTimer = setTimeout(() => {
+        editor.updateShapes(hlIds.map((id, j) => ({ id, type: 'geo' as const, opacity: baseOpacities[j] })))
+      }, 700)
+    }, 350)
+  }
+}
+
+/**
+ * Set up pulse effect for standalone diff docs (DiffLayout from document).
+ */
+function setupPulseForDiffLayout(
+  editorRef: React.MutableRefObject<Editor | null>,
+  docName: string,
+  diff: { highlights: DiffHighlight[] },
+  focusChangeRef: React.MutableRefObject<((currentPage: number) => void) | null>,
+) {
+  let delayTimer: ReturnType<typeof setTimeout> | null = null
+  let pulseTimer: ReturnType<typeof setTimeout> | null = null
+
+  focusChangeRef.current = (currentPage: number) => {
+    const editor = editorRef.current
+    if (!editor) return
+
+    const hlIds: TLShapeId[] = []
+    const baseOpacities: number[] = []
+    for (let i = 0; i < diff.highlights.length; i++) {
+      if (diff.highlights[i].currentPage === currentPage) {
+        const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+        const shape = editor.getShape(hlId)
+        hlIds.push(hlId)
+        baseOpacities.push(shape?.opacity ?? 0.07)
+      }
+    }
+    if (hlIds.length === 0) return
+
+    if (delayTimer) clearTimeout(delayTimer)
+    if (pulseTimer) clearTimeout(pulseTimer)
+
+    delayTimer = setTimeout(() => {
+      editor.updateShapes(hlIds.map(id => ({ id, type: 'geo' as const, opacity: 0.4 })))
+      pulseTimer = setTimeout(() => {
+        editor.updateShapes(hlIds.map((id, j) => ({ id, type: 'geo' as const, opacity: baseOpacities[j] })))
+      }, 700)
+    }, 350)
+  }
+}
+
+function setupSvgEditor(editor: Editor, document: SvgDocument): {
+  shapeIdSet: Set<TLShapeId>
+  shapeIds: TLShapeId[]
+  updateBounds: (bounds: any) => void
+} {
   // Check if page shapes already exist (from sync)
   const existingAssets = editor.getAssets()
   const hasAssets = document.format === 'html'
@@ -618,12 +1296,13 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
 
       editor.createShapes(
         document.pages.map(
-          (page): TLShapePartial<TLImageShape> => ({
+          (page, i): TLShapePartial<TLImageShape> => ({
             id: page.shapeId,
             type: 'image',
             x: page.bounds.x,
             y: page.bounds.y,
             isLocked: true,
+            opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
             props: {
               assetId: page.assetId,
               w: page.bounds.w,
@@ -635,7 +1314,24 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
     }
   }
 
-  const shapeIds = document.pages.map((page) => page.shapeId)
+  // Set up diff layout: old page opacity, highlight overlays
+  // Check for existing diff shapes (from Yjs sync) by looking for the first highlight ID
+  const diffExtraShapeIds: TLShapeId[] = []
+  if (document.diffLayout) {
+    const firstHlId = createShapeId(`${document.name}-diff-hl-0`)
+    const hasDiffShapes = !!editor.getShape(firstHlId)
+    if (!hasDiffShapes) {
+      setupDiffOverlays(editor, document, diffExtraShapeIds)
+    }
+    // Always set up hover + review effects (work whether shapes came from creation or Yjs sync)
+    setupDiffHoverEffect(editor, document)
+    setupDiffReviewEffect(editor, document)
+  }
+
+  const shapeIds = [
+    ...document.pages.map((page) => page.shapeId),
+    ...diffExtraShapeIds,
+  ]
   const shapeIdSet = new Set(shapeIds)
 
   // Don't let the user unlock the pages
@@ -647,7 +1343,7 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
 
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
-    const shapes = shapeIds
+    const shapes = [...shapeIdSet]
       .map((id) => editor.getShape(id))
       .filter((s): s is TLShape => s !== undefined)
       .sort(sortByIndex)
@@ -686,12 +1382,12 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
   editor.sideEffects.registerAfterChangeHandler('shape', makeSureShapesAreAtBottom)
 
   // Constrain the camera to the bounds of the pages
-  const targetBounds = document.pages.reduce(
+  let targetBounds = document.pages.reduce(
     (acc, page) => acc.union(page.bounds),
     document.pages[0].bounds.clone()
   )
 
-  function updateCameraBounds(_isMobile: boolean) {
+  function applyCameraBounds() {
     editor.setCameraOptions({
       constraints: {
         bounds: targetBounds,
@@ -711,9 +1407,18 @@ function setupSvgEditor(editor: Editor, document: SvgDocument) {
     const isMobileNow = editor.getViewportScreenBounds().width < 840
     if (isMobileNow === isMobile) return
     isMobile = isMobileNow
-    updateCameraBounds(isMobile)
+    applyCameraBounds()
   })
 
-  updateCameraBounds(isMobile)
+  applyCameraBounds()
+
+  return {
+    shapeIdSet,
+    shapeIds,
+    updateBounds: (newBounds: any) => {
+      targetBounds = newBounds
+      applyCameraBounds()
+    },
+  }
 }
 

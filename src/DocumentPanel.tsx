@@ -4,10 +4,10 @@ import { useEditor } from 'tldraw'
 import type { Editor, TLShape } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from './katexMacros'
-import { loadLookup, loadHtmlToc, loadHtmlSearch, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from './synctexLookup'
+import { loadLookup, clearLookupCache, loadHtmlToc, loadHtmlSearch, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
 import { PanelContext, type PanelContextValue } from './PanelContext'
-import { getYRecords, getLiveUrl } from './useYjsSync'
+import { getYRecords, getLiveUrl, onReloadSignal } from './useYjsSync'
 import './DocumentPanel.css'
 
 // --- Navigation helper ---
@@ -172,6 +172,17 @@ function TocTab() {
   const [headings, setHeadings] = useState<TocEntry[]>([])
   const [htmlToc, setHtmlToc] = useState<HtmlTocEntry[] | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
+  const [reloadCount, setReloadCount] = useState(0)
+
+  // Re-fetch TOC when reload signal arrives
+  useEffect(() => {
+    return onReloadSignal((signal) => {
+      if (signal.type === 'full' && ctx) {
+        clearLookupCache(ctx.docName)
+        setReloadCount(c => c + 1)
+      }
+    })
+  }, [ctx])
 
   useEffect(() => {
     if (!ctx) return
@@ -211,7 +222,7 @@ function TocTab() {
         })
       }
     })
-  }, [ctx?.docName])
+  }, [ctx?.docName, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!ctx) return
@@ -316,6 +327,14 @@ function TocTab() {
             dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
         )
       })}
+      {ctx?.diffAvailable && (
+        <div
+          className="toc-diff-hint"
+          onClick={() => ctx.onToggleDiff?.()}
+        >
+          <kbd>d</kbd> {ctx.diffLoading ? 'Loading diff\u2026' : ctx.diffMode ? 'Hide diff' : 'Show diff'}
+        </div>
+      )}
     </div>
   )
 }
@@ -473,6 +492,158 @@ function SearchTab() {
   )
 }
 
+type ReviewStatus = 'new' | 'old' | 'discuss' | null
+type ReviewMap = Record<number, ReviewStatus>  // currentPage → status
+type SummaryMap = Record<number, string>       // currentPage → one-line summary
+
+function readReviewState(): ReviewMap {
+  const yRecords = getYRecords()
+  if (!yRecords) return {}
+  const signal = yRecords.get('signal:diff-review' as any) as any
+  return signal?.reviews || {}
+}
+
+function writeReviewState(reviews: ReviewMap) {
+  const yRecords = getYRecords()
+  if (!yRecords) return
+  const doc = yRecords.doc!
+  doc.transact(() => {
+    yRecords.set('signal:diff-review' as any, {
+      reviews,
+      timestamp: Date.now(),
+    } as any)
+  })
+}
+
+function readSummaries(): SummaryMap {
+  const yRecords = getYRecords()
+  if (!yRecords) return {}
+  const signal = yRecords.get('signal:diff-summaries' as any) as any
+  return signal?.summaries || {}
+}
+
+const STATUS_LABELS: Array<{ key: ReviewStatus; label: string; symbol: string }> = [
+  { key: 'new', label: 'keep new', symbol: '\u25CB' },    // ○
+  { key: 'old', label: 'revert', symbol: '\u25CB' },      // ○
+  { key: 'discuss', label: 'discuss', symbol: '\u25CB' },  // ○
+]
+
+const STATUS_FILLED = '\u25CF' // ●
+
+function ChangesTab() {
+  const editor = useEditor()
+  const ctx = useContext(PanelContext)
+  const changes = ctx?.diffChanges
+  const [reviews, setReviews] = useState<ReviewMap>({})
+  const [summaries, setSummaries] = useState<SummaryMap>({})
+
+  // Load review state + summaries from Yjs and observe changes
+  useEffect(() => {
+    setReviews(readReviewState())
+    setSummaries(readSummaries())
+    const yRecords = getYRecords()
+    if (!yRecords) return
+    const handler = () => {
+      setReviews(readReviewState())
+      setSummaries(readSummaries())
+    }
+    yRecords.observe(handler)
+    return () => yRecords.unobserve(handler)
+  }, [])
+
+  // Clear reviews + summaries on reload (diff changed, need fresh triage)
+  useEffect(() => {
+    return onReloadSignal(() => {
+      writeReviewState({})
+      setReviews({})
+      setSummaries({})
+    })
+  }, [])
+
+  const setStatus = useCallback((page: number, status: ReviewStatus) => {
+    setReviews(prev => {
+      const next = { ...prev }
+      if (next[page] === status) {
+        delete next[page] // toggle off
+      } else {
+        next[page] = status
+      }
+      writeReviewState(next)
+      return next
+    })
+  }, [])
+
+  const handleNav = useCallback((pageNum: number) => {
+    if (!ctx) return
+    navigateToPage(editor, ctx, pageNum)
+    ctx.onFocusChange?.(pageNum)
+  }, [editor, ctx])
+
+  // n/p keyboard shortcuts are now handled at the SvgDocumentEditor level
+  // so they work regardless of which panel tab is active
+
+  if (!changes || changes.length === 0) {
+    return (
+      <div className="doc-panel-content">
+        <div className="panel-empty">No changes</div>
+      </div>
+    )
+  }
+
+  const reviewed = changes.filter(c => reviews[c.currentPage]).length
+
+  return (
+    <div className="doc-panel-content">
+      <div className="changes-header">
+        {reviewed}/{changes.length} reviewed
+      </div>
+      {changes.map((c) => {
+        const status = reviews[c.currentPage] || null
+        return (
+          <div key={c.currentPage} className={`change-item ${status ? 'reviewed' : ''}`}>
+            <span className="change-page" onClick={() => handleNav(c.currentPage)}>
+              p.{c.currentPage}
+            </span>
+            {c.oldPages.length > 0 && (
+              <span className="change-old" onClick={() => handleNav(c.currentPage)}>
+                {'\u2190 '}
+                {c.oldPages.length === 1
+                  ? `p.${c.oldPages[0]}`
+                  : `p.${c.oldPages[0]}\u2013${c.oldPages[c.oldPages.length - 1]}`
+                }
+              </span>
+            )}
+            {c.oldPages.length === 0 && (
+              <span className="change-new" onClick={() => handleNav(c.currentPage)}>new</span>
+            )}
+            <span className="change-status-dots">
+              {STATUS_LABELS.map(s => (
+                <span
+                  key={s.key}
+                  className={`status-dot ${status === s.key ? 'active' : ''} status-${s.key}`}
+                  onClick={(e) => { e.stopPropagation(); setStatus(c.currentPage, s.key) }}
+                  title={s.label}
+                >
+                  {status === s.key ? STATUS_FILLED : s.symbol}
+                </span>
+              ))}
+            </span>
+            {summaries[c.currentPage] && (
+              <div className="change-summary" onClick={() => handleNav(c.currentPage)}>
+                {summaries[c.currentPage]}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      <div className="changes-hint">
+        n / p to jump &middot; {STATUS_FILLED} new &middot; {STATUS_FILLED} old &middot; {STATUS_FILLED} discuss
+      </div>
+    </div>
+  )
+}
+
+
 function NotesTab() {
   const editor = useEditor()
   const [notes, setNotes] = useState<TLShape[]>([])
@@ -627,7 +798,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'toc' | 'search' | 'notes'
+type Tab = 'diff' | 'toc' | 'search' | 'notes'
 
 // Stop pointer events from reaching tldraw's canvas event handlers
 function stopTldrawEvents(e: { stopPropagation: () => void }) {
@@ -637,7 +808,15 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 
 export function DocumentPanel() {
-  const [tab, setTab] = useState<Tab>('toc')
+  const ctx = useContext(PanelContext)
+  const hasDiff = !!(ctx?.diffChanges && ctx.diffChanges.length > 0)
+  const [tab, setTab] = useState<Tab>(hasDiff ? 'diff' : 'toc')
+
+  // Auto-switch to diff tab when changes appear, back to toc when they disappear
+  useEffect(() => {
+    if (hasDiff) setTab('diff')
+    else setTab(prev => prev === 'diff' ? 'toc' : prev)
+  }, [hasDiff])
 
   // Portal outside TLDraw's DOM tree to avoid event capture interference
   const portalRef = useRef<HTMLDivElement | null>(null)
@@ -658,6 +837,11 @@ export function DocumentPanel() {
       onTouchEnd={stopTldrawEvents}
     >
       <div className="doc-panel-tabs">
+        {hasDiff && (
+          <button className={`doc-panel-tab ${tab === 'diff' ? 'active' : ''}`} onClick={() => setTab('diff')}>
+            Diff
+          </button>
+        )}
         <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
           TOC
         </button>
@@ -668,6 +852,7 @@ export function DocumentPanel() {
           Notes
         </button>
       </div>
+      {tab === 'diff' && hasDiff && <ChangesTab />}
       {tab === 'toc' && <TocTab />}
       {tab === 'search' && <SearchTab />}
       {tab === 'notes' && <NotesTab />}

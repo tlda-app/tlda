@@ -28,6 +28,19 @@
       "pages": 27,
       "basePath": "/docs/lecture3-prose/",
       "format": "html"
+    },
+    "bregman-lower-bound": {
+      "name": "bregman-lower-bound",
+      "pages": 50,
+      "basePath": "/docs/bregman-lower-bound/"
+    },
+    "bregman-lower-bound-diff": {
+      "name": "bregman-lower-bound diff vs HEAD~1",
+      "pages": 50,
+      "basePath": "/docs/bregman-lower-bound-diff/",
+      "format": "diff",
+      "texFile": "/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex",
+      "sourceDoc": "bregman-lower-bound"
     }
   }
 }
