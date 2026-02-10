@@ -772,9 +772,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       const editor = editorRef.current
       if (!editor || !cameraLinkedRef.current) return
       suppressBroadcastRef.current = true
-      editor.setCamera({ x: signal.x, y: signal.y, z: signal.z })
-      // Allow suppress to clear after a tick so the outgoing watcher doesn't echo
-      setTimeout(() => { suppressBroadcastRef.current = false }, 200)
+      editor.setCamera({ x: signal.x, y: signal.y, z: signal.z }, { animation: { duration: 80 } })
+      setTimeout(() => { suppressBroadcastRef.current = false }, 100)
     })
   }, [])
 
@@ -1225,7 +1224,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                   if (cameraLinkedRef.current && !suppressBroadcastRef.current) {
                     broadcastCamera(cam.x, cam.y, cam.z)
                   }
-                }, 150)
+                }, 30)
               })
 
               react('save-tool', () => {
@@ -1248,27 +1247,45 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Pen double-tap in right edge (panel zone) to cycle draw → highlight → eraser
           const penCycle = ['draw', 'highlight', 'eraser']
           let lastPenTap = 0
-          const container = window.document.querySelector('.tl-container') as HTMLElement | null
-          if (container) {
-            container.addEventListener('pointerdown', (e: PointerEvent) => {
-              if (e.pointerType !== 'pen') return
-              // Only in the rightmost 250px (doc panel x-span)
-              const threshold = window.innerWidth - 250
-              if (e.clientX < threshold) {
-                lastPenTap = 0
-                return
+          let penTapTool = ''  // tool at first tap (before TLDraw changes it)
+          const editorContainer = editor.getContainer()
+          editorContainer.addEventListener('pointerdown', (e: PointerEvent) => {
+            if (e.pointerType !== 'pen') return
+            const threshold = window.innerWidth - 250
+            if (e.clientX < threshold) {
+              lastPenTap = 0
+              return
+            }
+            const now = Date.now()
+            if (now - lastPenTap < 300) {
+              const idx = penCycle.indexOf(penTapTool)
+              const next = penCycle[(idx + 1) % penCycle.length]
+              console.log(`[PenTap] double-tap! ${penTapTool} → ${next}`)
+              editor.setCurrentTool(next)
+              lastPenTap = 0
+            } else {
+              penTapTool = editor.getCurrentToolId()
+              console.log(`[PenTap] first tap, tool=${penTapTool}`)
+              lastPenTap = now
+            }
+          }, true)
+
+          // Axis-lock two-finger scroll: snap to vertical or horizontal
+          // when the gesture is approximately aligned (3:1 ratio).
+          // Intercept at editor.dispatch since @use-gesture binds wheel internally.
+          const origDispatch = editor.dispatch.bind(editor)
+          const AXIS_RATIO = 2
+          editor.dispatch = (info: any) => {
+            if ((info.type === 'wheel' || info.type === 'pinch') && info.delta) {
+              const ax = Math.abs(info.delta.x)
+              const ay = Math.abs(info.delta.y)
+              if (ay > ax * AXIS_RATIO && ax > 0.3) {
+                info = { ...info, delta: { ...info.delta, x: 0 } }
+              } else if (ax > ay * AXIS_RATIO && ay > 0.3) {
+                info = { ...info, delta: { ...info.delta, y: 0 } }
               }
-              const now = Date.now()
-              if (now - lastPenTap < 300) {
-                const current = editor.getCurrentToolId()
-                const idx = penCycle.indexOf(current)
-                const next = penCycle[(idx + 1) % penCycle.length]
-                editor.setCurrentTool(next)
-                lastPenTap = 0
-              } else {
-                lastPenTap = now
-              }
-            }, true)
+            }
+            return origDispatch(info)
           }
         }}
         components={components}
