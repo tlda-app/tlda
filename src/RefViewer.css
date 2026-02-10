@@ -1,0 +1,103 @@
+.ref-viewer {
+  width: 600px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+  background: white;
+  pointer-events: all;
+}
+
+.ref-viewer-label {
+  height: 20px;
+  line-height: 20px;
+  padding: 0 8px;
+  font-size: 9px;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 100, 100, 0.6);
+  background: rgba(245, 245, 245, 0.8);
+  border-bottom: 1px solid rgba(220, 220, 220, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ref-viewer-label:hover {
+  background: rgba(235, 235, 235, 0.8);
+}
+
+.ref-viewer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref-viewer-count {
+  color: rgba(100, 100, 100, 0.4);
+  font-size: 8px;
+}
+
+.ref-viewer-page {
+  font-size: 9px;
+  color: rgba(100, 100, 100, 0.4);
+  flex-shrink: 0;
+}
+
+.ref-viewer-nav {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.5);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+}
+
+.ref-viewer-nav:hover {
+  color: rgba(100, 100, 100, 0.8);
+}
+
+.ref-viewer-nav-inline {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.35);
+  font-size: 8px;
+  cursor: pointer;
+  padding: 0 1px;
+  line-height: 20px;
+}
+
+.ref-viewer-nav-inline:hover {
+  color: rgba(100, 100, 100, 0.7);
+}
+
+.ref-viewer-close {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.4);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.ref-viewer-close:hover {
+  color: rgba(100, 100, 100, 0.8);
+}
+
+.ref-viewer-canvas {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: white;
+}
+
+.ref-viewer-canvas .tl-background {
+  display: none;
+}

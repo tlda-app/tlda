@@ -1,0 +1,73 @@
+.proof-overlay {
+  width: 600px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+  background: white;
+  transition: height 0.2s ease, opacity 0.2s ease;
+  pointer-events: all;
+}
+
+.proof-overlay-label {
+  height: 20px;
+  line-height: 20px;
+  padding: 0 8px;
+  font-size: 9px;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(90, 138, 106, 0.4);
+  background: rgba(200, 230, 201, 0.1);
+  border-bottom: 1px solid rgba(200, 230, 201, 0.15);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.proof-overlay-label:hover {
+  background: rgba(200, 230, 201, 0.2);
+}
+
+.proof-overlay-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proof-overlay-page {
+  font-size: 9px;
+  font-weight: 400;
+  color: rgba(138, 186, 148, 0.4);
+  flex-shrink: 0;
+}
+
+.proof-overlay-close {
+  border: none;
+  background: none;
+  color: rgba(90, 138, 106, 0.3);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.proof-overlay-close:hover {
+  color: rgba(90, 138, 106, 0.6);
+}
+
+.proof-overlay-canvas {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: white;
+}
+
+/* Hide TLDraw's background pattern in the mini editor */
+.proof-overlay-canvas .tl-background {
+  display: none;
+}

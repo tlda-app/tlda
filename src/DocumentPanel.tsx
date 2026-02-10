@@ -644,6 +644,74 @@ function ChangesTab() {
 }
 
 
+function ProofsTab() {
+  const editor = useEditor()
+  const ctx = useContext(PanelContext)
+  const pairs = ctx?.proofPairs
+
+  const handleNav = useCallback((pair: { proofPageIndices: number[] }) => {
+    if (!ctx || pair.proofPageIndices.length === 0) return
+    const pageIdx = pair.proofPageIndices[0]
+    if (pageIdx < 0 || pageIdx >= ctx.pages.length) return
+    const page = ctx.pages[pageIdx]
+
+    // Turn on proof mode if off
+    if (!ctx.proofMode && ctx.onToggleProof) {
+      ctx.onToggleProof()
+    }
+
+    navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
+  }, [editor, ctx])
+
+  if (!pairs || pairs.length === 0) {
+    return (
+      <div className="doc-panel-content">
+        <div className="panel-empty">No theorem/proof pairs found</div>
+      </div>
+    )
+  }
+
+  const crossPage = pairs.filter(p => !p.samePage)
+  const samePage = pairs.filter(p => p.samePage)
+
+  return (
+    <div className="doc-panel-content">
+      {ctx?.onToggleProof && (
+        <div
+          className="toc-diff-hint"
+          onClick={() => ctx.onToggleProof?.()}
+        >
+          <kbd>r</kbd> {ctx.proofLoading ? 'Loading\u2026' : ctx.proofMode ? 'Hide cards' : 'Show cards'}
+        </div>
+      )}
+      {crossPage.length > 0 && (
+        <>
+          <div className="search-group-label">Cross-page ({crossPage.length})</div>
+          {crossPage.map((pair, i) => (
+            <div key={pair.id} className="proof-item" onClick={() => handleNav(pair)}>
+              <span className="proof-type">{pair.title}</span>
+              <span className="proof-pages">
+                p.{pair.statementPage} {'→'} p.{pair.proofPageIndices.map(i => i + 1).join('\u2013')}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+      {samePage.length > 0 && (
+        <>
+          <div className="search-group-label">Same page ({samePage.length})</div>
+          {samePage.map((pair) => (
+            <div key={pair.id} className="proof-item same-page" onClick={() => handleNav(pair)}>
+              <span className="proof-type">{pair.title}</span>
+              <span className="proof-pages">p.{pair.statementPage}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
 function NotesTab() {
   const editor = useEditor()
   const [notes, setNotes] = useState<TLShape[]>([])
@@ -798,7 +866,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'diff' | 'toc' | 'search' | 'notes'
+type Tab = 'diff' | 'toc' | 'proofs' | 'search' | 'notes'
 
 // Stop pointer events from reaching tldraw's canvas event handlers
 function stopTldrawEvents(e: { stopPropagation: () => void }) {
@@ -810,6 +878,7 @@ const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: co
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
   const hasDiff = !!(ctx?.diffChanges && ctx.diffChanges.length > 0)
+  const hasProofs = !!(ctx?.proofPairs && ctx.proofPairs.length > 0)
   const [tab, setTab] = useState<Tab>(hasDiff ? 'diff' : 'toc')
 
   // Auto-switch to diff tab when changes appear, back to toc when they disappear
@@ -845,6 +914,11 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
           TOC
         </button>
+        {hasProofs && (
+          <button className={`doc-panel-tab ${tab === 'proofs' ? 'active' : ''}`} onClick={() => setTab('proofs')}>
+            Proofs
+          </button>
+        )}
         <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
           Search
         </button>
@@ -854,6 +928,7 @@ export function DocumentPanel() {
       </div>
       {tab === 'diff' && hasDiff && <ChangesTab />}
       {tab === 'toc' && <TocTab />}
+      {tab === 'proofs' && hasProofs && <ProofsTab />}
       {tab === 'search' && <SearchTab />}
       {tab === 'notes' && <NotesTab />}
     </div>,

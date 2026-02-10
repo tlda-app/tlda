@@ -489,3 +489,39 @@
   opacity: 0.5;
 }
 
+/* Proofs tab */
+
+.proof-item {
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  line-height: 1.25;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.proof-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.proof-type {
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proof-pages {
+  opacity: 0.4;
+  font-size: 9px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.proof-item.same-page {
+  opacity: 0.45;
+}
+

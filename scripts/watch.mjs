@@ -444,6 +444,8 @@ function scheduleSynctex() {
         console.log(`[watch] Synctex extraction done in ${elapsed}s`)
         // Rebuild dependent diff doc (needs updated lookup.json)
         rebuildDiffDoc()
+        // Rebuild proof pairing (needs updated lookup.json)
+        rebuildProofPairing()
       } else if (code !== null) {
         console.error(`[watch] Synctex extraction failed (code ${code})`)
       }
@@ -544,6 +546,23 @@ function rebuildDiffDoc() {
     console.log(`[watch] Diff doc rebuilt in ${elapsed}s`)
   } catch (e) {
     console.error(`[watch] Diff rebuild failed: ${e.message}`)
+  }
+}
+
+function rebuildProofPairing() {
+  const lookupFile = join(OUTPUT_DIR, 'lookup.json')
+  if (!existsSync(lookupFile)) return
+
+  const start = Date.now()
+  try {
+    execSync(
+      `node scripts/compute-proof-pairing.mjs "${texPath}" "${lookupFile}" "${join(OUTPUT_DIR, 'proof-info.json')}"`,
+      { cwd: PROJECT_ROOT, stdio: 'pipe' }
+    )
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+    console.log(`[watch] Proof pairing rebuilt in ${elapsed}s`)
+  } catch (e) {
+    console.error(`[watch] Proof pairing failed: ${e.message}`)
   }
 }
 

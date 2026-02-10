@@ -75,22 +75,20 @@ const PAGE_GAP = 20
 // PDF dimensions and viewBox offset (matching synctexAnchor.ts)
 const PDF_WIDTH = 612
 const PDF_HEIGHT = 792
-const VIEWBOX_OFFSET = -72
-
 function pageToCanvas(pageNum) {
   // Pages are stacked vertically with gap
   const y = (pageNum - 1) * (PAGE_HEIGHT + PAGE_GAP)
   return { x: 0, y, width: PAGE_WIDTH, height: PAGE_HEIGHT }
 }
 
-// Convert PDF coordinates to canvas coordinates
+// Convert synctex/PDF coordinates to canvas coordinates
 function pdfToCanvas(page, pdfX, pdfY) {
   const pageBounds = pageToCanvas(page)
   const scaleX = PAGE_WIDTH / PDF_WIDTH
   const scaleY = PAGE_HEIGHT / PDF_HEIGHT
 
-  const canvasX = pageBounds.x + (pdfX - VIEWBOX_OFFSET) * scaleX
-  const canvasY = pageBounds.y + (pdfY - VIEWBOX_OFFSET) * scaleY
+  const canvasX = pageBounds.x + pdfX * scaleX
+  const canvasY = pageBounds.y + pdfY * scaleY
 
   return { x: canvasX, y: canvasY }
 }

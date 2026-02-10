@@ -76,6 +76,10 @@ if [ -f "$TEX_DIR/$TEX_BASE.synctex.gz" ]; then
   echo ""
   echo "Extracting synctex lookup..."
   node scripts/extract-synctex-lookup.mjs "$TEX_FILE" "$OUTPUT_DIR/lookup.json"
+
+  # Extract theorem/proof pairing
+  echo "Extracting proof pairing..."
+  node scripts/compute-proof-pairing.mjs "$TEX_FILE" "$OUTPUT_DIR/lookup.json" "$OUTPUT_DIR/proof-info.json"
 fi
 
 # Update manifest

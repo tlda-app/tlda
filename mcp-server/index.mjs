@@ -57,7 +57,6 @@ function lookupLine(docName, lineNum) {
 // PDF → canvas coordinate conversion (matching synctexAnchor.ts)
 const PDF_WIDTH = 612;
 const PDF_HEIGHT = 792;
-const VIEWBOX_OFFSET = -72;
 const PAGE_WIDTH = 800;
 const PAGE_HEIGHT = 1035.294; // 792 * (800/612)
 const PAGE_GAP = 32;
@@ -67,8 +66,8 @@ function pdfToCanvas(page, pdfX, pdfY) {
   const scaleX = PAGE_WIDTH / PDF_WIDTH;
   const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
   return {
-    x: (pdfX - VIEWBOX_OFFSET) * scaleX,
-    y: pageY + (pdfY - VIEWBOX_OFFSET) * scaleY,
+    x: pdfX * scaleX,
+    y: pageY + pdfY * scaleY,
   };
 }
 
@@ -79,8 +78,8 @@ function canvasToPdf(canvasX, canvasY) {
   const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
   return {
     page,
-    pdfX: canvasX / scaleX + VIEWBOX_OFFSET,
-    pdfY: localY / scaleY + VIEWBOX_OFFSET,
+    pdfX: canvasX / scaleX,
+    pdfY: localY / scaleY,
   };
 }
 

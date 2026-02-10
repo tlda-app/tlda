@@ -1,6 +1,6 @@
 import { createContext } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
-import type { DiffChange } from './svgDocumentLoader'
+import type { DiffChange, ProofPair } from './svgDocumentLoader'
 
 export interface PanelContextValue {
   docName: string
@@ -11,6 +11,10 @@ export interface PanelContextValue {
   diffMode?: boolean
   onToggleDiff?: () => void
   diffLoading?: boolean
+  proofPairs?: ProofPair[]
+  proofMode?: boolean
+  onToggleProof?: () => void
+  proofLoading?: boolean
 }
 
 export const PanelContext = createContext<PanelContextValue | null>(null)

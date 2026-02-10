@@ -1,4 +1,5 @@
 import { useMemo, useEffect, useRef, useContext, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Tldraw,
   createShapeId,
@@ -38,11 +39,14 @@ import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, getYRecords } from './useYjsSync'
 import type { ForwardSyncSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
-import { clearLookupCache } from './synctexLookup'
+import { clearLookupCache, buildReverseIndex } from './synctexLookup'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
 import { TextSelectionLayer, extractTextFromSvgAsync } from './TextSelectionLayer'
-import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight } from './svgDocumentLoader'
+import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, loadProofData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight, type ProofData, type LabelRegion } from './svgDocumentLoader'
+import { ProofStatementOverlay } from './ProofStatementOverlay'
+import { RefViewer } from './RefViewer'
+import { canvasToPdf } from './synctexAnchor'
 
 // Sync server URL - use env var, or auto-detect based on environment
 // In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
@@ -283,6 +287,37 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const diffModeRef = useRef(false)
   const toggleDiffRef = useRef<() => void>(() => {})
   const [diffFetchSeq, setDiffFetchSeq] = useState(0)  // bumped on reload to re-trigger pre-fetch
+  const sessionRestoredRef = useRef(false)
+  // --- Proof reader toggle state ---
+  const [proofMode, setProofMode] = useState(false)
+  const proofDataRef = useRef<ProofData | null>(null)
+  const proofShapeIdsRef = useRef<Set<TLShapeId>>(new Set())
+  const proofLoadingRef = useRef(false)
+  const [proofLoading, setProofLoading] = useState(false)
+  const proofModeRef = useRef(false)
+  const toggleProofRef = useRef<() => void>(() => {})
+  const [proofFetchSeq, setProofFetchSeq] = useState(0)
+  const [proofDataReady, setProofDataReady] = useState(false)
+
+  // --- Ref viewer state (click-to-reference) ---
+  const [refViewerRefs, setRefViewerRefs] = useState<{ label: string; region: LabelRegion }[] | null>(null)
+  const refViewerLineRef = useRef<number | null>(null)  // current source line shown in ref viewer
+  const sortedRefLinesRef = useRef<number[]>([])  // all lines with refs, sorted
+
+  // --- Shared portal for bottom-left panels (ref viewer + proof overlay) ---
+  const bottomPanelsRef = useRef<HTMLDivElement | null>(null)
+  if (!bottomPanelsRef.current) {
+    bottomPanelsRef.current = window.document.createElement('div')
+    bottomPanelsRef.current.className = 'bottom-panels'
+    window.document.body.appendChild(bottomPanelsRef.current)
+  }
+  useEffect(() => {
+    return () => {
+      bottomPanelsRef.current?.remove()
+      bottomPanelsRef.current = null
+    }
+  }, [])
+
   // Refs for setupSvgEditor's mutable sets — populated in onMount
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
   const shapeIdsArrayRef = useRef<TLShapeId[]>([])
@@ -293,6 +328,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
   // Keep refs in sync with state for access in closures
   useEffect(() => { diffModeRef.current = diffMode }, [diffMode])
+  useEffect(() => { proofModeRef.current = proofMode }, [proofMode])
 
   const toggleDiff = useCallback(async () => {
     const editor = editorRef.current
@@ -453,7 +489,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       // Set up pulse effect for this diff data
       setupPulseForDiffData(editor, document.name, dd, focusChangeRef)
 
-      // Expand camera bounds
+      // Expand camera bounds to include old diff pages
       if (updateCameraBoundsRef.current && dd.pages.length > 0) {
         const allBounds = document.pages.reduce(
           (acc, page) => acc.union(page.bounds),
@@ -508,6 +544,96 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // Keep toggleDiff ref current for session restore
   useEffect(() => { toggleDiffRef.current = toggleDiff }, [toggleDiff])
 
+  // --- Proof reader toggle ---
+  const hasProofInfo = !!document.basePath  // any doc with basePath could have proof-info.json
+
+  const toggleProof = useCallback(async () => {
+    const editor = editorRef.current
+    if (!editor || proofLoadingRef.current) return
+
+    const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+
+    if (!proofMode) {
+      // Turning ON
+      if (!proofDataRef.current) {
+        proofLoadingRef.current = true
+        setProofLoading(true)
+        try {
+          proofDataRef.current = await loadProofData(document.name, basePath, document.pages)
+        } catch (e) {
+          console.error('[Proof Toggle] Failed to load proof data:', e)
+          proofLoadingRef.current = false
+          setProofLoading(false)
+          return
+        }
+        proofLoadingRef.current = false
+        setProofLoading(false)
+      }
+
+      const pd = proofDataRef.current
+      if (pd.highlights.length === 0) {
+        console.log('[Proof Toggle] No cross-page pairs found')
+        return
+      }
+
+      const createdIds = new Set<TLShapeId>()
+
+      // Create only highlight shapes — statement display is handled by the overlay
+      editor.store.mergeRemoteChanges(() => {
+        editor.createShapes(
+          pd.highlights.map((hl, i) => {
+            const hlId = createShapeId(`${document.name}-proof-hl-${i}`)
+            createdIds.add(hlId)
+            return {
+              id: hlId,
+              type: 'geo' as const,
+              x: hl.x,
+              y: hl.y,
+              isLocked: true,
+              opacity: 0,
+              props: {
+                geo: 'rectangle',
+                w: hl.w,
+                h: hl.h,
+                fill: 'solid',
+                color: 'light-green',
+                dash: 'draw',
+                size: 's',
+              },
+            }
+          })
+        )
+      })
+
+      proofShapeIdsRef.current = createdIds
+      for (const id of createdIds) {
+        shapeIdSetRef.current.add(id)
+        shapeIdsArrayRef.current.push(id)
+      }
+
+      setProofMode(true)
+      console.log(`[Proof Toggle] ON — ${createdIds.size} highlight shapes, overlay active`)
+    } else {
+      // Turning OFF
+      const idsToRemove = proofShapeIdsRef.current
+      if (idsToRemove.size > 0) {
+        editor.store.mergeRemoteChanges(() => {
+          editor.store.remove([...idsToRemove] as any[])
+        })
+        for (const id of idsToRemove) {
+          shapeIdSetRef.current.delete(id)
+        }
+        shapeIdsArrayRef.current = shapeIdsArrayRef.current.filter(id => !idsToRemove.has(id))
+      }
+      proofShapeIdsRef.current = new Set()
+
+      setProofMode(false)
+      console.log('[Proof Toggle] OFF — highlights removed, overlay dismissed')
+    }
+  }, [proofMode, document])
+
+  useEffect(() => { toggleProofRef.current = toggleProof }, [toggleProof])
+
   // Subscribe to Yjs reload signals
   useEffect(() => {
     return onReloadSignal((signal) => {
@@ -519,6 +645,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         clearLookupCache(document.name)
         diffDataRef.current = null  // invalidate so next toggle re-fetches
         setDiffFetchSeq(s => s + 1)  // re-trigger pre-fetch
+        proofDataRef.current = null  // invalidate proof data too
+        setProofDataReady(false)
+        setProofFetchSeq(s => s + 1)
         reloadPages(editor, document, null)
       }
     })
@@ -616,6 +745,113 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       .catch(e => console.warn('[Diff] Pre-fetch failed:', e))
   }, [diffConfig, document, diffFetchSeq])
 
+  // Pre-fetch proof data in background for instant first toggle
+  useEffect(() => {
+    if (!hasProofInfo) return
+    setProofDataReady(false)
+    const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+    loadProofData(document.name, basePath, document.pages)
+      .then(data => {
+        if (!proofDataRef.current) proofDataRef.current = data
+        setProofDataReady(true)
+      })
+      .catch(() => {}) // proof-info.json may not exist — that's fine
+  }, [hasProofInfo, document, proofFetchSeq])
+
+  // --- Click-to-ref: double-click on document text to look up references ---
+  const reverseIndexRef = useRef<((page: number, y: number) => number | null) | null>(null)
+  useEffect(() => {
+    buildReverseIndex(document.name).then(fn => { reverseIndexRef.current = fn })
+  }, [document.name])
+
+  // Helper: resolve refs on a given line to regions
+  const resolveRefsOnLine = useCallback((line: number): { label: string; region: LabelRegion }[] | null => {
+    const proofData = proofDataRef.current
+    if (!proofData) return null
+    const lineRefsMap = proofData.lineRefs
+    // Check exact line and nearby (synctex can be off by a few lines)
+    let refsOnLine: string[] | undefined
+    let matchedLine = line
+    for (let offset = 0; offset <= 5; offset++) {
+      if (lineRefsMap[(line + offset).toString()]) {
+        refsOnLine = lineRefsMap[(line + offset).toString()]
+        matchedLine = line + offset
+        break
+      }
+      if (offset > 0 && lineRefsMap[(line - offset).toString()]) {
+        refsOnLine = lineRefsMap[(line - offset).toString()]
+        matchedLine = line - offset
+        break
+      }
+    }
+    if (!refsOnLine || refsOnLine.length === 0) return null
+    const resolved: { label: string; region: LabelRegion }[] = []
+    for (const label of refsOnLine) {
+      const region = proofData.labelRegions[label]
+      if (region) resolved.push({ label, region })
+    }
+    if (resolved.length === 0) return null
+    refViewerLineRef.current = matchedLine
+    return resolved
+  }, [])
+
+  // Build sorted ref lines when proof data loads
+  useEffect(() => {
+    const proofData = proofDataRef.current
+    if (!proofData || !proofDataReady) {
+      sortedRefLinesRef.current = []
+      return
+    }
+    sortedRefLinesRef.current = Object.keys(proofData.lineRefs).map(Number).sort((a, b) => a - b)
+  }, [proofDataReady])
+
+  // Navigate to prev/next ref line
+  const navigateRefLine = useCallback((direction: -1 | 1) => {
+    const currentLine = refViewerLineRef.current
+    if (currentLine === null) return
+    const sorted = sortedRefLinesRef.current
+    const idx = sorted.indexOf(currentLine)
+    if (idx < 0) return
+    const nextIdx = idx + direction
+    if (nextIdx < 0 || nextIdx >= sorted.length) return
+    const nextLine = sorted[nextIdx]
+    const resolved = resolveRefsOnLine(nextLine)
+    if (resolved) setRefViewerRefs(resolved)
+  }, [resolveRefsOnLine])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor || !proofDataReady) return
+
+    const handleDoubleClick = (e: MouseEvent) => {
+      const reverseIndex = reverseIndexRef.current
+      if (!reverseIndex) return
+
+      // Convert screen point to canvas coords
+      const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      // Convert canvas coords to PDF coords (page + y)
+      const pages = document.pages.map(p => ({
+        bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+        width: p.width,
+        height: p.height,
+      }))
+      const pdf = canvasToPdf(point.x, point.y, pages)
+      if (!pdf) return
+
+      // Reverse lookup: PDF coords → source line
+      const line = reverseIndex(pdf.page, pdf.y)
+      if (!line) return
+
+      const resolved = resolveRefsOnLine(line)
+      if (resolved) setRefViewerRefs(resolved)
+    }
+
+    // Use native dblclick on the TLDraw container
+    const container = editor.getContainer()
+    container.addEventListener('dblclick', handleDoubleClick)
+    return () => container.removeEventListener('dblclick', handleDoubleClick)
+  }, [document, proofDataReady, resolveRefsOnLine])
+
   // Keyboard shortcut: 'd' for diff toggle
   useEffect(() => {
     if (!hasDiffToggle) return
@@ -631,6 +867,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [hasDiffToggle, toggleDiff])
+
+  // Keyboard shortcut: 'r' for proof reader toggle
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'r' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (isInputFocused()) return
+        const editor = editorRef.current
+        if (!editor) return
+        if (editor.getEditingShapeId()) return
+        toggleProof()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [toggleProof])
 
   // n/p keyboard shortcuts for diff change navigation (global, not tied to ChangesTab)
   useEffect(() => {
@@ -740,7 +991,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     diffMode,
     onToggleDiff: hasDiffToggle ? toggleDiff : undefined,
     diffLoading,
-  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff])
+    proofPairs: proofDataReady ? proofDataRef.current?.pairs : undefined,
+    proofMode,
+    onToggleProof: toggleProof,
+    proofLoading,
+  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -821,6 +1076,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 camera: { x: cam.x, y: cam.y, z: cam.z },
                 tool,
                 diffMode: diffModeRef.current,
+                proofMode: proofModeRef.current,
               }))
             } catch { /* quota exceeded etc */ }
           }
@@ -829,55 +1085,63 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean; proofMode?: boolean }
             } catch { return null }
           }
 
           // Restore session after constraints and Yjs sync settle,
-          // then start watching for changes
-          const session = loadSession()
-          setTimeout(() => {
-            if (session?.camera) {
-              editor.setCamera(session.camera)
-            }
-            if (session?.tool) {
-              try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
-            }
-            // Restore diff mode if it was active
-            if (session?.diffMode && hasDiffToggle) {
-              toggleDiffRef.current()
-            }
+          // then start watching for changes.
+          // Guard: onMount fires multiple times (React Strict Mode double-invokes
+          // TLDraw's layout effect on every commit). Only restore+watch once.
+          if (!sessionRestoredRef.current) {
+            sessionRestoredRef.current = true
+            const session = loadSession()
+            setTimeout(() => {
+              if (session?.camera) {
+                editor.setCamera(session.camera)
+              }
+              if (session?.tool) {
+                try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
+              }
+              // Restore diff mode if it was active
+              if (session?.diffMode && hasDiffToggle) {
+                toggleDiffRef.current()
+              }
+              if (session?.proofMode) {
+                toggleProofRef.current()
+              }
 
-            // Start save watchers only after restore
-            let cameraTimer: ReturnType<typeof setTimeout> | null = null
-            react('save-camera', () => {
-              editor.getCamera() // subscribe
-              if (cameraTimer) clearTimeout(cameraTimer)
-              cameraTimer = setTimeout(() => {
+              // Start save watchers only after restore
+              let cameraTimer: ReturnType<typeof setTimeout> | null = null
+              react('save-camera', () => {
+                editor.getCamera() // subscribe
+                if (cameraTimer) clearTimeout(cameraTimer)
+                cameraTimer = setTimeout(() => {
+                  saveSession()
+                  // Report visible pages to Yjs (for watcher priority rebuild)
+                  const yRecords = getYRecords()
+                  if (yRecords && document.pages.length > 0) {
+                    const vb = editor.getViewportScreenBounds()
+                    const cam = editor.getCamera()
+                    // Convert screen bounds to canvas coords
+                    const top = -cam.y + vb.y / cam.z
+                    const bottom = top + vb.h / cam.z
+                    const pageH = document.pages[0].height + pageSpacing
+                    const firstPage = Math.max(1, Math.floor(top / pageH) + 1)
+                    const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
+                    const pages: number[] = []
+                    for (let p = firstPage; p <= lastPage; p++) pages.push(p)
+                    yRecords.set('signal:viewport' as any, { pages, timestamp: Date.now() } as any)
+                  }
+                }, 500)
+              })
+
+              react('save-tool', () => {
+                editor.getCurrentToolId() // subscribe
                 saveSession()
-                // Report visible pages to Yjs (for watcher priority rebuild)
-                const yRecords = getYRecords()
-                if (yRecords && document.pages.length > 0) {
-                  const vb = editor.getViewportScreenBounds()
-                  const cam = editor.getCamera()
-                  // Convert screen bounds to canvas coords
-                  const top = -cam.y + vb.y / cam.z
-                  const bottom = top + vb.h / cam.z
-                  const pageH = document.pages[0].height + pageSpacing
-                  const firstPage = Math.max(1, Math.floor(top / pageH) + 1)
-                  const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
-                  const pages: number[] = []
-                  for (let p = firstPage; p <= lastPage; p++) pages.push(p)
-                  yRecords.set('signal:viewport' as any, { pages, timestamp: Date.now() } as any)
-                }
-              }, 500)
-            })
-
-            react('save-tool', () => {
-              editor.getCurrentToolId() // subscribe
-              saveSession()
-            })
-          }, 500)
+              })
+            }, 500)
+          }
 
           // Keyboard shortcut: 'm' for math note
           const handleKeyDown = (e: KeyboardEvent) => {
@@ -920,6 +1184,47 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     >
       <YjsSyncProvider roomId={roomId} />
     </Tldraw>
+    {bottomPanelsRef.current && createPortal(
+      <>
+        {refViewerRefs && editorRef.current && (
+          <RefViewer
+            mainEditor={editorRef.current}
+            pages={panelContextValue.pages}
+            refs={refViewerRefs}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+            onClose={() => { setRefViewerRefs(null); refViewerLineRef.current = null }}
+            onPrevLine={() => navigateRefLine(-1)}
+            onNextLine={() => navigateRefLine(1)}
+            onJump={(region) => {
+              const editor = editorRef.current
+              if (!editor) return
+              const pageIdx = region.page - 1
+              const page = document.pages[pageIdx]
+              if (!page) return
+              const scaleY = page.bounds.height / 792
+              const canvasY = page.bounds.y + region.yTop * scaleY
+              editor.centerOnPoint(
+                { x: page.bounds.x + page.bounds.width / 2, y: canvasY },
+                { animation: { duration: 300 } }
+              )
+            }}
+          />
+        )}
+        {proofMode && editorRef.current && proofDataRef.current && (
+          <ProofStatementOverlay
+            mainEditor={editorRef.current}
+            proofData={proofDataRef.current}
+            pages={panelContextValue.pages}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+          />
+        )}
+      </>,
+      bottomPanelsRef.current,
+    )}
     </PanelContext.Provider>
   )
 }

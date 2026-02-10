@@ -176,6 +176,47 @@ export async function resolveAnchorStatic(
 }
 
 /**
+ * Build a reverse synctex index: given a page and y-coordinate, find the
+ * closest source line. Returns a function that does the lookup.
+ */
+export async function buildReverseIndex(docName: string): Promise<((page: number, y: number) => number | null) | null> {
+  const lookup = await loadLookup(docName)
+  if (!lookup) return null
+
+  // Group entries by page, sorted by y
+  const byPage = new Map<number, { y: number; line: number }[]>()
+  for (const [lineStr, entry] of Object.entries(lookup.lines)) {
+    const line = parseInt(lineStr)
+    if (!byPage.has(entry.page)) byPage.set(entry.page, [])
+    byPage.get(entry.page)!.push({ y: entry.y, line })
+  }
+  for (const entries of byPage.values()) {
+    entries.sort((a, b) => a.y - b.y)
+  }
+
+  return (page: number, y: number): number | null => {
+    const entries = byPage.get(page)
+    if (!entries || entries.length === 0) return null
+
+    // Binary search for closest y
+    let lo = 0, hi = entries.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (entries[mid].y < y) lo = mid + 1
+      else hi = mid
+    }
+    // Check lo and lo-1 for closest
+    let best = lo
+    if (lo > 0 && Math.abs(entries[lo - 1].y - y) < Math.abs(entries[lo].y - y)) {
+      best = lo - 1
+    }
+    // Only match if within ~30pt (about 2 lines of text)
+    if (Math.abs(entries[best].y - y) > 30) return null
+    return entries[best].line
+  }
+}
+
+/**
  * Clear lookup cache (call after document rebuild)
  */
 export function clearLookupCache(docName?: string) {

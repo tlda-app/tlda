@@ -3,7 +3,8 @@
     "bregman": {
       "name": "bregman",
       "pages": 47,
-      "basePath": "/docs/bregman/"
+      "basePath": "/docs/bregman/",
+      "texFile": "/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex"
     },
     "lecture2-prose": {
       "name": "Point and Interval Estimates",
@@ -31,7 +32,7 @@
     },
     "bregman-lower-bound": {
       "name": "bregman-lower-bound",
-      "pages": 50,
+      "pages": 60,
       "basePath": "/docs/bregman-lower-bound/"
     },
     "bregman-lower-bound-diff": {
@@ -41,6 +42,14 @@
       "format": "diff",
       "texFile": "/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex",
       "sourceDoc": "bregman-lower-bound"
+    },
+    "bregman-diff": {
+      "name": "bregman diff vs HEAD",
+      "pages": 52,
+      "basePath": "/docs/bregman-diff/",
+      "format": "diff",
+      "texFile": "/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex",
+      "sourceDoc": "bregman"
     }
   }
 }
