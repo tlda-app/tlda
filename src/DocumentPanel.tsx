@@ -335,6 +335,22 @@ function TocTab() {
           <kbd>d</kbd> {ctx.diffLoading ? 'Loading diff\u2026' : ctx.diffMode ? 'Hide diff' : 'Show diff'}
         </div>
       )}
+      {ctx?.onToggleCameraLink && (
+        <div
+          className="toc-diff-hint"
+          onClick={() => ctx.onToggleCameraLink?.()}
+        >
+          <kbd>l</kbd> {ctx.cameraLinked ? 'Unlink cameras' : 'Link cameras'}
+        </div>
+      )}
+      {ctx?.cameraLinked && ctx?.onTogglePanelsLocal && (
+        <div
+          className="toc-diff-hint"
+          onClick={() => ctx.onTogglePanelsLocal?.()}
+        >
+          {ctx.panelsLocal ? 'Hide panels here' : 'Show panels here'}
+        </div>
+      )}
     </div>
   )
 }

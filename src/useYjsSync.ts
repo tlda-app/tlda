@@ -70,6 +70,60 @@ export function onScreenshotRequest(cb: ScreenshotCallback) {
 }
 let lastScreenshotRequestTimestamp = 0
 
+// Camera link: sync camera position between viewers
+export type CameraLinkSignal = { x: number; y: number; z: number; viewerId: string; timestamp: number }
+type CameraLinkCallback = (signal: CameraLinkSignal) => void
+const cameraLinkCallbacks = new Set<CameraLinkCallback>()
+export function onCameraLink(cb: CameraLinkCallback) {
+  cameraLinkCallbacks.add(cb)
+  return () => { cameraLinkCallbacks.delete(cb) }
+}
+let lastCameraLinkTimestamp = 0
+
+// Ref viewer: sync click-to-reference state between viewers
+export type RefViewerSignal = {
+  refs: Array<{ label: string; region: { page: number; yTop: number; yBottom: number; displayLabel?: string } }> | null
+  viewerId: string
+  timestamp: number
+}
+type RefViewerCallback = (signal: RefViewerSignal) => void
+const refViewerCallbacks = new Set<RefViewerCallback>()
+export function onRefViewerSignal(cb: RefViewerCallback) {
+  refViewerCallbacks.add(cb)
+  return () => { refViewerCallbacks.delete(cb) }
+}
+let lastRefViewerTimestamp = 0
+
+// Stable random viewer ID for this tab (prevents applying own signals)
+const localViewerId = Math.random().toString(36).slice(2, 10)
+export function getViewerId() { return localViewerId }
+
+export function broadcastCamera(x: number, y: number, z: number) {
+  const yRecords = activeYRecords
+  if (!yRecords) return
+  const doc = yRecords.doc!
+  doc.transact(() => {
+    yRecords.set('signal:camera-link' as any, {
+      x, y, z,
+      viewerId: localViewerId,
+      timestamp: Date.now(),
+    } as any)
+  })
+}
+
+export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
+  const yRecords = activeYRecords
+  if (!yRecords) return
+  const doc = yRecords.doc!
+  doc.transact(() => {
+    yRecords.set('signal:ref-viewer' as any, {
+      refs,
+      viewerId: localViewerId,
+      timestamp: Date.now(),
+    } as any)
+  })
+}
+
 /**
  * Load static annotations from annotations.json when no sync server is available.
  * Used in production (GitHub Pages) where annotations were baked in by publish-snapshot.
@@ -269,6 +323,28 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
             lastHighlightTimestamp = signal.timestamp
             console.log(`[Yjs] Forward highlight: page ${signal.page} (${signal.x}, ${signal.y})`)
             for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...signal })
+          }
+        }
+
+        // Camera link: sync camera between viewers
+        if (key === 'signal:camera-link' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as CameraLinkSignal
+          if (!hasReceivedInitialSync) {
+            if (signal?.timestamp) lastCameraLinkTimestamp = signal.timestamp
+          } else if (signal?.timestamp && signal.timestamp > lastCameraLinkTimestamp && signal.viewerId !== localViewerId) {
+            lastCameraLinkTimestamp = signal.timestamp
+            for (const cb of cameraLinkCallbacks) cb(signal)
+          }
+        }
+
+        // Ref viewer: sync click-to-reference between viewers
+        if (key === 'signal:ref-viewer' && (change.action === 'add' || change.action === 'update')) {
+          const signal = yRecords.get(key) as unknown as RefViewerSignal
+          if (!hasReceivedInitialSync) {
+            if (signal?.timestamp) lastRefViewerTimestamp = signal.timestamp
+          } else if (signal?.timestamp && signal.timestamp > lastRefViewerTimestamp && signal.viewerId !== localViewerId) {
+            lastRefViewerTimestamp = signal.timestamp
+            for (const cb of refViewerCallbacks) cb(signal)
           }
         }
       })

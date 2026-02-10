@@ -15,6 +15,10 @@ export interface PanelContextValue {
   proofMode?: boolean
   onToggleProof?: () => void
   proofLoading?: boolean
+  cameraLinked?: boolean
+  onToggleCameraLink?: () => void
+  panelsLocal?: boolean
+  onTogglePanelsLocal?: () => void
 }
 
 export const PanelContext = createContext<PanelContextValue | null>(null)

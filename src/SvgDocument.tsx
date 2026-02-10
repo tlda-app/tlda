@@ -36,7 +36,7 @@ import { MathNoteShapeUtil } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, getYRecords } from './useYjsSync'
+import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, onCameraLink, broadcastCamera, onRefViewerSignal, broadcastRefViewer, getYRecords } from './useYjsSync'
 import type { ForwardSyncSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { clearLookupCache, buildReverseIndex } from './synctexLookup'
@@ -299,10 +299,46 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const [proofFetchSeq, setProofFetchSeq] = useState(0)
   const [proofDataReady, setProofDataReady] = useState(false)
 
+  // --- Camera link state ---
+  const [cameraLinked, setCameraLinked] = useState(false)
+  const cameraLinkedRef = useRef(false)
+  const suppressBroadcastRef = useRef(false)
+  const broadcastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => { cameraLinkedRef.current = cameraLinked }, [cameraLinked])
+
+  const toggleCameraLink = useCallback(() => {
+    setCameraLinked(prev => !prev)
+  }, [])
+
+  // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
+  const [panelsLocal, setPanelsLocal] = useState(true)
+  const panelsLocalRef = useRef(true)
+  useEffect(() => { panelsLocalRef.current = panelsLocal }, [panelsLocal])
+
+  const togglePanelsLocal = useCallback(() => {
+    setPanelsLocal(prev => !prev)
+  }, [])
+
   // --- Ref viewer state (click-to-reference) ---
   const [refViewerRefs, setRefViewerRefs] = useState<{ label: string; region: LabelRegion }[] | null>(null)
   const refViewerLineRef = useRef<number | null>(null)  // current source line shown in ref viewer
   const sortedRefLinesRef = useRef<number[]>([])  // all lines with refs, sorted
+
+  // Broadcast ref viewer state to other viewers when it changes
+  const refViewerUserActionRef = useRef(false)  // true when change is from local user action
+  useEffect(() => {
+    if (!refViewerUserActionRef.current) return  // skip broadcasts triggered by incoming signals
+    broadcastRefViewer(refViewerRefs)
+    refViewerUserActionRef.current = false
+  }, [refViewerRefs])
+
+  // Wrapper to set refs from local user actions (triggers broadcast)
+  const setRefViewerRefsLocal = useCallback((refs: { label: string; region: LabelRegion }[] | null) => {
+    refViewerUserActionRef.current = true
+    setRefViewerRefs(refs)
+    if (refs === null) refViewerLineRef.current = null
+  }, [])
 
   // --- Shared portal for bottom-left panels (ref viewer + proof overlay) ---
   const bottomPanelsRef = useRef<HTMLDivElement | null>(null)
@@ -730,6 +766,31 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     })
   }, [])
 
+  // Incoming camera link: apply remote camera position
+  useEffect(() => {
+    return onCameraLink((signal) => {
+      const editor = editorRef.current
+      if (!editor || !cameraLinkedRef.current) return
+      suppressBroadcastRef.current = true
+      editor.setCamera({ x: signal.x, y: signal.y, z: signal.z })
+      // Allow suppress to clear after a tick so the outgoing watcher doesn't echo
+      setTimeout(() => { suppressBroadcastRef.current = false }, 200)
+    })
+  }, [])
+
+  // Incoming ref viewer signal: show refs from another viewer
+  useEffect(() => {
+    return onRefViewerSignal((signal) => {
+      if (!panelsLocalRef.current) return  // panels hidden locally
+      if (signal.refs === null) {
+        setRefViewerRefs(null)
+        refViewerLineRef.current = null
+      } else {
+        setRefViewerRefs(signal.refs)
+      }
+    })
+  }, [])
+
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {
     const tag = window.document.activeElement?.tagName
@@ -816,8 +877,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     if (nextIdx < 0 || nextIdx >= sorted.length) return
     const nextLine = sorted[nextIdx]
     const resolved = resolveRefsOnLine(nextLine)
-    if (resolved) setRefViewerRefs(resolved)
-  }, [resolveRefsOnLine])
+    if (resolved) setRefViewerRefsLocal(resolved)
+  }, [resolveRefsOnLine, setRefViewerRefsLocal])
 
   useEffect(() => {
     const editor = editorRef.current
@@ -843,14 +904,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       if (!line) return
 
       const resolved = resolveRefsOnLine(line)
-      if (resolved) setRefViewerRefs(resolved)
+      if (resolved) setRefViewerRefsLocal(resolved)
     }
 
     // Use native dblclick on the TLDraw container
     const container = editor.getContainer()
     container.addEventListener('dblclick', handleDoubleClick)
     return () => container.removeEventListener('dblclick', handleDoubleClick)
-  }, [document, proofDataReady, resolveRefsOnLine])
+  }, [document, proofDataReady, resolveRefsOnLine, setRefViewerRefsLocal])
 
   // Keyboard shortcut: 'd' for diff toggle
   useEffect(() => {
@@ -882,6 +943,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [toggleProof])
+
+  // Keyboard shortcut: 'l' for camera link toggle
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'l' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (isInputFocused()) return
+        const editor = editorRef.current
+        if (!editor) return
+        if (editor.getEditingShapeId()) return
+        toggleCameraLink()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [toggleCameraLink])
 
   // n/p keyboard shortcuts for diff change navigation (global, not tied to ChangesTab)
   useEffect(() => {
@@ -995,7 +1071,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     proofMode,
     onToggleProof: toggleProof,
     proofLoading,
-  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof])
+    cameraLinked,
+    onToggleCameraLink: toggleCameraLink,
+    panelsLocal,
+    onTogglePanelsLocal: togglePanelsLocal,
+  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -1136,6 +1216,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 }, 500)
               })
 
+              // Camera link: broadcast position to other viewers (faster debounce)
+              react('broadcast-camera', () => {
+                const cam = editor.getCamera() // subscribe
+                if (!cameraLinkedRef.current || suppressBroadcastRef.current) return
+                if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current)
+                broadcastTimerRef.current = setTimeout(() => {
+                  if (cameraLinkedRef.current && !suppressBroadcastRef.current) {
+                    broadcastCamera(cam.x, cam.y, cam.z)
+                  }
+                }, 150)
+              })
+
               react('save-tool', () => {
                 editor.getCurrentToolId() // subscribe
                 saveSession()
@@ -1186,7 +1278,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     </Tldraw>
     {bottomPanelsRef.current && createPortal(
       <>
-        {refViewerRefs && editorRef.current && (
+        {panelsLocal && refViewerRefs && editorRef.current && (
           <RefViewer
             mainEditor={editorRef.current}
             pages={panelContextValue.pages}
@@ -1194,7 +1286,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             shapeUtils={shapeUtils}
             tools={tools}
             licenseKey={LICENSE_KEY}
-            onClose={() => { setRefViewerRefs(null); refViewerLineRef.current = null }}
+            onClose={() => setRefViewerRefsLocal(null)}
             onPrevLine={() => navigateRefLine(-1)}
             onNextLine={() => navigateRefLine(1)}
             onJump={(region) => {
@@ -1212,7 +1304,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             }}
           />
         )}
-        {proofMode && editorRef.current && proofDataRef.current && (
+        {panelsLocal && proofMode && editorRef.current && proofDataRef.current && (
           <ProofStatementOverlay
             mainEditor={editorRef.current}
             proofData={proofDataRef.current}
