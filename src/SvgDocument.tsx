@@ -1244,32 +1244,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           }
           window.addEventListener('keydown', handleKeyDown)
 
-          // Pen double-tap in right edge (panel zone) to cycle draw → highlight → eraser
-          const penCycle = ['draw', 'highlight', 'eraser']
-          let lastPenTap = 0
-          let penTapTool = ''  // tool at first tap (before TLDraw changes it)
-          const editorContainer = editor.getContainer()
-          editorContainer.addEventListener('pointerdown', (e: PointerEvent) => {
-            if (e.pointerType !== 'pen') return
-            const threshold = window.innerWidth - 250
-            if (e.clientX < threshold) {
-              lastPenTap = 0
-              return
-            }
-            const now = Date.now()
-            if (now - lastPenTap < 300) {
-              const idx = penCycle.indexOf(penTapTool)
-              const next = penCycle[(idx + 1) % penCycle.length]
-              console.log(`[PenTap] double-tap! ${penTapTool} → ${next}`)
-              editor.setCurrentTool(next)
-              lastPenTap = 0
-            } else {
-              penTapTool = editor.getCurrentToolId()
-              console.log(`[PenTap] first tap, tool=${penTapTool}`)
-              lastPenTap = now
-            }
-          }, true)
-
           // Axis-lock two-finger scroll: snap to vertical or horizontal
           // when the gesture is approximately aligned (3:1 ratio).
           // Intercept at editor.dispatch since @use-gesture binds wheel internally.
