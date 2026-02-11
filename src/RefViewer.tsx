@@ -166,42 +166,21 @@ export function RefViewer({
         <button
           className="ref-viewer-nav"
           onClick={(e) => { e.stopPropagation(); onPrevLine() }}
-          title="Previous ref in document"
+          title="Previous ref"
         >
           ‹
         </button>
-        {refs.length > 1 && (
-          <button
-            className="ref-viewer-nav-inline"
-            onClick={(e) => { e.stopPropagation(); setActiveIndex((activeIndex - 1 + refs.length) % refs.length) }}
-            title="Previous ref on this line"
-          >
-            ◂
-          </button>
-        )}
         <span className="ref-viewer-title">
           {activeRef.region.displayLabel}
         </span>
-        {refs.length > 1 && (
-          <>
-            <span className="ref-viewer-count">{activeIndex + 1}/{refs.length}</span>
-            <button
-              className="ref-viewer-nav-inline"
-              onClick={(e) => { e.stopPropagation(); setActiveIndex((activeIndex + 1) % refs.length) }}
-              title="Next ref on this line"
-            >
-              ▸
-            </button>
-          </>
-        )}
-        <span className="ref-viewer-page">p.{activeRef.region.page}</span>
         <button
           className="ref-viewer-nav"
           onClick={(e) => { e.stopPropagation(); onNextLine() }}
-          title="Next ref in document"
+          title="Next ref"
         >
           ›
         </button>
+        <span className="ref-viewer-page">p.{activeRef.region.page}</span>
         <button
           className="ref-viewer-close"
           onClick={(e) => { e.stopPropagation(); onClose() }}

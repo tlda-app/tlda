@@ -324,6 +324,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const [refViewerRefs, setRefViewerRefs] = useState<{ label: string; region: LabelRegion }[] | null>(null)
   const refViewerLineRef = useRef<number | null>(null)  // current source line shown in ref viewer
   const sortedRefLinesRef = useRef<number[]>([])  // all lines with refs, sorted
+  // Flat list of all refs in document order, and current position
+  const flatRefsRef = useRef<{ line: number; label: string; region: LabelRegion }[]>([])
+  const flatRefIndexRef = useRef<number>(-1)
 
   // Broadcast ref viewer state to other viewers when it changes
   const refViewerUserActionRef = useRef(false)  // true when change is from local user action
@@ -337,7 +340,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const setRefViewerRefsLocal = useCallback((refs: { label: string; region: LabelRegion }[] | null) => {
     refViewerUserActionRef.current = true
     setRefViewerRefs(refs)
-    if (refs === null) refViewerLineRef.current = null
+    if (refs === null) {
+      refViewerLineRef.current = null
+      flatRefIndexRef.current = -1
+    }
   }, [])
 
   // --- Shared portal for bottom-left panels (ref viewer + proof overlay) ---
@@ -855,62 +861,113 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     return resolved
   }, [])
 
-  // Build sorted ref lines when proof data loads
+  // Build flat ref list when proof data loads
   useEffect(() => {
     const proofData = proofDataRef.current
     if (!proofData || !proofDataReady) {
       sortedRefLinesRef.current = []
+      flatRefsRef.current = []
       return
     }
-    sortedRefLinesRef.current = Object.keys(proofData.lineRefs).map(Number).sort((a, b) => a - b)
+    const sorted = Object.keys(proofData.lineRefs).map(Number).sort((a, b) => a - b)
+    sortedRefLinesRef.current = sorted
+    const flat: { line: number; label: string; region: LabelRegion }[] = []
+    for (const line of sorted) {
+      const labels = proofData.lineRefs[line.toString()]
+      if (!labels) continue
+      for (const label of labels) {
+        const region = proofData.labelRegions[label]
+        if (region) flat.push({ line, label, region })
+      }
+    }
+    flatRefsRef.current = flat
   }, [proofDataReady])
 
-  // Navigate to prev/next ref line
-  const navigateRefLine = useCallback((direction: -1 | 1) => {
-    const currentLine = refViewerLineRef.current
-    if (currentLine === null) return
-    const sorted = sortedRefLinesRef.current
-    const idx = sorted.indexOf(currentLine)
-    if (idx < 0) return
+  // Navigate to prev/next ref in document (one ref at a time)
+  const navigateRef = useCallback((direction: -1 | 1) => {
+    const flat = flatRefsRef.current
+    if (flat.length === 0) return
+    const idx = flatRefIndexRef.current
     const nextIdx = idx + direction
-    if (nextIdx < 0 || nextIdx >= sorted.length) return
-    const nextLine = sorted[nextIdx]
-    const resolved = resolveRefsOnLine(nextLine)
-    if (resolved) setRefViewerRefsLocal(resolved)
-  }, [resolveRefsOnLine, setRefViewerRefsLocal])
+    if (nextIdx < 0 || nextIdx >= flat.length) return
+    flatRefIndexRef.current = nextIdx
+    const entry = flat[nextIdx]
+    refViewerLineRef.current = entry.line
+    setRefViewerRefsLocal([{ label: entry.label, region: entry.region }])
+  }, [setRefViewerRefsLocal])
+
+  // Shared ref lookup from screen coordinates
+  const lookupRefAt = useCallback((clientX: number, clientY: number): boolean => {
+    const editor = editorRef.current
+    if (!editor) return false
+    const reverseIndex = reverseIndexRef.current
+    if (!reverseIndex) return false
+
+    const point = editor.screenToPage({ x: clientX, y: clientY })
+    const pages = document.pages.map(p => ({
+      bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+      width: p.width,
+      height: p.height,
+    }))
+    const pdf = canvasToPdf(point.x, point.y, pages)
+    if (!pdf) return false
+
+    const line = reverseIndex(pdf.page, pdf.y)
+    if (!line) return false
+
+    const resolved = resolveRefsOnLine(line)
+    if (!resolved) return false
+
+    const flat = flatRefsRef.current
+    const firstLabel = resolved[0].label
+    const flatIdx = flat.findIndex(e => e.label === firstLabel)
+    if (flatIdx >= 0) flatRefIndexRef.current = flatIdx
+    setRefViewerRefsLocal([resolved[0]])
+    return true
+  }, [document, resolveRefsOnLine, setRefViewerRefsLocal])
 
   useEffect(() => {
     const editor = editorRef.current
     if (!editor || !proofDataReady) return
+    const container = editor.getContainer()
 
+    // Desktop: double-click to look up refs
     const handleDoubleClick = (e: MouseEvent) => {
-      const reverseIndex = reverseIndexRef.current
-      if (!reverseIndex) return
-
-      // Convert screen point to canvas coords
-      const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      // Convert canvas coords to PDF coords (page + y)
-      const pages = document.pages.map(p => ({
-        bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
-        width: p.width,
-        height: p.height,
-      }))
-      const pdf = canvasToPdf(point.x, point.y, pages)
-      if (!pdf) return
-
-      // Reverse lookup: PDF coords → source line
-      const line = reverseIndex(pdf.page, pdf.y)
-      if (!line) return
-
-      const resolved = resolveRefsOnLine(line)
-      if (resolved) setRefViewerRefsLocal(resolved)
+      if (editor.getCurrentToolId() === 'select') {
+        editor.cancel()
+      }
+      lookupRefAt(e.clientX, e.clientY)
     }
 
-    // Use native dblclick on the TLDraw container
-    const container = editor.getContainer()
+    // iPad: single finger tap to look up refs (pen stays for drawing)
+    const TAP_THRESHOLD = 10  // max movement in px to count as a tap
+    const TAP_TIME = 300      // max duration in ms
+    let tapStart: { x: number; y: number; time: number } | null = null
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      tapStart = { x: e.clientX, y: e.clientY, time: Date.now() }
+    }
+
+    const handlePointerUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !tapStart) return
+      const dx = e.clientX - tapStart.x
+      const dy = e.clientY - tapStart.y
+      const dt = Date.now() - tapStart.time
+      tapStart = null
+      if (Math.abs(dx) > TAP_THRESHOLD || Math.abs(dy) > TAP_THRESHOLD || dt > TAP_TIME) return
+      lookupRefAt(e.clientX, e.clientY)
+    }
+
     container.addEventListener('dblclick', handleDoubleClick)
-    return () => container.removeEventListener('dblclick', handleDoubleClick)
-  }, [document, proofDataReady, resolveRefsOnLine, setRefViewerRefsLocal])
+    container.addEventListener('pointerdown', handlePointerDown)
+    container.addEventListener('pointerup', handlePointerUp)
+    return () => {
+      container.removeEventListener('dblclick', handleDoubleClick)
+      container.removeEventListener('pointerdown', handlePointerDown)
+      container.removeEventListener('pointerup', handlePointerUp)
+    }
+  }, [document, proofDataReady, lookupRefAt])
 
   // Keyboard shortcut: 'd' for diff toggle
   useEffect(() => {
@@ -1156,6 +1213,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 tool,
                 diffMode: diffModeRef.current,
                 proofMode: proofModeRef.current,
+                cameraLinked: cameraLinkedRef.current,
+                panelsLocal: panelsLocalRef.current,
               }))
             } catch { /* quota exceeded etc */ }
           }
@@ -1164,7 +1223,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean; proofMode?: boolean }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean; proofMode?: boolean; cameraLinked?: boolean; panelsLocal?: boolean }
             } catch { return null }
           }
 
@@ -1188,6 +1247,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               }
               if (session?.proofMode) {
                 toggleProofRef.current()
+              }
+              if (session?.cameraLinked) {
+                setCameraLinked(true)
+              }
+              if (session?.panelsLocal === false) {
+                setPanelsLocal(false)
               }
 
               // Start save watchers only after restore
@@ -1278,8 +1343,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             tools={tools}
             licenseKey={LICENSE_KEY}
             onClose={() => setRefViewerRefsLocal(null)}
-            onPrevLine={() => navigateRefLine(-1)}
-            onNextLine={() => navigateRefLine(1)}
+            onPrevLine={() => navigateRef(-1)}
+            onNextLine={() => navigateRef(1)}
             onJump={(region) => {
               const editor = editorRef.current
               if (!editor) return
@@ -1295,7 +1360,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             }}
           />
         )}
-        {panelsLocal && proofMode && editorRef.current && proofDataRef.current && (
+        {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
           <ProofStatementOverlay
             mainEditor={editorRef.current}
             proofData={proofDataRef.current}

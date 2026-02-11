@@ -282,7 +282,7 @@ async function doBuild() {
       // Full path: latexmk handles biber, multiple passes, etc.
       console.log('[watch] Running latexmk...')
       execSync(
-        `latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "${texBase}.tex"`,
+        `latexmk -dvi -bibtex -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "${texBase}.tex"`,
         { cwd: texDir, stdio: 'pipe' }
       )
       // Rebuild format after full latexmk if we don't have one yet
