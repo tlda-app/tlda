@@ -32,7 +32,7 @@ import {
 } from 'tldraw'
 import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
-import { MathNoteShapeUtil } from './MathNoteShape'
+import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor, setChangeHighlights, dismissAllChanges, clearDocumentStores } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
@@ -1097,6 +1097,37 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     }
   }, [document, proofDataReady, lookupRefAt])
 
+  // Reverse synctex: cmd+click to jump to source line in editor
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    const container = editor.getContainer()
+
+    const handleClick = (e: MouseEvent) => {
+      if (!e.metaKey && !e.ctrlKey) return
+      const reverseIndex = reverseIndexRef.current
+      if (!reverseIndex) return
+
+      const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const pages = document.pages.map(p => ({
+        bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+        width: p.width, height: p.height,
+      }))
+      const pdf = canvasToPdf(point.x, point.y, pages)
+      if (!pdf) return
+
+      const line = reverseIndex(pdf.page, pdf.y)
+      if (!line) return
+
+      e.preventDefault()
+      e.stopPropagation()
+      writeSignal('signal:reverse-sync', { line })
+    }
+
+    container.addEventListener('click', handleClick)
+    return () => container.removeEventListener('click', handleClick)
+  }, [document])
+
   // Keyboard shortcut: 'd' for diff toggle
   useEffect(() => {
     if (!hasDiffToggle) return
@@ -1142,6 +1173,27 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [toggleCameraLink])
+
+  // Keyboard shortcut: 'i' or ':' to enter math note in vim mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'i' && e.key !== ':') return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isInputFocused()) return
+      const editor = editorRef.current
+      if (!editor) return
+      if (editor.getEditingShapeId()) return
+      const selected = editor.getSelectedShapeIds()
+      if (selected.length !== 1) return
+      const shape = editor.getShape(selected[0])
+      if (!shape || shape.type !== 'math-note') return
+      e.preventDefault()
+      setMathNoteEntryMode(e.key as 'i' | ':')
+      editor.setEditingShape(shape.id)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   // n/p keyboard shortcuts for diff change navigation (global, not tied to ChangesTab)
   useEffect(() => {
@@ -1310,7 +1362,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         overrides={overrides}
         onMount={(editor) => {
           // Clear stale data from any previous document
-          clearDocumentStores()
+          clearDocumentStores();
 
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor

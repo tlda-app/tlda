@@ -147,6 +147,14 @@ yRecords.observe((event) => {
         cachedViewportPages = viewport.pages
       }
     }
+    if (key === 'signal:reverse-sync' && (change.action === 'add' || change.action === 'update')) {
+      const sig = yRecords.get(key)
+      if (sig?.line) {
+        const target = `${texPath}:${sig.line}`
+        console.log(`[reverse-sync] Opening ${target}`)
+        spawn('zed', [target], { stdio: 'ignore', detached: true }).unref()
+      }
+    }
   })
 })
 

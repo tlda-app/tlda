@@ -641,7 +641,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
     rotation: 0,
     isLocked: false,
     opacity: 1,
-    props: { w: width, h: height, text, color },
+    props: { w: width, h: height, text, color, autoSize: true },
     meta: {
       sourceAnchor: {
         file: `./${linePos.texFile || doc + '.tex'}`,

@@ -67,6 +67,11 @@ const NOTE_COLORS: Record<string, string> = {
   'white': '#ffffff',
 }
 
+// Entry mode: set before entering edit mode to dispatch vim command on mount
+// 'i' = insert mode, ':' = ex command, null = normal mode (default)
+let pendingEntryMode: 'i' | ':' | null = null
+export function setMathNoteEntryMode(mode: 'i' | ':' | null) { pendingEntryMode = mode }
+
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
   '&': {
@@ -100,14 +105,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     text: T.string,
     color: DefaultColorStyle,
+    autoSize: T.optional(T.boolean),
   }
 
   getDefaultProps() {
     return {
       w: 200,
-      h: 200,
+      h: 50,
       text: '',
       color: 'light-blue',
+      autoSize: true,
     }
   }
 
@@ -119,6 +126,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => false
   override hideSelectionBoundsFg = () => false
+
+  override onResize = (shape: any, info: any) => {
+    const next = super.onResize!(shape, info) as any
+    // Manual resize disables auto-size
+    if (next.props) next.props.autoSize = false
+    else next.props = { autoSize: false }
+    return next
+  }
 
   component(shape: any) {
     const editor = useEditor()
@@ -133,6 +148,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const isDraggingRef = useRef(false)
     const dragStartRef = useRef({ y: 0, splitPx: 0 })
     const previewRef = useRef<HTMLDivElement>(null)
+    const contentRef = useRef<HTMLDivElement>(null)
     const [cursorFraction, setCursorFraction] = useState(0)
 
     // Refs for sync coordination
@@ -201,6 +217,22 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setSplitPx(null) // reset split on edit start
       }
     }, [isEditing])
+
+    // Auto-size: measure rendered content and update shape height
+    useEffect(() => {
+      if (isEditing || !shape.props.autoSize) return
+      const el = contentRef.current
+      if (!el) return
+      const measured = el.scrollHeight
+      const target = Math.max(40, measured)
+      if (Math.abs(target - shape.props.h) > 2) {
+        editor.updateShape({
+          id: shape.id,
+          type: 'math-note' as any,
+          props: { h: target },
+        })
+      }
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -307,6 +339,17 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       // Focus the editor
       view.focus()
+
+      // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
+      if (pendingEntryMode && cm) {
+        const mode = pendingEntryMode
+        pendingEntryMode = null
+        if (mode === 'i') {
+          Vim.handleKey(cm, 'i')
+        } else if (mode === ':') {
+          Vim.handleKey(cm, ':')
+        }
+      }
 
       return () => {
         container.removeEventListener('keydown', captureTab, true)
@@ -483,16 +526,18 @@ onPointerDown={stopEventPropagation}
       )
     } else {
       const text = shape.props.text || ''
+      const autoH = shape.props.autoSize
       if (hasMath(text)) {
         const rendered = renderMath(text)
         content = (
           <div
+            ref={contentRef}
             style={{
               padding: '12px',
               fontSize: '14px',
               lineHeight: 1.4,
-              overflow: 'auto',
-              height: '100%',
+              overflow: autoH ? 'hidden' : 'auto',
+              height: autoH ? 'auto' : '100%',
               boxSizing: 'border-box',
             }}
             dangerouslySetInnerHTML={{ __html: rendered }}
@@ -500,16 +545,19 @@ onPointerDown={stopEventPropagation}
         )
       } else {
         content = (
-          <div style={{
-            padding: '12px',
-            fontSize: '14px',
-            lineHeight: 1.4,
-            whiteSpace: 'pre-wrap',
-            overflow: 'auto',
-            height: '100%',
-            boxSizing: 'border-box',
-          }}>
-            {text}
+          <div
+            ref={contentRef}
+            style={{
+              padding: '12px',
+              fontSize: '14px',
+              lineHeight: 1.4,
+              whiteSpace: 'pre-wrap',
+              overflow: autoH ? 'hidden' : 'auto',
+              height: autoH ? 'auto' : '100%',
+              boxSizing: 'border-box',
+            }}
+          >
+            {text || '\u00A0'}
           </div>
         )
       }
