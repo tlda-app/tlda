@@ -54,12 +54,13 @@ function lookupLine(docName, lineNum) {
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
 
-// PDF → canvas coordinate conversion (matching synctexAnchor.ts)
-const PDF_WIDTH = 612;
-const PDF_HEIGHT = 792;
-const PAGE_WIDTH = 800;
-const PAGE_HEIGHT = 1035.294; // 792 * (800/612)
-const PAGE_GAP = 32;
+// PDF → canvas coordinate conversion (constants from shared/layout-constants.json)
+const _lc = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'shared', 'layout-constants.json'), 'utf8'));
+const PDF_WIDTH = _lc.PDF_WIDTH;
+const PDF_HEIGHT = _lc.PDF_HEIGHT;
+const PAGE_WIDTH = _lc.TARGET_WIDTH;
+const PAGE_HEIGHT = PDF_HEIGHT * (PAGE_WIDTH / PDF_WIDTH);
+const PAGE_GAP = _lc.PAGE_GAP;
 
 function pdfToCanvas(page, pdfX, pdfY) {
   const pageY = (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
@@ -86,7 +87,7 @@ function canvasToPdf(canvasX, canvasY) {
 // ---- HTML document layout support ----
 
 const pageInfoCache = new Map(); // docName → { layout, mtime }
-const HTML_PAGE_SPACING = 32;
+const HTML_PAGE_SPACING = PAGE_GAP;
 const HTML_TAB_SPACING = 24;
 
 function loadHtmlLayout(docName) {

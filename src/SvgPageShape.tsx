@@ -4,6 +4,7 @@ import {
   T,
 } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
+import { injectSvgFonts } from './svgFonts'
 
 // Client-side SVG text store — keyed by shape ID, not synced through Yjs
 // Populated by svgDocumentLoader, read by the shape component
@@ -77,6 +78,16 @@ export function dismissAllChanges() {
   notifyChangeListeners()
 }
 
+/** Clear all module-level stores — call on document switch to prevent stale data. */
+export function clearDocumentStores() {
+  svgTextStore.clear()
+  svgViewBoxStore.clear()
+  anchorIndex.clear()
+  changeStore.clear()
+  changedPages.clear()
+  notifyChangeListeners()
+}
+
 // Expose change store on window for testing/debugging
 if (typeof window !== 'undefined') {
   (window as any).__changeStore__ = { changeStore, changedPages, setChangeHighlights, dismissAllChanges, dismissPageChanges, svgViewBoxStore }
@@ -144,7 +155,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     // browser text selection produces readable text (with word breaks).
     // Must wait for fonts to load before measuring text widths.
     if (svgEl) {
-      injectSvgFontsToPage(svgEl)
+      injectSvgFonts(svgEl)
       document.fonts.ready.then(() => injectWordSpaces(svgEl))
     }
 
@@ -212,24 +223,6 @@ function SvgPageComponent({ shape }: { shape: any }) {
       </div>
     </HTMLContainer>
   )
-}
-
-/**
- * Extract @font-face rules from an SVG's <style> and inject them into the page.
- * This ensures getComputedTextLength/getEndPositionOfChar use the correct fonts.
- */
-let fontsInjected = false
-function injectSvgFontsToPage(svgEl: SVGSVGElement) {
-  if (fontsInjected) return
-  const styleEl = svgEl.querySelector('style')
-  if (!styleEl) return
-  const cssText = styleEl.textContent || ''
-  const fontFaces = cssText.match(/@font-face\{[^}]+\}/g)
-  if (!fontFaces) return
-  const pageStyle = document.createElement('style')
-  pageStyle.textContent = fontFaces.join('\n')
-  document.head.appendChild(pageStyle)
-  fontsInjected = true
 }
 
 /**

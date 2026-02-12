@@ -9,9 +9,8 @@ import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
 import { Tldraw, createTLStore, defaultShapeUtils } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import type { LabelRegion } from './svgDocumentLoader'
+import { PDF_HEIGHT } from './layoutConstants'
 import './RefViewer.css'
-
-const PDF_HEIGHT = 792
 const PANEL_WIDTH = 600
 const MARGIN_INSET = 70
 

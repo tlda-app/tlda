@@ -7,7 +7,7 @@ import { getActiveMacros } from './katexMacros'
 import { loadLookup, clearLookupCache, loadHtmlToc, loadHtmlSearch, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
 import { PanelContext, type PanelContextValue } from './PanelContext'
-import { getYRecords, getLiveUrl, onReloadSignal } from './useYjsSync'
+import { getYRecords, getLiveUrl, onReloadSignal, writeSignal, readSignal } from './useYjsSync'
 import { changedPages, onChangeStoreUpdate, dismissAllChanges } from './SvgPageShape'
 import './DocumentPanel.css'
 
@@ -597,29 +597,15 @@ type ReviewMap = Record<number, ReviewStatus>  // currentPage → status
 type SummaryMap = Record<number, string>       // currentPage → one-line summary
 
 function readReviewState(): ReviewMap {
-  const yRecords = getYRecords()
-  if (!yRecords) return {}
-  const signal = yRecords.get('signal:diff-review' as any) as any
-  return signal?.reviews || {}
+  return readSignal<{ reviews: ReviewMap }>('signal:diff-review')?.reviews || {}
 }
 
 function writeReviewState(reviews: ReviewMap) {
-  const yRecords = getYRecords()
-  if (!yRecords) return
-  const doc = yRecords.doc!
-  doc.transact(() => {
-    yRecords.set('signal:diff-review' as any, {
-      reviews,
-      timestamp: Date.now(),
-    } as any)
-  })
+  writeSignal('signal:diff-review', { reviews })
 }
 
 function readSummaries(): SummaryMap {
-  const yRecords = getYRecords()
-  if (!yRecords) return {}
-  const signal = yRecords.get('signal:diff-summaries' as any) as any
-  return signal?.summaries || {}
+  return readSignal<{ summaries: SummaryMap }>('signal:diff-summaries')?.summaries || {}
 }
 
 const STATUS_LABELS: Array<{ key: ReviewStatus; label: string; symbol: string }> = [
@@ -882,21 +868,14 @@ export function PingButton() {
     if (state === 'sending') return
     setState('sending')
     try {
-      const yRecords = getYRecords()
-      if (!yRecords) throw new Error('Yjs not connected')
-      const doc = yRecords.doc!
-      doc.transact(() => {
-        yRecords.set('signal:ping', {
-          id: 'signal:ping',
-          typeName: 'signal',
-          type: 'ping',
-          timestamp: Date.now(),
-          viewport: (() => {
-            const center = editor.getViewportScreenCenter()
-            const pt = editor.screenToPage(center)
-            return { x: pt.x, y: pt.y }
-          })(),
-        } as any)
+      if (!getYRecords()) throw new Error('Yjs not connected')
+      const center = editor.getViewportScreenCenter()
+      const pt = editor.screenToPage(center)
+      writeSignal('signal:ping', {
+        id: 'signal:ping',
+        typeName: 'signal',
+        type: 'ping',
+        viewport: { x: pt.x, y: pt.y },
       })
 
       // Capture viewport screenshot and write to Yjs
@@ -917,13 +896,7 @@ export function PingButton() {
           }
           reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
         })
-        doc.transact(() => {
-          yRecords.set('signal:screenshot' as any, {
-            data: base64,
-            mimeType: 'image/png',
-            timestamp: Date.now(),
-          } as any)
-        })
+        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
       } catch (e) {
         console.warn('[Ping] Screenshot capture failed:', e)
       }

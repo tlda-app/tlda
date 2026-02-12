@@ -98,30 +98,29 @@ let lastRefViewerTimestamp = 0
 const localViewerId = Math.random().toString(36).slice(2, 10)
 export function getViewerId() { return localViewerId }
 
-export function broadcastCamera(x: number, y: number, z: number) {
+/** Write a signal into Yjs. Timestamp is added automatically. */
+export function writeSignal(key: string, payload: Record<string, unknown>): void {
   const yRecords = activeYRecords
   if (!yRecords) return
   const doc = yRecords.doc!
   doc.transact(() => {
-    yRecords.set('signal:camera-link' as any, {
-      x, y, z,
-      viewerId: localViewerId,
-      timestamp: Date.now(),
-    } as any)
+    yRecords.set(key as any, { ...payload, timestamp: Date.now() } as any)
   })
 }
 
-export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
+/** Read a signal from Yjs. Returns null if not found. */
+export function readSignal<T = Record<string, unknown>>(key: string): (T & { timestamp: number }) | null {
   const yRecords = activeYRecords
-  if (!yRecords) return
-  const doc = yRecords.doc!
-  doc.transact(() => {
-    yRecords.set('signal:ref-viewer' as any, {
-      refs,
-      viewerId: localViewerId,
-      timestamp: Date.now(),
-    } as any)
-  })
+  if (!yRecords) return null
+  return (yRecords.get(key as any) as any) ?? null
+}
+
+export function broadcastCamera(x: number, y: number, z: number) {
+  writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
+}
+
+export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
+  writeSignal('signal:ref-viewer', { refs, viewerId: localViewerId })
 }
 
 /**

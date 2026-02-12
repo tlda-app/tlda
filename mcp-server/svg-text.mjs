@@ -8,6 +8,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { DOMParser } from '@xmldom/xmldom';
 
 // ---- Font class parsing ----
@@ -162,9 +163,10 @@ function loadPageTextCached(svgPath) {
 
 // ---- Coordinate transform + query ----
 
-const PDF_WIDTH = 612;
-const PAGE_WIDTH = 800;
-const PAGE_GAP = 32;
+const _lc2 = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'shared', 'layout-constants.json'), 'utf8'));
+const PDF_WIDTH = _lc2.PDF_WIDTH;
+const PAGE_WIDTH = _lc2.TARGET_WIDTH;
+const PAGE_GAP = _lc2.PAGE_GAP;
 
 /**
  * Find rendered text within a canvas bounding box.

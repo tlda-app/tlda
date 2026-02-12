@@ -7,6 +7,7 @@ import type { TLAssetId, TLShapeId } from 'tldraw'
 import { setActiveMacros } from './katexMacros'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { svgTextStore, svgViewBoxStore, anchorIndex } from './SvgPageShape'
+import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
 
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
@@ -65,7 +66,7 @@ export interface SvgDocument {
   diffLayout?: DiffLayout
 }
 
-export const pageSpacing = 32
+export const pageSpacing = PAGE_GAP
 
 export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<SvgDocument> {
   // Fetch all SVGs in parallel
@@ -111,7 +112,7 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
     const svgEl = doc.querySelector('svg')
 
     let width = 600
-    let height = 800
+    let height = TARGET_WIDTH
 
     if (svgEl) {
       // Try to get dimensions from viewBox or width/height attributes
@@ -137,8 +138,8 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
       }
     }
 
-    // Scale to reasonable size (target ~800px wide)
-    const scale = 800 / width
+    // Scale to reasonable size
+    const scale = TARGET_WIDTH / width
     width = width * scale
     height = height * scale
 
@@ -259,8 +260,8 @@ export async function loadImageDocument(
     let width = dims.width / 2
     let height = dims.height / 2
 
-    // Scale to ~800px target width (matching SVG loader)
-    const scale = 800 / width
+    // Scale to target width (matching SVG loader)
+    const scale = TARGET_WIDTH / width
     width = width * scale
     height = height * scale
 
@@ -433,9 +434,6 @@ interface DiffInfo {
   pairs: DiffInfoPair[]
 }
 
-// PDF page dimensions (same as synctexAnchor.ts)
-const PDF_WIDTH = 612
-const PDF_HEIGHT = 792
 const OLD_PAGE_GAP = 48  // horizontal gap between old and current columns
 
 /**
@@ -457,7 +455,7 @@ function parseSvgDimensions(svgText: string): { width: number; height: number } 
   const parser = new DOMParser()
   const doc = parser.parseFromString(svgText, 'image/svg+xml')
   const svgEl = doc.querySelector('svg')
-  let width = 600, height = 800
+  let width = 600, height = TARGET_WIDTH
 
   if (svgEl) {
     const viewBox = svgEl.getAttribute('viewBox')
@@ -474,7 +472,7 @@ function parseSvgDimensions(svgText: string): { width: number; height: number } 
     if (hAttr) { const h = parseFloat(hAttr); if (!isNaN(h)) height = h }
   }
 
-  const scale = 800 / width
+  const scale = TARGET_WIDTH / width
   return { width: width * scale, height: height * scale }
 }
 

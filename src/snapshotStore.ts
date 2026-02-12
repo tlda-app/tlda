@@ -6,8 +6,9 @@
  * Up to 20 snapshots (~2MB max for a 47-page doc).
  */
 
-import type { PageTextData, TextLine } from './TextSelectionLayer'
+import type { PageTextData } from './TextSelectionLayer'
 import type { ChangeRegion } from './SvgPageShape'
+import { diffWords } from './wordDiff'
 
 interface TextSnapshot {
   timestamp: number
@@ -148,88 +149,10 @@ export function diffAgainstSnapshot(
   return result
 }
 
-/**
- * Diff old words (space-joined string) against current PageTextData.
- * Uses longest common prefix + suffix (O(n)) to find the changed region,
- * then maps changed words back to their line positions for highlighting.
- */
+/** Diff old words (space-joined string) against current PageTextData. */
 function diffWordStrings(
   oldWordString: string,
   newData: PageTextData,
 ): ChangeRegion[] {
-  const oldWords = oldWordString.split(' ')
-
-  // Extract new words with line provenance
-  interface WordEntry { word: string; lineIdx: number }
-  const newEntries: WordEntry[] = []
-  for (let i = 0; i < newData.lines.length; i++) {
-    const words = newData.lines[i].text.split(/\s+/).filter(w => w.length > 0)
-    for (const word of words) {
-      newEntries.push({ word, lineIdx: i })
-    }
-  }
-
-  // Longest common prefix
-  let prefixLen = 0
-  const minLen = Math.min(oldWords.length, newEntries.length)
-  while (prefixLen < minLen && oldWords[prefixLen] === newEntries[prefixLen].word) {
-    prefixLen++
-  }
-
-  // Longest common suffix (non-overlapping with prefix)
-  let suffixLen = 0
-  const maxSuffix = minLen - prefixLen
-  while (suffixLen < maxSuffix &&
-    oldWords[oldWords.length - 1 - suffixLen] === newEntries[newEntries.length - 1 - suffixLen].word) {
-    suffixLen++
-  }
-
-  const changeStart = prefixLen
-  const changeEnd = newEntries.length - suffixLen
-  if (changeStart >= changeEnd && oldWords.length - suffixLen <= prefixLen) return []
-
-  // Collect line indices that contain changed words
-  const changedLineIndices = new Set<number>()
-  for (let i = changeStart; i < changeEnd; i++) {
-    changedLineIndices.add(newEntries[i].lineIdx)
-  }
-  // Include boundary lines for partial-line changes
-  if (changeStart > 0) changedLineIndices.add(newEntries[changeStart - 1].lineIdx)
-  if (changeEnd < newEntries.length) changedLineIndices.add(newEntries[changeEnd].lineIdx)
-
-  // If only deletions (changeStart >= changeEnd but old has extra words),
-  // highlight the boundary line where text was removed
-  if (changedLineIndices.size === 0 && oldWords.length > newEntries.length) {
-    const boundaryIdx = Math.min(changeStart, newEntries.length - 1)
-    if (boundaryIdx >= 0) changedLineIndices.add(newEntries[boundaryIdx].lineIdx)
-  }
-
-  // Convert to regions
-  const newLines = newData.lines
-  const rawRegions: ChangeRegion[] = []
-  for (const idx of changedLineIndices) {
-    const line = newLines[idx]
-    if (!line) continue
-    rawRegions.push({
-      y: line.y - line.fontSize * 0.3,
-      height: line.fontSize * 1.4,
-    })
-  }
-
-  if (rawRegions.length === 0) return []
-
-  // Merge overlapping/adjacent regions
-  rawRegions.sort((a, b) => a.y - b.y)
-  const merged: ChangeRegion[] = []
-  for (const r of rawRegions) {
-    const last = merged[merged.length - 1]
-    if (last && r.y <= last.y + last.height + 2) {
-      const bottom = Math.max(last.y + last.height, r.y + r.height)
-      last.height = bottom - last.y
-    } else {
-      merged.push({ ...r })
-    }
-  }
-
-  return merged
+  return diffWords(oldWordString.split(' '), newData.lines)
 }

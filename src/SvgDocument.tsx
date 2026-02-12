@@ -34,21 +34,23 @@ import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLSha
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor, setChangeHighlights, dismissAllChanges } from './SvgPageShape'
+import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor, setChangeHighlights, dismissAllChanges, clearDocumentStores } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, onCameraLink, broadcastCamera, onRefViewerSignal, broadcastRefViewer, getYRecords } from './useYjsSync'
+import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, onCameraLink, broadcastCamera, onRefViewerSignal, broadcastRefViewer, getYRecords, writeSignal } from './useYjsSync'
 import type { ForwardSyncSignal } from './useYjsSync'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { clearLookupCache, buildReverseIndex } from './synctexLookup'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
-import { extractTextFromSvgAsync, type PageTextData, type TextLine } from './TextSelectionLayer'
+import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, loadProofData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight, type ProofData, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
 import { canvasToPdf } from './synctexAnchor'
 import { initSnapshots, captureSnapshot, getSnapshots, diffAgainstSnapshot, onSnapshotUpdate } from './snapshotStore'
+import { PDF_HEIGHT } from './layoutConstants'
+import { diffWords, extractFlatWords } from './wordDiff'
 
 // Sync server URL - use env var, or auto-detect based on environment
 // In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
@@ -154,96 +156,12 @@ async function remapAnnotations(
   }
 }
 
-/**
- * Diff old vs new page text to find changed regions.
- *
- * Works at the WORD level to handle LaTeX paragraph reflow: when a sentence
- * is added/removed, LaTeX re-wraps the paragraph so every line after the edit
- * has different text — but the words are the same. By diffing words and mapping
- * changed words back to their lines, we highlight only the actual edit.
- *
- * Uses longest common prefix + suffix of word sequences (O(n)) which handles
- * the common case of a single contiguous edit perfectly.
- */
+/** Diff old vs new page text using shared word-level diff. */
 function diffTextLines(
   oldData: PageTextData,
   newData: PageTextData,
 ): { y: number; height: number }[] {
-  // Build word sequences with line provenance
-  interface WordEntry { word: string; lineIdx: number }
-  function extractWords(lines: TextLine[]): WordEntry[] {
-    const result: WordEntry[] = []
-    for (let i = 0; i < lines.length; i++) {
-      const words = lines[i].text.split(/\s+/).filter(w => w.length > 0)
-      for (const word of words) {
-        result.push({ word, lineIdx: i })
-      }
-    }
-    return result
-  }
-
-  const oldWords = extractWords(oldData.lines)
-  const newWords = extractWords(newData.lines)
-
-  // Find longest common prefix
-  let prefixLen = 0
-  const minLen = Math.min(oldWords.length, newWords.length)
-  while (prefixLen < minLen && oldWords[prefixLen].word === newWords[prefixLen].word) {
-    prefixLen++
-  }
-
-  // Find longest common suffix (not overlapping with prefix)
-  let suffixLen = 0
-  const maxSuffix = minLen - prefixLen
-  while (suffixLen < maxSuffix &&
-    oldWords[oldWords.length - 1 - suffixLen].word === newWords[newWords.length - 1 - suffixLen].word) {
-    suffixLen++
-  }
-
-  // The changed region in new is [prefixLen, newWords.length - suffixLen)
-  const changeStart = prefixLen
-  const changeEnd = newWords.length - suffixLen
-
-  if (changeStart >= changeEnd) return []  // no changes
-
-  // Collect line indices that contain changed words
-  const changedLineIndices = new Set<number>()
-  for (let i = changeStart; i < changeEnd; i++) {
-    changedLineIndices.add(newWords[i].lineIdx)
-  }
-
-  // Also include the lines at the boundary (the line where prefix ends and suffix starts)
-  // to capture partial-line changes
-  if (changeStart > 0) changedLineIndices.add(newWords[changeStart - 1].lineIdx)
-  if (changeEnd < newWords.length) changedLineIndices.add(newWords[changeEnd].lineIdx)
-
-  // Convert to regions
-  const newLines = newData.lines
-  const rawRegions: { y: number; height: number }[] = []
-  for (const idx of changedLineIndices) {
-    const line = newLines[idx]
-    rawRegions.push({
-      y: line.y - line.fontSize * 0.3,
-      height: line.fontSize * 1.4,
-    })
-  }
-
-  if (rawRegions.length === 0) return []
-
-  // Merge overlapping/adjacent regions
-  rawRegions.sort((a, b) => a.y - b.y)
-  const merged: { y: number; height: number }[] = []
-  for (const r of rawRegions) {
-    const last = merged[merged.length - 1]
-    if (last && r.y <= last.y + last.height + 2) {
-      const bottom = Math.max(last.y + last.height, r.y + r.height)
-      last.height = bottom - last.y
-    } else {
-      merged.push({ ...r })
-    }
-  }
-
-  return merged
+  return diffWords(extractFlatWords(oldData.lines), newData.lines)
 }
 
 
@@ -940,14 +858,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           }
           reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
         })
-        const ydoc = yRecords.doc!
-        ydoc.transact(() => {
-          yRecords.set('signal:screenshot' as any, {
-            data: base64,
-            mimeType: 'image/png',
-            timestamp: Date.now(),
-          } as any)
-        })
+        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
         console.log(`[Screenshot] Captured ${Math.round(base64.length / 1024)}KB`)
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)
@@ -1089,7 +1000,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     const pageIdx = region.page - 1
     const page = document.pages[pageIdx]
     if (!page) return
-    const scaleY = page.bounds.height / 792
+    const scaleY = page.bounds.height / PDF_HEIGHT
     const canvasY = page.bounds.y + region.yTop * scaleY
     editor.centerOnPoint(
       { x: page.bounds.x + page.bounds.width / 2, y: canvasY },
@@ -1398,6 +1309,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         tools={tools}
         overrides={overrides}
         onMount={(editor) => {
+          // Clear stale data from any previous document
+          clearDocumentStores()
+
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
@@ -1415,14 +1329,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             const { type, displayLabel } = anchorIdToLabel(title || anchorId)
 
             // Convert viewBox to PDF coordinates
-            let yTop = 0, yBottom = 792
+            let yTop = 0, yBottom = PDF_HEIGHT
             const svgVB = getSvgViewBox(entry.pageShapeId)
             if (svgVB && entry.viewBox) {
               const parts = entry.viewBox.split(/\s+/).map(Number)
               if (parts.length === 4) {
                 const [, svgY, , svgH] = parts
-                yTop = (svgY - svgVB.minY) / svgVB.height * 792
-                yBottom = yTop + svgH / svgVB.height * 792
+                yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
+                yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
               }
             }
 
@@ -1529,7 +1443,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                     const lastPage = Math.min(document.pages.length, Math.floor(bottom / pageH) + 1)
                     const pages: number[] = []
                     for (let p = firstPage; p <= lastPage; p++) pages.push(p)
-                    yRecords.set('signal:viewport' as any, { pages, timestamp: Date.now() } as any)
+                    writeSignal('signal:viewport', { pages })
                   }
                 }, 500)
               })

@@ -6,15 +6,12 @@ import {
   getSourceAnchorStatic,
   resolveAnchorStatic
 } from './synctexLookup'
+import { PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
 
 const SYNCTEX_SERVER = import.meta.env.VITE_SYNCTEX_SERVER || 'http://localhost:5177'
 
 // On HTTPS pages, skip server (browser blocks mixed content http://localhost from https://)
 const USE_SERVER = typeof window === 'undefined' || window.location.protocol !== 'https:'
-
-// Standard PDF page dimensions in points (US Letter)
-const PDF_WIDTH = 612
-const PDF_HEIGHT = 792
 
 // Note: synctex y coords are measured from page top (0 = top of physical page).
 // The SVG viewBox starts at -72, but the page image shape maps the full viewBox

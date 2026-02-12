@@ -5,7 +5,7 @@
 import { WebSocketServer } from 'ws'
 import http from 'http'
 import * as Y from 'yjs'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, openSync, fsyncSync, closeSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -47,7 +47,13 @@ function getDoc(docName) {
     saveTimeout = setTimeout(() => {
       try {
         const state = Y.encodeStateAsUpdate(doc)
-        writeFileSync(filePath, Buffer.from(state))
+        // Atomic write: temp file → fsync → rename (crash-safe)
+        const tmpPath = filePath + '.tmp'
+        writeFileSync(tmpPath, Buffer.from(state))
+        const fd = openSync(tmpPath, 'r')
+        fsyncSync(fd)
+        closeSync(fd)
+        renameSync(tmpPath, filePath)
         console.log(`Saved ${docName}`)
       } catch (e) {
         console.error(`Failed to save ${docName}:`, e.message)

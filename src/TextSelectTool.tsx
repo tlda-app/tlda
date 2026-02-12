@@ -1,5 +1,5 @@
 import { StateNode } from 'tldraw'
-import { getYRecords } from './useYjsSync'
+import { writeSignal } from './useYjsSync'
 
 /**
  * Custom tool that activates native SVG text selection mode.
@@ -20,13 +20,7 @@ export class TextSelectTool extends StateNode {
       const text = sel?.toString()
       if (!text?.trim()) return
 
-      const yRecords = getYRecords()
-      if (yRecords) {
-        yRecords.set('signal:text-selection' as any, {
-          text,
-          timestamp: Date.now(),
-        } as any)
-      }
+      writeSignal('signal:text-selection', { text })
     }
     document.addEventListener('selectionchange', this._onSelectionChange)
   }
