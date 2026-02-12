@@ -199,7 +199,7 @@ function TocTab() {
     if (!ctx || changedPageSet.size === 0) return []
     const nums: number[] = []
     for (let i = 0; i < ctx.pages.length; i++) {
-      if (changedPageSet.has(ctx.pages[i].shapeId)) {
+      if (changedPageSet.has(ctx.pages[i].shapeId as string)) {
         nums.push(i + 1)
       }
     }
@@ -773,7 +773,7 @@ function ProofsTab() {
       {crossPage.length > 0 && (
         <>
           <div className="search-group-label">Cross-page ({crossPage.length})</div>
-          {crossPage.map((pair, i) => (
+          {crossPage.map((pair) => (
             <div key={pair.id} className="proof-item" onClick={() => handleNav(pair)}>
               <span className="proof-type">{pair.title}</span>
               <span className="proof-pages">

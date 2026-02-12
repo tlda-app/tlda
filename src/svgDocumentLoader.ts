@@ -7,7 +7,7 @@ import type { TLAssetId, TLShapeId } from 'tldraw'
 import { setActiveMacros } from './katexMacros'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { svgTextStore, svgViewBoxStore, anchorIndex } from './SvgPageShape'
-import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
+import { TARGET_WIDTH, PAGE_GAP, PDF_HEIGHT } from './layoutConstants'
 
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
@@ -847,7 +847,7 @@ export interface ProofData {
  * for the shared-store overlay.
  */
 export async function loadProofData(
-  name: string,
+  _name: string,
   basePath: string,
   currentPages: SvgPage[],
 ): Promise<ProofData> {

@@ -297,7 +297,8 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           } else if (signal?.timestamp && signal.timestamp > lastScrollTimestamp) {
             lastScrollTimestamp = signal.timestamp
             console.log(`[Yjs] Forward scroll: (${signal.x}, ${signal.y})`)
-            for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...signal })
+            const { type: _, ...rest } = signal
+            for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...rest })
           }
         }
 
@@ -321,7 +322,8 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           } else if (signal?.timestamp && signal.timestamp > lastHighlightTimestamp) {
             lastHighlightTimestamp = signal.timestamp
             console.log(`[Yjs] Forward highlight: page ${signal.page} (${signal.x}, ${signal.y})`)
-            for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...signal })
+            const { type: _hl, ...hlRest } = signal
+            for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...hlRest })
           }
         }
 

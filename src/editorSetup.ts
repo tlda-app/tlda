@@ -188,10 +188,10 @@ export async function reloadPages(
 
     // For svg-page shapes, bump version to trigger re-render
     const shape = editor.getShape(page.shapeId)
-    if (shape && shape.type === 'svg-page') {
+    if (shape && (shape.type as string) === 'svg-page') {
       editor.updateShape({
         id: shape.id,
-        type: 'svg-page',
+        type: 'svg-page' as any,
         props: { version: ((shape as any).props.version || 0) + 1 },
       })
       console.log(`[Reload] Updated svg-page for page ${index + 1}`)
@@ -282,10 +282,10 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // Check if page shapes already exist (from sync)
   const existingShapes = editor.getCurrentPageShapes()
   const hasPages = document.format === 'html'
-    ? existingShapes.some(s => s.type === 'html-page')
+    ? existingShapes.some(s => (s.type as string) === 'html-page')
     : document.format === 'png'
     ? editor.getAssets().some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
-    : existingShapes.some(s => s.type === 'svg-page')
+    : existingShapes.some(s => (s.type as string) === 'svg-page')
 
   if (!hasPages) {
     if (document.format === 'html') {

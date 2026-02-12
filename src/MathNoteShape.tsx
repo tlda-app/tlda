@@ -345,9 +345,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         const mode = pendingEntryMode
         pendingEntryMode = null
         if (mode === 'i') {
-          Vim.handleKey(cm, 'i')
+          Vim.handleKey(cm, 'i', 'user')
         } else if (mode === ':') {
-          Vim.handleKey(cm, ':')
+          Vim.handleKey(cm, ':', 'user')
         }
       }
 

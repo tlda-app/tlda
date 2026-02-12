@@ -200,7 +200,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       const selected = editor.getSelectedShapeIds()
       if (selected.length !== 1) return
       const shape = editor.getShape(selected[0])
-      if (!shape || shape.type !== 'math-note') return
+      if (!shape || (shape.type as string) !== 'math-note') return
       e.preventDefault()
       setMathNoteEntryMode(e.key as 'i' | ':')
       editor.setEditingShape(shape.id)

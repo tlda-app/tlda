@@ -5,7 +5,7 @@
  *
  * Uses the same copy-store TLDraw pattern as ProofStatementOverlay.
  */
-import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Tldraw, createTLStore, defaultShapeUtils } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import type { LabelRegion } from './svgDocumentLoader'

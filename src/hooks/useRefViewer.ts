@@ -188,7 +188,7 @@ export function useRefViewer({
     const handleDoubleClick = (e: MouseEvent) => {
       const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
       const hitShape = editor.getShapeAtPoint(point, { hitInside: true, margin: 0 })
-      if (hitShape && hitShape.type !== 'image' && hitShape.type !== 'svg-page') return
+      if (hitShape && hitShape.type !== 'image' && (hitShape.type as string) !== 'svg-page') return
 
       if (editor.getCurrentToolId() === 'select') {
         editor.cancel()
