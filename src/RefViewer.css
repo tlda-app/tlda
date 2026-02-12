@@ -4,7 +4,7 @@
   overflow: hidden;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
   background: white;
-  pointer-events: all;
+  pointer-events: none;
 }
 
 .ref-viewer-label {
@@ -20,14 +20,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
-}
-
-.ref-viewer-label:hover {
-  background: rgba(235, 235, 235, 0.8);
+  pointer-events: all;
 }
 
 .ref-viewer-title {
@@ -76,6 +72,21 @@
   color: rgba(100, 100, 100, 0.7);
 }
 
+.ref-viewer-action {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.5);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.ref-viewer-action:hover {
+  color: rgba(100, 100, 100, 0.8);
+}
+
 .ref-viewer-close {
   border: none;
   background: none;
@@ -96,8 +107,14 @@
   width: 100%;
   overflow: hidden;
   background: white;
+  clip-path: inset(0);
+  pointer-events: none;
 }
 
 .ref-viewer-canvas .tl-background {
   display: none;
+}
+
+.ref-viewer-canvas * {
+  pointer-events: none !important;
 }

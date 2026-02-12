@@ -280,13 +280,21 @@
   background: #1d4ed8;
 }
 
-/* Text selection layer */
-.text-selection-layer span::selection {
-  background: rgba(59, 130, 246, 0.3);
+/* Native SVG text selection when text-select tool is active */
+body.text-select-mode .tl-container text,
+body.text-select-mode .tl-container tspan {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text !important;
 }
 
-.text-selection-layer.active {
-  cursor: text;
+body.text-select-mode .tl-container svg {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+body.text-select-mode ::selection {
+  background: rgba(59, 130, 246, 0.3);
 }
 
 /* Exit pen mode — faint stacked icon */

@@ -42,6 +42,7 @@ export function ProofStatementOverlay({
   const activePairRef = useRef(-1)
   const [dismissed, setDismissed] = useState(false)
   const dismissedPairRef = useRef(-1)
+  const [expanded, setExpanded] = useState(false)
 
   // Create copy store
   const stmtStore = useMemo(() => {
@@ -96,15 +97,16 @@ export function ProofStatementOverlay({
       }
 
       const idx = proofData.pairs.findIndex(p =>
-        !p.samePage && p.proofPageIndices.includes(closestPage)
+        p.proofPageIndices.includes(closestPage)
       )
 
       if (idx !== activePairRef.current) {
-        // Clear dismissed state when scrolling to a different proof (or away from any proof)
+        // Clear dismissed/expanded state when scrolling to a different proof (or away from any proof)
         if (idx !== dismissedPairRef.current) {
           setDismissed(false)
           dismissedPairRef.current = -1
         }
+        setExpanded(false)
         activePairRef.current = idx
         setActivePairIndex(idx)
       }
@@ -183,6 +185,24 @@ export function ProofStatementOverlay({
 
   if (!activePair || dismissed) return null
 
+  if (!expanded) {
+    // Collapsed: subtle pill hint
+    return (
+      <div
+        className="proof-overlay-pill"
+        onClick={() => setExpanded(true)}
+        onPointerDown={stopPropagation}
+        onPointerUp={stopPropagation}
+        onTouchStart={stopPropagation}
+        onTouchEnd={stopPropagation}
+        title="Show theorem statement"
+      >
+        <span className="proof-overlay-pill-title">{activePair?.title}</span>
+        <span className="proof-overlay-pill-page">p.{statementRegion?.page}</span>
+      </div>
+    )
+  }
+
   return (
     <div
       className="proof-overlay"
@@ -197,7 +217,15 @@ export function ProofStatementOverlay({
         <span className="proof-overlay-page">p.{statementRegion?.page}</span>
         <button
           className="proof-overlay-close"
+          onClick={(e) => { e.stopPropagation(); setExpanded(false) }}
+          title="Collapse"
+        >
+          ‹
+        </button>
+        <button
+          className="proof-overlay-close"
           onClick={(e) => { e.stopPropagation(); setDismissed(true); dismissedPairRef.current = activePairIndex }}
+          title="Dismiss"
         >
           ×
         </button>

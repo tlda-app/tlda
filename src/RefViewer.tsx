@@ -30,8 +30,12 @@ interface RefViewerProps {
   tools: TLStateNodeConstructor[]
   licenseKey: string
   onClose: () => void
-  /** Jump main editor to the ref's location */
-  onJump: (region: LabelRegion) => void
+  /** Navigate main editor to the ref's location (saves camera for go-back) */
+  onGoThere: (region: LabelRegion) => void
+  /** Restore camera to position before last "go there" */
+  onGoBack: () => void
+  /** Whether there's a camera position to go back to */
+  canGoBack: boolean
   /** Navigate to previous/next source line with refs */
   onPrevLine: () => void
   onNextLine: () => void
@@ -45,7 +49,9 @@ export function RefViewer({
   tools,
   licenseKey,
   onClose,
-  onJump,
+  onGoThere,
+  onGoBack,
+  canGoBack,
   onPrevLine,
   onNextLine,
 }: RefViewerProps) {
@@ -158,14 +164,10 @@ export function RefViewer({
       onTouchStart={stopPropagation}
       onTouchEnd={stopPropagation}
     >
-      <div
-        className="ref-viewer-label"
-        onClick={() => onJump(activeRef.region)}
-        title="Click to jump"
-      >
+      <div className="ref-viewer-label">
         <button
           className="ref-viewer-nav"
-          onClick={(e) => { e.stopPropagation(); onPrevLine() }}
+          onClick={() => onPrevLine()}
           title="Previous ref"
         >
           ‹
@@ -175,15 +177,31 @@ export function RefViewer({
         </span>
         <button
           className="ref-viewer-nav"
-          onClick={(e) => { e.stopPropagation(); onNextLine() }}
+          onClick={() => onNextLine()}
           title="Next ref"
         >
           ›
         </button>
         <span className="ref-viewer-page">p.{activeRef.region.page}</span>
         <button
+          className="ref-viewer-action"
+          onClick={() => onGoThere(activeRef.region)}
+          title="Go to this location"
+        >
+          ↗
+        </button>
+        {canGoBack && (
+          <button
+            className="ref-viewer-action"
+            onClick={onGoBack}
+            title="Go back"
+          >
+            ↩
+          </button>
+        )}
+        <button
           className="ref-viewer-close"
-          onClick={(e) => { e.stopPropagation(); onClose() }}
+          onClick={() => onClose()}
         >
           ×
         </button>

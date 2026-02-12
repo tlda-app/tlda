@@ -11,8 +11,6 @@
   color: white;
   border-radius: 50%;
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
   pointer-events: all;
   display: flex;
   align-items: center;
@@ -44,7 +42,6 @@
   .ping-button-standalone {
     width: 44px;
     height: 44px;
-    font-size: 20px;
     bottom: 20px;
     right: 20px;
     opacity: 0.6;

@@ -34,6 +34,7 @@ import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLSha
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
+import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, onCameraLink, broadcastCamera, onRefViewerSignal, broadcastRefViewer, getYRecords } from './useYjsSync'
@@ -42,7 +43,7 @@ import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { clearLookupCache, buildReverseIndex } from './synctexLookup'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
-import { TextSelectionLayer, extractTextFromSvgAsync } from './TextSelectionLayer'
+import { extractTextFromSvgAsync } from './TextSelectionLayer'
 import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, loadProofData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight, type ProofData, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
@@ -201,22 +202,56 @@ async function reloadPages(
     const { index, svgText } = result
     const page = pages[index]
 
-    // Re-encode as base64 data URL
-    const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
+    // Update the SVG text store for inline svg-page shapes
+    svgTextStore.set(page.shapeId, svgText)
 
-    // Update the asset src (this triggers TLDraw to re-render the image)
-    const asset = editor.getAsset(page.assetId)
-    if (asset && asset.type === 'image') {
-      editor.updateAssets([{
-        ...asset,
-        props: { ...asset.props, src: dataUrl },
-      }])
-      console.log(`[Reload] Updated asset for page ${index + 1}`)
+    // Rebuild anchor index and viewBox for this page
+    const parser = new DOMParser()
+    const svgDoc = parser.parseFromString(svgText, 'image/svg+xml')
+    const svgEl = svgDoc.querySelector('svg')
+    if (svgEl) {
+      const vb = svgEl.getAttribute('viewBox')
+      if (vb) {
+        const parts = vb.split(/\s+/).map(Number)
+        if (parts.length === 4) {
+          svgViewBoxStore.set(page.shapeId, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+        }
+      }
+    }
+    const views = svgDoc.querySelectorAll('view')
+    for (const view of views) {
+      const id = view.getAttribute('id')
+      if (id) {
+        anchorIndex.set(id, {
+          pageShapeId: page.shapeId,
+          viewBox: view.getAttribute('viewBox') || undefined,
+        })
+      }
+    }
+
+    // For svg-page shapes, bump version to trigger re-render
+    const shape = editor.getShape(page.shapeId)
+    if (shape && shape.type === 'svg-page') {
+      editor.updateShape({
+        id: shape.id,
+        type: 'svg-page',
+        props: { version: ((shape as any).props.version || 0) + 1 },
+      })
+      console.log(`[Reload] Updated svg-page for page ${index + 1}`)
+    } else if (shape && shape.type === 'image') {
+      // Fallback for image shapes (PNG format)
+      const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
+      const asset = editor.getAsset(page.assetId)
+      if (asset && asset.type === 'image') {
+        editor.updateAssets([{
+          ...asset,
+          props: { ...asset.props, src: dataUrl },
+        }])
+        console.log(`[Reload] Updated asset for page ${index + 1}`)
+      }
     }
 
     // Re-extract text for selection overlay
-    const parser = new DOMParser()
-    const svgDoc = parser.parseFromString(svgText, 'image/svg+xml')
     page.textData = await extractTextFromSvgAsync(svgDoc)
   }
 
@@ -236,12 +271,6 @@ interface SvgDocumentEditorProps {
   diffConfig?: { basePath: string }
 }
 
-// Wrapper to connect TextSelectionLayer to PanelContext
-function TextSelectionOverlay() {
-  const ctx = useContext(PanelContext)
-  if (!ctx) return null
-  return <TextSelectionLayer pages={ctx.pages} />
-}
 
 function MathNoteToolbarItem() {
   const tools = useTools()
@@ -327,6 +356,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // Flat list of all refs in document order, and current position
   const flatRefsRef = useRef<{ line: number; label: string; region: LabelRegion }[]>([])
   const flatRefIndexRef = useRef<number>(-1)
+
+  // Camera history for "go back" after "go there" in RefViewer
+  const cameraHistoryRef = useRef<{x: number, y: number, z: number}[]>([])
+  const [canGoBack, setCanGoBack] = useState(false)
 
   // Broadcast ref viewer state to other viewers when it changes
   const refViewerUserActionRef = useRef(false)  // true when change is from local user action
@@ -896,6 +929,34 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     setRefViewerRefsLocal([{ label: entry.label, region: entry.region }])
   }, [setRefViewerRefsLocal])
 
+  // "Go there" / "Go back" for RefViewer
+  const handleGoThere = useCallback((region: LabelRegion) => {
+    const editor = editorRef.current
+    if (!editor) return
+    const cam = editor.getCamera()
+    cameraHistoryRef.current.push({ x: cam.x, y: cam.y, z: cam.z })
+    setCanGoBack(true)
+    const pageIdx = region.page - 1
+    const page = document.pages[pageIdx]
+    if (!page) return
+    const scaleY = page.bounds.height / 792
+    const canvasY = page.bounds.y + region.yTop * scaleY
+    editor.centerOnPoint(
+      { x: page.bounds.x + page.bounds.width / 2, y: canvasY },
+      { animation: { duration: 300 } }
+    )
+  }, [document])
+
+  const handleGoBack = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    const history = cameraHistoryRef.current
+    if (history.length === 0) return
+    const cam = history.pop()!
+    setCanGoBack(history.length > 0)
+    editor.setCamera(cam, { animation: { duration: 300 } })
+  }, [])
+
   // Shared ref lookup from screen coordinates
   const lookupRefAt = useCallback((clientX: number, clientY: number): boolean => {
     const editor = editorRef.current
@@ -931,8 +992,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     if (!editor || !proofDataReady) return
     const container = editor.getContainer()
 
-    // Desktop: double-click to look up refs
+    // Desktop: double-click to look up refs (skip if clicking on an editable shape)
     const handleDoubleClick = (e: MouseEvent) => {
+      // Don't interfere with double-click-to-edit on user shapes (math notes, text, etc.)
+      // Page shapes (type 'image' or 'svg-page') should still trigger ref lookup.
+      const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const hitShape = editor.getShapeAtPoint(point, { hitInside: true, margin: 0 })
+      if (hitShape && hitShape.type !== 'image' && hitShape.type !== 'svg-page') return
+
       if (editor.getCurrentToolId() === 'select') {
         editor.cancel()
       }
@@ -1095,7 +1162,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         </DefaultToolbar>
       ),
       HelperButtons: ExitPenModeButton,
-      InFrontOfTheCanvas: () => <><TextSelectionOverlay /><DocumentPanel /><PingButton /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PingButton /></>,
     }),
     [document, roomId]
   )
@@ -1133,7 +1200,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     onTogglePanelsLocal: togglePanelsLocal,
   }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal])
 
-  const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil], [])
+  const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
 
   // Override toolbar to replace note with math-note
@@ -1179,6 +1246,35 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
+
+          // Set up hyperref link navigation: open target in RefViewer panel
+          setNavigateToAnchor((anchorId: string, title: string) => {
+            const entry = anchorIndex.get(anchorId)
+            if (!entry) return
+
+            // Find which page this anchor is on
+            const pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+            if (pageIdx < 0) return
+
+            // Convert xlink:title (e.g. "equation.28") to display label
+            const { type, displayLabel } = anchorIdToLabel(title || anchorId)
+
+            // Convert viewBox to PDF coordinates
+            let yTop = 0, yBottom = 792
+            const svgVB = getSvgViewBox(entry.pageShapeId)
+            if (svgVB && entry.viewBox) {
+              const parts = entry.viewBox.split(/\s+/).map(Number)
+              if (parts.length === 4) {
+                const [, svgY, , svgH] = parts
+                yTop = (svgY - svgVB.minY) / svgVB.height * 792
+                yBottom = yTop + svgH / svgVB.height * 792
+              }
+            }
+
+            const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
+            setRefViewerRefsLocal([{ label: anchorId, region }])
+          })
+
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
           shapeIdsArrayRef.current = editorSetup.shapeIds
@@ -1342,22 +1438,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             shapeUtils={shapeUtils}
             tools={tools}
             licenseKey={LICENSE_KEY}
-            onClose={() => setRefViewerRefsLocal(null)}
+            onClose={() => {
+              setRefViewerRefsLocal(null)
+              cameraHistoryRef.current = []
+              setCanGoBack(false)
+            }}
             onPrevLine={() => navigateRef(-1)}
             onNextLine={() => navigateRef(1)}
-            onJump={(region) => {
-              const editor = editorRef.current
-              if (!editor) return
-              const pageIdx = region.page - 1
-              const page = document.pages[pageIdx]
-              if (!page) return
-              const scaleY = page.bounds.height / 792
-              const canvasY = page.bounds.y + region.yTop * scaleY
-              editor.centerOnPoint(
-                { x: page.bounds.x + page.bounds.width / 2, y: canvasY },
-                { animation: { duration: 300 } }
-              )
-            }}
+            onGoThere={handleGoThere}
+            onGoBack={handleGoBack}
+            canGoBack={canGoBack}
           />
         )}
         {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
@@ -1699,18 +1789,59 @@ function setupPulseForDiffLayout(
   }
 }
 
+/**
+ * Parse hyperref anchor ID into a display label.
+ * e.g. "equation.2.28" → { type: "equation", displayLabel: "Eq. (2.28)" }
+ */
+function anchorIdToLabel(anchorId: string): { type: string; displayLabel: string } {
+  const dotIdx = anchorId.indexOf('.')
+  if (dotIdx < 0) return { type: anchorId, displayLabel: anchorId }
+
+  const rawType = anchorId.substring(0, dotIdx).toLowerCase()
+  const number = anchorId.substring(dotIdx + 1)
+
+  const typeMap: Record<string, string> = {
+    equation: 'Eq.',
+    theorem: 'Theorem',
+    lemma: 'Lemma',
+    proposition: 'Proposition',
+    corollary: 'Corollary',
+    definition: 'Definition',
+    remark: 'Remark',
+    example: 'Example',
+    section: '§',
+    subsection: '§',
+    subsubsection: '§',
+    appendix: 'Appendix',
+    figure: 'Figure',
+    table: 'Table',
+    footnote: 'Footnote',
+    hfootnote: 'Footnote',
+    item: 'Item',
+  }
+
+  const displayType = typeMap[rawType] || (rawType.charAt(0).toUpperCase() + rawType.slice(1))
+
+  if (rawType === 'equation') {
+    return { type: 'equation', displayLabel: `${displayType} (${number})` }
+  }
+  return { type: rawType, displayLabel: `${displayType} ${number}` }
+}
+
 function setupSvgEditor(editor: Editor, document: SvgDocument): {
   shapeIdSet: Set<TLShapeId>
   shapeIds: TLShapeId[]
   updateBounds: (bounds: any) => void
 } {
   // Check if page shapes already exist (from sync)
-  const existingAssets = editor.getAssets()
-  const hasAssets = document.format === 'html'
-    ? editor.getCurrentPageShapes().some(s => s.type === 'html-page')
-    : existingAssets.some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
+  const existingShapes = editor.getCurrentPageShapes()
+  const hasPages = document.format === 'html'
+    ? existingShapes.some(s => s.type === 'html-page')
+    : document.format === 'png'
+    ? editor.getAssets().some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
+    : existingShapes.some(s => s.type === 'svg-page')
 
-  if (!hasAssets) {
+  if (!hasPages) {
     if (document.format === 'html') {
       // Create html-page custom shapes (no assets needed)
       editor.createShapes(
@@ -1727,9 +1858,8 @@ function setupSvgEditor(editor: Editor, document: SvgDocument): {
           },
         }))
       )
-    } else {
-      // Create image assets + shapes for SVG/PNG pages
-      const mimeType = document.format === 'png' ? 'image/png' : 'image/svg+xml'
+    } else if (document.format === 'png') {
+      // PNG pages: use image assets + shapes
       editor.createAssets(
         document.pages.map((page) => ({
           id: page.assetId,
@@ -1739,7 +1869,7 @@ function setupSvgEditor(editor: Editor, document: SvgDocument): {
           props: {
             w: page.width,
             h: page.height,
-            mimeType,
+            mimeType: 'image/png',
             src: page.src,
             name: 'svg-page',
             isAnimated: false,
@@ -1763,6 +1893,23 @@ function setupSvgEditor(editor: Editor, document: SvgDocument): {
             },
           })
         )
+      )
+    } else {
+      // SVG pages: use inline svg-page custom shapes (hyperref links are clickable)
+      editor.createShapes(
+        document.pages.map((page, i) => ({
+          id: page.shapeId,
+          type: 'svg-page' as any,
+          x: page.bounds.x,
+          y: page.bounds.y,
+          isLocked: true,
+          opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
+          props: {
+            w: page.bounds.w,
+            h: page.bounds.h,
+            pageIndex: i,
+          },
+        }))
       )
     }
   }

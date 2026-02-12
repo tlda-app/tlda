@@ -6,6 +6,7 @@ import {
 import type { TLAssetId, TLShapeId } from 'tldraw'
 import { setActiveMacros } from './katexMacros'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
+import { svgTextStore, svgViewBoxStore, anchorIndex } from './SvgPageShape'
 
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
@@ -141,17 +142,45 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
     width = width * scale
     height = height * scale
 
-    // Convert SVG to base64 data URL (TLDraw doesn't accept blob URLs)
-    const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
-
     // Use deterministic IDs based on document name + page index
     // This prevents duplicates when Yjs syncs existing shapes
     const pageId = `${name}-page-${i}`
+    const shapeId = createShapeId(pageId)
+
+    // Store raw SVG text for inline rendering (not synced through Yjs)
+    svgTextStore.set(shapeId, svgText)
+
+    // Store SVG viewBox for coordinate conversion (hyperref link navigation)
+    if (svgEl) {
+      const vb = svgEl.getAttribute('viewBox')
+      if (vb) {
+        const parts = vb.split(/\s+/).map(Number)
+        if (parts.length === 4) {
+          svgViewBoxStore.set(shapeId, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+        }
+      }
+    }
+
+    // Build anchor index from <view> elements (hyperref destinations)
+    const views = doc.querySelectorAll('view')
+    for (const view of views) {
+      const id = view.getAttribute('id')
+      if (id) {
+        anchorIndex.set(id, {
+          pageShapeId: shapeId,
+          viewBox: view.getAttribute('viewBox') || undefined,
+        })
+      }
+    }
+
+    // Also keep data URL for fallback (diff overlay, old pages, etc.)
+    const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
+
     pages.push({
       src: dataUrl,
       bounds: new Box(0, top, width, height),
       assetId: AssetRecordType.createId(pageId),
-      shapeId: createShapeId(pageId),
+      shapeId,
       width,
       height,
     })
@@ -172,7 +201,7 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
     pages[i].textData = await extractTextFromSvgAsync(svgDocs[i])
   }
 
-  console.log('SVG document ready')
+  console.log(`SVG document ready (${anchorIndex.size} hyperref anchors indexed)`)
   return { name, pages, basePath }
 }
 
@@ -862,7 +891,7 @@ export async function loadProofData(
     })
 
     // Store raw statement region for the overlay camera
-    statementRegions.push(pair.samePage ? null : {
+    statementRegions.push({
       page: pair.statementRegion.page,
       yTop: pair.statementRegion.yTop,
       yBottom: pair.statementRegion.yBottom,

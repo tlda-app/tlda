@@ -46,7 +46,13 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "Running latexmk..."
 cd "$TEX_DIR"
-latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "$TEX_BASE.tex"
+# Inject hyperref with hypertex driver for SVG-native clickable links.
+# The -usepretex flag passes TeX commands before the input file.
+latexmk -dvi -f -latex='pdflatex --output-format=dvi -synctex=1 %O %S' \
+  -interaction=nonstopmode \
+  -pretex='\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\AddToHook{begindocument/before}{\RequirePackage{hyperref}}' \
+  -usepretex \
+  "$TEX_BASE.tex"
 
 DVI_FILE="$TEX_DIR/$TEX_BASE.dvi"
 if [ ! -f "$DVI_FILE" ]; then
@@ -57,7 +63,7 @@ fi
 # Convert to SVG
 echo ""
 echo "Converting DVI to SVG..."
-dvisvgm --page=1- --font-format=woff2 --bbox=papersize \
+dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none \
   --output="$OUTPUT_DIR/page-%p.svg" \
   "$DVI_FILE"
 

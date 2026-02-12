@@ -1,3 +1,34 @@
+/* Collapsed pill: subtle, findable, not distracting */
+.proof-overlay-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.06);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(120, 120, 120, 0.45);
+  cursor: pointer;
+  pointer-events: all;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.proof-overlay-pill:hover {
+  color: rgba(80, 80, 80, 0.7);
+}
+
+.proof-overlay-pill-title {
+  font-weight: 500;
+}
+
+.proof-overlay-pill-page {
+  color: rgba(120, 120, 120, 0.3);
+  font-size: 8px;
+}
+
 .proof-overlay {
   width: 600px;
   border-radius: 8px;
@@ -5,7 +36,7 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
   background: white;
   transition: height 0.2s ease, opacity 0.2s ease;
-  pointer-events: all;
+  pointer-events: none;
 }
 
 .proof-overlay-label {
@@ -25,6 +56,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  pointer-events: all;
 }
 
 .proof-overlay-label:hover {
@@ -65,9 +97,20 @@
   width: 100%;
   overflow: hidden;
   background: white;
+  clip-path: inset(0);
+  pointer-events: none;
 }
 
 /* Hide TLDraw's background pattern in the mini editor */
 .proof-overlay-canvas .tl-background {
   display: none;
+}
+
+/* Make the TLDraw canvas non-interactive so it doesn't block resize handles
+   and other pointer events on the main canvas underneath. The proof overlay's
+   TLDraw occupies a large screen area at z-index 1000 — without this, its
+   background/image layers capture clicks meant for the main canvas.
+   Must use * because children re-enable pointer-events individually. */
+.proof-overlay-canvas * {
+  pointer-events: none !important;
 }

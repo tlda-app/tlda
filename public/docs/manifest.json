@@ -32,7 +32,7 @@
     },
     "bregman-lower-bound": {
       "name": "bregman-lower-bound",
-      "pages": 60,
+      "pages": 61,
       "basePath": "/docs/bregman-lower-bound/"
     },
     "bregman-lower-bound-diff": {
@@ -50,6 +50,12 @@
       "format": "diff",
       "texFile": "/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex",
       "sourceDoc": "bregman"
+    },
+    "balancing-act": {
+      "name": "The Balancing Act in Causal Inference",
+      "pages": 43,
+      "basePath": "/docs/balancing-act/",
+      "texFile": "/Users/skip/work/balancing-act/main.tex"
     }
   }
 }
