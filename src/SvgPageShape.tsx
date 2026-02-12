@@ -3,7 +3,7 @@ import {
   HTMLContainer,
   T,
 } from 'tldraw'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // Client-side SVG text store — keyed by shape ID, not synced through Yjs
 // Populated by svgDocumentLoader, read by the shape component
@@ -30,6 +30,56 @@ export const anchorIndex = new Map<string, AnchorEntry>()
 let navigateToAnchor: ((anchorId: string, title: string) => void) | null = null
 export function setNavigateToAnchor(fn: ((anchorId: string, title: string) => void) | null) {
   navigateToAnchor = fn
+}
+
+// --- Change highlight store (local "unread" state, not synced via Yjs) ---
+
+export interface ChangeRegion {
+  y: number       // viewBox y coordinate (top of changed region)
+  height: number  // region height in viewBox units
+}
+
+export const changeStore = new Map<string, ChangeRegion[]>()  // shapeId → regions
+export const changedPages = new Set<string>()                 // shapeIds with unread changes
+
+type ChangeListener = () => void
+const changeListeners = new Set<ChangeListener>()
+
+export function onChangeStoreUpdate(fn: ChangeListener): () => void {
+  changeListeners.add(fn)
+  return () => { changeListeners.delete(fn) }
+}
+
+function notifyChangeListeners() {
+  for (const fn of changeListeners) fn()
+}
+
+export function setChangeHighlights(shapeId: string, regions: ChangeRegion[]) {
+  if (regions.length > 0) {
+    changeStore.set(shapeId, regions)
+    changedPages.add(shapeId)
+  } else {
+    changeStore.delete(shapeId)
+    changedPages.delete(shapeId)
+  }
+  notifyChangeListeners()
+}
+
+export function dismissPageChanges(shapeId: string) {
+  changeStore.delete(shapeId)
+  changedPages.delete(shapeId)
+  notifyChangeListeners()
+}
+
+export function dismissAllChanges() {
+  changeStore.clear()
+  changedPages.clear()
+  notifyChangeListeners()
+}
+
+// Expose change store on window for testing/debugging
+if (typeof window !== 'undefined') {
+  (window as any).__changeStore__ = { changeStore, changedPages, setChangeHighlights, dismissAllChanges, dismissPageChanges, svgViewBoxStore }
 }
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
@@ -63,6 +113,16 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 function SvgPageComponent({ shape }: { shape: any }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgText = svgTextStore.get(shape.id)
+
+  // Subscribe to change store for this shape's highlights
+  const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])
+  useEffect(() => {
+    return onChangeStoreUpdate(() => {
+      setHighlights(changeStore.get(shape.id) || [])
+    })
+  }, [shape.id])
+
+  const viewBox = svgViewBoxStore.get(shape.id)
 
   // Inject SVG and wire up link clicks
   // Re-runs when version changes (hot reload) or svgText changes
@@ -128,16 +188,28 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
   return (
     <HTMLContainer>
-      <div
-        ref={containerRef}
-        style={{
-          width: shape.props.w,
-          height: shape.props.h,
-          background: 'white',
-          overflow: 'hidden',
-          pointerEvents: 'all',
-        }}
-      />
+      <div style={{ position: 'relative', width: shape.props.w, height: shape.props.h }}>
+        <div
+          ref={containerRef}
+          style={{
+            width: shape.props.w,
+            height: shape.props.h,
+            background: 'white',
+            overflow: 'hidden',
+            pointerEvents: 'all',
+          }}
+        />
+        {highlights.length > 0 && viewBox && highlights.map((r, i) => (
+          <div
+            key={i}
+            className="change-highlight"
+            style={{
+              top: `${((r.y - viewBox.minY) / viewBox.height) * 100}%`,
+              height: `${(r.height / viewBox.height) * 100}%`,
+            }}
+          />
+        ))}
+      </div>
     </HTMLContainer>
   )
 }

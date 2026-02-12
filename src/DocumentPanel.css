@@ -457,6 +457,108 @@
 }
 
 /* Subtle diff link at bottom of TOC — aligned with toc-item bullets */
+/* Recent changes section */
+.recent-changes {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 2px;
+}
+
+.recent-changes-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.recent-changes-label {
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.4;
+  color: #b45309;
+}
+
+.recent-changes-dismiss {
+  font-size: 8px;
+  opacity: 0.25;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.recent-changes-dismiss:hover {
+  opacity: 0.6;
+}
+
+.recent-changes-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+}
+
+.recent-changes-page {
+  font-size: 9px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 200, 0, 0.12);
+  color: #92400e;
+  transition: background 0.15s;
+}
+
+.recent-changes-page:hover {
+  background: rgba(255, 200, 0, 0.25);
+}
+
+/* Snapshot time slider */
+.snapshot-slider {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0 1px;
+}
+
+.snapshot-range {
+  flex: 1;
+  height: 2px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(180, 83, 9, 0.15);
+  border-radius: 1px;
+  outline: none;
+}
+
+.snapshot-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b45309;
+  cursor: pointer;
+}
+
+.snapshot-label {
+  font-size: 7px;
+  opacity: 0.35;
+  white-space: nowrap;
+  min-width: 30px;
+  text-align: right;
+}
+
+@media (pointer: coarse) {
+  .snapshot-range::-webkit-slider-thumb {
+    width: 16px;
+    height: 16px;
+  }
+  .snapshot-range {
+    height: 4px;
+  }
+  .snapshot-label {
+    font-size: 9px;
+  }
+}
+
 .toc-diff-hint {
   padding: 6px 8px;
   font-size: 9px;

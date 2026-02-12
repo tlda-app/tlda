@@ -8,7 +8,19 @@ import { loadLookup, clearLookupCache, loadHtmlToc, loadHtmlSearch, type LookupE
 import { pdfToCanvas } from './synctexAnchor'
 import { PanelContext, type PanelContextValue } from './PanelContext'
 import { getYRecords, getLiveUrl, onReloadSignal } from './useYjsSync'
+import { changedPages, onChangeStoreUpdate, dismissAllChanges } from './SvgPageShape'
 import './DocumentPanel.css'
+
+// --- Helpers ---
+
+function formatRelativeTime(ts: number | undefined): string {
+  if (!ts) return ''
+  const delta = Date.now() - ts
+  if (delta < 60_000) return 'just now'
+  if (delta < 3600_000) return `${Math.floor(delta / 60_000)}m ago`
+  if (delta < 86400_000) return `${Math.floor(delta / 3600_000)}h ago`
+  return `${Math.floor(delta / 86400_000)}d ago`
+}
 
 // --- Navigation helper ---
 
@@ -174,6 +186,26 @@ function TocTab() {
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
 
+  // Track recent changes (page-level "unread" indicators)
+  const [changedPageSet, setChangedPageSet] = useState<Set<string>>(() => new Set(changedPages))
+  useEffect(() => {
+    return onChangeStoreUpdate(() => {
+      setChangedPageSet(new Set(changedPages))
+    })
+  }, [])
+
+  // Map shapeIds to 1-indexed page numbers for display
+  const changedPageNumbers = useMemo(() => {
+    if (!ctx || changedPageSet.size === 0) return []
+    const nums: number[] = []
+    for (let i = 0; i < ctx.pages.length; i++) {
+      if (changedPageSet.has(ctx.pages[i].shapeId)) {
+        nums.push(i + 1)
+      }
+    }
+    return nums.sort((a, b) => a - b)
+  }, [ctx, changedPageSet])
+
   // Re-fetch TOC when reload signal arrives
   useEffect(() => {
     return onReloadSignal((signal) => {
@@ -277,6 +309,58 @@ function TocTab() {
         >
           Join live session
         </a>
+      )}
+      {(changedPageNumbers.length > 0 || (ctx && (ctx.snapshotCount ?? 0) >= 2)) && (
+        <div className="recent-changes">
+          {changedPageNumbers.length > 0 && (
+            <>
+              <div className="recent-changes-header">
+                <span className="recent-changes-label">Recent changes</span>
+                <span className="recent-changes-dismiss" onClick={() => {
+                  dismissAllChanges()
+                  if (ctx?.onSliderChange) ctx.onSliderChange(-1)
+                }}>
+                  mark read
+                </span>
+              </div>
+              <div className="recent-changes-pages">
+                {changedPageNumbers.map(n => (
+                  <span
+                    key={n}
+                    className="recent-changes-page"
+                    onClick={() => { if (ctx) navigateToPage(editor, ctx, n) }}
+                  >
+                    p.{n}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+          {ctx && (ctx.snapshotCount ?? 0) >= 2 && ctx.snapshotTimestamps && (
+            <div className="snapshot-slider">
+              {changedPageNumbers.length === 0 && (
+                <span className="recent-changes-label" style={{ marginRight: 4 }}>history</span>
+              )}
+              <input
+                type="range"
+                className="snapshot-range"
+                min={0}
+                max={(ctx.snapshotCount ?? 1) - 1}
+                value={ctx.activeSnapshotIdx !== undefined && ctx.activeSnapshotIdx >= 0
+                  ? ctx.activeSnapshotIdx
+                  : (ctx.snapshotCount ?? 1) - 1}
+                onChange={(e) => ctx.onSliderChange?.(parseInt(e.target.value))}
+              />
+              <span className="snapshot-label">
+                {formatRelativeTime(ctx.snapshotTimestamps[
+                  ctx.activeSnapshotIdx !== undefined && ctx.activeSnapshotIdx >= 0
+                    ? ctx.activeSnapshotIdx
+                    : (ctx.snapshotCount ?? 1) - 1
+                ])}
+              </span>
+            </div>
+          )}
+        </div>
       )}
       {items.map((h, i) => {
         if (h.level === 'section') {

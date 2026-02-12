@@ -34,7 +34,7 @@ import type { TLComponents, TLImageShape, TLShapePartial, Editor, TLShape, TLSha
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor } from './SvgPageShape'
+import { SvgPageShapeUtil, svgTextStore, svgViewBoxStore, anchorIndex, getSvgViewBox, setNavigateToAnchor, setChangeHighlights, dismissAllChanges } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, onReloadSignal, onForwardSync, onScreenshotRequest, onCameraLink, broadcastCamera, onRefViewerSignal, broadcastRefViewer, getYRecords } from './useYjsSync'
@@ -43,11 +43,12 @@ import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { clearLookupCache, buildReverseIndex } from './synctexLookup'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { PanelContext } from './PanelContext'
-import { extractTextFromSvgAsync } from './TextSelectionLayer'
+import { extractTextFromSvgAsync, type PageTextData, type TextLine } from './TextSelectionLayer'
 import { currentDocumentInfo, setCurrentDocumentInfo, pageSpacing, loadDiffData, loadProofData, type SvgDocument, type SvgPage, type DiffData, type DiffHighlight, type ProofData, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
 import { canvasToPdf } from './synctexAnchor'
+import { initSnapshots, captureSnapshot, getSnapshots, diffAgainstSnapshot, onSnapshotUpdate } from './snapshotStore'
 
 // Sync server URL - use env var, or auto-detect based on environment
 // In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
@@ -154,6 +155,99 @@ async function remapAnnotations(
 }
 
 /**
+ * Diff old vs new page text to find changed regions.
+ *
+ * Works at the WORD level to handle LaTeX paragraph reflow: when a sentence
+ * is added/removed, LaTeX re-wraps the paragraph so every line after the edit
+ * has different text — but the words are the same. By diffing words and mapping
+ * changed words back to their lines, we highlight only the actual edit.
+ *
+ * Uses longest common prefix + suffix of word sequences (O(n)) which handles
+ * the common case of a single contiguous edit perfectly.
+ */
+function diffTextLines(
+  oldData: PageTextData,
+  newData: PageTextData,
+): { y: number; height: number }[] {
+  // Build word sequences with line provenance
+  interface WordEntry { word: string; lineIdx: number }
+  function extractWords(lines: TextLine[]): WordEntry[] {
+    const result: WordEntry[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const words = lines[i].text.split(/\s+/).filter(w => w.length > 0)
+      for (const word of words) {
+        result.push({ word, lineIdx: i })
+      }
+    }
+    return result
+  }
+
+  const oldWords = extractWords(oldData.lines)
+  const newWords = extractWords(newData.lines)
+
+  // Find longest common prefix
+  let prefixLen = 0
+  const minLen = Math.min(oldWords.length, newWords.length)
+  while (prefixLen < minLen && oldWords[prefixLen].word === newWords[prefixLen].word) {
+    prefixLen++
+  }
+
+  // Find longest common suffix (not overlapping with prefix)
+  let suffixLen = 0
+  const maxSuffix = minLen - prefixLen
+  while (suffixLen < maxSuffix &&
+    oldWords[oldWords.length - 1 - suffixLen].word === newWords[newWords.length - 1 - suffixLen].word) {
+    suffixLen++
+  }
+
+  // The changed region in new is [prefixLen, newWords.length - suffixLen)
+  const changeStart = prefixLen
+  const changeEnd = newWords.length - suffixLen
+
+  if (changeStart >= changeEnd) return []  // no changes
+
+  // Collect line indices that contain changed words
+  const changedLineIndices = new Set<number>()
+  for (let i = changeStart; i < changeEnd; i++) {
+    changedLineIndices.add(newWords[i].lineIdx)
+  }
+
+  // Also include the lines at the boundary (the line where prefix ends and suffix starts)
+  // to capture partial-line changes
+  if (changeStart > 0) changedLineIndices.add(newWords[changeStart - 1].lineIdx)
+  if (changeEnd < newWords.length) changedLineIndices.add(newWords[changeEnd].lineIdx)
+
+  // Convert to regions
+  const newLines = newData.lines
+  const rawRegions: { y: number; height: number }[] = []
+  for (const idx of changedLineIndices) {
+    const line = newLines[idx]
+    rawRegions.push({
+      y: line.y - line.fontSize * 0.3,
+      height: line.fontSize * 1.4,
+    })
+  }
+
+  if (rawRegions.length === 0) return []
+
+  // Merge overlapping/adjacent regions
+  rawRegions.sort((a, b) => a.y - b.y)
+  const merged: { y: number; height: number }[] = []
+  for (const r of rawRegions) {
+    const last = merged[merged.length - 1]
+    if (last && r.y <= last.y + last.height + 2) {
+      const bottom = Math.max(last.y + last.height, r.y + r.height)
+      last.height = bottom - last.y
+    } else {
+      merged.push({ ...r })
+    }
+  }
+
+  return merged
+}
+
+
+/**
  * Re-fetch SVG pages and hot-swap their TLDraw assets.
  * Called when a reload signal arrives from the MCP server after a rebuild.
  */
@@ -195,6 +289,18 @@ async function reloadPages(
       }
     })
   )
+
+  // Save old SVG text + text data before overwriting (for change detection)
+  const oldSvgTextMap = new Map<number, string | undefined>()
+  const oldTextDataMap = new Map<number, PageTextData | null | undefined>()
+  for (const result of results) {
+    if (!result) continue
+    oldSvgTextMap.set(result.index, svgTextStore.get(pages[result.index].shapeId))
+    oldTextDataMap.set(result.index, pages[result.index].textData)
+  }
+
+  // Capture pre-rebuild text into snapshot store (pages[].textData is still the old text)
+  captureSnapshot(pages, Date.now())
 
   // Process and hot-swap each fetched page
   for (const result of results) {
@@ -253,6 +359,19 @@ async function reloadPages(
 
     // Re-extract text for selection overlay
     page.textData = await extractTextFromSvgAsync(svgDoc)
+
+    // Detect changed text regions by diffing old vs new.
+    // Skip if the raw SVG content is identical (stale reload signal, no actual rebuild).
+    const oldSvgText = oldSvgTextMap.get(index)
+    const oldTextData = oldTextDataMap.get(index)
+    const svgContentChanged = oldSvgText !== undefined && oldSvgText !== svgText
+    if (svgContentChanged && oldTextData && page.textData) {
+      const regions = diffTextLines(oldTextData, page.textData)
+      setChangeHighlights(page.shapeId, regions)
+      if (regions.length > 0) {
+        console.log(`[Reload] Page ${index + 1}: ${regions.length} changed region(s)`)
+      }
+    }
   }
 
   // After a full reload, remap annotations
@@ -303,6 +422,37 @@ function ExitPenModeButton() {
 
 export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
   const editorRef = useRef<Editor | null>(null)
+
+  // --- Snapshot time slider state ---
+  const [snapshotSliderIdx, setSnapshotSliderIdx] = useState(-1) // -1 = "latest rebuild"
+  const [snapshotCount, setSnapshotCount] = useState(() => getSnapshots().length)
+
+  useEffect(() => {
+    return onSnapshotUpdate(() => {
+      setSnapshotCount(getSnapshots().length)
+      // Reset slider to rightmost on new snapshot
+      setSnapshotSliderIdx(-1)
+    })
+  }, [])
+
+  const handleSliderChange = useCallback((idx: number) => {
+    setSnapshotSliderIdx(idx)
+    const snaps = getSnapshots()
+    if (idx < 0 || idx >= snaps.length) {
+      // Rightmost: restore most-recent-rebuild diff (clear and let default kick in)
+      dismissAllChanges()
+      return
+    }
+    const result = diffAgainstSnapshot(idx, document.pages.map(p => ({
+      shapeId: p.shapeId as string,
+      textData: p.textData,
+    })))
+    // Clear and apply new highlights
+    dismissAllChanges()
+    for (const [shapeId, regions] of result) {
+      setChangeHighlights(shapeId, regions)
+    }
+  }, [document])
 
   // --- Diff toggle state ---
   const hasDiffBuiltin = !!document.diffLayout  // standalone diff doc
@@ -1183,6 +1333,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       width: p.width,
       height: p.height,
       textData: p.textData,
+      shapeId: p.shapeId,
     })),
     diffChanges: hasDiffBuiltin ? document.diffLayout?.changes : (diffMode ? diffDataRef.current?.changes : undefined),
     onFocusChange: (page: number) => focusChangeRef.current?.(page),
@@ -1198,7 +1349,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     onToggleCameraLink: toggleCameraLink,
     panelsLocal,
     onTogglePanelsLocal: togglePanelsLocal,
-  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal])
+    snapshotCount,
+    snapshotTimestamps: snapshotCount > 0 ? getSnapshots().map(s => s.timestamp) : undefined,
+    activeSnapshotIdx: snapshotSliderIdx,
+    onSliderChange: handleSliderChange,
+  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -1296,6 +1451,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           })
 
           // Remapping is triggered by YjsSyncProvider after initial sync
+
+          // Initialize snapshot store for change tracking across refreshes
+          initSnapshots(document.name)
 
           // --- Session persistence ---
           const sessionKey = `tldraw-session:${roomId}`

@@ -297,6 +297,22 @@ body.text-select-mode ::selection {
   background: rgba(59, 130, 246, 0.3);
 }
 
+/* Change highlights — "unread" indicators for recently rebuilt content */
+.change-highlight {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 200, 0, 0.08);
+  border-left: 2px solid rgba(255, 180, 0, 0.3);
+  pointer-events: none;
+  animation: change-fade-in 0.5s ease-out;
+}
+
+@keyframes change-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Exit pen mode — faint stacked icon */
 .exit-pen-mode-btn {
   pointer-events: all;
