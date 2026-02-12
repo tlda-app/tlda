@@ -274,6 +274,15 @@ async function doBuild() {
           { cwd: texDir, stdio: 'pipe' }
         )
         usedFmt = true
+        // Check log for undefined refs/citations → schedule full rebuild
+        const logPath = join(texDir, `${texBase}.log`)
+        if (existsSync(logPath)) {
+          const log = readFileSync(logPath, 'utf8')
+          if (/undefined references|Citation .* undefined|Please rerun|No file .+\.bbl/i.test(log)) {
+            console.log('[watch] Undefined refs detected after fast build, scheduling full rebuild...')
+            needFullRebuild = true
+          }
+        }
       } catch {
         console.log('[watch] Format build failed, falling back to latexmk...')
       }
@@ -282,7 +291,7 @@ async function doBuild() {
       // Full path: latexmk handles biber, multiple passes, etc.
       console.log('[watch] Running latexmk...')
       execSync(
-        `latexmk -dvi -bibtex -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "${texBase}.tex"`,
+        `latexmk -dvi -latex="pdflatex --output-format=dvi -synctex=1 %O %S" -interaction=batchmode "${texBase}.tex"`,
         { cwd: texDir, stdio: 'pipe' }
       )
       // Rebuild format after full latexmk if we don't have one yet
