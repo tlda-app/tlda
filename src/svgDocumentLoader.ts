@@ -514,8 +514,7 @@ export async function loadDiffData(
   // Fetch old SVGs
   const oldUrlMap = new Map<number, string>()
   for (const op of neededOldPages) {
-    const num = String(op).padStart(2, '0')
-    oldUrlMap.set(op, diffBasePath + `old-page-${num}.svg`)
+    oldUrlMap.set(op, diffBasePath + `old-page-${op}.svg`)
   }
 
   const oldTexts = await Promise.all(
@@ -682,8 +681,7 @@ export async function loadDiffDocument(
 
   // Build current pages (stacked vertically at x=0)
   const currentUrls = Array.from({ length: diffInfo.currentPages }, (_, i) => {
-    const num = String(i + 1).padStart(2, '0')
-    return basePath + `page-${num}.svg`
+    return basePath + `page-${i + 1}.svg`
   })
 
   const currentTexts = await Promise.all(

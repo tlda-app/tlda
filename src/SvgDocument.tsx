@@ -30,7 +30,7 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, clearDocumentStores, anchorIndex } from './SvgPageShape'
+import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, anchorIndex } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, getYRecords, writeSignal, broadcastCamera } from './useYjsSync'
@@ -42,7 +42,7 @@ import { RefViewer } from './RefViewer'
 import { initSnapshots, getSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
-import { remapAnnotations, setupSvgEditor, anchorIdToLabel } from './editorSetup'
+import { setupSvgEditor, anchorIdToLabel } from './editorSetup'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
@@ -50,28 +50,29 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 
-// Sync server URL - use env var, or auto-detect based on environment
-// In dev mode, use local sync server (works for both localhost and LAN access like 10.0.0.x)
-// In production (GitHub Pages), use Fly.io
+// Sync server URL - use env var, or derive from window.location
+// Dev mode (Vite on 5173): connect to sync server on 5176
+// Production (unified server): same host, ws/wss based on protocol
 const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
   (import.meta.env.DEV
     ? `ws://${window.location.hostname}:5176`
-    : 'wss://tldraw-sync-skip.fly.dev')
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
 // Inner component to set up Yjs sync (needs useEditor context)
-function YjsSyncProvider({ roomId }: { roomId: string }) {
+function YjsSyncProvider({ roomId, onInitialSync }: { roomId: string; onInitialSync?: () => void }) {
   const editor = useEditor()
   useYjsSync({
     editor,
     roomId,
     serverUrl: SYNC_SERVER,
     onInitialSync: () => {
-      // Remap annotations after Yjs applies initial data
-      if (currentDocumentInfo) {
-        remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
-      }
+      // Don't remap annotations here — positions from Yjs are authoritative.
+      // remapAnnotations only runs after a document rebuild (in reloadPages),
+      // not on every connect/reconnect (which would snap user-dragged notes
+      // back to their source anchor positions).
+      onInitialSync?.()
     }
   })
   return null
@@ -121,6 +122,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
   const shapeIdsArrayRef = useRef<TLShapeId[]>([])
   const updateCameraBoundsRef = useRef<((bounds: any) => void) | null>(null)
+  const ensurePagesAtBottomRef = useRef<(() => void) | null>(null)
   const focusChangeRef = useRef<((currentPage: number) => void) | null>(null)
 
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
@@ -375,9 +377,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         tools={tools}
         overrides={overrides}
         onMount={(editor) => {
-          // Clear stale data from any previous document
-          clearDocumentStores();
-
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
@@ -414,6 +413,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           shapeIdSetRef.current = editorSetup.shapeIdSet
           shapeIdsArrayRef.current = editorSetup.shapeIds
           updateCameraBoundsRef.current = editorSetup.updateBounds
+          ensurePagesAtBottomRef.current = editorSetup.ensurePagesAtBottom
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -564,7 +564,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         components={components}
         forceMobile
     >
-      <YjsSyncProvider roomId={roomId} />
+      <YjsSyncProvider roomId={roomId} onInitialSync={() => ensurePagesAtBottomRef.current?.()} />
     </Tldraw>
     {bottomPanelsRef.current && createPortal(
       <>

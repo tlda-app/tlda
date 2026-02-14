@@ -51,7 +51,7 @@ function hasMath(text: string): boolean {
   return /\$[^$]+\$/.test(text)
 }
 
-const NOTE_COLORS: Record<string, string> = {
+export const NOTE_COLORS: Record<string, string> = {
   'yellow': '#fef9c3',
   'red': '#fecaca',
   'green': '#bbf7d0',

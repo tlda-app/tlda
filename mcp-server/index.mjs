@@ -20,36 +20,35 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import * as Y from 'yjs';
+import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
+import { initDataSource, readJsonSync, readManifestSync, localDocDir, isRemote } from './data-source.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
+// Initialize data source: HTTP fetch when CTD_SERVER is set, disk read otherwise
+initDataSource(PROJECT_ROOT, process.env.CTD_SERVER || null);
+
 // ---- Lookup.json support ----
 
-const lookupCache = new Map(); // docName → { data, mtime }
-
 function loadLookup(docName) {
-  const lookupPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'lookup.json');
-  try {
-    const stat = fs.statSync(lookupPath);
-    const cached = lookupCache.get(docName);
-    if (cached && cached.mtime >= stat.mtimeMs) return cached.data;
-
-    const data = JSON.parse(fs.readFileSync(lookupPath, 'utf8'));
-    lookupCache.set(docName, { data, mtime: stat.mtimeMs });
-    return data;
-  } catch {
-    return null;
-  }
+  return readJsonSync(docName, 'lookup.json');
 }
 
-function lookupLine(docName, lineNum) {
+function lookupLine(docName, lineNum, file) {
   const lookup = loadLookup(docName);
   if (!lookup?.lines) return null;
-  const entry = lookup.lines[lineNum.toString()];
+  // If file is given, try "filename.tex:lineNum" key first (multi-file project)
+  let entry = null;
+  if (file) {
+    const fname = path.basename(file);
+    entry = lookup.lines[`${fname}:${lineNum}`];
+  }
+  // Fall back to plain line number (main file)
+  if (!entry) entry = lookup.lines[lineNum.toString()];
   if (!entry) return null;
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
@@ -86,24 +85,17 @@ function canvasToPdf(canvasX, canvasY) {
 
 // ---- HTML document layout support ----
 
-const pageInfoCache = new Map(); // docName → { layout, mtime }
+const pageInfoCache = new Map(); // docName → computed layout
 const HTML_PAGE_SPACING = PAGE_GAP;
 const HTML_TAB_SPACING = 24;
 
 function loadHtmlLayout(docName) {
-  const piPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'page-info.json');
-  try {
-    const stat = fs.statSync(piPath);
-    const cached = pageInfoCache.get(docName);
-    if (cached && cached.mtime >= stat.mtimeMs) return cached.layout;
-
-    const pageInfos = JSON.parse(fs.readFileSync(piPath, 'utf8'));
-    const layout = computeHtmlLayout(pageInfos);
-    pageInfoCache.set(docName, { layout, mtime: stat.mtimeMs });
-    return layout;
-  } catch {
-    return null;
-  }
+  if (pageInfoCache.has(docName)) return pageInfoCache.get(docName);
+  const pageInfos = readJsonSync(docName, 'page-info.json');
+  if (!pageInfos) return null;
+  const layout = computeHtmlLayout(pageInfos);
+  pageInfoCache.set(docName, layout);
+  return layout;
 }
 
 function computeHtmlLayout(pageInfos) {
@@ -170,14 +162,8 @@ function computeHtmlLayout(pageInfos) {
 function isHtmlDoc(docName) {
   const lookup = loadLookup(docName);
   if (lookup?.meta?.format === 'html') return true;
-  // Also check manifest
-  const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    return manifest.documents?.[docName]?.format === 'html';
-  } catch {
-    return false;
-  }
+  const manifest = readManifestSync();
+  return manifest?.documents?.[docName]?.format === 'html';
 }
 
 function htmlToCanvas(docName, page, localX, localY) {
@@ -275,21 +261,8 @@ function findNearbyLines(docName, canvasBBox) {
 
 // ---- HTML search index text extraction ----
 
-const searchIndexCache = new Map(); // docName → { data, mtime }
-
 function loadSearchIndex(docName) {
-  const siPath = path.join(PROJECT_ROOT, 'public', 'docs', docName, 'search-index.json');
-  try {
-    const stat = fs.statSync(siPath);
-    const cached = searchIndexCache.get(docName);
-    if (cached && cached.mtime >= stat.mtimeMs) return cached.data;
-
-    const data = JSON.parse(fs.readFileSync(siPath, 'utf8'));
-    searchIndexCache.set(docName, { data, mtime: stat.mtimeMs });
-    return data;
-  } catch {
-    return null;
-  }
+  return readJsonSync(docName, 'search-index.json');
 }
 
 function findHtmlRenderedText(docName, canvasBBox) {
@@ -536,9 +509,9 @@ function generateShapeId() {
 
 // ---- Shared action functions (used by both HTTP and MCP) ----
 
-async function scrollToLine(doc, line) {
-  const linePos = lookupLine(doc, line);
-  if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
+async function scrollToLine(doc, line, file) {
+  const linePos = lookupLine(doc, line, file);
+  if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
 
@@ -562,16 +535,15 @@ async function scrollToLine(doc, line) {
 async function highlightLine(doc, file, line) {
   // If no doc given, infer from manifest texFile paths
   if (!doc) {
-    const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
-    try {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const manifest = readManifestSync();
+    if (manifest?.documents) {
       for (const [name, entry] of Object.entries(manifest.documents)) {
         if (entry.texFile && file.includes(path.basename(entry.texFile, '.tex'))) {
           doc = name;
           break;
         }
       }
-    } catch {}
+    }
     if (!doc) doc = path.basename(file, '.tex');
   }
 
@@ -589,7 +561,7 @@ async function highlightLine(doc, file, line) {
     }
   }
 
-  const linePos = lookupLine(doc, line);
+  const linePos = lookupLine(doc, line, file);
   if (linePos) {
     const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
     await sendHighlightSignal(canvasPos.x, canvasPos.y, linePos.page);
@@ -613,9 +585,9 @@ async function highlightLine(doc, file, line) {
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
 
-async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right' } = {}) {
-  const linePos = lookupLine(doc, line);
-  if (!linePos) return { ok: false, error: `Line ${line} not found in lookup.json for doc "${doc}"` };
+async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file } = {}) {
+  const linePos = lookupLine(doc, line, file);
+  if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
   // Position note at left or right margin of the page
@@ -633,6 +605,16 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
 
   const entry = await connectYjs(doc);
   const shapeId = generateShapeId();
+
+  // Find the highest index among existing shapes so the note renders on top
+  let maxIndex = 'a1';
+  for (const [, val] of entry.yRecords.entries()) {
+    if (val && val.typeName === 'shape' && val.index && val.index > maxIndex) {
+      maxIndex = val.index;
+    }
+  }
+  const noteIndex = getIndexAbove(maxIndex);
+
   const shape = {
     id: shapeId,
     type: 'math-note',
@@ -651,7 +633,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
       },
     },
     parentId: 'page:page',
-    index: 'a1',
+    index: noteIndex,
   };
 
   entry.doc.transact(() => {
@@ -662,13 +644,13 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   return { ok: true, shapeId, page: linePos.page, x, y };
 }
 
-async function sendNote(doc, line, text, color = 'violet') {
+async function sendNote(doc, line, text, color = 'violet', file) {
   // Create persistent math-note via Yjs — syncs to all viewers automatically
-  const result = await addAnnotation(doc, line, text, { color });
+  const result = await addAnnotation(doc, line, text, { color, file });
   if (!result.ok) return result;
 
   // Also scroll viewer to the note location
-  await scrollToLine(doc, line);
+  await scrollToLine(doc, line, file);
 
   return { ok: true, shapeId: result.shapeId, page: result.page, x: result.x, y: result.y };
 }
@@ -766,11 +748,8 @@ const httpServer = http.createServer(async (req, res) => {
   // GET /health — service status + available docs
   if (req.method === 'GET' && req.url === '/health') {
     let docs = {};
-    try {
-      const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json');
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      docs = manifest.documents || {};
-    } catch {}
+    const manifest = readManifestSync();
+    if (manifest?.documents) docs = manifest.documents;
 
     const status = {
       ok: true,
@@ -1222,13 +1201,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'screenshot',
-      description: 'Take a screenshot of the viewer on demand. Sends a request via Yjs and waits for the viewer to capture and return the viewport image.',
+      description: 'Take a screenshot of the viewer on demand. Sends a request via Yjs and waits for the viewer to capture and return the viewport image. If page is specified, scrolls there first.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: {
             type: 'string',
             description: 'Document name (e.g. "bregman")',
+          },
+          page: {
+            type: 'number',
+            description: 'Page number to scroll to before capturing (optional — captures current viewport if omitted)',
           },
         },
         required: ['doc'],
@@ -1269,6 +1252,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           width: { type: 'number', description: 'Note width in pixels (default: 200)' },
           height: { type: 'number', description: 'Note height in pixels (default: 150)' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
+          file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
         required: ['doc', 'line', 'text'],
       },
@@ -1344,6 +1328,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           line: { type: 'number', description: 'Source line number to scroll to' },
+          file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
         required: ['doc', 'line'],
       },
@@ -1358,6 +1343,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           line: { type: 'number', description: 'Source line number to place the note at' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
+          file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
         required: ['doc', 'line', 'text'],
       },
@@ -1667,7 +1653,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         sendYjsUpdate(entry);
         // Wait up to 5s for the viewer to respond
         const result = await new Promise((resolve) => {
-          const timeout = setTimeout(() => resolve(null), 5000);
           const observer = (event) => {
             event.changes.keys.forEach((change, key) => {
               if (key === 'signal:screenshot') {
@@ -1680,6 +1665,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
             });
           };
+          const timeout = setTimeout(() => {
+            entry.yRecords.unobserve(observer);
+            resolve(null);
+          }, 5000);
           entry.yRecords.observe(observer);
         });
         if (result?.data) {
@@ -1699,11 +1688,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'screenshot') {
     const docName = args?.doc;
+    const targetPage = args?.page;
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
     try {
       const entry = await connectYjs(docName);
+
+      // Scroll to page first if requested
+      if (targetPage) {
+        const canvasPos = docToCanvas(docName, targetPage, 0, 0);
+        entry.doc.transact(() => {
+          entry.yRecords.set('signal:forward-scroll', {
+            x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
+          });
+        });
+        sendYjsUpdate(entry);
+        // Wait for viewer to scroll before capturing
+        await new Promise(r => setTimeout(r, 500));
+      }
+
       // Clear any old screenshot so we know the response is fresh
       entry.doc.transact(() => {
         entry.yRecords.delete('signal:screenshot');
@@ -1712,7 +1716,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       sendYjsUpdate(entry);
       // Wait up to 5s for the viewer to respond
       const result = await new Promise((resolve) => {
-        const timeout = setTimeout(() => resolve(null), 5000);
         const observer = (event) => {
           event.changes.keys.forEach((change, key) => {
             if (key === 'signal:screenshot') {
@@ -1725,6 +1728,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           });
         };
+        const timeout = setTimeout(() => {
+          entry.yRecords.unobserve(observer);
+          resolve(null);
+        }, 5000);
         entry.yRecords.observe(observer);
       });
       if (result?.data) {
@@ -1754,12 +1761,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'add_annotation') {
-    const { doc, line, text, color, width, height, side } = args;
+    const { doc, line, text, color, width, height, side, file } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
     try {
-      const result = await addAnnotation(doc, line, text, { color, width, height, side });
+      const result = await addAnnotation(doc, line, text, { color, width, height, side, file });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  line ${line} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
     } catch (e) {
@@ -1779,7 +1786,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         summary += `${i + 1}. ${a.id}\n`;
         summary += `   pos: (${a.x}, ${a.y}) color: ${a.color}\n`;
         if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
-        summary += `   text: "${a.text.slice(0, 80)}${a.text.length > 80 ? '...' : ''}"\n\n`;
+        summary += `   text: "${a.text}"\n\n`;
       });
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
@@ -2019,11 +2026,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'scroll_to_line') {
-    const { doc, line } = args;
+    const { doc, line, file } = args;
     if (!doc || !line) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line' }], isError: true };
     }
-    const result = await scrollToLine(doc, line);
+    const result = await scrollToLine(doc, line, file);
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }
@@ -2031,11 +2038,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'send_note') {
-    const { doc, line, text, color } = args;
+    const { doc, line, text, color, file } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
-    const result = await sendNote(doc, line, text, color);
+    const result = await sendNote(doc, line, text, color, file);
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }

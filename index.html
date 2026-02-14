@@ -8,34 +8,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script>
-      // Pen double-tap in right edge to cycle draw tools
-      // Lives here (not in React) so it survives HMR and works on iPad
-      (function() {
-        var penCycle = ['draw', 'highlight', 'eraser'];
-        var lastPenTap = 0;
-        var penTapTool = '';
-        window.addEventListener('pointerdown', function(e) {
-          if (e.pointerType !== 'pen') return;
-          var threshold = window.innerWidth - 250;
-          if (e.clientX < threshold) { lastPenTap = 0; return; }
-          var now = Date.now();
-          var editor = window.__tldraw_editor__;
-          if (!editor) return;
-          if (now - lastPenTap < 300) {
-            var idx = penCycle.indexOf(penTapTool);
-            var next = penCycle[(idx + 1) % penCycle.length];
-            console.log('[PenTap] double-tap! ' + penTapTool + ' → ' + next);
-            editor.setCurrentTool(next);
-            lastPenTap = 0;
-          } else {
-            penTapTool = editor.getCurrentToolId();
-            console.log('[PenTap] first tap, tool=' + penTapTool);
-            lastPenTap = now;
-          }
-        }, true);
-      })();
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

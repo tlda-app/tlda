@@ -114,19 +114,15 @@ function ensureFormat() {
   }
 }
 
-// Detect page count from existing SVGs or manifest
+// Detect page count — always count files on disk (source of truth), manifest as fallback
+import { getDoc, listDocs } from './manifest.mjs'
 function detectPageCount() {
-  try {
-    const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'public', 'docs', 'manifest.json'), 'utf8'))
-    if (manifest.documents?.[DOC_NAME]?.pages) {
-      return manifest.documents[DOC_NAME].pages
-    }
-  } catch {}
-  // Count existing page files (SVG or HTML)
   const ext = IS_HTML_MODE ? 'html' : 'svg'
   let n = 0
   while (existsSync(join(OUTPUT_DIR, `page-${String(n + 1).padStart(2, '0')}.${ext}`))) n++
-  return n
+  if (n > 0) return n
+  // No files yet — check manifest for initial count
+  return getDoc(DOC_NAME)?.pages || 0
 }
 
 // ---- Persistent Yjs connection (for viewport reads + reload signals) ----
@@ -399,16 +395,10 @@ function startBackgroundConversion(dviFile, buildStart) {
     totalPages = detectPageCount()
     console.log(`[watch] All ${totalPages} pages done in ${allElapsed}s`)
 
-    // Update manifest
+    // Update manifest via shared module
     try {
       execSync(
-        `node -e "
-const fs = require('fs');
-const p = '${join(PROJECT_ROOT, 'public', 'docs', 'manifest.json')}';
-const m = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {documents:{}};
-m.documents['${DOC_NAME}'] = { name: '${DOC_TITLE}', pages: ${totalPages || 47}, basePath: '/docs/${DOC_NAME}/' };
-fs.writeFileSync(p, JSON.stringify(m, null, 2));
-"`,
+        `node scripts/manifest.mjs set '${DOC_NAME}' --name '${DOC_TITLE}' --pages ${totalPages}`,
         { cwd: PROJECT_ROOT, stdio: 'pipe' }
       )
     } catch {}
@@ -477,8 +467,8 @@ let diffDocInfo = null
 
 function detectDiffDoc() {
   try {
-    const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'public', 'docs', 'manifest.json'), 'utf8'))
-    for (const [name, info] of Object.entries(manifest.documents)) {
+    const docs = listDocs()
+    for (const [name, info] of Object.entries(docs)) {
       if (info.format === 'diff' && info.sourceDoc === DOC_NAME) {
         diffDocName = name
         diffDocInfo = info

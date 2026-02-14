@@ -1,10 +1,7 @@
 import { useState, useEffect, Component, type ReactNode } from 'react'
-import { loadPdf } from './PdfPicker'
-import type { Pdf } from './PdfPicker'
-import { PdfEditor } from './PdfEditor'
 import { SvgDocumentEditor } from './SvgDocument'
 import { loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
-import { Canvas } from './Canvas'
+import { clearDocumentStores } from './SvgPageShape'
 import './App.css'
 
 // Error boundary to prevent blank screen on errors
@@ -54,84 +51,88 @@ interface DiffConfig {
 }
 
 type State =
-  | { phase: 'canvas'; roomId: string }
   | { phase: 'loading'; message: string; roomId: string }
-  | { phase: 'picker'; manifest: Record<string, DocConfig>; roomId: string }
-  | { phase: 'pdf'; pdf: Pdf; roomId: string }
+  | { phase: 'error'; message: string }
+  | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
 
-function generateRoomId(): string {
-  return `room-${Math.random().toString(36).slice(2, 10)}`
-}
-
-// Fetch document manifest at runtime
+// Fetch document manifest at runtime — derives basePath from key
 async function fetchManifest(): Promise<Record<string, DocConfig>> {
   try {
     const base = import.meta.env.BASE_URL || '/'
     const resp = await fetch(`${base}docs/manifest.json`)
     if (!resp.ok) return {}
     const data = await resp.json()
-    return data.documents || {}
+    const docs = data.documents || {}
+    // Derive basePath from key — never trust a stored value
+    for (const [key, config] of Object.entries(docs) as [string, DocConfig][]) {
+      config.basePath = `/docs/${key}/`
+    }
+    return docs
   } catch {
     return {}
   }
 }
+
+// Generation counter + abort controller for document loading — prevents stale async completions
+let loadGeneration = 0
+let loadAbort: AbortController | null = null
 
 function App() {
   const [state, setState] = useState<State | null>(null)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const pdfUrl = params.get('pdf')
     const docName = params.get('doc')
-    // Use doc name as room ID for persistence, or explicit room param, or random
-    const roomId = params.get('room') || (docName ? `doc-${docName}` : generateRoomId())
-
-    if (!params.get('room')) {
-      const newUrl = new URL(window.location.href)
-      newUrl.searchParams.set('room', roomId)
-      window.history.replaceState({}, '', newUrl.toString())
-    }
 
     if (docName) {
+      const roomId = `doc-${docName}`
       setState({ phase: 'loading', message: 'Loading document...', roomId })
       loadDocument(docName, roomId)
-    } else if (pdfUrl) {
-      setState({ phase: 'loading', message: 'Loading PDF...', roomId })
-      loadPdfFromUrl(pdfUrl, roomId)
     } else {
-      // No doc specified — show document picker
-      setState({ phase: 'loading', message: 'Loading...', roomId })
+      // No doc specified — show document picker or auto-load single doc
+      setState({ phase: 'loading', message: 'Loading...', roomId: '' })
       fetchManifest().then(manifest => {
         const docs = Object.keys(manifest)
         if (docs.length === 1) {
-          // Only one doc — just load it
           const name = docs[0]
           const newUrl = new URL(window.location.href)
           newUrl.searchParams.set('doc', name)
-          newUrl.searchParams.set('room', `doc-${name}`)
           window.history.replaceState({}, '', newUrl.toString())
-          loadDocument(name, `doc-${name}`)
+          const roomId = `doc-${name}`
+          setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
+          loadDocument(name, roomId)
         } else if (docs.length > 1) {
-          setState({ phase: 'picker', manifest, roomId })
+          setState({ phase: 'picker', manifest })
         } else {
-          setState({ phase: 'canvas', roomId })
+          setState({ phase: 'error', message: 'No documents found. Use `ctd create` to add a project.' })
         }
       })
     }
   }, [])
 
   async function loadDocument(docName: string, roomId: string) {
+    // Bump generation and abort any in-flight load
+    const gen = ++loadGeneration
+    loadAbort?.abort()
+    const abort = loadAbort = new AbortController()
+    const { signal } = abort
+
     const manifest = await fetchManifest()
+    if (gen !== loadGeneration) return  // superseded
+
     const config = manifest[docName]
 
     if (!config) {
       console.error(`Document "${docName}" not found in manifest`)
-      setState({ phase: 'canvas', roomId })
+      setState({ phase: 'error', message: `Document "${docName}" not found.` })
       return
     }
 
     setState(s => s ? { ...s, message: `Loading ${config.name}...` } : s)
+
+    // Clear stale stores from any previous document before loading new one
+    clearDocumentStores()
 
     try {
       const base = import.meta.env.BASE_URL || '/'
@@ -145,14 +146,24 @@ function App() {
         document = await loadHtmlDocument(config.name, fullBasePath)
       } else {
         const ext = config.format === 'png' ? 'png' : 'svg'
-        const urls = Array.from({ length: config.pages }, (_, i) => {
-          const pageNum = String(i + 1).padStart(2, '0')
-          return `${fullBasePath}page-${pageNum}.${ext}`
-        })
+        // Probe beyond manifest hint to discover extra pages (handles stale page counts)
+        let pageCount = config.pages
+        const makeUrl = (n: number) => `${fullBasePath}page-${n}.${ext}`
+        const expectedType = ext === 'svg' ? 'image/svg+xml' : 'image/png'
+        while (true) {
+          if (signal.aborted) return  // navigated away during probe
+          const resp = await fetch(makeUrl(pageCount + 1), { method: 'HEAD', signal })
+          if (!resp.ok || !resp.headers.get('content-type')?.includes(expectedType)) break
+          pageCount++
+        }
+        const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
         document = config.format === 'png'
           ? await loadImageDocument(config.name, urls, fullBasePath)
           : await loadSvgDocument(config.name, urls)
       }
+
+      if (gen !== loadGeneration) return  // superseded during fetch
+
       // For non-diff docs, check if a matching diff doc exists
       let diffConfig: DiffConfig | undefined
       if (config.format !== 'diff') {
@@ -169,48 +180,10 @@ function App() {
 
       setState({ phase: 'svg', document, roomId, diffConfig })
     } catch (e) {
+      if (signal.aborted) return  // expected abort, don't show error
       console.error('Failed to load document:', e)
-      setState({ phase: 'canvas', roomId })
+      setState({ phase: 'error', message: `Failed to load "${docName}": ${(e as Error).message}` })
     }
-  }
-
-  async function loadPdfFromUrl(url: string, roomId: string) {
-    try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`)
-      const buffer = await response.arrayBuffer()
-      const name = url.split('/').pop() || 'document.pdf'
-      const pdf = await loadPdf(name, buffer)
-      setState({ phase: 'pdf', pdf, roomId })
-    } catch (e) {
-      console.error('Failed to load PDF:', e)
-      setState({ phase: 'canvas', roomId })
-    }
-  }
-
-  function handleLoadPdf() {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'application/pdf'
-    input.addEventListener('change', async (e) => {
-      const fileList = (e.target as HTMLInputElement).files
-      if (!fileList || fileList.length === 0) return
-      const file = fileList[0]
-
-      const roomId = state?.roomId || generateRoomId()
-      try {
-        const pdf = await loadPdf(file.name, await file.arrayBuffer())
-
-        const newUrl = new URL(window.location.href)
-        newUrl.searchParams.set('room', roomId)
-        window.history.replaceState({}, '', newUrl.toString())
-
-        setState({ phase: 'pdf', pdf, roomId })
-      } catch (e) {
-        console.error('Failed to load PDF:', e)
-      }
-    })
-    input.click()
   }
 
   if (!state) {
@@ -218,16 +191,19 @@ function App() {
   }
 
   switch (state.phase) {
-    case 'canvas':
-      return (
-        <div className="App">
-          <Canvas roomId={state.roomId} onLoadPdf={handleLoadPdf} />
-        </div>
-      )
     case 'loading':
       return (
         <div className="App">
           <div className="LoadingScreen">
+            <p>{state.message}</p>
+          </div>
+        </div>
+      )
+    case 'error':
+      return (
+        <div className="App">
+          <div className="LoadingScreen">
+            <h2>Error</h2>
             <p>{state.message}</p>
           </div>
         </div>
@@ -244,10 +220,10 @@ function App() {
                   onClick={() => {
                     const newUrl = new URL(window.location.href)
                     newUrl.searchParams.set('doc', key)
-                    newUrl.searchParams.set('room', `doc-${key}`)
                     window.history.replaceState({}, '', newUrl.toString())
-                    setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId: `doc-${key}` })
-                    loadDocument(key, `doc-${key}`)
+                    const roomId = `doc-${key}`
+                    setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
+                    loadDocument(key, roomId)
                   }}
                   style={{ padding: '12px 24px', fontSize: '16px', cursor: 'pointer' }}
                 >
@@ -256,12 +232,6 @@ function App() {
               ))}
             </div>
           </div>
-        </div>
-      )
-    case 'pdf':
-      return (
-        <div className="App">
-          <PdfEditor pdf={state.pdf} roomId={state.roomId} />
         </div>
       )
     case 'svg':

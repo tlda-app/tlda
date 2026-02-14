@@ -40,9 +40,8 @@ mkdir -p "$OUTPUT_DIR"
 # Convert each page to SVG using pdf2svg
 echo "Converting pages to SVG..."
 for i in $(seq 1 $PAGE_COUNT); do
-  PAGE_NUM=$(printf "%02d" $i)
-  echo "  Page $PAGE_NUM..."
-  pdf2svg "$PDF_FILE" "$OUTPUT_DIR/page-$PAGE_NUM.svg" $i
+  echo "  Page $i..."
+  pdf2svg "$PDF_FILE" "$OUTPUT_DIR/page-$i.svg" $i
 done
 
 # Extract preamble and convert to JSON

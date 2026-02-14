@@ -98,6 +98,9 @@ function diffTextLines(
   return diffWords(extractFlatWords(oldData.lines), newData.lines)
 }
 
+// Generation counter for reloadPages — prevents interleaved concurrent reloads
+let reloadGeneration = 0
+
 /**
  * Re-fetch SVG pages and hot-swap their TLDraw assets.
  * Called when a reload signal arrives from the MCP server after a rebuild.
@@ -109,6 +112,8 @@ export async function reloadPages(
 ) {
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
   if (document.format === 'png' || document.format === 'diff') return
+
+  const gen = ++reloadGeneration
 
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
@@ -125,8 +130,7 @@ export async function reloadPages(
   // Fetch SVGs in parallel with cache-bust
   const results = await Promise.all(
     indices.map(async (i) => {
-      const pageNum = String(i + 1).padStart(2, '0')
-      const url = `${basePath}page-${pageNum}.svg?t=${timestamp}`
+      const url = `${basePath}page-${i + 1}.svg?t=${timestamp}`
       try {
         const resp = await fetch(url)
         if (!resp.ok) {
@@ -140,6 +144,12 @@ export async function reloadPages(
       }
     })
   )
+
+  // Superseded by a newer reload — discard these results
+  if (gen !== reloadGeneration) {
+    console.log('[Reload] Superseded by newer reload, discarding')
+    return
+  }
 
   // Save old SVG text + text data before overwriting (for change detection)
   const oldSvgTextMap = new Map<number, string | undefined>()
@@ -278,6 +288,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   shapeIdSet: Set<TLShapeId>
   shapeIds: TLShapeId[]
   updateBounds: (bounds: any) => void
+  ensurePagesAtBottom: () => void
 } {
   // Check if page shapes already exist (from sync)
   const existingShapes = editor.getCurrentPageShapes()
@@ -465,5 +476,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       targetBounds = newBounds
       applyCameraBounds()
     },
+    ensurePagesAtBottom: makeSureShapesAreAtBottom,
   }
 }

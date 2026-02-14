@@ -146,20 +146,9 @@ node scripts/compute-diff-pairing.mjs \
 # --- Step 7: Update manifest ---
 echo ""
 echo "Updating manifest..."
-node -e "
-const fs = require('fs');
-const manifest = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
-manifest.documents['$DIFF_DOC_NAME'] = {
-  name: '$DOC_NAME diff vs $GIT_REF',
-  pages: $CURRENT_PAGE_COUNT,
-  basePath: '/docs/$DIFF_DOC_NAME/',
-  format: 'diff',
-  texFile: '$TEX_DIR/$TEX_BASE.tex',
-  sourceDoc: '$DOC_NAME'
-};
-fs.writeFileSync('$MANIFEST', JSON.stringify(manifest, null, 2));
-console.log('Manifest updated');
-"
+node "$SCRIPT_DIR/scripts/manifest.mjs" set "$DIFF_DOC_NAME" \
+  --name "$DOC_NAME diff vs $GIT_REF" --pages "$CURRENT_PAGE_COUNT" \
+  --format diff --texFile "$TEX_DIR/$TEX_BASE.tex" --sourceDoc "$DOC_NAME"
 
 # Cleanup
 rm -rf "$TMPDIR"

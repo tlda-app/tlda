@@ -15,6 +15,7 @@ export interface LookupData {
     texFile: string
     generated: string
     totalLines: number
+    inputFiles?: string[]
   }
   lines: Record<string, LookupEntry>
 }
@@ -71,10 +72,16 @@ export async function getSourceAnchorStatic(
   if (!lookup) return null
 
   // Find lines on this page, sorted by y position
-  const linesOnPage: Array<{ line: number; entry: LookupEntry }> = []
-  for (const [lineStr, entry] of Object.entries(lookup.lines)) {
+  // Keys may be "42" (main file) or "appendix.tex:42" (input file)
+  const linesOnPage: Array<{ line: number; file: string; entry: LookupEntry }> = []
+  for (const [key, entry] of Object.entries(lookup.lines)) {
     if (entry.page === page) {
-      linesOnPage.push({ line: parseInt(lineStr), entry })
+      const colonIdx = key.indexOf(':')
+      if (colonIdx >= 0) {
+        linesOnPage.push({ line: parseInt(key.slice(colonIdx + 1)), file: `./${key.slice(0, colonIdx)}`, entry })
+      } else {
+        linesOnPage.push({ line: parseInt(key), file: `./${lookup.meta.texFile}`, entry })
+      }
     }
   }
 
@@ -84,8 +91,6 @@ export async function getSourceAnchorStatic(
   linesOnPage.sort((a, b) => a.entry.y - b.entry.y || a.line - b.line)
 
   // Find closest line to click position
-  // For now, just return the line with closest y
-  // TODO: improve with x proximity
   let closest = linesOnPage[0]
   let minDist = Math.abs(_y - closest.entry.y)
   for (const item of linesOnPage) {
@@ -97,7 +102,7 @@ export async function getSourceAnchorStatic(
   }
 
   return {
-    file: `./${lookup.meta.texFile}`,
+    file: closest.file,
     line: closest.line,
     content: closest.entry.content
   }
@@ -157,13 +162,18 @@ export async function resolveAnchorStatic(
     }
   }
 
+  // Determine lookup key — use "file:line" for input files, plain line for main file
+  const anchorFile = anchor.file?.replace(/^\.\//, '')
+  const isInputFile = anchorFile && lookup.meta.inputFiles?.includes(anchorFile)
+  const keyPrefix = isInputFile ? `${anchorFile}:` : ''
+
   // Look up the resolved line
-  const entry = lookup.lines[resolvedLine.toString()]
+  const entry = lookup.lines[`${keyPrefix}${resolvedLine}`]
   if (!entry) {
     // Try nearby lines
     for (let offset = 1; offset <= 5; offset++) {
-      const nearby = lookup.lines[(resolvedLine + offset).toString()] ||
-                     lookup.lines[(resolvedLine - offset).toString()]
+      const nearby = lookup.lines[`${keyPrefix}${resolvedLine + offset}`] ||
+                     lookup.lines[`${keyPrefix}${resolvedLine - offset}`]
       if (nearby) {
         return { page: nearby.page, x: nearby.x, y: nearby.y }
       }
@@ -184,9 +194,11 @@ export async function buildReverseIndex(docName: string): Promise<((page: number
   if (!lookup) return null
 
   // Group entries by page, sorted by y
+  // For keys like "file.tex:42", extract the line number portion
   const byPage = new Map<number, { y: number; line: number }[]>()
-  for (const [lineStr, entry] of Object.entries(lookup.lines)) {
-    const line = parseInt(lineStr)
+  for (const [key, entry] of Object.entries(lookup.lines)) {
+    const colonIdx = key.indexOf(':')
+    const line = colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key)
     if (!byPage.has(entry.page)) byPage.set(entry.page, [])
     byPage.get(entry.page)!.push({ y: entry.y, line })
   }

@@ -1,6 +1,7 @@
-import { StateNode, createShapeId, type JsonObject } from 'tldraw'
+import { StateNode, createShapeId, DefaultColorStyle, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from './svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from './synctexAnchor'
+import { NOTE_COLORS } from './MathNoteShape'
 
 const NOTE_W = 200
 const NOTE_H = 50
@@ -10,13 +11,19 @@ export class MathNoteTool extends StateNode {
 
   private preview: HTMLDivElement | null = null
 
+  private getPreviewColor(): string {
+    const color = this.editor.getStyleForNextShape(DefaultColorStyle)
+    return NOTE_COLORS[color] || NOTE_COLORS['light-blue']
+  }
+
   override onEnter = () => {
     const container = this.editor.getContainer()
     const el = document.createElement('div')
+    const bg = this.getPreviewColor()
     el.style.cssText = `
       position: absolute; pointer-events: none; z-index: 9999;
       width: ${NOTE_W}px; height: ${NOTE_H}px;
-      background: rgba(191, 219, 254, 0.5);
+      background: ${bg}80;
       border-radius: 4px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.12);
       display: none;
@@ -32,6 +39,9 @@ export class MathNoteTool extends StateNode {
     this.preview.style.left = `${screen.x}px`
     this.preview.style.top = `${screen.y}px`
     this.preview.style.display = 'block'
+    // Update color in case it changed
+    const bg = this.getPreviewColor()
+    this.preview.style.background = `${bg}80`
     // Scale preview to match camera zoom
     const zoom = this.editor.getZoomLevel()
     this.preview.style.transform = `scale(${zoom})`

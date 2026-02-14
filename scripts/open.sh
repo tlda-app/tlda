@@ -73,7 +73,19 @@ fi
 
 # --- Start services if not running ---
 
-if ! lsof -i :5173 -sTCP:LISTEN >/dev/null 2>&1; then
+VITE_UP=false
+SYNC_UP=false
+lsof -i :5173 -sTCP:LISTEN >/dev/null 2>&1 && VITE_UP=true
+lsof -i :5176 -sTCP:LISTEN >/dev/null 2>&1 && SYNC_UP=true
+
+if [ "$VITE_UP" = false ]; then
+  # Kill stray process on sync port if vite isn't running (orphaned from previous session)
+  if [ "$SYNC_UP" = true ]; then
+    echo "Killing stray process on port 5176..."
+    lsof -i :5176 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+    sleep 0.5
+  fi
+
   COLLAB_ARGS=""
   if [ -n "$TEX_FILE" ]; then
     COLLAB_ARGS="-- --watch $TEX_FILE $DOC"
@@ -116,7 +128,7 @@ fi
 
 # --- Open browser ---
 
-open "http://localhost:5173/?doc=${DOC}"
+open "http://localhost:5173/claude-tldraw/?doc=${DOC}"
 
 # --- Wait for background builds ---
 

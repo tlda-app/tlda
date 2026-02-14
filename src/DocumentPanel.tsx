@@ -551,7 +551,6 @@ function SearchTab() {
           placeholder="Search document & notes..."
           value={query}
           onChange={e => setQuery(e.target.value)}
-          autoFocus
         />
       </div>
       <div className="doc-panel-content">
@@ -948,7 +947,83 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
   e.stopPropagation()
 }
 
+// Tool toggle regions — fixed squares at bottom-right (touch devices only)
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+
+// TLDraw highlight color names → sRGB highlight values (from DefaultColorThemePalette)
+const highlightColors: Record<string, string> = {
+  black: '#fddd00', blue: '#10acff', green: '#00ffc8', grey: '#cbe7f1',
+  'light-blue': '#00f4ff', 'light-green': '#65f641', 'light-red': '#ff7fa3',
+  'light-violet': '#ff88ff', orange: '#ffa500', red: '#ff636e',
+  violet: '#c77cff', yellow: '#fddd00', white: '#fddd00',
+}
+
+function ToolToggleZones() {
+  const editor = useEditor()
+  const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
+  const [highlightColor, setHighlightColor] = useState('#c77cff')
+  const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
+
+  // Track tool and color changes
+  useEffect(() => {
+    const update = () => {
+      setCurrentTool(editor.getCurrentToolId())
+      const colorName = editor.getInstanceState().stylesForNextShape?.['tldraw:color'] || 'violet'
+      setHighlightColor(highlightColors[colorName] || '#c77cff')
+    }
+    editor.on('change', update)
+    update()
+    return () => { editor.off('change', update) }
+  }, [editor])
+
+  const handleDoubleTap = useCallback((targetTool: string) => (e: React.PointerEvent) => {
+    // Only respond to pen
+    if (e.pointerType !== 'pen') return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const now = Date.now()
+    const last = lastTapRef.current
+    if (last.tool === targetTool && now - last.time < 400) {
+      // Double-tap: toggle
+      const cur = editor.getCurrentToolId()
+      if (cur === targetTool) {
+        editor.setCurrentTool('draw')
+      } else {
+        editor.setCurrentTool(targetTool)
+      }
+      lastTapRef.current = { tool: '', time: 0 }
+    } else {
+      lastTapRef.current = { tool: targetTool, time: now }
+    }
+  }, [editor])
+
+  if (!isTouch) return null
+
+  return (
+    <div className="tool-toggle-zones">
+      <div
+        className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
+        style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
+        onPointerDown={handleDoubleTap('highlight')}
+        onPointerUp={stopTldrawEvents}
+        onTouchStart={stopTldrawEvents}
+        onTouchEnd={stopTldrawEvents}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
+      </div>
+      <div
+        className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
+        onPointerDown={handleDoubleTap('eraser')}
+        onPointerUp={stopTldrawEvents}
+        onTouchStart={stopTldrawEvents}
+        onTouchEnd={stopTldrawEvents}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
+      </div>
+    </div>
+  )
+}
 
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
@@ -973,40 +1048,45 @@ export function DocumentPanel() {
   }, [])
 
   return createPortal(
-    <div
-      className={`doc-panel ${isTouch ? 'panel-open' : ''}`}
-      onPointerDown={stopTldrawEvents}
-      onPointerUp={stopTldrawEvents}
-      onTouchStart={stopTldrawEvents}
-      onTouchEnd={stopTldrawEvents}
-    >
-      <div className="doc-panel-tabs">
-        {hasDiff && (
-          <button className={`doc-panel-tab ${tab === 'diff' ? 'active' : ''}`} onClick={() => setTab('diff')}>
-            Diff
+    <>
+      <div
+        className="doc-panel"
+      >
+        <div
+          className="doc-panel-tabs"
+          onPointerDown={stopTldrawEvents}
+          onPointerUp={stopTldrawEvents}
+          onTouchStart={stopTldrawEvents}
+          onTouchEnd={stopTldrawEvents}
+        >
+          {hasDiff && (
+            <button className={`doc-panel-tab ${tab === 'diff' ? 'active' : ''}`} onClick={() => setTab('diff')}>
+              Diff
+            </button>
+          )}
+          <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+            TOC
           </button>
-        )}
-        <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-          TOC
-        </button>
-        {hasProofs && (
-          <button className={`doc-panel-tab ${tab === 'proofs' ? 'active' : ''}`} onClick={() => setTab('proofs')}>
-            Proofs
+          {hasProofs && (
+            <button className={`doc-panel-tab ${tab === 'proofs' ? 'active' : ''}`} onClick={() => setTab('proofs')}>
+              Proofs
+            </button>
+          )}
+          <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
+            Search
           </button>
-        )}
-        <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-          Search
-        </button>
-        <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-          Notes
-        </button>
+          <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+            Notes
+          </button>
+        </div>
+        {tab === 'diff' && hasDiff && <ChangesTab />}
+        {tab === 'toc' && <TocTab />}
+        {tab === 'proofs' && hasProofs && <ProofsTab />}
+        {tab === 'search' && <SearchTab />}
+        {tab === 'notes' && <NotesTab />}
       </div>
-      {tab === 'diff' && hasDiff && <ChangesTab />}
-      {tab === 'toc' && <TocTab />}
-      {tab === 'proofs' && hasProofs && <ProofsTab />}
-      {tab === 'search' && <SearchTab />}
-      {tab === 'notes' && <NotesTab />}
-    </div>,
+      <ToolToggleZones />
+    </>,
     portalRef.current,
   )
 }

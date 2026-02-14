@@ -102,36 +102,6 @@
   text-overflow: ellipsis;
 }
 
-/* Canvas controls */
-.CanvasControls {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
-  font-family: system-ui, -apple-system, sans-serif;
-}
-
-.CanvasControls .load-pdf-btn {
-  padding: 0.4rem 0.75rem;
-  border: none;
-  background: #f1f5f9;
-  color: #334155;
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8rem;
-}
-
-.CanvasControls .load-pdf-btn:hover {
-  background: #e2e8f0;
-}
-
-.CanvasControls .room-id {
-  font-size: 0.75rem;
-  color: #64748b;
-  font-family: monospace;
-}
-
 /* TLDraw overlay styles */
 .PageOverlayScreen-screen {
   pointer-events: none;
@@ -145,70 +115,6 @@
   pointer-events: none;
   box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   border-radius: 2px;
-}
-
-.RoomInfo {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 0.75rem;
-  color: #64748b;
-  pointer-events: all;
-}
-
-.RoomInfo .room-id {
-  font-family: monospace;
-}
-
-.RoomInfo .share-btn {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: none;
-  background: #2563eb;
-  color: white;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  pointer-events: all;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.5;
-}
-
-.RoomInfo .share-btn:hover {
-  background: #1d4ed8;
-}
-
-.RoomInfo .share-btn--sending {
-  background: #6b7280;
-  cursor: wait;
-}
-
-.RoomInfo .share-btn--success {
-  background: #16a34a;
-  animation: flash-success 0.3s ease-out;
-}
-
-.RoomInfo .share-btn--error {
-  background: #dc2626;
-  animation: flash-error 0.3s ease-out;
-}
-
-@keyframes flash-success {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.1); }
-  100% { transform: scale(1); }
-}
-
-@keyframes flash-error {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
 }
 
 /* Forward sync highlight marker */

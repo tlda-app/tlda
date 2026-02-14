@@ -14,8 +14,7 @@
  *   node scripts/collab.mjs --watch ~/papers/main.tex my-paper
  */
 
-import { spawn } from 'child_process'
-import { readFileSync } from 'fs'
+import { spawn, execSync } from 'child_process'
 import { networkInterfaces } from 'os'
 import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -117,6 +116,27 @@ function cleanup() {
 process.on('SIGINT', cleanup)
 process.on('SIGTERM', cleanup)
 
+// Kill any stray processes on our ports before starting
+function cleanPort(port, label) {
+  try {
+    const pids = execSync(`lsof -i :${port} -sTCP:LISTEN -t 2>/dev/null`, { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean)
+    if (pids.length > 0) {
+      console.log(`Killing stray process(es) on port ${port} (${label}): pid ${pids.join(', ')}`)
+      for (const pid of pids) {
+        try { process.kill(Number(pid), 'SIGTERM') } catch {}
+      }
+      // Brief pause for port to free up
+      execSync('sleep 0.5')
+    }
+  } catch {
+    // lsof returns non-zero if nothing found — fine
+  }
+}
+
+cleanPort(5176, 'sync server')
+cleanPort(5173, 'dev server')
+
 // Start services
 console.log('Starting collaborative session...\n')
 
@@ -131,13 +151,9 @@ if (watchTexFile) {
 }
 
 // Read manifest to list available docs
+import { listDocs } from './manifest.mjs'
 function readManifest() {
-  try {
-    const manifestPath = resolve(PROJECT_ROOT, 'public', 'docs', 'manifest.json')
-    return JSON.parse(readFileSync(manifestPath, 'utf8')).documents || {}
-  } catch {
-    return {}
-  }
+  try { return listDocs() } catch { return {} }
 }
 
 // Print connection info after a short delay (wait for servers to start)

@@ -890,18 +890,8 @@ ${processedChunks[i].html.join('\n')}
   }
 
   // --- Step 5: Update manifest ---
-  const manifestPath = path.join(PROJECT_ROOT, 'public', 'docs', 'manifest.json')
-  let manifest = { documents: {} }
-  if (fs.existsSync(manifestPath)) {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
-  }
-  manifest.documents[docName] = {
-    name: docTitle,
-    pages: pageFiles.length,
-    basePath: `/docs/${docName}/`,
-    format: 'html',
-  }
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+  const { updateDoc } = await import('./manifest.mjs')
+  updateDoc(docName, { name: docTitle, pages: pageFiles.length, format: 'html' })
 
   console.log('')
   console.log(`Done! ${pageFiles.length} pages written to ${outDir}`)

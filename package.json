@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "bin": {
+    "ctd": "./cli/ctd.mjs"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -13,7 +16,8 @@
     "watch": "node scripts/watch.mjs",
     "collab": "node scripts/collab.mjs",
     "publish-snapshot": "node scripts/publish-snapshot.mjs",
-    "start": "npm run sync & npm run dev"
+    "start": "npm run sync & npm run dev",
+    "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.1",

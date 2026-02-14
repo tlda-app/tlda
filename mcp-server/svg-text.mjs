@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DOMParser } from '@xmldom/xmldom';
+import { readManifestSync, localDocDir } from './data-source.mjs';
 
 // ---- Font class parsing ----
 
@@ -178,19 +179,13 @@ const PAGE_GAP = _lc2.PAGE_GAP;
  */
 export function findRenderedText(docName, canvasBBox, projectRoot) {
   // Load manifest to get page count
-  const manifestPath = path.join(projectRoot, 'public', 'docs', 'manifest.json');
-  let pageCount;
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    pageCount = manifest.documents?.[docName]?.pages;
-  } catch {
-    return [];
-  }
+  const manifest = readManifestSync();
+  const pageCount = manifest?.documents?.[docName]?.pages;
   if (!pageCount) return [];
 
   // Determine which page(s) the bbox falls on
   // Each SVG has its own viewBox; we need to load it to get accurate dimensions
-  const docDir = path.join(projectRoot, 'public', 'docs', docName);
+  const docDir = localDocDir(docName) || path.join(projectRoot, 'public', 'docs', docName);
 
   // Load first page to get viewBox (all pages in a doc should share the same viewBox)
   const firstPagePath = path.join(docDir, 'page-01.svg');

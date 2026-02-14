@@ -42,23 +42,27 @@ echo "  Title: $DOC_TITLE"
 mkdir -p "$OUTPUT_DIR"
 
 # Build DVI + synctex with latexmk (handles biber, multiple passes, etc.)
-# Uses pdflatex in DVI output mode so we get synctex in the same pass
+# Uses pdflatex in DVI output mode so we get synctex in the same pass.
+# Note: -usepretex resets $latex to 'latex %O %P', so we write a local
+# .latexmkrc with the correct $latex command including %P for pretex.
 echo ""
 echo "Running latexmk..."
 cd "$TEX_DIR"
-# Inject hyperref with hypertex driver for SVG-native clickable links.
-# The -usepretex flag passes TeX commands before the input file.
-latexmk -dvi -f -latex='pdflatex --output-format=dvi -synctex=1 %O %S' \
+echo "\$latex = 'pdflatex --output-format=dvi -synctex=1 %O %P';" > .latexmkrc.ctd
+latexmk -dvi -f -r .latexmkrc.ctd \
   -interaction=nonstopmode \
-  -pretex='\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\AddToHook{begindocument/before}{\RequirePackage{hyperref}}' \
-  -usepretex \
+  -pretex='\PassOptionsToPackage{draft,dvipdfmx}{graphicx}\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\AddToHook{begindocument/before}{\RequirePackage{hyperref}}' \
   "$TEX_BASE.tex"
+rm -f .latexmkrc.ctd
 
 DVI_FILE="$TEX_DIR/$TEX_BASE.dvi"
 if [ ! -f "$DVI_FILE" ]; then
   echo "Error: DVI file not created"
   exit 1
 fi
+
+# Clean old page SVGs
+rm -f "$OUTPUT_DIR"/page-*.svg
 
 # Convert to SVG
 echo ""
@@ -67,9 +71,22 @@ dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none \
   --output="$OUTPUT_DIR/page-%p.svg" \
   "$DVI_FILE"
 
+# Normalize zero-padded names (dvisvgm 3.x pads page numbers)
+for f in "$OUTPUT_DIR"/page-0*.svg; do
+  [ -f "$f" ] || continue
+  base=$(basename "$f")
+  newname=$(echo "$base" | sed 's/page-0*\([0-9]\)/page-\1/')
+  [ "$base" != "$newname" ] && mv "$f" "$OUTPUT_DIR/$newname"
+done
+
 # Count pages
 PAGE_COUNT=$(ls -1 "$OUTPUT_DIR"/page-*.svg 2>/dev/null | wc -l | tr -d ' ')
 echo "Generated $PAGE_COUNT pages"
+
+# Patch draft-mode image placeholders with actual images
+echo ""
+echo "Patching image placeholders..."
+node "$SCRIPT_DIR/scripts/patch-svg-images.mjs" "$OUTPUT_DIR" "$TEX_DIR"
 
 # Extract preamble macros
 echo ""
@@ -91,23 +108,7 @@ fi
 # Update manifest
 echo ""
 echo "Updating manifest..."
-if [ ! -f "$MANIFEST" ]; then
-  echo '{"documents":{}}' > "$MANIFEST"
-fi
-
-# Use node to update JSON properly
-node -e "
-const fs = require('fs');
-const manifest = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
-manifest.documents['$DOC_NAME'] = {
-  name: '$DOC_TITLE',
-  pages: $PAGE_COUNT,
-  basePath: '/docs/$DOC_NAME/',
-  texFile: '$TEX_DIR/$TEX_BASE.tex'
-};
-fs.writeFileSync('$MANIFEST', JSON.stringify(manifest, null, 2));
-console.log('Manifest updated');
-"
+node "$SCRIPT_DIR/scripts/manifest.mjs" set "$DOC_NAME" --name "$DOC_TITLE" --pages "$PAGE_COUNT" --texFile "$TEX_DIR/$TEX_BASE.tex"
 
 echo ""
 echo "Done! Access at: ?doc=$DOC_NAME"

@@ -25,6 +25,7 @@
 
 import WebSocket from 'ws'
 import * as Y from 'yjs'
+import { getIndexAbove } from '@tldraw/utils'
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -109,9 +110,17 @@ function loadLookup(docName) {
 }
 
 // Get position for a source line from lookup
-function getLinePosition(lookup, lineNum) {
+// file: optional filename for multi-file projects (e.g. "appendix.tex")
+function getLinePosition(lookup, lineNum, file) {
   if (!lookup || !lookup.lines) return null
-  const entry = lookup.lines[lineNum.toString()]
+  let entry = null
+  // Try file-qualified key first for multi-file projects
+  if (file) {
+    const fname = file.replace(/^.*\//, '') // basename
+    entry = lookup.lines[`${fname}:${lineNum}`]
+  }
+  // Fall back to plain line number (main file)
+  if (!entry) entry = lookup.lines[lineNum.toString()]
   if (!entry) return null
   return {
     page: entry.page,
@@ -254,6 +263,16 @@ async function main() {
     }
 
     const shapeId = `shape:${generateId()}`
+
+    // Find the highest index among existing shapes so the note renders on top
+    let maxIndex = 'a1'
+    for (const [, val] of yRecords.entries()) {
+      if (val && val.typeName === 'shape' && val.index && val.index > maxIndex) {
+        maxIndex = val.index
+      }
+    }
+    const noteIndex = getIndexAbove(maxIndex)
+
     const shape = {
       id: shapeId,
       type: 'math-note',
@@ -271,7 +290,7 @@ async function main() {
       },
       meta: sourceAnchor ? { sourceAnchor } : {},
       parentId: 'page:page',
-      index: 'a1',
+      index: noteIndex,
     }
 
     doc.transact(() => {

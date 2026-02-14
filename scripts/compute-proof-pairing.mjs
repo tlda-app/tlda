@@ -20,8 +20,36 @@ if (!texFile || !lookupPath || !outputPath) {
 }
 
 const texContent = readFileSync(texFile, 'utf8')
-const texLines = texContent.split('\n')
+const rawLines = texContent.split('\n')
 const lookup = JSON.parse(readFileSync(lookupPath, 'utf8'))
+
+// Expand \input{} files inline and build a line→lookup-key mapping.
+// This lets all parsing functions see input file content transparently,
+// while mapLinesToRegions uses the right "file.tex:N" keys for lookup.
+const texLines = []
+const lineToKey = [] // lineToKey[i] = lookup key for texLines[i] (0-indexed)
+const texDir = dirname(texFile)
+
+for (let i = 0; i < rawLines.length; i++) {
+  const line = rawLines[i]
+  const m = line.match(/\\(?:input|include)\{([^}]+)\}/)
+  if (m) {
+    let name = m[1]
+    if (!name.endsWith('.tex')) name += '.tex'
+    const fullPath = join(texDir, name)
+    if (existsSync(fullPath)) {
+      const inputLines = readFileSync(fullPath, 'utf8').split('\n')
+      const fname = basename(name)
+      for (let j = 0; j < inputLines.length; j++) {
+        texLines.push(inputLines[j])
+        lineToKey.push(`${fname}:${j + 1}`)
+      }
+      continue
+    }
+  }
+  texLines.push(line)
+  lineToKey.push(`${i + 1}`) // main file: plain line number
+}
 
 // Parse .aux file for reference numbers (label → "E.2", etc.)
 const auxPath = texFile.replace(/\.tex$/, '.aux')
@@ -407,7 +435,9 @@ function mapLinesToRegions(startLine, endLine) {
   const pageRanges = new Map() // page -> { yMin, yMax }
 
   for (let line = startLine; line <= endLine; line++) {
-    const entry = lookup.lines[line.toString()]
+    // Use lineToKey mapping for multi-file lookup support
+    const key = lineToKey[line - 1] || line.toString()
+    const entry = lookup.lines[key]
     if (!entry) continue
 
     const page = entry.page
@@ -481,10 +511,11 @@ for (const { statement, proof } of matched) {
 }
 
 // Build lineRefs: for each line with \ref/\eqref, store ordered labels
+// Keys match lookup.json keys (plain number for main file, "file.tex:N" for input files)
 const lineRefs = {}
 const excludeRefTypes = new Set(['section', 'figure', 'table'])
 for (let i = 0; i < texLines.length; i++) {
-  const lineNum = i + 1 // 1-indexed
+  const key = lineToKey[i] || `${i + 1}`
   let m
   const re = new RegExp(BODY_REF_RE.source, 'g')
   const refs = []
@@ -495,7 +526,7 @@ for (let i = 0; i < texLines.length; i++) {
     if (info && excludeRefTypes.has(info.type)) continue
     refs.push(label)
   }
-  if (refs.length > 0) lineRefs[lineNum] = refs
+  if (refs.length > 0) lineRefs[key] = refs
 }
 
 // Build labelRegions: label → region for all resolvable labels
