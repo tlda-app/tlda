@@ -1,0 +1,1050 @@
+{
+  "meta": {
+    "gitRef": "HEAD~1",
+    "generated": "2026-02-13T20:26:47.751Z"
+  },
+  "currentPages": 70,
+  "oldPages": 0,
+  "pairs": [
+    {
+      "currentPage": 1,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 2,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 3,
+      "oldPages": [
+        6,
+        7
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 265.221802,
+            "yBottom": 341.46225
+          },
+          {
+            "yTop": 412.19104,
+            "yBottom": 456.101379
+          }
+        ],
+        "old": [
+          {
+            "page": 6,
+            "yTop": 397.5448,
+            "yBottom": 620.690002
+          },
+          {
+            "page": 7,
+            "yTop": 86.362427,
+            "yBottom": 207.565491
+          },
+          {
+            "page": 7,
+            "yTop": 366.236725,
+            "yBottom": 386.236725
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 4,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 5,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 6,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 7,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 8,
+      "oldPages": [
+        19,
+        20
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 197.272797,
+            "yBottom": 243.168701
+          },
+          {
+            "yTop": 267.412842,
+            "yBottom": 331.735138
+          },
+          {
+            "yTop": 374.830444,
+            "yBottom": 434.470795
+          }
+        ],
+        "old": [
+          {
+            "page": 19,
+            "yTop": 299.562927,
+            "yBottom": 445.265869
+          },
+          {
+            "page": 19,
+            "yTop": 528.766602,
+            "yBottom": 595.044373
+          },
+          {
+            "page": 20,
+            "yTop": 252.59515399999998,
+            "yBottom": 308.28598
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 9,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 10,
+      "oldPages": [
+        25,
+        26
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 622.374878,
+            "yBottom": 685.5177
+          }
+        ],
+        "old": [
+          {
+            "page": 25,
+            "yTop": 622.755615,
+            "yBottom": 709.402039
+          },
+          {
+            "page": 26,
+            "yTop": 98.317596,
+            "yBottom": 309.095184
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 11,
+      "oldPages": [
+        25,
+        26
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 110.272743,
+            "yBottom": 178.093414
+          }
+        ],
+        "old": [
+          {
+            "page": 25,
+            "yTop": 622.755615,
+            "yBottom": 709.402039
+          },
+          {
+            "page": 26,
+            "yTop": 98.317596,
+            "yBottom": 309.095184
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 12,
+      "oldPages": [
+        30
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 499.320618,
+            "yBottom": 555.186157
+          }
+        ],
+        "old": [
+          {
+            "page": 30,
+            "yTop": 162.448181,
+            "yBottom": 214.167664
+          },
+          {
+            "page": 30,
+            "yTop": 400.832458,
+            "yBottom": 444.645935
+          },
+          {
+            "page": 30,
+            "yTop": 642.991882,
+            "yBottom": 662.991882
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 13,
+      "oldPages": [
+        30
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 178.874268,
+            "yBottom": 439.939911
+          }
+        ],
+        "old": [
+          {
+            "page": 30,
+            "yTop": 162.448181,
+            "yBottom": 214.167664
+          },
+          {
+            "page": 30,
+            "yTop": 400.832458,
+            "yBottom": 444.645935
+          },
+          {
+            "page": 30,
+            "yTop": 642.991882,
+            "yBottom": 662.991882
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 14,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 51.493168,
+            "yBottom": 670.091309
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 15,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 281.188812
+          },
+          {
+            "yTop": 491.581757,
+            "yBottom": 567.372559
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 16,
+      "oldPages": [
+        30
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 98.317574,
+            "yBottom": 240.198685
+          },
+          {
+            "yTop": 352.612518,
+            "yBottom": 715.60022
+          }
+        ],
+        "old": [
+          {
+            "page": 30,
+            "yTop": 162.448181,
+            "yBottom": 214.167664
+          },
+          {
+            "page": 30,
+            "yTop": 400.832458,
+            "yBottom": 444.645935
+          },
+          {
+            "page": 30,
+            "yTop": 642.991882,
+            "yBottom": 662.991882
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 17,
+      "oldPages": [
+        30
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 110.272743,
+            "yBottom": 176.289719
+          }
+        ],
+        "old": [
+          {
+            "page": 30,
+            "yTop": 162.448181,
+            "yBottom": 214.167664
+          },
+          {
+            "page": 30,
+            "yTop": 400.832458,
+            "yBottom": 444.645935
+          },
+          {
+            "page": 30,
+            "yTop": 642.991882,
+            "yBottom": 662.991882
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 18,
+      "oldPages": [
+        30,
+        31
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 273.515045,
+            "yBottom": 468.712128
+          },
+          {
+            "yTop": 491.468445,
+            "yBottom": 651.494202
+          }
+        ],
+        "old": [
+          {
+            "page": 30,
+            "yTop": 162.448181,
+            "yBottom": 214.167664
+          },
+          {
+            "page": 30,
+            "yTop": 400.832458,
+            "yBottom": 444.645935
+          },
+          {
+            "page": 30,
+            "yTop": 642.991882,
+            "yBottom": 662.991882
+          },
+          {
+            "page": 31,
+            "yTop": 87.856812,
+            "yBottom": 151.524765
+          },
+          {
+            "page": 31,
+            "yTop": 208.327271,
+            "yBottom": 272.858826
+          },
+          {
+            "page": 31,
+            "yTop": 302.5466,
+            "yBottom": 494.375946
+          },
+          {
+            "page": 31,
+            "yTop": 683.126892,
+            "yBottom": 709.866699
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 19,
+      "oldPages": [
+        31,
+        32
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 98.317574,
+            "yBottom": 130.272743
+          },
+          {
+            "yTop": 170.048584,
+            "yBottom": 217.937012
+          }
+        ],
+        "old": [
+          {
+            "page": 31,
+            "yTop": 87.856812,
+            "yBottom": 151.524765
+          },
+          {
+            "page": 31,
+            "yTop": 208.327271,
+            "yBottom": 272.858826
+          },
+          {
+            "page": 31,
+            "yTop": 302.5466,
+            "yBottom": 494.375946
+          },
+          {
+            "page": 31,
+            "yTop": 683.126892,
+            "yBottom": 709.866699
+          },
+          {
+            "page": 32,
+            "yTop": 87.960854,
+            "yBottom": 348.98584
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 20,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 21,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 22,
+      "oldPages": [
+        35
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 183.146332,
+            "yBottom": 236.521164
+          }
+        ],
+        "old": [
+          {
+            "page": 35,
+            "yTop": 121.917664,
+            "yBottom": 237.965027
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 23,
+      "oldPages": [
+        38,
+        39
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 401.822968,
+            "yBottom": 467.359955
+          },
+          {
+            "yTop": 661.50592,
+            "yBottom": 718.644348
+          }
+        ],
+        "old": [
+          {
+            "page": 38,
+            "yTop": 318.574951,
+            "yBottom": 410.675659
+          },
+          {
+            "page": 39,
+            "yTop": 217.299683,
+            "yBottom": 370.545074
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 24,
+      "oldPages": [
+        39
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 106.362411
+          }
+        ],
+        "old": [
+          {
+            "page": 39,
+            "yTop": 217.299683,
+            "yBottom": 370.545074
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 25,
+      "oldPages": [
+        41
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 94.702209,
+            "yBottom": 227.357849
+          }
+        ],
+        "old": [
+          {
+            "page": 41,
+            "yTop": 564.153992,
+            "yBottom": 642.241638
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 26,
+      "oldPages": [
+        42
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 636.694336,
+            "yBottom": 675.494873
+          }
+        ],
+        "old": [
+          {
+            "page": 42,
+            "yTop": 450.972015,
+            "yBottom": 687.721741
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 27,
+      "oldPages": [
+        42
+      ],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 99.811958,
+            "yBottom": 147.885208
+          },
+          {
+            "yTop": 274.973633,
+            "yBottom": 403.413666
+          }
+        ],
+        "old": [
+          {
+            "page": 42,
+            "yTop": 450.972015,
+            "yBottom": 687.721741
+          }
+        ]
+      }
+    },
+    {
+      "currentPage": 28,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 29,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 30,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 31,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 32,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 33,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 34,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 35,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 177.065155,
+            "yBottom": 316.616852
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 36,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 652.152771,
+            "yBottom": 709.374329
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 37,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 123.658646
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 38,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 39,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 40,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 190.737991,
+            "yBottom": 400.631561
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 41,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 224.310272,
+            "yBottom": 495.261383
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 42,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 43,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 44,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 256.543549,
+            "yBottom": 313.765106
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 45,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 110.263954,
+            "yBottom": 189.052948
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 46,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 546.447754,
+            "yBottom": 715.60022
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 47,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 83.733368,
+            "yBottom": 166.138245
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 48,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 49,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 50,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 542.963928,
+            "yBottom": 650.186523
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 51,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 574.68396,
+            "yBottom": 618.594299
+          },
+          {
+            "yTop": 661.979675,
+            "yBottom": 715.60022
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 52,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 53,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 212.204956,
+            "yBottom": 291.546234
+          },
+          {
+            "yTop": 460.508057,
+            "yBottom": 515.5386659999999
+          },
+          {
+            "yTop": 595.440125,
+            "yBottom": 715.60022
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 54,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 168.12381
+          },
+          {
+            "yTop": 195.944489,
+            "yBottom": 537.417786
+          },
+          {
+            "yTop": 631.795654,
+            "yBottom": 690.56781
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 55,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 106.362411
+          },
+          {
+            "yTop": 634.910767,
+            "yBottom": 654.910767
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 56,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 145.974365,
+            "yBottom": 693.818542
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 57,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 58,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 59,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 146.507935,
+            "yBottom": 229.899139
+          },
+          {
+            "yTop": 353.665527,
+            "yBottom": 418.548737
+          },
+          {
+            "yTop": 521.756287,
+            "yBottom": 705.314148
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 60,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 86.362411,
+            "yBottom": 106.362411
+          },
+          {
+            "yTop": 245.61055,
+            "yBottom": 493.957672
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 61,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 62,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 515.071838,
+            "yBottom": 549.656006
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 63,
+      "oldPages": [],
+      "hasChanges": true,
+      "highlights": {
+        "current": [
+          {
+            "yTop": 162.157501,
+            "yBottom": 217.517838
+          },
+          {
+            "yTop": 422.066193,
+            "yBottom": 472.472992
+          }
+        ],
+        "old": []
+      },
+      "newContent": true
+    },
+    {
+      "currentPage": 64,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 65,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 66,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 67,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 68,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 69,
+      "oldPages": [],
+      "hasChanges": false
+    },
+    {
+      "currentPage": 70,
+      "oldPages": [],
+      "hasChanges": false
+    }
+  ]
+}

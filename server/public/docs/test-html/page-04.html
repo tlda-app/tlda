@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: #1a1a1a;
+    padding: 48px 56px;
+    max-width: 800px;
+    background: white;
+    overflow: hidden;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  h2 { font-size: 22px; margin-top: 40px; margin-bottom: 12px; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+  h3 { font-size: 18px; margin-top: 28px; margin-bottom: 8px; }
+  p { margin-bottom: 16px; }
+  .subtitle { color: #666; font-size: 18px; margin-bottom: 32px; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+  pre { background: #f5f5f5; padding: 16px; border-radius: 6px; margin-bottom: 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 3px solid #ccc; padding-left: 16px; margin: 16px 0; color: #555; }
+  ul, ol { margin-bottom: 16px; padding-left: 28px; }
+  li { margin-bottom: 4px; }
+  .theorem { background: #f8f4ff; border-left: 3px solid #7c3aed; padding: 16px; margin: 20px 0; border-radius: 0 6px 6px 0; }
+  .theorem-title { font-weight: 600; margin-bottom: 4px; }
+  .figure { text-align: center; margin: 24px 0; }
+  .figure img { max-width: 100%; border: 1px solid #eee; border-radius: 4px; }
+  .figure-caption { font-size: 14px; color: #666; margin-top: 8px; }
+  table { border-collapse: collapse; margin: 16px 0; width: 100%; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f5f5f5; font-weight: 600; }
+</style>
+<script>
+  // MathJax for rendering math
+  window.MathJax = {
+    tex: { inlineMath: [['$', '$']], displayMath: [['$$', '$$']] },
+    svg: { fontCache: 'global' }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async=""></script>
+
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      color: #1a1a1a;
+      padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome if it leaked through */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header { display: none !important; }
+  </style>
+</head>
+<body>
+<h2>3. Confidence Intervals</h2>
+<p>A <strong>confidence interval</strong> is an interval estimate associated with a confidence level $1 - \alpha$. For a parameter $\theta$, a $(1-\alpha)$ confidence interval $(L, U)$ satisfies:</p>
+<h3>3.1 Normal Distribution</h3>
+<p>For a sample from a normal distribution with known variance $\sigma^2$, the $(1-\alpha)$ confidence interval for the mean is:</p>
+<p>where $z_{\alpha/2}$ is the upper $\alpha/2$ quantile of the standard normal distribution.</p>
+<h3>3.2 Student's t-Distribution</h3>
+<p>When the variance is unknown and estimated by $S^2$, we use the t-distribution. The confidence interval becomes:</p>
+<p>where $t_{\alpha/2, n-1}$ is the critical value from the t-distribution with $n-1$ degrees of freedom.</p>
+<table>
+  <tbody><tr><th>Confidence Level</th><th>$z_{\alpha/2}$</th><th>Interpretation</th></tr>
+  <tr><td>90%</td><td>1.645</td><td>Moderate confidence</td></tr>
+  <tr><td>95%</td><td>1.960</td><td>Standard</td></tr>
+  <tr><td>99%</td><td>2.576</td><td>High confidence</td></tr>
+</tbody></table>
+</body>
+</html>

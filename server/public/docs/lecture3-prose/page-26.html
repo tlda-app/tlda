@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.24">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Calibrating Interval Estimates with Binary Observations</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="Lecture3-prose_files/libs/clipboard/clipboard.min.js"></script>
+<script src="Lecture3-prose_files/libs/quarto-html/quarto.js"></script>
+<script src="Lecture3-prose_files/libs/quarto-html/popper.min.js"></script>
+<script src="Lecture3-prose_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="Lecture3-prose_files/libs/quarto-html/anchor.min.js"></script>
+<link href="Lecture3-prose_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="Lecture3-prose_files/libs/quarto-html/quarto-syntax-highlighting-018089954d508eae8a473f0b7f0491f0.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="Lecture3-prose_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="Lecture3-prose_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="Lecture3-prose_files/libs/bootstrap/bootstrap-18b480f5ab8b37c32123ceb3263ca564.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+
+<style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header,
+    .toc-actions, nav[role="doc-toc"],
+    header.quarto-title-block .quarto-title-breadcrumbs { display: none !important; }
+    #quarto-content { margin-left: 0 !important; padding-left: 0 !important; }
+    .page-columns .content { grid-column: 1 / -1 !important; }
+  </style>
+</head>
+<body>
+<section id="marginalization" class="level2">
+<h2 class="anchored" data-anchor-id="marginalization">Marginalization</h2>
+<p>To find the distribution of a sum <span class="math inline">\(Y_1 + \ldots + Y_n\)</span> when we sample <em>without replacement</em> we do the same thing. We start by writing out the joint distribution of <span class="math inline">\(n\)</span> dice rolls. We’re equally likely to pull any sequence of <span class="math inline">\(n\)</span> <em>distinct</em> numbers in <span class="math inline">\(1\ldots m\)</span>. There are <span class="math inline">\(m \times (m-1) \times \ldots \times  (m-n+1)=m!/(m-n)!\)</span> sequences, so the probability is <span class="math inline">\((m-n)!/m!\)</span> for each sequence. Then we add the responses and sums as columns. That doesn’t change.</p>
+<p>Then we marginalize in two steps.</p>
+<ol type="1">
+<li>Sum over roll sequences leading to the same response sequence <span class="math inline">\(a_1 \ldots a_n\)</span>.</li>
+<li>Sum over response sequences leading to the same sum <span class="math inline">\(s=a_1+\ldots+a_n\)</span>.</li>
+</ol>
+<section id="step-1.-partial-marginalization-2" class="level3">
+<h3 class="anchored" data-anchor-id="step-1.-partial-marginalization-2">Step 1. Partial Marginalization</h3>
+<p>To sum over roll sequences, we sum over one roll after another. Suppose we’re calculating the probability of the response sequence <span class="math inline">\(a_1 \ldots a_n = 0,0,...,0,0\)</span>.</p>
+<ol type="1">
+<li>We consider any ‘head’ <span class="math inline">\(j_1\ldots j_{n-1}\)</span> where <span class="math inline">\(y_{j_1} \ldots y_{j_{n-1}}=0,0,...0\)</span> and think about choosing the last element. No matter what the head is, we’ve ‘used up’ <span class="math inline">\(n-1\)</span> people with response <span class="math inline">\(y_j=0\)</span>. So there are <span class="math inline">\(m_0-(n-1)=m_0-n+1\)</span> ways to complete the sequence by choosing <em>an as-yet unused</em> <span class="math inline">\(j_{n}\)</span> with <span class="math inline">\(y_{j_n}=0\)</span>.</li>
+<li>We repeat with shortened ‘head’ <span class="math inline">\(j_1 \ldots j_{n-2}\)</span> to consider the choice of <span class="math inline">\(j_{n-1}\)</span>. We have <span class="math inline">\(m_0-n+2\)</span> as-yet unused choices and our last step tells us that each choice results in <span class="math inline">\(m_0-(n-1)\)</span> call sequences, so there are <span class="math inline">\((m_0 - n + 1)(m_0 - n + 2)\)</span> sequences with head <span class="math inline">\(j_1 \ldots j_{n-2}\)</span> ending in <span class="math inline">\(0,0\)</span>.</li>
+<li>Repeat <span class="math inline">\(n-2\)</span> more times. We get <span class="math inline">\((m_0 - n + 1) \times \ldots \times m_0 = m_0!/(m_0-n)!\)</span> rows.</li>
+</ol>
+<p>When we work through the same argument for sequences with a mix of 0s and 1s, we see that a call in the head forecloses possibilities for later calls <em>with the same response only</em>. Thus, when we have <span class="math inline">\(s\)</span> ones and <span class="math inline">\(n-s\)</span> zeros, we can think of ourselves as choosing calls with response zero and response one separately. We have <span class="math inline">\(m_0!/(m_0-(n-s))! \times m_1!/(m_1-s)!\)</span> rows. Multiplying by the probability of each row, we get the probability of seeing a response sequence with <span class="math inline">\(s\)</span> ones.</p>
+<p><span class="math display">\[
+\frac{m_0!}{(m_0-(n-s))!} \times \frac{m_1!}{(m_1-s)!} \times \frac{(m-n)!}{m!}
+\]</span></p>
+</section>
+<section id="step-2.-full-marginalization-2" class="level3">
+<h3 class="anchored" data-anchor-id="step-2.-full-marginalization-2">Step 2. Full Marginalization</h3>
+<p>To calculate the probability that the sum takes on the value <span class="math inline">\(s\)</span>, we sum over response sequences with <span class="math inline">\(s\)</span> ones. Just like in the with-replacement case, the probability of all these sequences is the same—it depends only on how many ones and zeros are in the sequence, not their order. So summing is counting and multiplying.</p>
+<p>The count is the same as before: the number of binary sequences of length <span class="math inline">\(n\)</span> with <span class="math inline">\(s\)</span> ones is <span class="math inline">\(\binom{n}{s}\)</span>. Multiplying, we get</p>
+<p><span class="math display">\[
+P\qty(\sum_{i=1}^n Y_i = s) = \binom{n}{s} \times \frac{m_0!}{(m_0-(n-s))!} \times \frac{m_1!}{(m_1-s)!} \times \frac{(m-n)!}{m!}.
+\]</span></p>
+<p>This is the <em>Hypergeometric distribution</em>. It’s a bit uglier than the Binomial, but the same R tricks work.</p>
+</section>
+<section id="using-r-1" class="level3">
+<h3 class="anchored" data-anchor-id="using-r-1">Using <strong>R</strong></h3>
+<p>The <code>dhyper</code> function gives us the probability: <code>dhyper(s, m1, m0, n)</code> is <span class="math inline">\(P(\sum_{i=1}^n Y_i = s)\)</span> when we sample <span class="math inline">\(n\)</span> times without replacement from a population with <span class="math inline">\(m_1\)</span> ones and <span class="math inline">\(m_0\)</span> zeros. The <code>rhyper</code> function draws samples: <code>rhyper(10000, m1, m0, n)</code> gives us 10,000.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>theta_1 <span class="ot">=</span> .<span class="dv">7</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>m <span class="ot">=</span> <span class="dv">1000</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>m1 <span class="ot">=</span> m <span class="sc">*</span> theta_1</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>m0 <span class="ot">=</span> m <span class="sc">*</span> (<span class="dv">1</span><span class="sc">-</span>theta_1)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>n <span class="ot">=</span> <span class="dv">100</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>p <span class="ot">=</span> <span class="fu">dhyper</span>(<span class="dv">0</span><span class="sc">:</span>n, m1, m0, n)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>S <span class="ot">=</span> <span class="fu">rhyper</span>(<span class="dv">10000</span>, m1, m0, n)</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>() <span class="sc">+</span> <span class="fu">geom_area</span>(<span class="fu">aes</span>(<span class="at">x=</span><span class="dv">0</span><span class="sc">:</span>n, <span class="at">y=</span>p), <span class="at">color=</span>pollc, <span class="at">alpha=</span>.<span class="dv">2</span>) <span class="sc">+</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>           <span class="fu">geom_bar</span>(<span class="fu">aes</span>(<span class="at">x=</span>S, <span class="at">y=</span><span class="fu">after_stat</span>(prop)), <span class="at">alpha=</span>.<span class="dv">3</span>) <span class="sc">+</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>           <span class="fu">geom_point</span>(<span class="fu">aes</span>(<span class="at">x=</span>S[<span class="dv">1</span><span class="sc">:</span><span class="dv">100</span>], <span class="at">y=</span><span class="fu">max</span>(p)<span class="sc">*</span><span class="fu">seq</span>(<span class="dv">0</span>,<span class="dv">1</span>,<span class="at">length.out=</span><span class="dv">100</span>)), </span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>                      <span class="at">color=</span><span class="st">'purple'</span>, <span class="at">alpha=</span>.<span class="dv">2</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Lecture3-prose_files/figure-html/unnamed-chunk-19-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+</section>
+</section>
+</body>
+</html>

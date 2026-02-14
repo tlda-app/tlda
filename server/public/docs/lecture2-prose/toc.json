@@ -1,0 +1,92 @@
+[
+  {
+    "title": "Point and Interval Estimates",
+    "level": "section",
+    "page": 1
+  },
+  {
+    "title": "Sampling Review",
+    "level": "section",
+    "page": 2
+  },
+  {
+    "title": "Sampling Distributions in Real Studies",
+    "level": "subsection",
+    "page": 6
+  },
+  {
+    "title": "What Do We Do with a Sampling Distribution?",
+    "level": "subsection",
+    "page": 7
+  },
+  {
+    "title": "Sampling Mechanisms",
+    "level": "subsection",
+    "page": 8
+  },
+  {
+    "title": "Polling",
+    "level": "section",
+    "page": 9
+  },
+  {
+    "title": "Before the Election",
+    "level": "subsubsection",
+    "page": 9
+  },
+  {
+    "title": "After the Election",
+    "level": "subsubsection",
+    "page": 9
+  },
+  {
+    "title": "Important Questions",
+    "level": "subsubsection",
+    "page": 9
+  },
+  {
+    "title": "Sampling",
+    "level": "subsection",
+    "page": 10
+  },
+  {
+    "title": "Sampling Distributions",
+    "level": "subsection",
+    "page": 15
+  },
+  {
+    "title": "The Sampling Distribution of our Estimate",
+    "level": "subsection",
+    "page": 22
+  },
+  {
+    "title": "Interval Estimation",
+    "level": "subsection",
+    "page": 23
+  },
+  {
+    "title": "Calculating the Coverage Probability",
+    "level": "subsection",
+    "page": 28
+  },
+  {
+    "title": "Calibrating Interval Estimates",
+    "level": "subsection",
+    "page": 29
+  },
+  {
+    "title": "A Problem",
+    "level": "subsubsection",
+    "page": 32
+  },
+  {
+    "title": "Communication",
+    "level": "subsection",
+    "page": 33
+  },
+  {
+    "title": "Don’t Make this Mistake!",
+    "level": "subsubsection",
+    "page": 33
+  }
+]

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.24">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Point and Interval Estimates</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="Lecture2-prose_files/libs/clipboard/clipboard.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/quarto.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/popper.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/anchor.min.js"></script>
+<link href="Lecture2-prose_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/quarto-html/quarto-syntax-highlighting-018089954d508eae8a473f0b7f0491f0.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="Lecture2-prose_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-18b480f5ab8b37c32123ceb3263ca564.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+
+<style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header,
+    .toc-actions, nav[role="doc-toc"],
+    header.quarto-title-block .quarto-title-breadcrumbs { display: none !important; }
+    #quarto-content { margin-left: 0 !important; padding-left: 0 !important; }
+    .page-columns .content { grid-column: 1 / -1 !important; }
+  </style>
+</head>
+<body>
+<h1>Sampling Review</h1>
+<div class="hidden">
+$$ \newcommand{X}{} \newcommand{Y}{}
+<p>$$</p>
+</div>
+<div class="columns">
+<div class="column">
+<div class="cell">
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Lecture2-prose_files/figure-html/unnamed-chunk-2-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+</div><div class="column">
+<p><span class="math display">\[
+\color{gray}
+\begin{array}{r|rrrrrr|r}
+j &amp; 1 &amp; 2 &amp; 3 &amp; 4 &amp; 5 &amp; 6 &amp;
+\bar{y}  \\
+y_{j} &amp; 0 &amp; 1 &amp; \textcolor[RGB]{7,59,76}{1} &amp; 1 &amp; \textcolor[RGB]{7,59,76}{0} &amp; \textcolor[RGB]{7,59,76}{1}
+&amp; \textcolor{black}{4/6}  \\
+\end{array}
+\]</span></p>
+</div>
+</div>
+<p>In the last chapter, we talked about how to use sampling to summarize a population without surveying everyone in it. For example, we might estimate the proportion of people in a population of six who prefer chocolate to sour candy. In the fake population shown above, 4/6 people prefer chocolate. Those who prefer chocolate are in the top row, at y=1. Those who prefer sour candy are below at y=0.</p>
+<p>We considered a few different sampling schemes: sampling with replacement, sampling without replacement, and convenience sampling. Suppose we chose sampling with replacement. We’d randomly pick people from our population to survey, putting them back each time so they could be picked again. Of the <span class="polla">3 people we sampled</span>, 2 prefer chocolate to sour candy. So our estimate of the proportion of the population who preferred chocolate was 2/3.</p>
+<div class="columns">
+<div class="column">
+<div>
+
+</div>
+<div class="cell quarto-layout-panel" data-layout-nrow="3">
+<div class="quarto-layout-row">
+<div class="quarto-layout-cell" style="flex-basis: 100.0%;justify-content: center;">
+<p><img src="Lecture2-prose_files/figure-html/unnamed-chunk-3-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</div>
+</div><div class="column">
+<p><span class="math display">\[
+\color{gray}
+\begin{array}{r|rrrrrr|r}
+j &amp; 1 &amp; 2 &amp; 3 &amp; 4 &amp; 5 &amp; 6 &amp;
+\bar{Y}  \\
+y_{j} &amp; 0 &amp; 1 &amp; \textcolor[RGB]{7,59,76}{1} &amp; 1 &amp; \textcolor[RGB]{7,59,76}{0} &amp; \textcolor[RGB]{7,59,76}{1}
+&amp; \textcolor[RGB]{7,59,76}{2/3}  \\
+y_{j} &amp; 0 &amp; 1 &amp; 1 &amp; \textcolor[RGB]{239,71,111}{1} &amp; 0 &amp; \textcolor[RGB]{239,71,111}{1}
+&amp; \textcolor[RGB]{239,71,111}{2/2}  \\
+y_{j} &amp; \textcolor[RGB]{17,138,178}{0} &amp; 1 &amp; \textcolor[RGB]{17,138,178}{1} &amp; \textcolor[RGB]{17,138,178}{1} &amp; 0 &amp; \textcolor[RGB]{17,138,178}{1}
+&amp; \textcolor[RGB]{17,138,178}{3/4}  \\
+\end{array}
+\]</span></p>
+</div>
+</div>
+<p>Sampling was a huge time-saver. But is our estimate trustworthy? How close was our estimate to the actual proportion in the population of 6? We looked into it ahead of time by running a <strong>simulation</strong> of our survey on a fake population. We did exactly what we did in our actual survey, but we did it over and over. This let us look at what our estimator does, knowing what we want it to do: be <span class="math inline">\(\textcolor{gray}{ \approx 4/6}\)</span>. Above, we’ve shown the results of three of these simulations. We call the distribution of estimates we get like this our estimator’s <strong>sampling distribution</strong>. These three estimates are three <em>draws</em> from the sampling distribution. That’s three equally-likely outcomes of our survey. And we do ok in these three. But that’s just three. To get a better sense of what’s likely, we should look at a lot more.</p>
+</body>
+</html>

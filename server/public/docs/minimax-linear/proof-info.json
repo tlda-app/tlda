@@ -1,0 +1,1306 @@
+{
+  "meta": {
+    "texFile": "/Users/skip/work/retargeted-mean-paper/manuscript/minimax-linear.tex",
+    "generated": "2026-02-13T21:26:20.957Z"
+  },
+  "pairs": [
+    {
+      "id": "lemma:complexity",
+      "type": "lemma",
+      "title": "Lemma 10",
+      "statementLines": [
+        1430,
+        1442
+      ],
+      "statementRegion": {
+        "page": 33,
+        "yTop": 382.291931,
+        "yBottom": 495.223511
+      },
+      "statementRegions": [
+        {
+          "page": 33,
+          "yTop": 382.291931,
+          "yBottom": 495.223511
+        }
+      ],
+      "proofLines": [
+        1444,
+        1460
+      ],
+      "proofRegions": [
+        {
+          "page": 33,
+          "yTop": 500.791412,
+          "yBottom": 703.64325
+        }
+      ],
+      "samePage": true,
+      "dependencies": []
+    },
+    {
+      "id": "lemma:ridge-equivalence",
+      "type": "lemma",
+      "title": "Lemma 1",
+      "statementLines": [
+        260,
+        268
+      ],
+      "statementRegion": {
+        "page": 5,
+        "yTop": 78.271477,
+        "yBottom": 275.462952
+      },
+      "statementRegions": [
+        {
+          "page": 5,
+          "yTop": 78.271477,
+          "yBottom": 275.462952
+        }
+      ],
+      "proofLines": [
+        1609,
+        1662
+      ],
+      "proofRegions": [
+        {
+          "page": 36,
+          "yTop": 424.885193,
+          "yBottom": 549.351868
+        },
+        {
+          "page": 37,
+          "yTop": 101.411057,
+          "yBottom": 722.861755
+        },
+        {
+          "page": 38,
+          "yTop": 91.820679,
+          "yBottom": 327.23233
+        }
+      ],
+      "samePage": false,
+      "dependencies": []
+    },
+    {
+      "id": "lemma:rkhs-approx-extremal",
+      "type": "lemma",
+      "title": "Lemma 9",
+      "statementLines": [
+        1377,
+        1382
+      ],
+      "statementRegion": {
+        "page": 32,
+        "yTop": 428.789032,
+        "yBottom": 541.996704
+      },
+      "statementRegions": [
+        {
+          "page": 32,
+          "yTop": 428.789032,
+          "yBottom": 541.996704
+        }
+      ],
+      "proofLines": [
+        1666,
+        1678
+      ],
+      "proofRegions": [
+        {
+          "page": 38,
+          "yTop": 322.969727,
+          "yBottom": 562.014282
+        }
+      ],
+      "samePage": false,
+      "dependencies": []
+    },
+    {
+      "id": "lemma:regularized-product-opnorm-bound",
+      "type": "lemma",
+      "title": "Lemma 7",
+      "statementLines": [
+        1302,
+        1307
+      ],
+      "statementRegion": {
+        "page": 30,
+        "yTop": 639.643982,
+        "yBottom": 717.977417
+      },
+      "statementRegions": [
+        {
+          "page": 30,
+          "yTop": 639.643982,
+          "yBottom": 717.977417
+        },
+        {
+          "page": 31,
+          "yTop": 105.369873,
+          "yBottom": 135.36987299999998
+        }
+      ],
+      "proofLines": [
+        1680,
+        1695
+      ],
+      "proofRegions": [
+        {
+          "page": 38,
+          "yTop": 557.751709,
+          "yBottom": 718.357422
+        },
+        {
+          "page": 39,
+          "yTop": 87.861855,
+          "yBottom": 221.881683
+        }
+      ],
+      "samePage": false,
+      "dependencies": []
+    },
+    {
+      "id": "lemma:N-polynomial",
+      "type": "lemma",
+      "title": "Lemma 6",
+      "statementLines": [
+        1233,
+        1239
+      ],
+      "statementRegion": {
+        "page": 29,
+        "yTop": 161.879196,
+        "yBottom": 251.909698
+      },
+      "statementRegions": [
+        {
+          "page": 29,
+          "yTop": 161.879196,
+          "yBottom": 251.909698
+        }
+      ],
+      "proofLines": [
+        1698,
+        1737
+      ],
+      "proofRegions": [
+        {
+          "page": 39,
+          "yTop": 218.989929,
+          "yBottom": 611.726807
+        },
+        {
+          "page": 40,
+          "yTop": 91.820679,
+          "yBottom": 368.682892
+        }
+      ],
+      "samePage": false,
+      "dependencies": []
+    },
+    {
+      "id": "prop:simplification-of-duality",
+      "type": "proposition",
+      "title": "Proposition 11",
+      "statementLines": [
+        1503,
+        1513
+      ],
+      "statementRegion": {
+        "page": 34,
+        "yTop": 523.03894,
+        "yBottom": 682.214172
+      },
+      "statementRegions": [
+        {
+          "page": 34,
+          "yTop": 523.03894,
+          "yBottom": 682.214172
+        }
+      ],
+      "proofLines": [
+        1741,
+        1751
+      ],
+      "proofRegions": [
+        {
+          "page": 40,
+          "yTop": 364.587677,
+          "yBottom": 528.8463750000001
+        }
+      ],
+      "samePage": false,
+      "dependencies": []
+    },
+    {
+      "id": "cor:seminorm",
+      "type": "corollary",
+      "title": "Corollary 5",
+      "statementLines": [
+        523,
+        534
+      ],
+      "statementRegion": {
+        "page": 10,
+        "yTop": 577.440491,
+        "yBottom": 670.112244
+      },
+      "statementRegions": [
+        {
+          "page": 10,
+          "yTop": 577.440491,
+          "yBottom": 670.112244
+        }
+      ],
+      "proofLines": [
+        1756,
+        1821
+      ],
+      "proofRegions": [
+        {
+          "page": 40,
+          "yTop": 561.710754,
+          "yBottom": 697.452026
+        },
+        {
+          "page": 41,
+          "yTop": 94.040695,
+          "yBottom": 722.861755
+        },
+        {
+          "page": 42,
+          "yTop": 91.820679,
+          "yBottom": 703.64325
+        }
+      ],
+      "samePage": false,
+      "dependencies": [
+        {
+          "label": "eq:ml-weights",
+          "displayLabel": "(1)",
+          "type": "equation",
+          "shortType": "eq",
+          "region": {
+            "page": 4,
+            "yTop": 121.379761,
+            "yBottom": 188.875885
+          },
+          "pageDist": 36
+        },
+        {
+          "label": "theo:asymptotic",
+          "displayLabel": "Theorem 2",
+          "type": "theorem",
+          "shortType": "thm",
+          "region": {
+            "page": 9,
+            "yTop": 329.710022,
+            "yBottom": 513.266479
+          },
+          "pageDist": 31
+        },
+        {
+          "label": "cor:targeted-mean",
+          "displayLabel": "Corollary 3",
+          "type": "corollary",
+          "shortType": "cor",
+          "region": {
+            "page": 9,
+            "yTop": 491.11792,
+            "yBottom": 632.078796
+          },
+          "pageDist": 31
+        },
+        {
+          "label": "theo:imbalance",
+          "displayLabel": "Theorem 4",
+          "type": "theorem",
+          "shortType": "thm",
+          "region": {
+            "page": 10,
+            "yTop": 172.470795,
+            "yBottom": 589.243896
+          },
+          "pageDist": 30
+        }
+      ]
+    }
+  ],
+  "lineRefs": {
+    "254": [
+      "eq:ml-weights"
+    ],
+    "281": [
+      "lemma:ridge-equivalence"
+    ],
+    "282": [
+      "eq:ridge-equivalence-weighting"
+    ],
+    "297": [
+      "lemma:ridge-equivalence",
+      "eq:linear-error-decomp"
+    ],
+    "317": [
+      "eq:augmented-error-decomp"
+    ],
+    "327": [
+      "eq:linear-error-decomp"
+    ],
+    "328": [
+      "eq:ml-weights"
+    ],
+    "417": [
+      "eq:riesz-targeted-mean"
+    ],
+    "434": [
+      "eq:ml-weights"
+    ],
+    "443": [
+      "eq:riesz-targeted-mean"
+    ],
+    "451": [
+      "eq:ml-weights"
+    ],
+    "477": [
+      "eq:linear-error-decomp"
+    ],
+    "478": [
+      "theo:asymptotic"
+    ],
+    "520": [
+      "eq:non-smooth-imbalance-bound"
+    ],
+    "526": [
+      "theo:asymptotic",
+      "theo:imbalance",
+      "cor:targeted-mean"
+    ],
+    "530": [
+      "eq:ml-weights"
+    ],
+    "545": [
+      "eq:uniform-imbalance-bound"
+    ],
+    "551": [
+      "theo:asymptotic"
+    ],
+    "555": [
+      "eq:linear-error-decomp"
+    ],
+    "562": [
+      "eq:uniform-imbalance-bound-simplified"
+    ],
+    "583": [
+      "cor:seminorm"
+    ],
+    "599": [
+      "cor:seminorm"
+    ],
+    "604": [
+      "eq:ridge-equivalence-weighting"
+    ],
+    "605": [
+      "lemma:ridge-equivalence"
+    ],
+    "613": [
+      "lemma:ridge-equivalence"
+    ],
+    "621": [
+      "tab_ks"
+    ],
+    "626": [
+      "table:sims"
+    ],
+    "appendix-minimax-linear.tex:30": [
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:50": [
+      "eq:ridge-equivalence-weighting",
+      "eq:ridge-equivalence-regression"
+    ],
+    "appendix-minimax-linear.tex:65": [
+      "lemma:ridge-equivalence"
+    ],
+    "appendix-minimax-linear.tex:75": [
+      "eq:bias-corrected-estimator"
+    ],
+    "appendix-minimax-linear.tex:84": [
+      "eq:z-regression"
+    ],
+    "appendix-minimax-linear.tex:85": [
+      "eq:z-regression"
+    ],
+    "appendix-minimax-linear.tex:95": [
+      "eq:z-regression"
+    ],
+    "appendix-minimax-linear.tex:96": [
+      "eq:ml-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:111": [
+      "eq:ml-error-decomp",
+      "eq:bc-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:113": [
+      "eq:z-regression"
+    ],
+    "appendix-minimax-linear.tex:136": [
+      "eq:ml-error-decomp",
+      "eq:bc-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:148": [
+      "eq:ipw-operator"
+    ],
+    "appendix-minimax-linear.tex:178": [
+      "lemma:regularized-product-opnorm-bound"
+    ],
+    "appendix-minimax-linear.tex:187": [
+      "eq:bias-term-sample-average"
+    ],
+    "appendix-minimax-linear.tex:191": [
+      "eq:bias-term-sample-average"
+    ],
+    "appendix-minimax-linear.tex:196": [
+      "eq:decoupled-bias-mean-bound",
+      "eq:bias-term-sample-average"
+    ],
+    "appendix-minimax-linear.tex:212": [
+      "eq:decoupled-mean-bound-1"
+    ],
+    "appendix-minimax-linear.tex:225": [
+      "eq:decoupled-mean-bound-1",
+      "eq:decoupled-mean-bound-2"
+    ],
+    "appendix-minimax-linear.tex:240": [
+      "eq:bias-term-sample-average"
+    ],
+    "appendix-minimax-linear.tex:254": [
+      "eq:ml-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:265": [
+      "eq:disjoint-case-bias-bound",
+      "eq:explicit-hm",
+      "eq:bias-term-disjoint-case"
+    ],
+    "appendix-minimax-linear.tex:275": [
+      "eq:non-smooth-term-explicit"
+    ],
+    "appendix-minimax-linear.tex:280": [
+      "eq:ipw-operator"
+    ],
+    "appendix-minimax-linear.tex:291": [
+      "eq:neumann-fk"
+    ],
+    "appendix-minimax-linear.tex:292": [
+      "eq:neumann-higher-order-bound"
+    ],
+    "appendix-minimax-linear.tex:293": [
+      "eq:empirical-correction-bound"
+    ],
+    "appendix-minimax-linear.tex:330": [
+      "lemma:regularized-product-opnorm-bound"
+    ],
+    "appendix-minimax-linear.tex:353": [
+      "eq:neumann-expansion"
+    ],
+    "appendix-minimax-linear.tex:407": [
+      "eq:non-smooth-bias-decomp"
+    ],
+    "appendix-minimax-linear.tex:416": [
+      "lemma:rkhs-approx-extremal"
+    ],
+    "appendix-minimax-linear.tex:419": [
+      "eq:decoupled-bias-mean-bound"
+    ],
+    "appendix-minimax-linear.tex:420": [
+      "eq:non-smooth-expected-value-bound"
+    ],
+    "appendix-minimax-linear.tex:425": [
+      "eq:generalized-approximation"
+    ],
+    "appendix-minimax-linear.tex:435": [
+      "lemma:rkhs-approx-extremal"
+    ],
+    "appendix-minimax-linear.tex:438": [
+      "eq:disjoint-case-bias-bound",
+      "eq:generalized-approximation"
+    ],
+    "appendix-minimax-linear.tex:442": [
+      "lemma:rkhs-approx-extremal"
+    ],
+    "appendix-minimax-linear.tex:445": [
+      "eq:disjoint-case-bias-bound"
+    ],
+    "appendix-minimax-linear.tex:446": [
+      "eq:neumann-control-variance",
+      "eq:Llam-Lg-bound",
+      "eq:generalized-approximation"
+    ],
+    "appendix-minimax-linear.tex:457": [
+      "lemma:rkhs-approx-extremal",
+      "eq:disjoint-case-bias-bound"
+    ],
+    "appendix-minimax-linear.tex:461": [
+      "eq:non-smooth-disjoint-result"
+    ],
+    "appendix-minimax-linear.tex:503": [
+      "eq:bias-containment",
+      "eq:non-disjoint-tri"
+    ],
+    "appendix-minimax-linear.tex:546": [
+      "eq:hat-b-uniform-deviation"
+    ],
+    "appendix-minimax-linear.tex:547": [
+      "eq:decoupled-bias-mean-bound",
+      "eq:disjoint-case-bias-bound",
+      "eq:hat-b-uniform-deviation"
+    ],
+    "appendix-minimax-linear.tex:573": [
+      "eq:bc-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:581": [
+      "eq:explicit-ridge-weighting"
+    ],
+    "appendix-minimax-linear.tex:608": [
+      "eq:inverse-regularized",
+      "eq:inverse-power"
+    ],
+    "appendix-minimax-linear.tex:619": [
+      "eq:ipw-operator"
+    ],
+    "appendix-minimax-linear.tex:620": [
+      "lemma:regularized-product-opnorm-bound"
+    ],
+    "appendix-minimax-linear.tex:646": [
+      "eq:T-bound",
+      "eq:lambda-bound"
+    ],
+    "appendix-minimax-linear.tex:651": [
+      "eq:summary-bias-bound-in-hh"
+    ],
+    "appendix-minimax-linear.tex:653": [
+      "eq:noise-term-markov",
+      "eq:extra-noise-variance-deviation",
+      "eq:lambda-bound"
+    ],
+    "appendix-minimax-linear.tex:683": [
+      "lemma:rkhs-approx-extremal"
+    ],
+    "appendix-minimax-linear.tex:695": [
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:700": [
+      "eq:non-smooth-imbalance-bound"
+    ],
+    "appendix-minimax-linear.tex:720": [
+      "theo:asymptotic"
+    ],
+    "appendix-minimax-linear.tex:721": [
+      "theo:asymptotic"
+    ],
+    "appendix-minimax-linear.tex:734": [
+      "theo:asymptotic"
+    ],
+    "appendix-minimax-linear.tex:736": [
+      "theo:asymptotic"
+    ],
+    "appendix-minimax-linear.tex:741": [
+      "assu:sigma"
+    ],
+    "appendix-minimax-linear.tex:751": [
+      "eq:linear-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:752": [
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:796": [
+      "eq:linear-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:800": [
+      "eq:uniform-imbalance-bound",
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:803": [
+      "eq:uniform-imbalance-bound"
+    ],
+    "appendix-minimax-linear.tex:816": [
+      "eq:uniform-imbalance-bound"
+    ],
+    "appendix-minimax-linear.tex:818": [
+      "lemma:complexity"
+    ],
+    "appendix-minimax-linear.tex:844": [
+      "eq:weights-minimax-linear-amle-form"
+    ],
+    "appendix-minimax-linear.tex:845": [
+      "eq:ridge-equivalence-weighting"
+    ],
+    "appendix-minimax-linear.tex:883": [
+      "eq:weight-consistency-abstract"
+    ],
+    "appendix-minimax-linear.tex:892": [
+      "lemma:complexity"
+    ],
+    "appendix-minimax-linear.tex:895": [
+      "lemma:complexity"
+    ],
+    "appendix-minimax-linear.tex:906": [
+      "eq:linear-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:912": [
+      "assu:sigma"
+    ],
+    "appendix-minimax-linear.tex:913": [
+      "eq:linear-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:915": [
+      "eq:scaled-targeted-asymptotically-linear"
+    ],
+    "appendix-minimax-linear.tex:918": [
+      "eq:targeted-asymptotically-linear"
+    ],
+    "appendix-minimax-linear.tex:925": [
+      "eq:scaled-targeted-asymptotically-linear"
+    ],
+    "appendix-minimax-linear.tex:931": [
+      "eq:targeted-asymptotically-linear"
+    ],
+    "appendix-minimax-linear.tex:938": [
+      "lemma:ridge-equivalence"
+    ],
+    "appendix-minimax-linear.tex:940": [
+      "eq:ridge-equivalence-weighting"
+    ],
+    "appendix-minimax-linear.tex:995": [
+      "lemma:rkhs-approx-extremal"
+    ],
+    "appendix-minimax-linear.tex:1009": [
+      "lemma:regularized-product-opnorm-bound"
+    ],
+    "appendix-minimax-linear.tex:1027": [
+      "lemma:N-polynomial"
+    ],
+    "appendix-minimax-linear.tex:1070": [
+      "prop:simplification-of-duality"
+    ],
+    "appendix-minimax-linear.tex:1085": [
+      "cor:seminorm"
+    ],
+    "appendix-minimax-linear.tex:1095": [
+      "eq:linear-error-decomp"
+    ],
+    "appendix-minimax-linear.tex:1101": [
+      "lemma:ridge-equivalence"
+    ],
+    "appendix-minimax-linear.tex:1115": [
+      "theo:asymptotic",
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:1125": [
+      "eq:ipw-operator"
+    ],
+    "appendix-minimax-linear.tex:1149": [
+      "theo:asymptotic",
+      "theo:imbalance"
+    ],
+    "appendix-minimax-linear.tex:1162": [
+      "table:ks"
+    ],
+    "appendix-minimax-linear.tex:1182": [
+      "eq:ridge-equivalence-weighting"
+    ],
+    "appendix-minimax-linear.tex:1185": [
+      "lemma:ridge-equivalence"
+    ]
+  },
+  "labelRegions": {
+    "lemma:ridge-equivalence": {
+      "page": 5,
+      "yTop": 78.271477,
+      "yBottom": 275.462952,
+      "type": "lemma",
+      "displayLabel": "Lemma 1"
+    },
+    "theo:asymptotic": {
+      "page": 9,
+      "yTop": 329.710022,
+      "yBottom": 513.266479,
+      "type": "theorem",
+      "displayLabel": "Theorem 2"
+    },
+    "cor:targeted-mean": {
+      "page": 9,
+      "yTop": 491.11792,
+      "yBottom": 632.078796,
+      "type": "corollary",
+      "displayLabel": "Corollary 3"
+    },
+    "theo:imbalance": {
+      "page": 10,
+      "yTop": 172.470795,
+      "yBottom": 589.243896,
+      "type": "theorem",
+      "displayLabel": "Theorem 4"
+    },
+    "cor:seminorm": {
+      "page": 10,
+      "yTop": 577.440491,
+      "yBottom": 670.112244,
+      "type": "corollary",
+      "displayLabel": "Corollary 5"
+    },
+    "assumption:overlap": {
+      "page": 17,
+      "yTop": 375.964417,
+      "yBottom": 462.309357,
+      "type": "assumption",
+      "displayLabel": "Assumption 1"
+    },
+    "assumption:uncondoundedness": {
+      "page": 17,
+      "yTop": 432.309357,
+      "yBottom": 533.839844,
+      "type": "assumption",
+      "displayLabel": "Assumption 2"
+    },
+    "lemma:N-polynomial": {
+      "page": 29,
+      "yTop": 161.879196,
+      "yBottom": 251.909698,
+      "type": "lemma",
+      "displayLabel": "Lemma 6"
+    },
+    "lemma:regularized-product-opnorm-bound": {
+      "page": 30,
+      "yTop": 639.643982,
+      "yBottom": 717.977417,
+      "type": "lemma",
+      "displayLabel": "Lemma 7"
+    },
+    "lemma:rkhs-approx-extremal": {
+      "page": 32,
+      "yTop": 428.789032,
+      "yBottom": 541.996704,
+      "type": "lemma",
+      "displayLabel": "Lemma 9"
+    },
+    "assu:sigma": {
+      "page": 32,
+      "yTop": 620.44281,
+      "yBottom": 718.902954,
+      "type": "assumption",
+      "displayLabel": "Assumption 3"
+    },
+    "lemma:complexity": {
+      "page": 33,
+      "yTop": 382.291931,
+      "yBottom": 495.223511,
+      "type": "lemma",
+      "displayLabel": "Lemma 10"
+    },
+    "prop:simplification-of-duality": {
+      "page": 34,
+      "yTop": 523.03894,
+      "yBottom": 682.214172,
+      "type": "proposition",
+      "displayLabel": "Proposition 11"
+    },
+    "eq:ml-weights": {
+      "page": 4,
+      "yTop": 121.379761,
+      "yBottom": 188.875885,
+      "type": "equation",
+      "displayLabel": "(1)"
+    },
+    "eq:riesz-targeted-mean": {
+      "page": 4,
+      "yTop": 281.868225,
+      "yBottom": 364.821014,
+      "type": "equation",
+      "displayLabel": "(2)"
+    },
+    "eq:linear-error-decomp": {
+      "page": 4,
+      "yTop": 484.088165,
+      "yBottom": 572.603394,
+      "type": "equation",
+      "displayLabel": "(3)"
+    },
+    "eq:ridge-equivalence": {
+      "page": 5,
+      "yTop": 91.820679,
+      "yBottom": 155.171967,
+      "type": "equation",
+      "displayLabel": "(4)"
+    },
+    "eq:ridge-equivalence-weighting": {
+      "page": 5,
+      "yTop": 91.820679,
+      "yBottom": 155.171967,
+      "type": "equation",
+      "displayLabel": "(5)"
+    },
+    "eq:ridge-equivalence-regression": {
+      "page": 5,
+      "yTop": 91.820679,
+      "yBottom": 155.171967,
+      "type": "equation",
+      "displayLabel": "(6)"
+    },
+    "eq:bias-corrected-estimator": {
+      "page": 5,
+      "yTop": 510.018372,
+      "yBottom": 645.360291,
+      "type": "equation",
+      "displayLabel": "(7)"
+    },
+    "eq:augmented-error-decomp": {
+      "page": 6,
+      "yTop": 91.820679,
+      "yBottom": 205.385056,
+      "type": "equation",
+      "displayLabel": "(8)"
+    },
+    "eq:naive-bound": {
+      "page": 6,
+      "yTop": 654.795471,
+      "yBottom": 716.284302,
+      "type": "equation",
+      "displayLabel": "(9)"
+    },
+    "eq:hpsi-ml": {
+      "page": 9,
+      "yTop": 239.683441,
+      "yBottom": 299.451324,
+      "type": "equation",
+      "displayLabel": "(10)"
+    },
+    "eq:influence-function": {
+      "page": 9,
+      "yTop": 292.147522,
+      "yBottom": 352.854858,
+      "type": "equation",
+      "displayLabel": "(11)"
+    },
+    "eq:scaled-targeted-asymptotically-linear": {
+      "page": 9,
+      "yTop": 370.357635,
+      "yBottom": 434.898987,
+      "type": "equation",
+      "displayLabel": "(12)"
+    },
+    "eq:sigma-bounds": {
+      "page": 9,
+      "yTop": 448.174683,
+      "yBottom": 488.334625,
+      "type": "equation",
+      "displayLabel": "(13)"
+    },
+    "eq:targeted-asymptotically-linear": {
+      "page": 9,
+      "yTop": 506.30346699999996,
+      "yBottom": 575.043274,
+      "type": "equation",
+      "displayLabel": "(14)"
+    },
+    "eq:uniform-imbalance-bound": {
+      "page": 10,
+      "yTop": 180.103851,
+      "yBottom": 310.319458,
+      "type": "equation",
+      "displayLabel": "(15)"
+    },
+    "eq:non-smooth-imbalance-bound": {
+      "page": 10,
+      "yTop": 310.820221,
+      "yBottom": 373.930817,
+      "type": "equation",
+      "displayLabel": "(16)"
+    },
+    "eq:uniform-imbalance-bound-simplified": {
+      "page": 10,
+      "yTop": 440.502777,
+      "yBottom": 546.830261,
+      "type": "equation",
+      "displayLabel": "(17)"
+    },
+    "table:sims": {
+      "page": 13,
+      "yTop": 186.130173,
+      "yBottom": 216.130173,
+      "type": "unknown",
+      "displayLabel": "table:sims"
+    },
+    "eq:ipw-operator": {
+      "page": 17,
+      "yTop": 621.488647,
+      "yBottom": 687.480896,
+      "type": "equation",
+      "displayLabel": "(18)"
+    },
+    "eq:inverse-power": {
+      "page": 17,
+      "yTop": 621.488647,
+      "yBottom": 687.480896,
+      "type": "equation",
+      "displayLabel": "(19)"
+    },
+    "eq:inverse-regularized": {
+      "page": 17,
+      "yTop": 621.488647,
+      "yBottom": 687.480896,
+      "type": "equation",
+      "displayLabel": "(20)"
+    },
+    "eq:minimax-s-n": {
+      "page": 18,
+      "yTop": 247.85733,
+      "yBottom": 350.381165,
+      "type": "equation",
+      "displayLabel": "(22)"
+    },
+    "eq:z-regression": {
+      "page": 18,
+      "yTop": 354.585358,
+      "yBottom": 415.914703,
+      "type": "equation",
+      "displayLabel": "(23)"
+    },
+    "eq:ml-error-decomp": {
+      "page": 18,
+      "yTop": 434.340149,
+      "yBottom": 512.02066,
+      "type": "equation",
+      "displayLabel": "(24)"
+    },
+    "eq:bias-correction-term": {
+      "page": 18,
+      "yTop": 586.905762,
+      "yBottom": 636.797791,
+      "type": "equation",
+      "displayLabel": "(25)"
+    },
+    "eq:bias-correction-signal-noise": {
+      "page": 18,
+      "yTop": 637.997681,
+      "yBottom": 714.899963,
+      "type": "equation",
+      "displayLabel": "(26)"
+    },
+    "eq:bc-error-decomp": {
+      "page": 19,
+      "yTop": 94.273102,
+      "yBottom": 207.461029,
+      "type": "equation",
+      "displayLabel": "(27)"
+    },
+    "eq:explicit-hm": {
+      "page": 19,
+      "yTop": 305.044434,
+      "yBottom": 472.805908,
+      "type": "equation",
+      "displayLabel": "(28)"
+    },
+    "eq:explicit-bias-funcs": {
+      "page": 19,
+      "yTop": 479.186249,
+      "yBottom": 570.000793,
+      "type": "equation",
+      "displayLabel": "(29)"
+    },
+    "eq:bias-term-sample-average": {
+      "page": 19,
+      "yTop": 579.352905,
+      "yBottom": 722.861755,
+      "type": "equation",
+      "displayLabel": "(30)"
+    },
+    "eq:bias-term-population-average": {
+      "page": 20,
+      "yTop": 173.510681,
+      "yBottom": 225.302338,
+      "type": "equation",
+      "displayLabel": "(31)"
+    },
+    "eq:decoupled-mean-bound-1": {
+      "page": 20,
+      "yTop": 225.888367,
+      "yBottom": 356.134491,
+      "type": "equation",
+      "displayLabel": "(32)"
+    },
+    "eq:decoupled-mean-bound-2": {
+      "page": 20,
+      "yTop": 373.901886,
+      "yBottom": 461.428436,
+      "type": "equation",
+      "displayLabel": "(33)"
+    },
+    "eq:decoupled-bias-mean-bound": {
+      "page": 20,
+      "yTop": 449.178375,
+      "yBottom": 518.2440799999999,
+      "type": "equation",
+      "displayLabel": "(34)"
+    },
+    "eq:bias-term-disjoint-case": {
+      "page": 21,
+      "yTop": 139.176544,
+      "yBottom": 256.780731,
+      "type": "equation",
+      "displayLabel": "(35)"
+    },
+    "eq:disjoint-conditional-mean": {
+      "page": 21,
+      "yTop": 270.381775,
+      "yBottom": 344.22937,
+      "type": "equation",
+      "displayLabel": "(36)"
+    },
+    "eq:bias-term-cond-var-disjoint": {
+      "page": 21,
+      "yTop": 369.612335,
+      "yBottom": 507.659058,
+      "type": "equation",
+      "displayLabel": "(37)"
+    },
+    "eq:bias-l2-norm": {
+      "page": 21,
+      "yTop": 530.124146,
+      "yBottom": 662.821167,
+      "type": "equation",
+      "displayLabel": "(38)"
+    },
+    "eq:disjoint-case-bias-bound": {
+      "page": 22,
+      "yTop": 84.790382,
+      "yBottom": 162.621674,
+      "type": "equation",
+      "displayLabel": "(40)"
+    },
+    "eq:non-smooth-bias-decomp": {
+      "page": 22,
+      "yTop": 303.070892,
+      "yBottom": 389.081573,
+      "type": "equation",
+      "displayLabel": "(41)"
+    },
+    "eq:non-smooth-term-explicit": {
+      "page": 22,
+      "yTop": 430.361359,
+      "yBottom": 562.728882,
+      "type": "equation",
+      "displayLabel": "(42)"
+    },
+    "eq:non-smooth-bias-part1": {
+      "page": 23,
+      "yTop": 277.149475,
+      "yBottom": 394.910309,
+      "type": "equation",
+      "displayLabel": "(46)"
+    },
+    "eq:neumann-expansion": {
+      "page": 23,
+      "yTop": 441.778839,
+      "yBottom": 507.425842,
+      "type": "equation",
+      "displayLabel": "(47)"
+    },
+    "eq:non-smooth-expected-value-bound": {
+      "page": 23,
+      "yTop": 565.502197,
+      "yBottom": 694.204407,
+      "type": "equation",
+      "displayLabel": "(48)"
+    },
+    "eq:neumann-control-variance": {
+      "page": 24,
+      "yTop": 91.820679,
+      "yBottom": 171.845093,
+      "type": "equation",
+      "displayLabel": "(49)"
+    },
+    "eq:Llam-Lg-bound": {
+      "page": 24,
+      "yTop": 241.128723,
+      "yBottom": 305.469666,
+      "type": "equation",
+      "displayLabel": "(51)"
+    },
+    "eq:neumann-fk": {
+      "page": 24,
+      "yTop": 353.021149,
+      "yBottom": 424.908295,
+      "type": "equation",
+      "displayLabel": "(52)"
+    },
+    "eq:neumann-l2-factorization": {
+      "page": 24,
+      "yTop": 445.783997,
+      "yBottom": 512.290649,
+      "type": "equation",
+      "displayLabel": "(53)"
+    },
+    "eq:relative-perturbation-bound": {
+      "page": 24,
+      "yTop": 552.514771,
+      "yBottom": 631.819275,
+      "type": "equation",
+      "displayLabel": "(54)"
+    },
+    "eq:empirical-correction-bound": {
+      "page": 25,
+      "yTop": 108.836029,
+      "yBottom": 177.00351,
+      "type": "equation",
+      "displayLabel": "(56)"
+    },
+    "eq:neumann-higher-order-bound": {
+      "page": 25,
+      "yTop": 207.511139,
+      "yBottom": 265.73819000000003,
+      "type": "equation",
+      "displayLabel": "(57)"
+    },
+    "eq:generalized-approximation": {
+      "page": 25,
+      "yTop": 402.973053,
+      "yBottom": 484.547485,
+      "type": "equation",
+      "displayLabel": "(59)"
+    },
+    "eq:non-smooth-pop-mean-combined": {
+      "page": 25,
+      "yTop": 649.963379,
+      "yBottom": 724.068542,
+      "type": "equation",
+      "displayLabel": "(61)"
+    },
+    "eq:non-smooth-disjoint-result": {
+      "page": 26,
+      "yTop": 455.115723,
+      "yBottom": 542.072449,
+      "type": "equation",
+      "displayLabel": "(64)"
+    },
+    "eq:non-disjoint-tri": {
+      "page": 27,
+      "yTop": 178.925537,
+      "yBottom": 242.793396,
+      "type": "equation",
+      "displayLabel": "(66)"
+    },
+    "eq:bias-containment-step1": {
+      "page": 27,
+      "yTop": 347.376007,
+      "yBottom": 381.88028,
+      "type": "equation",
+      "displayLabel": "(68)"
+    },
+    "eq:bias-containment": {
+      "page": 27,
+      "yTop": 386.307709,
+      "yBottom": 517.243866,
+      "type": "equation",
+      "displayLabel": "(69)"
+    },
+    "eq:T-bound": {
+      "page": 28,
+      "yTop": 118.91906700000001,
+      "yBottom": 180.450058,
+      "type": "equation",
+      "displayLabel": "(72)"
+    },
+    "eq:LT-L-bound": {
+      "page": 28,
+      "yTop": 212.380219,
+      "yBottom": 278.074036,
+      "type": "equation",
+      "displayLabel": "(73)"
+    },
+    "eq:hat-b-uniform-deviation": {
+      "page": 28,
+      "yTop": 388.594849,
+      "yBottom": 479.822815,
+      "type": "equation",
+      "displayLabel": "(74)"
+    },
+    "eq:lambda-bound": {
+      "page": 28,
+      "yTop": 476.921204,
+      "yBottom": 584.731628,
+      "type": "equation",
+      "displayLabel": "(75)"
+    },
+    "eq:summary-bias-bound-in-hh": {
+      "page": 28,
+      "yTop": 595.644592,
+      "yBottom": 722.861755,
+      "type": "equation",
+      "displayLabel": "(76)"
+    },
+    "eq:noise-term-markov": {
+      "page": 29,
+      "yTop": 645.582092,
+      "yBottom": 722.861755,
+      "type": "equation",
+      "displayLabel": "(79)"
+    },
+    "eq:nprime-condvar": {
+      "page": 30,
+      "yTop": 438.107941,
+      "yBottom": 547.590942,
+      "type": "equation",
+      "displayLabel": "(81)"
+    },
+    "eq:extra-noise-variance-mean": {
+      "page": 30,
+      "yTop": 537.659058,
+      "yBottom": 649.16864,
+      "type": "equation",
+      "displayLabel": "(82)"
+    },
+    "eq:extra-noise-variance-deviation": {
+      "page": 31,
+      "yTop": 222.214264,
+      "yBottom": 293.708618,
+      "type": "equation",
+      "displayLabel": "(84)"
+    },
+    "eq:weights-minimax-linear-amle-form": {
+      "page": 34,
+      "yTop": 523.03894,
+      "yBottom": 617.209045,
+      "type": "equation",
+      "displayLabel": "(86)"
+    },
+    "eq:weight-consistency-abstract": {
+      "page": 34,
+      "yTop": 652.214172,
+      "yBottom": 682.214172,
+      "type": "equation",
+      "displayLabel": "(87)"
+    },
+    "eq:weight-consistency-abstract-2": {
+      "page": 35,
+      "yTop": 448.72171,
+      "yBottom": 514.3863220000001,
+      "type": "equation",
+      "displayLabel": "(C.3)"
+    },
+    "eq:explicit-ridge-weighting": {
+      "page": 37,
+      "yTop": 101.411057,
+      "yBottom": 174.867706,
+      "type": "equation",
+      "displayLabel": "(88)"
+    },
+    "table:ks": {
+      "page": 44,
+      "yTop": 620.977966,
+      "yBottom": 650.977966,
+      "type": "unknown",
+      "displayLabel": "table:ks"
+    }
+  }
+}

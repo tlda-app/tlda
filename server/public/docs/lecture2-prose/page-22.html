@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.24">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Point and Interval Estimates</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="Lecture2-prose_files/libs/clipboard/clipboard.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/quarto.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/popper.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/anchor.min.js"></script>
+<link href="Lecture2-prose_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/quarto-html/quarto-syntax-highlighting-018089954d508eae8a473f0b7f0491f0.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="Lecture2-prose_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-18b480f5ab8b37c32123ceb3263ca564.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+
+<style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header,
+    .toc-actions, nav[role="doc-toc"],
+    header.quarto-title-block .quarto-title-breadcrumbs { display: none !important; }
+    #quarto-content { margin-left: 0 !important; padding-left: 0 !important; }
+    .page-columns .content { grid-column: 1 / -1 !important; }
+  </style>
+</head>
+<body>
+<section id="the-sampling-distribution-of-our-estimate" class="level2">
+<h2 class="anchored" data-anchor-id="the-sampling-distribution-of-our-estimate">The Sampling Distribution of our Estimate</h2>
+<p>We run 10,000 simulated polls and store who we call (J) and what they say (Y).</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>Js <span class="ot">=</span> <span class="fu">array</span>(<span class="at">dim=</span><span class="fu">c</span>(<span class="dv">10000</span>, n))</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>Ys <span class="ot">=</span> <span class="fu">array</span>(<span class="at">dim=</span><span class="fu">c</span>(<span class="dv">10000</span>, n))</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span>(rr <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">10000</span>) {</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  Js[rr,] <span class="ot">=</span> <span class="fu">sample</span>(m, n, <span class="at">replace=</span><span class="cn">TRUE</span>)</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  Ys[rr,] <span class="ot">=</span> y[Js[rr,]]</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>We calculate the sample proportion for each poll.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>meanY.samples <span class="ot">=</span> <span class="fu">rowMeans</span>(Ys)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>And histogram the result. That’s the human-readable version. If you’re a computer or a person who just really like tables, you can just put all the numbers—including our sample proportions—in a table. Before we look at the real thing, let’s sketch the histogram we expect to see.</p>
+<p>If you take it seriously, sketching is a great way to develop your intution. As you sketch your histogram, think about what you’re doing. Are you drawing your histogram in the <em>location</em> you think it should be in? What about the <em>shape</em>? Is its <em>spread</em> what you really think it should be?</p>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-sketch-space" class="quarto-float quarto-figure quarto-figure-center anchored" width="672">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-sketch-space-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<img src="Lecture2-prose_files/figure-html/fig-sketch-space-1.png" id="fig-sketch-space" class="img-fluid figure-img" width="672">
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig quarto-uncaptioned" id="fig-sketch-space-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;6
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-1-contents" aria-controls="callout-1" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+The Histogram
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-1" class="callout-1-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<div class="cell">
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Lecture2-prose_files/figure-html/unnamed-chunk-32-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-2-contents" aria-controls="callout-2" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+As a Table
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-2" class="callout-2-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<p><span class="math display">\[
+\begin{array}{r|rr|rr|r|rr|r}
+\text{call} &amp;  1 &amp; &amp; 2 &amp; &amp; \dots &amp; 625 &amp; &amp;  \\
+\text{pollster} &amp; J_1 &amp; Y_1 &amp; J_2 &amp; Y_2   &amp; \dots &amp; J_{625} &amp; Y_{625}  &amp; \overline{Y}_{625}  \\
+\hline
+\color[RGB]{7,59,76}1   
+    &amp; \color[RGB]{7,59,76}869369    &amp; \color[RGB]{7,59,76}1
+    &amp; \color[RGB]{7,59,76}4428455   &amp; \color[RGB]{7,59,76}1           &amp; \color[RGB]{7,59,76}\dots
+    &amp; \color[RGB]{7,59,76}1268868   &amp; \color[RGB]{7,59,76}1           &amp; \color[RGB]{7,59,76}0.68 \\
+\color[RGB]{239,71,111}2   
+    &amp; \color[RGB]{239,71,111}600481    &amp; \color[RGB]{239,71,111}0
+    &amp; \color[RGB]{239,71,111}6793745   &amp; \color[RGB]{239,71,111}1          &amp; \color[RGB]{239,71,111}\dots
+    &amp; \color[RGB]{239,71,111}1377933   &amp; \color[RGB]{239,71,111}1           &amp; \color[RGB]{239,71,111}0.71 \\
+\color[RGB]{17,138,178}3   
+    &amp; \color[RGB]{17,138,178}3830847    &amp; \color[RGB]{17,138,178}1
+    &amp; \color[RGB]{17,138,178}5887416   &amp; \color[RGB]{17,138,178}1           &amp; \color[RGB]{17,138,178}\dots
+    &amp; \color[RGB]{17,138,178}4706637   &amp; \color[RGB]{17,138,178}1           &amp; \color[RGB]{17,138,178}0.70 \\
+{\vdots} &amp; {\vdots} &amp; {\vdots}  &amp; {\vdots} &amp; {\vdots}  &amp; {\vdots} &amp; {\vdots} &amp; {\vdots} &amp;  {\vdots} \\\\
+\color[RGB]{6,214,160}1M   
+    &amp; \color[RGB]{6,214,160}2533350    &amp; \color[RGB]{6,214,160}1
+    &amp; \color[RGB]{6,214,160}5539770   &amp; \color[RGB]{6,214,160}1           &amp; \color[RGB]{6,214,160}\dots
+    &amp; \color[RGB]{6,214,160}7068692   &amp; \color[RGB]{6,214,160}1           &amp; \color[RGB]{6,214,160}0.71 \\\\
+{\vdots} &amp; {\vdots} &amp; {\vdots} &amp; {\vdots} &amp; {\vdots}  &amp; {\vdots} &amp; {\vdots} &amp; {\vdots}  &amp; {\vdots} \\\\
+\end{array}
+\]</span></p>
+</div>
+</div>
+</div>
+<p>There are a few features of our sampling distribution that we may want to highlight. In <a href="#fig-annotated-hist" class="quarto-xref">Figure&nbsp;7</a> below, the <em>mean of the sampling distribution</em> is the solid blue line. The middle 2/3 of the sampling distribution lies between the dashed blue lines. The middle 95% of the sampling distribution lies between the dotted blue lines.</p>
+<p>Our estimation target — the turnout frequency in the population — is drawn as a wide green line. It’s in exactly the same place as the solid blue line.<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a> What does this tell us about our estimator?</p>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-annotated-hist" class="quarto-float quarto-figure quarto-figure-center anchored" width="672" height="500px">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-annotated-hist-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<img src="Lecture2-prose_files/figure-html/fig-annotated-hist-1.png" id="fig-annotated-hist" width="672" height="500" class="figure-img">
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig quarto-uncaptioned" id="fig-annotated-hist-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;7
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p><strong>Observation</strong>. Our point estimate (the ● in <a href="#fig-annotated-hist" class="quarto-xref">Figure&nbsp;7</a>) is close to our estimation target. It’s within 2%. Did we get lucky? Not really. In 68% of polls, the estimator is within 2% of the target. In 95% of polls, the estimator is within 4% of the target.</p>
+<p>Could we have predicted how close we’d get before the election happened? Yes, in a sense. We will use an interval estimate—a <em>range of values</em> the estimation target is likely to be in. The <em>width</em> of this interval speaks to the ‘how close’ question. The <em>coverage probability</em> — the probability our estimate is actually that close — qualifies this answer.</p>
+</section>
+</body>
+</html>

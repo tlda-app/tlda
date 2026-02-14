@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.24">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Point and Interval Estimates</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="Lecture2-prose_files/libs/clipboard/clipboard.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/quarto.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/popper.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/anchor.min.js"></script>
+<link href="Lecture2-prose_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/quarto-html/quarto-syntax-highlighting-018089954d508eae8a473f0b7f0491f0.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="Lecture2-prose_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-18b480f5ab8b37c32123ceb3263ca564.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+
+<style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header,
+    .toc-actions, nav[role="doc-toc"],
+    header.quarto-title-block .quarto-title-breadcrumbs { display: none !important; }
+    #quarto-content { margin-left: 0 !important; padding-left: 0 !important; }
+    .page-columns .content { grid-column: 1 / -1 !important; }
+  </style>
+</head>
+<body>
+<section id="communication" class="level2">
+<h2 class="anchored" data-anchor-id="communication">Communication</h2>
+<p>Talking about calibrated interval estimates, a.k.a. confidence intervals, has some advantages. It focuses on what we actually want to know: where the estimation target is. It reminds us that we’re not (usually) going to be able to know it exactly. It gives us a sense of how close we can expect that we’ve gotten.</p>
+<p>But there’s something about them that is a bit infuriating when you’re not used to them. Fundamentally, you’re talking about what would happen in surveys you aren’t doing. You can imagine someone saying ‘I don’t have time for imaginary surveys. What did this one tell you?’ And being pretty unhappy when the answer is ‘If that’s how you want to think about it, almost nothing.’</p>
+<p>This isn’t a problem with intervals. This is something that’s fundamentally uncomfortable about sampling. It might feel like a miracle that you can say anything about 7.23M people after 625 phone calls. But once someone thinks you can, it can be hard for them to accept that you also kind of can’t. We really are just saying ‘I think it’s between 64% and 72%, but I’m wrong sometimes.’ We are being clear about what ‘sometimes’ means. But that feels like it’s about you more than it is about what they want to know.</p>
+<section id="dont-make-this-mistake" class="level3">
+<h3 class="anchored" data-anchor-id="dont-make-this-mistake">Don’t Make this Mistake!</h3>
+<p>Talking about surveys you aren’t doing is pretty awkward. So awkward that you’ll want to try to avoid it. It’s tempting to say something nonsensical, e.g.&nbsp;“the turnout frequency in the election is in my confidence interval, 0.64-0.72, 95% of the time.” This a really weird thing to say. It’s like saying that 95% of the time 2 is between 1 and 3. It either is or it isn’t. The only way it could make sense is if the turnout frequency were random. Because 0.64 and 0.72 aren’t. People do that. Don’t. And please don’t encourage it by saying stuff like this.</p>
+<p>This doesn’t come up that often because you can just say ‘confidence interval’ most of the time. So you really only have to deal with all of this awkwardness in two situations.</p>
+<ol type="1">
+<li>When you say ‘confidence interval’ and someone asks what that means.</li>
+<li>When someone else says ‘confidence interval’ but clearly doesn’t know what it means.</li>
+</ol>
+<p>It takes a bit of practice to get good at this. And you’ll get some.</p>
+</section>
+</section>
+</body>
+</html>

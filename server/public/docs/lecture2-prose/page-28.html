@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.6.24">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Point and Interval Estimates</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="Lecture2-prose_files/libs/clipboard/clipboard.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/quarto.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/popper.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="Lecture2-prose_files/libs/quarto-html/anchor.min.js"></script>
+<link href="Lecture2-prose_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/quarto-html/quarto-syntax-highlighting-018089954d508eae8a473f0b7f0491f0.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="Lecture2-prose_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="Lecture2-prose_files/libs/bootstrap/bootstrap-18b480f5ab8b37c32123ceb3263ca564.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+
+<style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 48px 56px;
+      width: 800px;
+      background: white;
+      overflow: hidden;
+    }
+    /* Hide Quarto navigation chrome */
+    #quarto-sidebar, .sidebar, nav, footer, .nav-footer,
+    #quarto-margin-sidebar, .quarto-search, #quarto-header,
+    .toc-actions, nav[role="doc-toc"],
+    header.quarto-title-block .quarto-title-breadcrumbs { display: none !important; }
+    #quarto-content { margin-left: 0 !important; padding-left: 0 !important; }
+    .page-columns .content { grid-column: 1 / -1 !important; }
+  </style>
+</head>
+<body>
+<section id="calculating-the-coverage-probability" class="level2">
+<h2 class="anchored" data-anchor-id="calculating-the-coverage-probability">Calculating the Coverage Probability</h2>
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-coverage-prob-setup" class="quarto-float quarto-figure quarto-figure-center anchored" width="672" height="500px">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-coverage-prob-setup-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<img src="Lecture2-prose_files/figure-html/fig-coverage-prob-setup-1.png" id="fig-coverage-prob-setup" width="672" height="500" class="figure-img">
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig quarto-uncaptioned" id="fig-coverage-prob-setup-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;9
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p><strong>Activity</strong>. Explain how to calculate this <em>coverage probability</em> using the <em>sampling distribution</em> of your point estimate <span class="math inline">\(\bar Y_{625}\)</span>.</p>
+<div class="callout callout-style-default callout-tip callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-3-contents" aria-controls="callout-3" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Step 1. Counting
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-3" class="callout-3-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<p>Suppose you want to use a diagram like this to count how many of our 100 intervals cover the estimation target. But you don’t want to look at the horizontal segments for each poll. They’re small and hard to see. You just want to use the dots representing each poll’s point estimate <span class="math inline">\(\bar Y_{625}\)</span>. <strong>Sketch</strong> something on top of our diagram to help you count.</p>
+</div>
+</div>
+</div>
+<div class="callout callout-style-default callout-tip callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-4-contents" aria-controls="callout-4" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Hint for Step 1
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-4" class="callout-4-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<p>What should you sketch? Think of an interval estimate as a point—a ‘body’—with ‘arms’ of a certain length. It’s not so different from you. Suppose you had an identical twin. And you’re not sure whether you’re standing close enough to touch them. But you don’t want to put your arms out. You’re tired from all that polling. Could your twin check for you?</p>
+</div>
+</div>
+</div>
+<div class="callout callout-style-default callout-tip callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-5-contents" aria-controls="callout-5" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Step 2. From Counting to Probability
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-5" class="callout-5-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<p>Now you’ve worked out how to count how many of 100 intervals cover the estimation target. What would you do if you had a million? Or a billion? That’d be good enough. If x% of a billion intervals cover, you’re pretty safe saying that x% is the <em>coverage probability</em>. You can’t look at a billion dots one by one, but you can look at <em>a histogram</em> of a billion dots. <strong>Explain</strong> how to use that histogram to calculate the coverage probability. Use your sketch from Step 1.</p>
+</div>
+</div>
+</div>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center" data-bs-toggle="collapse" data-bs-target=".callout-6-contents" aria-controls="callout-6" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Solution
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-6" class="callout-6-contents callout-collapse show">
+<div class="callout-body-container callout-body">
+<div class="cell">
+<div class="cell-output-display">
+<div id="fig-coverage-calc-viz" class="quarto-float quarto-figure quarto-figure-center anchored" width="672" height="500px">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-coverage-calc-viz-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<img src="Lecture2-prose_files/figure-html/fig-coverage-calc-viz-1.png" id="fig-coverage-calc-viz" width="672" height="500" class="figure-img">
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig quarto-uncaptioned" id="fig-coverage-calc-viz-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;10
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<p>Shade in an interval of width .02 centered on the estimation target. This gives it ‘arms’ the same length as our interval estimates have. And its arms touch a point estimate <em>if and only if</em> the point estimate’s arms touch it. That means we can count the intervals that cover by counting the point estimates between the dotted lines.</p>
+<p>What, in terms of the sampling distribution of the point estimate, is the coverage probability? It’s the probability that a random draw from the sampling distribution lies in the <span class="green">green</span> shaded area. <span class="math display">\[
+\text{coverage probability} = P\qty(\overline{Y}_{625} \in \overline{y}_{7.23M} \pm .01)
+\]</span></p>
+<p>And it’s about 43%. We can get that by counting dots.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">mean</span>(<span class="fu">mean</span>(y) <span class="sc">-</span> .<span class="dv">01</span> <span class="sc">&lt;=</span> meanY.samples <span class="sc">&amp;</span> meanY.samples <span class="sc">&lt;=</span> <span class="fu">mean</span>(y) <span class="sc">+</span> .<span class="dv">01</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>[1] 0.4278</code></pre>
+</div>
+</div>
+<p>Or by finding the area of the histogram that’s shaded <span class="green">green</span>.</p>
+</div>
+</div>
+</div>
+</section>
+</body>
+</html>

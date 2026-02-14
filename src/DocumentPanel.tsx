@@ -51,22 +51,37 @@ function parseHeadings(lines: Record<string, LookupEntry>): TocEntry[] {
   const sectionRe = /\\(sub)*section\*?\{([^}]*)\}/
 
   // Find \appendix line to demote subsequent headings one step
+  // Matches both \appendix and \begin{appendix}
   let appendixLine = Infinity
   let appendixEntry: LookupEntry | null = null
   for (const [lineStr, entry] of Object.entries(lines)) {
-    if (entry.content.trim() === '\\appendix') {
-      appendixLine = parseInt(lineStr)
-      appendixEntry = entry
-      break
+    const trimmed = entry.content.trim()
+    if (trimmed === '\\appendix' || trimmed === '\\begin{appendix}') {
+      const lineNum = parseInt(lineStr)
+      if (!isNaN(lineNum)) {
+        appendixLine = lineNum
+        appendixEntry = entry
+        break
+      }
     }
   }
 
   for (const [lineStr, entry] of Object.entries(lines)) {
-    const lineNum = parseInt(lineStr)
+    // Handle both plain line numbers and multi-file keys ("file.tex:N")
+    let lineNum: number
+    const colonIdx = lineStr.lastIndexOf(':')
+    if (colonIdx > 0 && lineStr.slice(0, colonIdx).includes('.')) {
+      // Multi-file key — use page position for sorting
+      lineNum = entry.page * 10000 + Math.round(entry.y)
+    } else {
+      lineNum = parseInt(lineStr)
+      if (isNaN(lineNum)) continue
+    }
+
     const m = entry.content.match(sectionRe)
     if (!m) continue
     let level: TocLevel = m[1] ? 'subsection' : 'section'
-    if (lineNum > appendixLine) level = DEMOTE[level]
+    if (entry.page >= (appendixEntry?.page ?? Infinity)) level = DEMOTE[level]
     // Clean title: preserve $...$ math, strip other TeX
     let title = m[2]
       .replace(/~}/g, '}')                         // trailing ~ before }
@@ -82,12 +97,12 @@ function parseHeadings(lines: Record<string, LookupEntry>): TocEntry[] {
 
   // Insert synthetic "Appendix" section heading
   if (appendixEntry) {
-    const insertIdx = headings.findIndex(h => h.line > appendixLine)
+    const insertIdx = headings.findIndex(h => h.entry.page >= appendixEntry!.page)
     if (insertIdx >= 0) {
       headings.splice(insertIdx, 0, {
         level: 'section',
         title: 'Appendix',
-        line: appendixLine,
+        line: headings[insertIdx].line - 1,
         entry: appendixEntry,
       })
     }
