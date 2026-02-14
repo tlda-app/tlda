@@ -27,6 +27,12 @@ dist-ssr
 # Local Yjs persistence
 server/data/
 
+# Built viewer SPA (copied from dist/ to server/public/ for unified server)
+server/public/
+
+# Project build output
+server/projects/
+
 # Test artifacts
 test-results/
 
