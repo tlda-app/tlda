@@ -649,7 +649,7 @@ async function highlightLine(doc, file, line) {
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
 
-async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file } = {}) {
+async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file, choices } = {}) {
   const linePos = lookupLine(doc, line, file);
   if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
 
@@ -687,7 +687,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
     rotation: 0,
     isLocked: false,
     opacity: 1,
-    props: { w: width, h: height, text, color, autoSize: true },
+    props: { w: width, h: height, text, color, autoSize: true, ...(choices?.length ? { choices, selectedChoice: -1 } : {}) },
     meta: {
       sourceAnchor: {
         file: `./${linePos.texFile || doc + '.tex'}`,
@@ -708,9 +708,9 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   return { ok: true, shapeId, page: linePos.page, x, y };
 }
 
-async function sendNote(doc, line, text, color = 'violet', file) {
+async function sendNote(doc, line, text, color = 'violet', file, choices) {
   // Create persistent math-note via Yjs — syncs to all viewers automatically
-  const result = await addAnnotation(doc, line, text, { color, file });
+  const result = await addAnnotation(doc, line, text, { color, file, choices });
   if (!result.ok) return result;
 
   // Also scroll viewer to the note location
@@ -726,7 +726,7 @@ async function listAnnotations(doc) {
   entry.yRecords.forEach((record, id) => {
     if (!record || record.type !== 'math-note') return;
     const anchor = record.meta?.sourceAnchor;
-    annotations.push({
+    const ann = {
       id,
       x: Math.round(record.x || 0),
       y: Math.round(record.y || 0),
@@ -734,7 +734,12 @@ async function listAnnotations(doc) {
       text: record.props?.text || '',
       anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
       content: anchor?.content || null,
-    });
+    };
+    if (record.props?.choices?.length) {
+      ann.choices = record.props.choices;
+      ann.selectedChoice = record.props.selectedChoice ?? -1;
+    }
+    annotations.push(ann);
   });
 
   return { ok: true, annotations };
@@ -1317,6 +1322,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           height: { type: 'number', description: 'Note height in pixels (default: 150)' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
         required: ['doc', 'line', 'text'],
       },
@@ -1408,6 +1414,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
         required: ['doc', 'line', 'text'],
       },
@@ -1495,6 +1502,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
               const record = entry.yRecords.get(key);
               if (record?.type === 'math-note') {
+                // Choice selection — resolve immediately, no debounce
+                const choices = record.props?.choices;
+                const sel = record.props?.selectedChoice;
+                if (choices?.length && sel != null && sel >= 0) {
+                  if (debounceTimer) clearTimeout(debounceTimer);
+                  entry.yRecords.unobserve(observer);
+                  resolve({ type: 'choice', key, record, choiceIndex: sel, choiceText: choices[sel] });
+                  return;
+                }
                 const text = record.props?.text || '';
                 // Skip if the last line is our reply
                 if (text.trimEnd().endsWith('—Claude:')) return;
@@ -1550,6 +1566,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (result?.type === 'ping') {
         return { content: [{ type: 'text', text: formatPing(result.ping, entry) }] };
+      }
+
+      if (result?.type === 'choice') {
+        const r = result.record;
+        const anchor = r.meta?.sourceAnchor;
+        let text = `Choice selected on ${result.key}:\n`;
+        text += `  question: "${r.props?.text || ''}"\n`;
+        text += `  selected: ${result.choiceIndex} — "${result.choiceText}"\n`;
+        text += `  all choices: ${r.props.choices.map((c, i) => i === result.choiceIndex ? `[${c}]` : c).join(' | ')}\n`;
+        if (anchor) text += `  anchor: ${anchor.file}:${anchor.line}`;
+        return { content: [{ type: 'text', text }] };
       }
 
       // Shape drawn (draw/highlight/arrow/geo/text/line)
@@ -1756,70 +1783,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
     try {
-      const entry = await connectYjs(docName);
-
-      // Scroll to page first if requested
-      if (targetPage) {
-        const canvasPos = docToCanvas(docName, targetPage, 0, 0);
-        entry.doc.transact(() => {
-          entry.yRecords.set('signal:forward-scroll', {
-            x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
-          });
-        });
-        sendYjsUpdate(entry);
-        // Wait for viewer to scroll before capturing
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      // Try up to 2 attempts (retry once on timeout)
-      for (let attempt = 0; attempt < 2; attempt++) {
-        entry.doc.transact(() => {
-          entry.yRecords.delete('signal:screenshot');
-          entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
-        });
-        sendYjsUpdate(entry);
-        const result = await new Promise((resolve) => {
-          const observer = (event) => {
-            event.changes.keys.forEach((change, key) => {
-              if (key === 'signal:screenshot') {
-                const ss = entry.yRecords.get('signal:screenshot');
-                if (ss?.data) {
-                  clearTimeout(timer);
-                  entry.yRecords.unobserve(observer);
-                  resolve(ss);
-                }
-              }
-            });
-          };
-          const timer = setTimeout(() => {
-            entry.yRecords.unobserve(observer);
-            resolve(null);
-          }, 8000);
-          entry.yRecords.observe(observer);
-        });
-        if (result?.data) {
-          return {
-            content: [
-              { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
-              { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-            ],
-          };
-        }
-      }
-      // Yjs-based screenshot failed — fall back to headless browser
-      try {
-        const base64 = await headlessScreenshot(docName, targetPage);
-        return {
-          content: [
-            { type: 'text', text: `Headless screenshot (${Math.round(base64.length / 1024)}KB)` },
-            { type: 'image', data: base64, mimeType: 'image/png' },
-          ],
-        };
-      } catch (e2) {
-        return { content: [{ type: 'text', text: `Screenshot timed out and headless fallback failed: ${e2.message}` }], isError: true };
-      }
+      const base64 = await headlessScreenshot(docName, targetPage);
+      return {
+        content: [
+          { type: 'text', text: `Screenshot (${Math.round(base64.length / 1024)}KB)` },
+          { type: 'image', data: base64, mimeType: 'image/png' },
+        ],
+      };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Screenshot error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -1836,12 +1808,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'add_annotation') {
-    const { doc, line, text, color, width, height, side, file } = args;
+    const { doc, line, text, color, width, height, side, file, choices } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
     try {
-      const result = await addAnnotation(doc, line, text, { color, width, height, side, file });
+      const result = await addAnnotation(doc, line, text, { color, width, height, side, file, choices });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  line ${line} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
     } catch (e) {
@@ -1861,7 +1833,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         summary += `${i + 1}. ${a.id}\n`;
         summary += `   pos: (${a.x}, ${a.y}) color: ${a.color}\n`;
         if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
-        summary += `   text: "${a.text}"\n\n`;
+        summary += `   text: "${a.text}"\n`;
+        if (a.choices) {
+          summary += `   choices: ${a.choices.map((c, j) => (j === a.selectedChoice ? `[${c}]` : c)).join(' | ')}\n`;
+          summary += `   selected: ${a.selectedChoice >= 0 ? `${a.selectedChoice} ("${a.choices[a.selectedChoice]}")` : 'none'}\n`;
+        }
+        summary += '\n';
       });
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
@@ -2113,11 +2090,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'send_note') {
-    const { doc, line, text, color, file } = args;
+    const { doc, line, text, color, file, choices } = args;
     if (!doc || !line || !text) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
     }
-    const result = await sendNote(doc, line, text, color, file);
+    const result = await sendNote(doc, line, text, color, file, choices);
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }
