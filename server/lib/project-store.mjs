@@ -127,6 +127,9 @@ function walkDir(dir) {
   return results
 }
 
+/**
+ * Write a source file. Returns true if the file was actually changed.
+ */
 export function writeSourceFile(name, filePath, content) {
   const dir = sourceDir(name)
   const full = join(dir, filePath)
@@ -134,7 +137,14 @@ export function writeSourceFile(name, filePath, content) {
   if (!full.startsWith(dir)) throw new Error('Invalid file path')
   const parent = join(full, '..')
   if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
+  // Skip write if content is identical
+  if (existsSync(full)) {
+    const existing = readFileSync(full)
+    const incoming = Buffer.isBuffer(content) ? content : Buffer.from(content)
+    if (existing.equals(incoming)) return false
+  }
   writeFileSync(full, content)
+  return true
 }
 
 export function readBuildLog(name) {

@@ -253,8 +253,8 @@ function writePid(pid) {
   writeFileSync(PIDFILE, String(pid))
 }
 
-async function cmdServer() {
-  const sub = getPositional(0) || 'start'
+async function cmdServer(action) {
+  const sub = action || getPositional(0) || 'start'
 
   // Find the unified server script relative to this file's location
   const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -366,9 +366,9 @@ async function ensureServer() {
     if (res.ok) return
   } catch {}
 
-  // Auto-start
+  // Auto-start — call cmdServer with explicit 'start' action
   console.log('Server not running, starting...')
-  await cmdServer()  // calls 'start' by default
+  await cmdServer('start')
 }
 
 // --- Main ---

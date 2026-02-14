@@ -79,14 +79,21 @@ router.post('/:name/push', async (req, res) => {
 
   const { files, priorityPages } = req.body
 
-  // Write files
+  // Write files, track if anything actually changed
+  let anyChanged = false
   if (files?.length > 0) {
     for (const file of files) {
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
-      writeSourceFile(req.params.name, file.path, content)
+      if (writeSourceFile(req.params.name, file.path, content)) {
+        anyChanged = true
+      }
     }
+  }
+
+  if (!anyChanged) {
+    return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
   }
 
   // Respond immediately, build runs async

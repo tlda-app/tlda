@@ -30,6 +30,29 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
     console.log(`[watch] Yjs connection failed (non-fatal): ${e.message}`)
   }
 
+  // Initial push — rebuild if source is newer than last build
+  try {
+    const files = (await import('./source-files.mjs')).collectSourceFiles(dir)
+    if (files.length > 0) {
+      console.log(`[watch] Initial push: ${files.length} file(s)`)
+      const res = await fetch(`${server}/api/projects/${name}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files }),
+        signal: AbortSignal.timeout(30000),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
+        else console.log('[watch] Initial push accepted, build started.')
+      } else {
+        console.error(`[watch] Initial push failed: ${await res.text()}`)
+      }
+    }
+  } catch (e) {
+    console.error(`[watch] Initial push failed: ${e.message}`)
+  }
+
   async function pushChanges() {
     if (pushing) { pushQueued = true; return }
     pushing = true
