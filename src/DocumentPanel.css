@@ -62,6 +62,8 @@
   font-size: 11px;
   color: rgba(0, 0, 0, 0.1);
   pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
   transition: background 0.3s, color 0.3s;
 }
 
@@ -74,25 +76,31 @@
   pointer-events: none;
 }
 
-/* Interactive elements inside content get pointer events back */
-.doc-panel-content .toc-item,
-.doc-panel-content .toc-live-link,
-.doc-panel-content .toc-fold,
-.doc-panel-content .toc-diff-hint,
-.doc-panel-content .search-input-wrap,
-.doc-panel-content .recent-changes,
-.doc-panel-content .proof-item,
-.doc-panel-content .note-item,
-.doc-panel-content .diff-change-item,
-.doc-panel-content .status-dot {
-  pointer-events: all;
-}
-
 @media (pointer: fine) {
+  /* Desktop: individual items always clickable, full content on hover */
+  .doc-panel-content .toc-item,
+  .doc-panel-content .toc-live-link,
+  .doc-panel-content .toc-fold,
+  .doc-panel-content .toc-diff-hint,
+  .doc-panel-content .search-input-wrap,
+  .doc-panel-content .recent-changes,
+  .doc-panel-content .proof-item,
+  .doc-panel-content .note-item,
+  .doc-panel-content .diff-change-item,
+  .doc-panel-content .status-dot {
+    pointer-events: all;
+  }
   .doc-panel:hover {
     background: rgba(255, 255, 255, 0.7);
     color: rgba(0, 0, 0, 0.6);
   }
+  .doc-panel:hover .doc-panel-content {
+    pointer-events: all;
+  }
+}
+
+@media (pointer: coarse) {
+  /* Touch: content only responds after panel is tapped (sticky :hover on iOS) */
   .doc-panel:hover .doc-panel-content {
     pointer-events: all;
   }
