@@ -98,6 +98,17 @@ const cmTheme = EditorView.theme({
   },
 })
 
+/**
+ * In pen mode, finger touches should pass through to TLDraw (for palm rejection).
+ * Only stop propagation for pen/mouse events or when not in pen mode.
+ */
+function stopIfNotPenTouch(editor: any) {
+  return (e: React.PointerEvent) => {
+    if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
+    stopEventPropagation(e)
+  }
+}
+
 export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'math-note' as const
   static override props = {
@@ -423,7 +434,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             flexDirection: 'column',
           }}
           onKeyDown={handleKeyDown}
-onPointerDown={stopEventPropagation}
+          onPointerDown={stopIfNotPenTouch(editor)}
         >
           {/* CodeMirror editor */}
           <div
@@ -504,6 +515,7 @@ onPointerDown={stopEventPropagation}
                 <span
                   key={c}
                   onPointerDown={(e) => {
+                    if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
                     e.stopPropagation()
                     editor.updateShape({
                       id: shape.id,
@@ -587,6 +599,7 @@ onPointerDown={stopEventPropagation}
                   <button
                     key={i}
                     onPointerDown={(e) => {
+                      if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
                       e.stopPropagation()
                       editor.updateShape({
                         id: shape.id,

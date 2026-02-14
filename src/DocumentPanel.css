@@ -65,18 +65,36 @@
   transition: background 0.3s, color 0.3s;
 }
 
-/* Panel content always clickable — hovering activates full visibility */
-/* Only tabs and content intercept touches, not the full-height column */
-.doc-panel-tabs,
+/* Only interactive elements intercept touches, not the full-height panel */
+.doc-panel-tabs {
+  pointer-events: all;
+}
+
 .doc-panel-content {
+  pointer-events: none;
+}
+
+/* Interactive elements inside content get pointer events back */
+.doc-panel-content .toc-item,
+.doc-panel-content .toc-live-link,
+.doc-panel-content .toc-fold,
+.doc-panel-content .toc-diff-hint,
+.doc-panel-content .search-input-wrap,
+.doc-panel-content .recent-changes,
+.doc-panel-content .proof-item,
+.doc-panel-content .note-item,
+.doc-panel-content .diff-change-item,
+.doc-panel-content .status-dot {
   pointer-events: all;
 }
 
 @media (pointer: fine) {
   .doc-panel:hover {
-    pointer-events: all;
     background: rgba(255, 255, 255, 0.7);
     color: rgba(0, 0, 0, 0.6);
+  }
+  .doc-panel:hover .doc-panel-content {
+    pointer-events: all;
   }
 }
 
