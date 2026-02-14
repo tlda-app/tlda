@@ -106,6 +106,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     text: T.string,
     color: DefaultColorStyle,
     autoSize: T.optional(T.boolean),
+    choices: T.optional(T.arrayOf(T.string)),
+    selectedChoice: T.optional(T.number),
   }
 
   getDefaultProps() {
@@ -527,40 +529,93 @@ onPointerDown={stopEventPropagation}
     } else {
       const text = shape.props.text || ''
       const autoH = shape.props.autoSize
+      const choices = shape.props.choices as string[] | undefined
+      const selectedChoice = (shape.props.selectedChoice as number) ?? -1
+      const hasChoices = choices && choices.length > 0
+
+      let textContent
       if (hasMath(text)) {
         const rendered = renderMath(text)
-        content = (
+        textContent = (
           <div
-            ref={contentRef}
             style={{
               padding: '12px',
+              paddingBottom: hasChoices ? '4px' : '12px',
               fontSize: '14px',
               lineHeight: 1.4,
-              overflow: autoH ? 'hidden' : 'auto',
-              height: autoH ? 'auto' : '100%',
-              boxSizing: 'border-box',
             }}
             dangerouslySetInnerHTML={{ __html: rendered }}
           />
         )
       } else {
-        content = (
+        textContent = (
           <div
-            ref={contentRef}
             style={{
               padding: '12px',
+              paddingBottom: hasChoices ? '4px' : '12px',
               fontSize: '14px',
               lineHeight: 1.4,
               whiteSpace: 'pre-wrap',
-              overflow: autoH ? 'hidden' : 'auto',
-              height: autoH ? 'auto' : '100%',
-              boxSizing: 'border-box',
             }}
           >
             {text || '\u00A0'}
           </div>
         )
       }
+
+      content = (
+        <div
+          ref={contentRef}
+          style={{
+            overflow: autoH ? 'hidden' : 'auto',
+            height: autoH ? 'auto' : '100%',
+            boxSizing: 'border-box',
+          }}
+        >
+          {textContent}
+          {hasChoices && (
+            <div style={{
+              padding: '4px 10px 10px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '6px',
+            }}>
+              {choices.map((choice, i) => {
+                const isSelected = selectedChoice === i
+                const choiceHtml = hasMath(choice) ? renderMath(choice) : null
+                return (
+                  <button
+                    key={i}
+                    onPointerDown={(e) => {
+                      e.stopPropagation()
+                      editor.updateShape({
+                        id: shape.id,
+                        type: 'math-note' as any,
+                        props: { selectedChoice: isSelected ? -1 : i },
+                      })
+                    }}
+                    style={{
+                      padding: '4px 12px',
+                      fontSize: '12px',
+                      lineHeight: 1.3,
+                      border: isSelected ? '2px solid rgba(0,0,0,0.5)' : '1px solid rgba(0,0,0,0.15)',
+                      borderRadius: '14px',
+                      backgroundColor: isSelected ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.5)',
+                      cursor: 'pointer',
+                      fontWeight: isSelected ? 600 : 400,
+                      transition: 'all 0.15s',
+                    }}
+                    {...(choiceHtml
+                      ? { dangerouslySetInnerHTML: { __html: choiceHtml } }
+                      : { children: choice }
+                    )}
+                  />
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )
     }
 
     return (
