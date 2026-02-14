@@ -68,12 +68,13 @@ function getServer() {
 
 // --- HTTP helpers ---
 
-async function api(method, path, body = null) {
+async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
   const server = getServer()
   const url = `${server}${path}`
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
   }
   if (body) opts.body = JSON.stringify(body)
 
@@ -278,7 +279,7 @@ async function cmdServer() {
 
   if (sub === 'status') {
     try {
-      const res = await fetch(`${getServer()}/health`)
+      const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
       const data = await res.json()
       const pid = readPid()
       console.log(`Server running (uptime: ${Math.floor(data.uptime)}s${pid ? `, pid ${pid}` : ''})`)
@@ -301,7 +302,7 @@ async function cmdServer() {
   if (sub === 'start') {
     // Check if already running
     try {
-      const res = await fetch(`${getServer()}/health`)
+      const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
       if (res.ok) {
         console.log('Server already running.')
         return
@@ -361,7 +362,7 @@ function inferProjectName() {
 
 async function ensureServer() {
   try {
-    const res = await fetch(`${getServer()}/health`)
+    const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
     if (res.ok) return
   } catch {}
 

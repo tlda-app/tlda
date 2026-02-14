@@ -11,7 +11,7 @@ import { join, extname } from 'path'
 // Extensions that are part of a TeX project
 export const SOURCE_EXTENSIONS = new Set([
   '.tex', '.bib', '.sty', '.cls', '.bst', '.def',            // TeX source
-  '.pdf', '.png', '.jpg', '.jpeg', '.eps', '.svg',           // Figures
+  '.svg', '.png', '.jpg', '.jpeg', '.eps',                     // Figures (no PDFs — those are compiled output)
   '.tikz', '.pgf', '.dtx', '.ins', '.fd',                    // TeX extras
 ])
 

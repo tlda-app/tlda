@@ -118,7 +118,7 @@ try {
 
   // Detect live session URL
   const liveHost = detectLiveHost()
-  const liveUrl = liveHost ? `http://${liveHost}:5173/?doc=${DOC_NAME}` : null
+  const liveUrl = liveHost ? `http://${liveHost}:5176/?doc=${DOC_NAME}` : null
   if (liveUrl) {
     console.log(`[publish] Live session URL: ${liveUrl}`)
   }

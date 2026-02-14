@@ -214,6 +214,10 @@ process.on('SIGTERM', shutdown)
 process.on('uncaughtException', (err) => {
   console.error('[server] Uncaught exception:', err.message)
   console.error(err.stack)
+  // Fatal errors that mean we can't serve — exit instead of zombieing
+  if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
+    process.exit(1)
+  }
 })
 
 process.on('unhandledRejection', (err) => {
