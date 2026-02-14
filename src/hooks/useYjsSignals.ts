@@ -85,10 +85,21 @@ export function useYjsSignals({
 
   // Handle screenshot requests from MCP
   useEffect(() => {
-    return onScreenshotRequest(async () => {
+    // Track last user interaction to prioritize active viewers for screenshots
+    let lastInteraction = Date.now()
+    const onInteract = () => { lastInteraction = Date.now() }
+    window.addEventListener('pointerdown', onInteract, true)
+    window.addEventListener('keydown', onInteract, true)
+
+    const unsub = onScreenshotRequest(async () => {
       const editor = editorRef.current
       const yRecords = getYRecords()
       if (!editor || !yRecords) return
+      // Delay based on staleness: recently active viewers respond first (0-2s)
+      // This lets the most interactive viewer win the race
+      const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1) // 0..1 over 30s
+      const delay = Math.round(staleness * 2000)
+      if (delay > 0) await new Promise(r => setTimeout(r, delay))
       try {
         const viewportBounds = editor.getViewportPageBounds()
         const { blob } = await editor.toImage([], {
@@ -112,6 +123,11 @@ export function useYjsSignals({
         console.warn('[Screenshot] Capture failed:', e)
       }
     })
+    return () => {
+      unsub()
+      window.removeEventListener('pointerdown', onInteract, true)
+      window.removeEventListener('keydown', onInteract, true)
+    }
   }, [])
 
   // Incoming ref viewer signal: show refs from another viewer
