@@ -968,7 +968,7 @@ function ToolToggleZones() {
   useEffect(() => {
     const update = () => {
       setCurrentTool(editor.getCurrentToolId())
-      const colorName = editor.getInstanceState().stylesForNextShape?.['tldraw:color'] || 'violet'
+      const colorName = (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'violet'
       setHighlightColor(highlightColors[colorName] || '#c77cff')
     }
     editor.on('change', update)

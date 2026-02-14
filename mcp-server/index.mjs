@@ -1651,24 +1651,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
         });
         sendYjsUpdate(entry);
-        // Wait up to 5s for the viewer to respond
         const result = await new Promise((resolve) => {
           const observer = (event) => {
             event.changes.keys.forEach((change, key) => {
               if (key === 'signal:screenshot') {
                 const ss = entry.yRecords.get('signal:screenshot');
                 if (ss?.data) {
-                  clearTimeout(timeout);
+                  clearTimeout(timer);
                   entry.yRecords.unobserve(observer);
                   resolve(ss);
                 }
               }
             });
           };
-          const timeout = setTimeout(() => {
+          const timer = setTimeout(() => {
             entry.yRecords.unobserve(observer);
             resolve(null);
-          }, 5000);
+          }, 8000);
           entry.yRecords.observe(observer);
         });
         if (result?.data) {
@@ -1708,39 +1707,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Clear any old screenshot so we know the response is fresh
-      entry.doc.transact(() => {
-        entry.yRecords.delete('signal:screenshot');
-        entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
-      });
-      sendYjsUpdate(entry);
-      // Wait up to 5s for the viewer to respond
-      const result = await new Promise((resolve) => {
-        const observer = (event) => {
-          event.changes.keys.forEach((change, key) => {
-            if (key === 'signal:screenshot') {
-              const ss = entry.yRecords.get('signal:screenshot');
-              if (ss?.data) {
-                clearTimeout(timeout);
-                entry.yRecords.unobserve(observer);
-                resolve(ss);
+      // Try up to 2 attempts (retry once on timeout)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        entry.doc.transact(() => {
+          entry.yRecords.delete('signal:screenshot');
+          entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
+        });
+        sendYjsUpdate(entry);
+        const result = await new Promise((resolve) => {
+          const observer = (event) => {
+            event.changes.keys.forEach((change, key) => {
+              if (key === 'signal:screenshot') {
+                const ss = entry.yRecords.get('signal:screenshot');
+                if (ss?.data) {
+                  clearTimeout(timer);
+                  entry.yRecords.unobserve(observer);
+                  resolve(ss);
+                }
               }
-            }
-          });
-        };
-        const timeout = setTimeout(() => {
-          entry.yRecords.unobserve(observer);
-          resolve(null);
-        }, 5000);
-        entry.yRecords.observe(observer);
-      });
-      if (result?.data) {
-        return {
-          content: [
-            { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
-            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-          ],
-        };
+            });
+          };
+          const timer = setTimeout(() => {
+            entry.yRecords.unobserve(observer);
+            resolve(null);
+          }, 8000);
+          entry.yRecords.observe(observer);
+        });
+        if (result?.data) {
+          return {
+            content: [
+              { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
+              { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
+            ],
+          };
+        }
       }
       return { content: [{ type: 'text', text: 'Screenshot request timed out. Is the viewer open?' }] };
     } catch (e) {

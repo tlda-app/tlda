@@ -306,7 +306,16 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
         if (key === 'signal:screenshot-request' && (change.action === 'add' || change.action === 'update')) {
           const signal = yRecords.get(key) as unknown as { timestamp: number }
           if (!hasReceivedInitialSync) {
-            if (signal?.timestamp) lastScreenshotRequestTimestamp = signal.timestamp
+            // During initial sync, process recent requests (within 10s) instead of discarding
+            if (signal?.timestamp) {
+              if (Date.now() - signal.timestamp < 10000) {
+                lastScreenshotRequestTimestamp = signal.timestamp
+                console.log('[Yjs] Screenshot request received (during sync, recent)')
+                for (const cb of screenshotCallbacks) cb()
+              } else {
+                lastScreenshotRequestTimestamp = signal.timestamp
+              }
+            }
           } else if (signal?.timestamp && signal.timestamp > lastScreenshotRequestTimestamp) {
             lastScreenshotRequestTimestamp = signal.timestamp
             console.log('[Yjs] Screenshot request received')
