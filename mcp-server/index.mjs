@@ -29,6 +29,70 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
+// ---- Headless screenshot fallback ----
+
+let _browser = null;
+let _browserIdleTimer = null;
+const BROWSER_IDLE_MS = 120_000; // close after 2min idle
+
+async function getHeadlessBrowser() {
+  if (_browser && _browser.connected) {
+    clearTimeout(_browserIdleTimer);
+    return _browser;
+  }
+  const puppeteer = await import('puppeteer');
+  _browser = await puppeteer.default.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+  });
+  return _browser;
+}
+
+function scheduleBrowserClose() {
+  clearTimeout(_browserIdleTimer);
+  _browserIdleTimer = setTimeout(async () => {
+    if (_browser) {
+      await _browser.close().catch(() => {});
+      _browser = null;
+    }
+  }, BROWSER_IDLE_MS);
+}
+
+async function headlessScreenshot(docName, targetPage) {
+  const serverUrl = process.env.CTD_SERVER || 'http://localhost:5176';
+  const url = `${serverUrl}/?doc=${docName}`;
+  const browser = await getHeadlessBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: 1280, height: 960 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    // Wait for TLDraw to render shapes
+    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
+    // Let annotations sync from Yjs
+    await new Promise(r => setTimeout(r, 3000));
+
+    if (targetPage) {
+      await page.evaluate((pg) => {
+        const pageHeight = 792 * (800 / 612); // PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+        const pageGap = 32;
+        const y = (pg - 1) * (pageHeight + pageGap) + pageHeight / 2;
+        const editor = window.__tldraw_editor__;
+        if (editor) {
+          editor.centerOnPoint({ x: 400, y });
+        }
+      }, targetPage);
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    const buf = await page.screenshot({ type: 'png' });
+    const base64 = buf.toString('base64');
+    return base64;
+  } finally {
+    await page.close();
+    scheduleBrowserClose();
+  }
+}
+
 // Initialize data source: HTTP fetch when CTD_SERVER is set, disk read otherwise
 initDataSource(PROJECT_ROOT, process.env.CTD_SERVER || null);
 
@@ -1742,7 +1806,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
       }
-      return { content: [{ type: 'text', text: 'Screenshot request timed out. Is the viewer open?' }] };
+      // Yjs-based screenshot failed — fall back to headless browser
+      try {
+        const base64 = await headlessScreenshot(docName, targetPage);
+        return {
+          content: [
+            { type: 'text', text: `Headless screenshot (${Math.round(base64.length / 1024)}KB)` },
+            { type: 'image', data: base64, mimeType: 'image/png' },
+          ],
+        };
+      } catch (e2) {
+        return { content: [{ type: 'text', text: `Screenshot timed out and headless fallback failed: ${e2.message}` }], isError: true };
+      }
     } catch (e) {
       return { content: [{ type: 'text', text: `Screenshot error: ${e.message}` }], isError: true };
     }
