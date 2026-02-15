@@ -189,6 +189,9 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     let isRemoteUpdate = false
     let hasReceivedInitialSync = false
     let unsubscribe: (() => void) | null = null
+    // IDs received from server — protected from spurious deletion during init
+    const serverShapeIds = new Set<string>()
+    let initProtectionActive = true
 
     // Connect WebSocket
     const ws = new WebSocket(`${serverUrl}/${roomId}`)
@@ -227,9 +230,10 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
             // Apply syncable records from server to editor
             const toApply: TLRecord[] = []
-            yRecords.forEach((record) => {
+            yRecords.forEach((record, id) => {
               if (shouldSync(record)) {
                 toApply.push(record)
+                serverShapeIds.add(id)
               }
             })
             if (toApply.length > 0) {
@@ -252,6 +256,11 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
             try {
               setupBidirectionalSync()
+              // Expire deletion protection after init settles
+              setTimeout(() => {
+                initProtectionActive = false
+                console.log(`[Yjs] Init protection expired (${serverShapeIds.size} shapes were protected)`)
+              }, 5000)
             } catch (e) {
               console.error('[Yjs] Failed to setup bidirectional sync:', e)
             }
@@ -472,6 +481,12 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
             }
             for (const record of Object.values(changes.removed)) {
               if (!isPageBackground(record)) {
+                // During init, don't delete shapes that came from the server
+                // (TLDraw may spuriously remove them before pages fully load)
+                if (initProtectionActive && serverShapeIds.has(record.id)) {
+                  console.log(`[Yjs] Protecting server shape from deletion: ${record.id}`)
+                  continue
+                }
                 yRecords.delete(record.id)
               }
             }
