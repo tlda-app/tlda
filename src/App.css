@@ -3,9 +3,12 @@
   inset: 0;
 }
 
-/* White canvas background */
+/* Canvas background */
 .tl-background {
   background-color: white !important;
+}
+.tl-theme__dark .tl-background {
+  background-color: #0f0f1a !important;
 }
 
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
@@ -281,6 +284,53 @@ body.text-select-mode ::selection {
   }
 }
 
+/* Dark mode overrides */
+.tl-theme__dark .tlui-layout__bottom {
+  --tl-color-text-1: rgba(255, 255, 255, 0.15);
+  --tl-color-text: rgba(255, 255, 255, 0.15);
+  --tl-color-text-3: rgba(255, 255, 255, 0.08);
+  --tl-color-selected: rgba(255, 255, 255, 0.04);
+  --tl-color-selected-contrast: rgba(255, 255, 255, 0.1);
+  --tl-color-low: rgba(0, 0, 0, 0.3);
+  --tl-color-panel: rgba(0, 0, 0, 0.3);
+}
+
+.tl-theme__dark [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
+  --tl-color-text-1: rgba(255, 255, 255, 0.15);
+  --tl-color-text: rgba(255, 255, 255, 0.15);
+  --tl-color-text-3: rgba(255, 255, 255, 0.08);
+  --tl-color-selected: rgba(255, 255, 255, 0.04);
+  --tl-color-selected-contrast: rgba(255, 255, 255, 0.1);
+  --tl-color-low: rgba(0, 0, 0, 0.3);
+  --tl-color-panel: rgba(0, 0, 0, 0.3);
+}
+
+.tl-theme__dark .tlui-main-toolbar__mobile-style-panel .tlui-button {
+  color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.tl-theme__dark [class*="tlui-"][class*="actions"],
+.tl-theme__dark [class*="tlui-"][class*="extras"],
+.tl-theme__dark [class*="tlui-"][class*="buttons"],
+.tl-theme__dark [class*="tlui-"][class*="panel"],
+.tl-theme__dark [class*="tlui-"][class*="menu"],
+.tl-theme__dark .tlui-toolbar {
+  background: rgba(0, 0, 0, 0.3) !important;
+}
+
+.tl-theme__dark .PageOverlayScreen-screen {
+  fill: #0f0f1a;
+}
+
+.tl-theme__dark .change-highlight {
+  background: rgba(100, 160, 255, 0.08);
+  border-left-color: rgba(100, 160, 255, 0.3);
+}
+
+.tl-theme__dark .exit-pen-mode-btn {
+  color: rgba(255, 255, 255, 0.8);
+}
+
 /* iPad / touch-device overrides */
 @media (pointer: coarse) {
   .tlui-layout__bottom {
@@ -308,5 +358,21 @@ body.text-select-mode ::selection {
   [class*="tlui-"][class*="menu"] {
     opacity: 0.4;
     zoom: 0.85;
+  }
+
+  .tl-theme__dark .tlui-layout__bottom {
+    --tl-color-text-1: rgba(255, 255, 255, 0.25);
+    --tl-color-text: rgba(255, 255, 255, 0.25);
+    --tl-color-text-3: rgba(255, 255, 255, 0.12);
+  }
+
+  .tl-theme__dark [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
+    --tl-color-text-1: rgba(255, 255, 255, 0.25);
+    --tl-color-text: rgba(255, 255, 255, 0.25);
+    --tl-color-text-3: rgba(255, 255, 255, 0.12);
+  }
+
+  .tl-theme__dark .tlui-main-toolbar__mobile-style-panel .tlui-button {
+    color: rgba(255, 255, 255, 0.25) !important;
   }
 }

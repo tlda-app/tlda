@@ -2,6 +2,8 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  useEditor,
+  useValue,
 } from 'tldraw'
 
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
@@ -23,25 +25,33 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   override canBind = () => false
 
   component(shape: any) {
-    return (
-      <HTMLContainer>
-        <iframe
-          src={shape.props.url}
-          style={{
-            width: shape.props.w,
-            height: shape.props.h,
-            border: 'none',
-            pointerEvents: 'none',
-            background: 'white',
-            display: 'block',
-          }}
-          scrolling="no"
-        />
-      </HTMLContainer>
-    )
+    return <HtmlPageComponent shape={shape} />
   }
 
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} />
   }
+}
+
+function HtmlPageComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
+
+  return (
+    <HTMLContainer>
+      <iframe
+        src={shape.props.url}
+        style={{
+          width: shape.props.w,
+          height: shape.props.h,
+          border: 'none',
+          pointerEvents: 'none',
+          background: isDark ? '#1a1a2e' : 'white',
+          filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
+          display: 'block',
+        }}
+        scrolling="no"
+      />
+    </HTMLContainer>
+  )
 }

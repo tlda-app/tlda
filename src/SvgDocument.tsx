@@ -418,6 +418,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Signal that pages are ready — disables Yjs init deletion protection
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
+          // Follow system dark/light mode preference
+          editor.user.updateUserPreferences({ colorScheme: 'system' })
+
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
           editor.setStyleForNextShapes(DefaultSizeStyle, 's')
@@ -536,12 +539,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             }, 500)
           }
 
-          // Keyboard shortcut: 'm' for math note
+          // Keyboard shortcuts
           const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-              if (isInputFocused()) return
-              if (editor.getEditingShapeId()) return // Don't trigger while editing
+            if (e.metaKey || e.ctrlKey || e.altKey) return
+            if (isInputFocused()) return
+            if (editor.getEditingShapeId()) return
+
+            if (e.key === 'm') {
               editor.setCurrentTool('math-note')
+            } else if (e.key === 'd') {
+              // Cycle: system → dark → light → system
+              const prefs = editor.user.getUserPreferences()
+              const scheme = prefs.colorScheme || 'system'
+              const next = scheme === 'system' ? 'dark' : scheme === 'dark' ? 'light' : 'system'
+              editor.user.updateUserPreferences({ colorScheme: next })
             }
           }
           window.addEventListener('keydown', handleKeyDown)

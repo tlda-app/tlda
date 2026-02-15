@@ -2,6 +2,8 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  useEditor,
+  useValue,
 } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
 import { injectSvgFonts } from './svgFonts'
@@ -122,6 +124,8 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 }
 
 function SvgPageComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
   const svgText = svgTextStore.get(shape.id)
 
@@ -205,7 +209,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            background: 'white',
+            background: isDark ? '#1a1a2e' : 'white',
+            filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
             overflow: 'hidden',
             pointerEvents: 'all',
           }}
