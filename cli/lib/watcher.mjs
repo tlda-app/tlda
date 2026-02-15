@@ -20,6 +20,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
   let pendingFiles = new Set()
   let pushing = false
   let pushQueued = false
+  let retryDelay = 1000
 
   // Yjs connection for viewport + reverse sync
   let cachedViewportPages = null
@@ -31,27 +32,33 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
   }
 
   // Initial push — rebuild if source is newer than last build
-  try {
-    const files = (await import('./source-files.mjs')).collectSourceFiles(dir)
-    if (files.length > 0) {
-      console.log(`[watch] Initial push: ${files.length} file(s)`)
-      const res = await fetch(`${server}/api/projects/${name}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files }),
-        signal: AbortSignal.timeout(30000),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
-        else console.log('[watch] Initial push accepted, build started.')
-      } else {
-        console.error(`[watch] Initial push failed: ${await res.text()}`)
+  async function initialPush() {
+    try {
+      const files = (await import('./source-files.mjs')).collectSourceFiles(dir)
+      if (files.length > 0) {
+        console.log(`[watch] Initial push: ${files.length} file(s)`)
+        const res = await fetch(`${server}/api/projects/${name}/push`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files }),
+          signal: AbortSignal.timeout(30000),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
+          else console.log('[watch] Initial push accepted, build started.')
+          retryDelay = 1000
+        } else {
+          console.error(`[watch] Initial push failed: ${await res.text()}`)
+        }
       }
+    } catch (e) {
+      console.error(`[watch] Initial push failed: ${e.message}, retrying in ${retryDelay / 1000}s...`)
+      setTimeout(initialPush, retryDelay)
+      retryDelay = Math.min(retryDelay * 2, 30000)
     }
-  } catch (e) {
-    console.error(`[watch] Initial push failed: ${e.message}`)
   }
+  await initialPush()
 
   async function pushChanges() {
     if (pushing) { pushQueued = true; return }
@@ -83,9 +90,15 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
         console.error(`[watch] Push failed: ${text}`)
       } else {
         console.log('[watch] Push accepted, build started on server.')
+        retryDelay = 1000
       }
     } catch (e) {
-      console.error(`[watch] Push failed: ${e.message}`)
+      console.error(`[watch] Push failed: ${e.message}, retrying in ${retryDelay / 1000}s...`)
+      for (const f of filePaths) pendingFiles.add(f)
+      pushing = false
+      setTimeout(pushChanges, retryDelay)
+      retryDelay = Math.min(retryDelay * 2, 30000)
+      return
     }
 
     pushing = false

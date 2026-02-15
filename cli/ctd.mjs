@@ -236,22 +236,13 @@ async function cmdConfig() {
   }
 }
 
-const PIDFILE = join(homedir(), '.config', 'ctd', 'server.pid')
 const LOGFILE = join(homedir(), '.config', 'ctd', 'server.log')
 
-function readPid() {
-  try {
-    const pid = parseInt(readFileSync(PIDFILE, 'utf8').trim(), 10)
-    if (isNaN(pid)) return null
-    // Check if process is alive
-    try { process.kill(pid, 0); return pid } catch { return null }
-  } catch { return null }
+function getPort() {
+  try { return new URL(getServer()).port || '5176' } catch { return '5176' }
 }
 
-function writePid(pid) {
-  if (!existsSync(dirname(PIDFILE))) mkdirSync(dirname(PIDFILE), { recursive: true })
-  writeFileSync(PIDFILE, String(pid))
-}
+
 
 async function cmdServer(action) {
   const sub = action || getPositional(0) || 'start'
@@ -260,16 +251,24 @@ async function cmdServer(action) {
   const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const serverScript = join(ctdRoot, 'server', 'unified-server.mjs')
 
+  const port = getPort()
+  const { execSync } = await import('child_process')
+
+  // Clean up stale PID file from old versions
+  const oldPidFile = join(homedir(), '.config', 'ctd', 'server.pid')
+  try { const fs = await import('fs'); fs.unlinkSync(oldPidFile) } catch {}
+
   if (sub === 'stop') {
-    const pid = readPid()
-    if (pid) {
-      process.kill(pid, 'SIGTERM')
-      // Wait for it to die
+    let pids
+    try { pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim() } catch { pids = '' }
+    if (pids) {
+      for (const pid of pids.split('\n')) {
+        try { process.kill(parseInt(pid), 'SIGTERM') } catch {}
+      }
       for (let i = 0; i < 20; i++) {
         await new Promise(r => setTimeout(r, 250))
-        try { process.kill(pid, 0) } catch { break }
+        try { execSync(`lsof -ti:${port}`, { stdio: 'pipe' }) } catch { break }
       }
-      try { const fs = await import('fs'); fs.unlinkSync(PIDFILE) } catch {}
       console.log('Server stopped.')
     } else {
       console.log('No server running.')
@@ -281,8 +280,7 @@ async function cmdServer(action) {
     try {
       const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
       const data = await res.json()
-      const pid = readPid()
-      console.log(`Server running (uptime: ${Math.floor(data.uptime)}s${pid ? `, pid ${pid}` : ''})`)
+      console.log(`Server running (uptime: ${Math.floor(data.uptime)}s)`)
     } catch {
       console.log('Server not running.')
     }
@@ -308,7 +306,16 @@ async function cmdServer(action) {
         return
       }
     } catch {
-      // Not running, good
+      // Not running — kill any zombie holding the port
+      try {
+        const stale = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
+        if (stale) {
+          for (const pid of stale.split('\n')) {
+            try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
+          }
+          await new Promise(r => setTimeout(r, 500))
+        }
+      } catch {}
     }
 
     if (!existsSync(serverScript)) {
@@ -326,10 +333,9 @@ async function cmdServer(action) {
     const child = spawn('node', [serverScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, PORT: new URL(getServer()).port || '5176' },
+      env: { ...process.env, PORT: port },
     })
     child.unref()
-    writePid(child.pid)
 
     // Wait for it to come up
     for (let i = 0; i < 20; i++) {
@@ -366,7 +372,19 @@ async function ensureServer() {
     if (res.ok) return
   } catch {}
 
-  // Auto-start — call cmdServer with explicit 'start' action
+  // Check if something is on the port (could be busy with a build)
+  const port = getPort()
+  try {
+    const { execSync } = await import('child_process')
+    const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
+    if (pids) {
+      // Process exists on port but health check failed — probably busy building
+      console.log('Server busy (likely building), proceeding...')
+      return
+    }
+  } catch {}
+
+  // Nothing on the port — auto-start
   console.log('Server not running, starting...')
   await cmdServer('start')
 }

@@ -12,7 +12,9 @@
  * Signals reload via Yjs after SVG conversion.
  */
 
-import { execSync } from 'child_process'
+import { exec as execCb } from 'child_process'
+import { promisify } from 'util'
+const execAsync = promisify(execCb)
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'fs'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -95,7 +97,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     // Clean stale build artifacts so latexmk does a fresh compile with synctex.
     // Use -dvi to match our build mode (user's latexmkrc might default to -pdf).
     try {
-      execSync(`latexmk -C -dvi "${texBase}.tex"`, { cwd: srcDir, stdio: 'pipe', timeout: 10000 })
+      await execAsync(`latexmk -C -dvi "${texBase}.tex"`, { cwd: srcDir, timeout: 10000 })
     } catch {
       // latexmk -C may fail if no prior build — that's fine
     }
@@ -114,12 +116,12 @@ export async function runBuild(name, { priorityPages } = {}) {
 
     const pretex = '\\PassOptionsToPackage{draft,dvipdfmx}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
     try {
-      execSync(
+      await execAsync(
         `latexmk -dvi -f ` +
         `-interaction=nonstopmode ` +
         `-pretex='${pretex}' ` +
         `"${texBase}.tex"`,
-        { cwd: srcDir, stdio: 'pipe', timeout: 120000 },
+        { cwd: srcDir, timeout: 120000 },
       )
     } catch (e) {
       // latexmk may exit non-zero due to warnings — check for DVI below
@@ -142,10 +144,10 @@ export async function runBuild(name, { priorityPages } = {}) {
     if (priorityPages?.length > 0) {
       const pageSpec = priorityPages.join(',')
       addLog(`Converting priority pages [${pageSpec}]...`)
-      execSync(
+      await execAsync(
         `dvisvgm --page=${pageSpec} --font-format=woff2 --bbox=papersize --linkmark=none ` +
         `--output="${outDir}/page-%p.svg" "${dviFile}"`,
-        { cwd: srcDir, stdio: 'pipe' },
+        { cwd: srcDir },
       )
       // Normalize zero-padded names (dvisvgm 3.x pads page numbers)
       normalizeSvgNames(outDir)
@@ -155,10 +157,10 @@ export async function runBuild(name, { priorityPages } = {}) {
     // All pages
     addLog('Converting all pages...')
     const svgStart = Date.now()
-    execSync(
+    await execAsync(
       `dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none ` +
       `--output="${outDir}/page-%p.svg" "${dviFile}"`,
-      { cwd: srcDir, stdio: 'pipe', timeout: 120000 },
+      { cwd: srcDir, timeout: 120000 },
     )
     // Normalize zero-padded names (dvisvgm 3.x pads page numbers)
     normalizeSvgNames(outDir)
@@ -167,11 +169,11 @@ export async function runBuild(name, { priorityPages } = {}) {
     // Phase 2b: Patch draft-mode image placeholders with actual images
     addLog('Patching image placeholders...')
     try {
-      const patchResult = execSync(
+      const { stdout: patchStdout } = await execAsync(
         `node "${join(SCRIPTS_DIR, 'patch-svg-images.mjs')}" "${outDir}" "${srcDir}"`,
-        { cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 60000 },
+        { cwd: PROJECT_ROOT, timeout: 60000 },
       )
-      const patchOutput = patchResult.toString().trim()
+      const patchOutput = (patchStdout || '').trim()
       if (patchOutput) addLog(patchOutput.split('\n').pop())
     } catch (e) {
       addLog(`Image patching failed (non-fatal): ${e.message.split('\n')[0]}`)
@@ -188,9 +190,9 @@ export async function runBuild(name, { priorityPages } = {}) {
     status.phase = 'extracting'
     addLog('Extracting preamble macros...')
     try {
-      execSync(
+      await execAsync(
         `node "${join(SCRIPTS_DIR, 'extract-preamble.js')}" "${texPath}" "${join(outDir, 'macros.json')}"`,
-        { cwd: PROJECT_ROOT, stdio: 'pipe' },
+        { cwd: PROJECT_ROOT },
       )
     } catch (e) {
       addLog(`Macro extraction failed (non-fatal): ${e.message}`)
@@ -202,19 +204,19 @@ export async function runBuild(name, { priorityPages } = {}) {
       addLog('Extracting synctex lookup...')
       const synctexStart = Date.now()
       try {
-        execSync(
+        await execAsync(
           `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texPath}" "${join(outDir, 'lookup.json')}"`,
-          { cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 600000 },
+          { cwd: PROJECT_ROOT, timeout: 600000 },
         )
         addLog(`Synctex done in ${((Date.now() - synctexStart) / 1000).toFixed(1)}s`)
 
         // Phase 5: Proof pairing (depends on lookup.json)
         addLog('Computing proof pairing...')
         try {
-          execSync(
+          await execAsync(
             `node "${join(SCRIPTS_DIR, 'compute-proof-pairing.mjs')}" "${texPath}" ` +
             `"${join(outDir, 'lookup.json')}" "${join(outDir, 'proof-info.json')}"`,
-            { cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 120000 },
+            { cwd: PROJECT_ROOT, timeout: 120000 },
           )
         } catch (e) {
           addLog(`Proof pairing failed (non-fatal): ${e.message}`)
