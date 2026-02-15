@@ -258,7 +258,14 @@ async function cmdServer(action) {
   const oldPidFile = join(homedir(), '.config', 'ctd', 'server.pid')
   try { const fs = await import('fs'); fs.unlinkSync(oldPidFile) } catch {}
 
+  const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.ctd.server.plist')
+  const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
+
   if (sub === 'stop') {
+    if (hasLaunchd) {
+      try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+    }
+    // Also kill by port in case launchd didn't manage it
     let pids
     try { pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim() } catch { pids = '' }
     if (pids) {
@@ -269,10 +276,8 @@ async function cmdServer(action) {
         await new Promise(r => setTimeout(r, 250))
         try { execSync(`lsof -ti:${port}`, { stdio: 'pipe' }) } catch { break }
       }
-      console.log('Server stopped.')
-    } else {
-      console.log('No server running.')
     }
+    console.log('Server stopped.')
     return
   }
 
@@ -326,16 +331,22 @@ async function cmdServer(action) {
     // Ensure log directory exists
     if (!existsSync(dirname(LOGFILE))) mkdirSync(dirname(LOGFILE), { recursive: true })
 
-    const { spawn } = await import('child_process')
-    const { openSync: fsOpenSync } = await import('fs')
-    const logFd = fsOpenSync(LOGFILE, 'a')
+    if (hasLaunchd) {
+      // Use launchd — auto-restarts on crash, persists across login
+      try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
+      try { execSync('launchctl kickstart -k gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+    } else {
+      const { spawn } = await import('child_process')
+      const { openSync: fsOpenSync } = await import('fs')
+      const logFd = fsOpenSync(LOGFILE, 'a')
 
-    const child = spawn('node', [serverScript], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, PORT: port },
-    })
-    child.unref()
+      const child = spawn('node', [serverScript], {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        env: { ...process.env, PORT: port },
+      })
+      child.unref()
+    }
 
     // Wait for it to come up
     for (let i = 0; i < 20; i++) {
@@ -343,8 +354,10 @@ async function cmdServer(action) {
       try {
         const res = await fetch(`${getServer()}/health`)
         if (res.ok) {
-          console.log(`Server running at ${getServer()} (pid ${child.pid})`)
+          const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim().split('\n')[0]
+          console.log(`Server running at ${getServer()} (pid ${pids})`)
           console.log(`  Log: ${LOGFILE}`)
+          if (hasLaunchd) console.log('  Managed by launchd (auto-restarts)')
           return
         }
       } catch {}
