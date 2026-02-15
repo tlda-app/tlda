@@ -75,12 +75,14 @@ app.use('/docs', (req, res, next) => {
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {
+    res.set('Cache-Control', 'no-cache')
     return res.sendFile(resolve(projectPath))
   }
 
   // Fall back to public/docs (legacy/dev)
   const legacyPath = join(__dirname, '..', 'public', 'docs', name, filePath)
   if (existsSync(legacyPath)) {
+    res.set('Cache-Control', 'no-cache')
     return res.sendFile(resolve(legacyPath))
   }
 

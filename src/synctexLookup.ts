@@ -35,7 +35,7 @@ export async function loadLookup(docName: string): Promise<LookupData | null> {
 
   try {
     const base = import.meta.env.BASE_URL || '/'
-    const resp = await fetch(`${base}docs/${docName}/lookup.json`)
+    const resp = await fetch(`${base}docs/${docName}/lookup.json?t=${Date.now()}`)
     if (!resp.ok) {
       lookupCache.set(docName, null)
       return null

@@ -76,16 +76,17 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
   const basePath = svgUrls[0].replace(/page-\d+\.svg$/, '')
   const macrosUrl = basePath + 'macros.json'
 
-  // Fetch SVGs and macros in parallel
+  // Fetch SVGs and macros in parallel (cache-bust to avoid stale iPad cache)
+  const cacheBust = `?t=${Date.now()}`
   const [svgTexts, macrosData] = await Promise.all([
     Promise.all(
       svgUrls.map(async (url) => {
-        const response = await fetch(url)
+        const response = await fetch(url + cacheBust)
         if (!response.ok) throw new Error(`Failed to fetch ${url}`)
         return response.text()
       })
     ),
-    fetch(macrosUrl)
+    fetch(macrosUrl + cacheBust)
       .then(r => r.ok ? r.json() : null)
       .catch(() => null)
   ])
@@ -668,16 +669,17 @@ export async function loadDiffDocument(
   basePath: string,
 ): Promise<SvgDocument> {
   console.log(`Loading diff document from ${basePath}`)
+  const cacheBust = `?t=${Date.now()}`
 
   // Fetch macros
-  const macrosData = await fetch(basePath + 'macros.json').then(r => r.ok ? r.json() : null).catch(() => null)
+  const macrosData = await fetch(basePath + 'macros.json' + cacheBust).then(r => r.ok ? r.json() : null).catch(() => null)
   if (macrosData?.macros) {
     console.log(`Loaded ${Object.keys(macrosData.macros).length} macros from preamble`)
     setActiveMacros(macrosData.macros)
   }
 
   // Fetch diff-info to know how many current pages
-  const diffInfo = await fetch(basePath + 'diff-info.json').then(r => r.json()) as DiffInfo
+  const diffInfo = await fetch(basePath + 'diff-info.json' + cacheBust).then(r => r.json()) as DiffInfo
 
   // Build current pages (stacked vertically at x=0)
   const currentUrls = Array.from({ length: diffInfo.currentPages }, (_, i) => {
@@ -685,7 +687,7 @@ export async function loadDiffDocument(
   })
 
   const currentTexts = await Promise.all(
-    currentUrls.map(url => fetch(url).then(r => r.text()))
+    currentUrls.map(url => fetch(url + cacheBust).then(r => r.text()))
   )
 
   const pages: SvgPage[] = []
@@ -851,7 +853,7 @@ export async function loadProofData(
 ): Promise<ProofData> {
   console.log(`Loading proof data from ${basePath}`)
 
-  const proofInfo = await fetch(basePath + 'proof-info.json').then(r => r.json()) as ProofInfo
+  const proofInfo = await fetch(basePath + 'proof-info.json' + cacheBust).then(r => r.json()) as ProofInfo
 
   const highlights: ProofHighlight[] = []
   const pairs: ProofPair[] = []
