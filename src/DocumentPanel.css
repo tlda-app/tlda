@@ -718,105 +718,105 @@
 }
 
 /* Dark mode overrides */
-.tl-theme__dark .doc-panel {
+html[data-theme="dark"] .doc-panel {
   color: rgba(255, 255, 255, 0.1);
 }
 
 @media (pointer: fine) {
-  .tl-theme__dark .doc-panel:hover {
+  html[data-theme="dark"] .doc-panel:hover {
     background: rgba(0, 0, 0, 0.7);
     color: rgba(255, 255, 255, 0.6);
   }
 }
 
-.tl-theme__dark .doc-panel-tabs {
+html[data-theme="dark"] .doc-panel-tabs {
   border-bottom-color: rgba(255, 255, 255, 0.04);
 }
 
-.tl-theme__dark .doc-panel:hover .doc-panel-tabs {
+html[data-theme="dark"] .doc-panel:hover .doc-panel-tabs {
   border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
-.tl-theme__dark .doc-panel-tab {
+html[data-theme="dark"] .doc-panel-tab {
   color: rgba(255, 255, 255, 0.1);
 }
 
-.tl-theme__dark .doc-panel:hover .doc-panel-tab {
+html[data-theme="dark"] .doc-panel:hover .doc-panel-tab {
   color: rgba(255, 255, 255, 0.4);
 }
 
-.tl-theme__dark .doc-panel-tab.active {
+html[data-theme="dark"] .doc-panel-tab.active {
   border-bottom-color: rgba(255, 255, 255, 0.1);
 }
 
-.tl-theme__dark .doc-panel:hover .doc-panel-tab.active {
+html[data-theme="dark"] .doc-panel:hover .doc-panel-tab.active {
   color: rgba(255, 255, 255, 0.65);
   border-bottom-color: rgba(255, 255, 255, 0.3);
 }
 
-.tl-theme__dark .toc-item:hover,
-.tl-theme__dark .search-result:hover,
-.tl-theme__dark .change-item:hover,
-.tl-theme__dark .note-item:hover,
-.tl-theme__dark .proof-item:hover,
-.tl-theme__dark .toc-diff-hint:hover {
+html[data-theme="dark"] .toc-item:hover,
+html[data-theme="dark"] .search-result:hover,
+html[data-theme="dark"] .change-item:hover,
+html[data-theme="dark"] .note-item:hover,
+html[data-theme="dark"] .proof-item:hover,
+html[data-theme="dark"] .toc-diff-hint:hover {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.tl-theme__dark .tool-toggle-zone.pen-hover {
+html[data-theme="dark"] .tool-toggle-zone.pen-hover {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.tl-theme__dark .tool-toggle-zone-icon {
+html[data-theme="dark"] .tool-toggle-zone-icon {
   background-color: rgba(255, 255, 255, 0.2);
 }
 
-.tl-theme__dark .search-input {
+html[data-theme="dark"] .search-input {
   border-color: rgba(255, 255, 255, 0.05);
   background: rgba(0, 0, 0, 0.05);
 }
 
-.tl-theme__dark .doc-panel:hover .search-input {
+html[data-theme="dark"] .doc-panel:hover .search-input {
   border-color: rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.3);
 }
 
-.tl-theme__dark .search-input:focus {
+html[data-theme="dark"] .search-input:focus {
   border-color: rgba(255, 255, 255, 0.25);
   background: rgba(0, 0, 0, 0.5);
 }
 
-.tl-theme__dark .recent-changes {
+html[data-theme="dark"] .recent-changes {
   border-bottom-color: rgba(255, 255, 255, 0.06);
 }
 
-.tl-theme__dark .recent-changes-label {
+html[data-theme="dark"] .recent-changes-label {
   color: #fbbf24;
 }
 
-.tl-theme__dark .recent-changes-page {
+html[data-theme="dark"] .recent-changes-page {
   background: rgba(255, 200, 0, 0.08);
   color: #fbbf24;
 }
 
-.tl-theme__dark .recent-changes-page:hover {
+html[data-theme="dark"] .recent-changes-page:hover {
   background: rgba(255, 200, 0, 0.15);
 }
 
 @media (pointer: coarse) {
-  .tl-theme__dark .doc-panel {
+  html[data-theme="dark"] .doc-panel {
     color: rgba(255, 255, 255, 0.25);
   }
 
-  .tl-theme__dark .doc-panel:hover {
+  html[data-theme="dark"] .doc-panel:hover {
     color: rgba(255, 255, 255, 0.7);
   }
 
-  .tl-theme__dark .doc-panel-tab {
+  html[data-theme="dark"] .doc-panel-tab {
     color: rgba(255, 255, 255, 0.25);
   }
 
-  .tl-theme__dark .doc-panel:hover .doc-panel-tab {
+  html[data-theme="dark"] .doc-panel:hover .doc-panel-tab {
     color: rgba(255, 255, 255, 0.5);
   }
 }

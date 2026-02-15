@@ -209,7 +209,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            background: isDark ? '#1a1a2e' : 'white',
+            background: 'white',
             filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
             overflow: 'hidden',
             pointerEvents: 'all',

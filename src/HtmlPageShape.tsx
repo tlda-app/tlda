@@ -46,7 +46,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           height: shape.props.h,
           border: 'none',
           pointerEvents: 'none',
-          background: isDark ? '#1a1a2e' : 'white',
+          background: 'white',
           filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
           display: 'block',
         }}

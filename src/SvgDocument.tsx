@@ -114,6 +114,16 @@ function ExitPenModeButton() {
   )
 }
 
+/** Sync TLDraw dark mode to <html data-theme> for portaled elements */
+function DarkModeSync() {
+  const editor = useEditor()
+  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
+  useEffect(() => {
+    globalThis.document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
+  }, [isDark])
+  return null
+}
+
 export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
   const editorRef = useRef<Editor | null>(null)
   const sessionRestoredRef = useRef(false)
@@ -579,6 +589,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         forceMobile
     >
       <YjsSyncProvider roomId={roomId} onInitialSync={() => ensurePagesAtBottomRef.current?.()} />
+      <DarkModeSync />
     </Tldraw>
     {bottomPanelsRef.current && createPortal(
       <>
