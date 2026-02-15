@@ -39,19 +39,25 @@ function HtmlPageComponent({ shape }: { shape: any }) {
 
   return (
     <HTMLContainer>
-      <iframe
-        src={shape.props.url}
-        style={{
-          width: shape.props.w,
-          height: shape.props.h,
-          border: 'none',
-          pointerEvents: 'none',
-          background: 'white',
-          filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
-          display: 'block',
-        }}
-        scrolling="no"
-      />
+      <div style={{
+        width: shape.props.w,
+        height: shape.props.h,
+        background: isDark ? '#0f0f1a' : 'white',
+        overflow: 'hidden',
+      }}>
+        <iframe
+          src={shape.props.url}
+          style={{
+            width: '100%',
+            height: '100%',
+            border: 'none',
+            pointerEvents: 'none',
+            filter: isDark ? 'invert(0.88) hue-rotate(180deg)' : 'none',
+            display: 'block',
+          }}
+          scrolling="no"
+        />
+      </div>
     </HTMLContainer>
   )
 }

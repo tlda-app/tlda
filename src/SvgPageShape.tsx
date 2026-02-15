@@ -205,16 +205,23 @@ function SvgPageComponent({ shape }: { shape: any }) {
     <HTMLContainer>
       <div style={{ position: 'relative', width: shape.props.w, height: shape.props.h }}>
         <div
-          ref={containerRef}
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            background: 'white',
-            filter: isDark ? 'invert(1) hue-rotate(180deg)' : 'none',
+            background: isDark ? '#0f0f1a' : 'white',
             overflow: 'hidden',
             pointerEvents: 'all',
           }}
-        />
+        >
+          <div
+            ref={containerRef}
+            style={{
+              width: '100%',
+              height: '100%',
+              filter: isDark ? 'invert(0.88) hue-rotate(180deg)' : 'none',
+            }}
+          />
+        </div>
         {highlights.length > 0 && viewBox && highlights.map((r, i) => (
           <div
             key={i}
