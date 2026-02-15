@@ -261,6 +261,73 @@ async function cmdServer(action) {
   const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.ctd.server.plist')
   const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
 
+  if (sub === 'install') {
+    if (process.platform !== 'darwin') {
+      console.error('launchd is macOS-only.')
+      process.exit(1)
+    }
+
+    // Find node binary
+    let nodePath
+    try { nodePath = execSync('which node', { stdio: 'pipe' }).toString().trim() } catch {
+      nodePath = '/opt/homebrew/bin/node'
+    }
+
+    const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ctd.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${nodePath}</string>
+        <string>${serverScript}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PORT</key>
+        <string>${port}</string>
+        <key>PATH</key>
+        <string>${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${LOGFILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${LOGFILE}</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+`
+    const launchAgentsDir = join(homedir(), 'Library', 'LaunchAgents')
+    if (!existsSync(launchAgentsDir)) mkdirSync(launchAgentsDir, { recursive: true })
+    writeFileSync(PLIST, plistContent)
+    console.log(`Installed ${PLIST}`)
+    console.log(`  Node: ${nodePath}`)
+    console.log(`  Server: ${serverScript}`)
+    console.log(`  Port: ${port}`)
+    console.log(`  Log: ${LOGFILE}`)
+    console.log('\nThe server will auto-restart on crash and start on login.')
+    console.log('Run `ctd server start` to start now.')
+    return
+  }
+
+  if (sub === 'uninstall') {
+    if (hasLaunchd) {
+      try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+      try { const fs = await import('fs'); fs.unlinkSync(PLIST) } catch {}
+      console.log('Uninstalled launchd service.')
+    } else {
+      console.log('No launchd service installed.')
+    }
+    return
+  }
+
   if (sub === 'stop') {
     if (hasLaunchd) {
       try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
@@ -368,7 +435,7 @@ async function cmdServer(action) {
   }
 
   console.error(`Unknown subcommand: ctd server ${sub}`)
-  console.error('Usage: ctd server [start|stop|status|log]')
+  console.error('Usage: ctd server [start|stop|status|log|install|uninstall]')
   process.exit(1)
 }
 
@@ -420,7 +487,7 @@ async function main() {
         console.log(`ctd — Claude TLDraw CLI
 
 Commands:
-  server [start|stop|status|log]  Manage the unified server
+  server [start|stop|status|log|install|uninstall]  Manage the server
   create <name>  Create project, upload files, trigger build
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
