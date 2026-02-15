@@ -555,6 +555,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               paddingBottom: hasChoices ? '4px' : '12px',
               fontSize: '14px',
               lineHeight: 1.4,
+              color: '#1a1a1a',
             }}
             dangerouslySetInnerHTML={{ __html: rendered }}
           />
@@ -568,6 +569,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               fontSize: '14px',
               lineHeight: 1.4,
               whiteSpace: 'pre-wrap',
+              color: '#1a1a1a',
             }}
           >
             {text || '\u00A0'}
