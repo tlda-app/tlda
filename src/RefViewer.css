@@ -118,3 +118,59 @@
 .ref-viewer-canvas * {
   pointer-events: none !important;
 }
+
+/* Dark mode */
+html[data-theme="dark"] .ref-viewer {
+  background: #141420;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme="dark"] .ref-viewer-label {
+  color: rgba(255, 255, 255, 0.25);
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .ref-viewer-count {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .ref-viewer-page {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .ref-viewer-nav {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .ref-viewer-nav:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .ref-viewer-nav-inline {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .ref-viewer-nav-inline:hover {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .ref-viewer-action {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .ref-viewer-action:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .ref-viewer-close {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .ref-viewer-close:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .ref-viewer-canvas {
+  background: #141420;
+}

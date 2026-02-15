@@ -803,6 +803,14 @@ html[data-theme="dark"] .recent-changes-page:hover {
   background: rgba(255, 200, 0, 0.15);
 }
 
+html[data-theme="dark"] .snapshot-range {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .snapshot-range::-webkit-slider-thumb {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 @media (pointer: coarse) {
   html[data-theme="dark"] .doc-panel {
     color: rgba(255, 255, 255, 0.25);
