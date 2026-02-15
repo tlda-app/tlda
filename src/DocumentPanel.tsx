@@ -963,54 +963,89 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
 // Tool toggle regions — fixed squares at bottom-right (touch devices only)
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 
+const highlightColors: Record<string, string> = {
+  black: '#1d1d1d', grey: '#9fa1a4', 'light-violet': '#e0d4f5',
+  violet: '#c77cff', blue: '#4ea2e2', 'light-blue': '#b7d9f5',
+  yellow: '#ffc940', orange: '#ff8c40', green: '#65c365',
+  'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
+}
+
 function ToolToggleZones() {
   const editor = useEditor()
+  const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
+  const [highlightColor, setHighlightColor] = useState('#c77cff')
   const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
 
-  // Pen-only double-tap detection via document-level listener.
-  // No DOM elements needed — zones are defined by screen coordinates.
-  // This avoids capturing finger/touch events entirely.
+  // Track tool and color changes
   useEffect(() => {
-    if (!isTouch) return
-
-    const ZONE_SIZE = 250
-    function handlePointerDown(e: PointerEvent) {
-      if (e.pointerType !== 'pen') return
-
-      const x = e.clientX
-      const y = e.clientY
-      const w = window.innerWidth
-      const h = window.innerHeight
-
-      // Bottom-right corner: two stacked zones
-      if (x < w - ZONE_SIZE) return
-
-      let targetTool: string | null = null
-      if (y >= h - ZONE_SIZE) {
-        targetTool = 'eraser' // bottom zone
-      } else if (y >= h - ZONE_SIZE * 2) {
-        targetTool = 'highlight' // zone above
-      }
-      if (!targetTool) return
-
-      const now = Date.now()
-      const last = lastTapRef.current
-      if (last.tool === targetTool && now - last.time < 400) {
-        // Double-tap: toggle
-        const cur = editor.getCurrentToolId()
-        editor.setCurrentTool(cur === targetTool ? 'draw' : targetTool)
-        lastTapRef.current = { tool: '', time: 0 }
-      } else {
-        lastTapRef.current = { tool: targetTool, time: now }
-      }
+    const update = () => {
+      setCurrentTool(editor.getCurrentToolId())
+      const colorName = (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'violet'
+      setHighlightColor(highlightColors[colorName] || '#c77cff')
     }
-
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
+    editor.on('change', update)
+    update()
+    return () => { editor.off('change', update) }
   }, [editor])
 
-  // No DOM elements — fully transparent to touch
-  return null
+  // Pen-only hover — CSS :hover is sticky on touch devices
+  const handlePenEnter = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'pen') e.currentTarget.classList.add('pen-hover')
+  }, [])
+  const handlePenLeave = useCallback((e: React.PointerEvent) => {
+    e.currentTarget.classList.remove('pen-hover')
+  }, [])
+
+  const handleDoubleTap = useCallback((targetTool: string) => (e: React.PointerEvent) => {
+    if (e.pointerType !== 'pen') {
+      // Not pen — pass through to TLDraw by hiding element, finding what's behind, re-dispatching
+      const el = e.currentTarget as HTMLElement
+      el.style.pointerEvents = 'none'
+      const below = document.elementFromPoint(e.clientX, e.clientY)
+      if (below && below !== el) {
+        below.dispatchEvent(new PointerEvent('pointerdown', e.nativeEvent))
+      }
+      requestAnimationFrame(() => { el.style.pointerEvents = '' })
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+
+    const now = Date.now()
+    const last = lastTapRef.current
+    if (last.tool === targetTool && now - last.time < 400) {
+      const cur = editor.getCurrentToolId()
+      editor.setCurrentTool(cur === targetTool ? 'draw' : targetTool)
+      lastTapRef.current = { tool: '', time: 0 }
+    } else {
+      lastTapRef.current = { tool: targetTool, time: now }
+    }
+  }, [editor])
+
+  if (!isTouch) return null
+
+  return createPortal(
+    <div className="tool-toggle-zones">
+      <div
+        className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
+        style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
+        onPointerDown={handleDoubleTap('highlight')}
+        onPointerEnter={handlePenEnter}
+        onPointerLeave={handlePenLeave}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
+      </div>
+      <div
+        className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
+        onPointerDown={handleDoubleTap('eraser')}
+        onPointerEnter={handlePenEnter}
+        onPointerLeave={handlePenLeave}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
+      </div>
+    </div>,
+    document.body
+  )
 }
 
 export function DocumentPanel() {

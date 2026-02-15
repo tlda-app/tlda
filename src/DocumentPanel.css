@@ -144,8 +144,79 @@
   border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
-/* Pen double-tap zones: no DOM elements — handled by document-level pointerdown listener.
-   Zones are defined by screen coordinates (bottom-right 250x500px), pen-only. */
+/* Pen double-tap zones — fixed squares at bottom-right (touch devices only) */
+.tool-toggle-zones {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .tool-toggle-zones {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    width: 250px;
+    z-index: 1000; /* above panel (999), below ping button (1001) */
+    pointer-events: none;
+  }
+
+  .tool-toggle-zone {
+    width: 250px;
+    height: 250px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: all;
+    touch-action: manipulation;
+    transition: background 0.2s;
+    background: transparent;
+  }
+
+  .tool-toggle-zone.pen-hover {
+    background: rgba(0, 0, 0, 0.03);
+  }
+
+  .tool-toggle-zone--highlight.pen-hover {
+    background: color-mix(in srgb, var(--zone-highlight-color, #c77cff) 8%, transparent);
+  }
+
+  .tool-toggle-zone-icon {
+    width: 28px;
+    height: 28px;
+    background-color: rgba(0, 0, 0, 0.2);
+    opacity: 0;
+    transition: opacity 0.2s, background-color 0.2s;
+    mask-size: 100%;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    -webkit-mask-size: 100%;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+  }
+
+  .tool-toggle-zone-icon--highlight {
+    -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-highlight");
+    mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-highlight");
+  }
+
+  .tool-toggle-zone-icon--eraser {
+    -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-eraser");
+    mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-eraser");
+  }
+
+  .tool-toggle-zone.pen-hover .tool-toggle-zone-icon {
+    opacity: 1;
+  }
+
+  .tool-toggle-zone.pen-hover .tool-toggle-zone-icon--highlight {
+    background-color: var(--zone-highlight-color, #c77cff);
+  }
+
+  .tool-toggle-zone.active.pen-hover .tool-toggle-zone-icon--highlight {
+    background-color: var(--zone-highlight-color, #c77cff);
+  }
+}
 
 .doc-panel-content {
   flex: 1;
