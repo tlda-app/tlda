@@ -15,6 +15,11 @@
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
+// Ensure TeX binaries are available (launchd doesn't inherit full shell PATH)
+const texbin = '/Library/TeX/texbin'
+if (!process.env.PATH?.includes(texbin)) {
+  process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
+}
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'fs'
 import { join, basename, dirname } from 'path'

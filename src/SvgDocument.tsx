@@ -114,6 +114,95 @@ function ExitPenModeButton() {
   )
 }
 
+// --- Tool toggle zones (pen-only, inside TLDraw tree) ---
+
+const highlightColors: Record<string, string> = {
+  black: '#1d1d1d', grey: '#9fa1a4', 'light-violet': '#e0d4f5',
+  violet: '#c77cff', blue: '#4ea2e2', 'light-blue': '#b7d9f5',
+  yellow: '#ffc940', orange: '#ff8c40', green: '#65c365',
+  'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
+}
+
+const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+
+function ToolToggleZones() {
+  const editor = useEditor()
+  const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
+  const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
+  const [highlightColor, setHighlightColor] = useState('#c77cff')
+  const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
+
+  // Track tool and color changes
+  useEffect(() => {
+    const update = () => {
+      setCurrentTool(editor.getCurrentToolId())
+      const colorName = (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'violet'
+      setHighlightColor(highlightColors[colorName] || '#c77cff')
+    }
+    editor.on('change', update)
+    update()
+    return () => { editor.off('change', update) }
+  }, [editor])
+
+  const handlePenEnter = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'pen') e.currentTarget.classList.add('pen-hover')
+  }, [])
+  const handlePenLeave = useCallback((e: React.PointerEvent) => {
+    e.currentTarget.classList.remove('pen-hover')
+  }, [])
+
+  const handleDoubleTap = useCallback((targetTool: string) => (e: React.PointerEvent) => {
+    if (e.pointerType !== 'pen') return
+    e.preventDefault()
+    e.stopPropagation()
+    editor.markEventAsHandled(e)
+
+    const now = Date.now()
+    const last = lastTapRef.current
+    if (last.tool === targetTool && now - last.time < 400) {
+      const cur = editor.getCurrentToolId()
+      editor.setCurrentTool(cur === targetTool ? 'draw' : targetTool)
+      lastTapRef.current = { tool: '', time: 0 }
+    } else {
+      lastTapRef.current = { tool: targetTool, time: now }
+    }
+  }, [editor])
+
+  // Only show on touch devices in pen mode
+  if (!isTouch || !isPenMode) return null
+
+  return (
+    <div className="tool-toggle-zones">
+      <div
+        className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
+        style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
+        onPointerDown={handleDoubleTap('highlight')}
+        onPointerEnter={handlePenEnter}
+        onPointerLeave={handlePenLeave}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
+      </div>
+      <div
+        className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
+        onPointerDown={handleDoubleTap('eraser')}
+        onPointerEnter={handlePenEnter}
+        onPointerLeave={handlePenLeave}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
+      </div>
+    </div>
+  )
+}
+
+function PenHelperButtons() {
+  return (
+    <>
+      <ExitPenModeButton />
+      <ToolToggleZones />
+    </>
+  )
+}
+
 /** Sync TLDraw dark mode to <html data-theme> for portaled elements */
 function DarkModeSync() {
   const editor = useEditor()
@@ -300,7 +389,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           <LaserToolbarItem />
         </DefaultToolbar>
       ),
-      HelperButtons: ExitPenModeButton,
+      HelperButtons: PenHelperButtons,
       InFrontOfTheCanvas: () => <><DocumentPanel /><PingButton /></>,
     }),
     [document, roomId]

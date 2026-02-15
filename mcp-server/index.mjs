@@ -1225,7 +1225,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'wait_for_feedback',
-      description: 'Wait for feedback from the iPad. Blocks until user hits Share, then returns screenshot path and annotation summary.',
+      description: 'Wait for feedback from the iPad. Blocks until user hits the ping button, draws a shape, selects text, or edits a note. Returns a screenshot and summary of math-note sticky notes. To read pen/highlighter strokes, call read_pen_annotations separately.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1329,7 +1329,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'list_annotations',
-      description: 'List all annotations in a document.',
+      description: 'List all math-note annotations (sticky notes) in a document. Does NOT include pen strokes, highlights, or drawn shapes — use read_pen_annotations for those.',
       inputSchema: {
         type: 'object',
         properties: {
