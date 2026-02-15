@@ -962,6 +962,13 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
   e.stopPropagation()
 }
 
+// Only stop propagation for pen — let finger touches pass through to TLDraw
+function stopPenOnly(e: React.PointerEvent | React.TouchEvent) {
+  if ('pointerType' in e && e.pointerType !== 'pen') return
+  if (!('pointerType' in e)) return  // TouchEvent — let it through
+  e.stopPropagation()
+}
+
 // Tool toggle regions — fixed squares at bottom-right (touch devices only)
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 
@@ -1021,18 +1028,18 @@ function ToolToggleZones() {
         className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
         style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
         onPointerDown={handleDoubleTap('highlight')}
-        onPointerUp={stopTldrawEvents}
-        onTouchStart={stopTldrawEvents}
-        onTouchEnd={stopTldrawEvents}
+        onPointerUp={stopPenOnly}
+        onTouchStart={stopPenOnly}
+        onTouchEnd={stopPenOnly}
       >
         <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
       </div>
       <div
         className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
         onPointerDown={handleDoubleTap('eraser')}
-        onPointerUp={stopTldrawEvents}
-        onTouchStart={stopTldrawEvents}
-        onTouchEnd={stopTldrawEvents}
+        onPointerUp={stopPenOnly}
+        onTouchStart={stopPenOnly}
+        onTouchEnd={stopPenOnly}
       >
         <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
       </div>
