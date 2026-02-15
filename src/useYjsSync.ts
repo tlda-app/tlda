@@ -4,6 +4,7 @@
 
 import { useEffect, useRef } from 'react'
 import * as Y from 'yjs'
+import { IndexeddbPersistence } from 'y-indexeddb'
 import type { Editor, TLRecord } from 'tldraw'
 
 interface YjsSyncOptions {
@@ -180,6 +181,15 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     console.log(`[Yjs] Setting up sync for room ${roomId}`)
     const doc = new Y.Doc()
     docRef.current = doc
+    let destroyed = false
+
+    // --- Fix 1: IndexedDB local persistence ---
+    // Persists all Yjs updates locally. On reload, restores from IDB before WS connects.
+    // CRDT merge ensures no conflicts between local and server state.
+    const idbProvider = new IndexeddbPersistence(roomId, doc)
+    idbProvider.on('synced', () => {
+      console.log(`[Yjs] IndexedDB synced for ${roomId}`)
+    })
 
     // Y.Map to hold TLDraw records keyed by id
     const yRecords = doc.getMap<TLRecord>('tldraw')
@@ -193,96 +203,132 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     const serverShapeIds = new Set<string>()
     let initProtectionActive = true
 
-    // Connect WebSocket
-    const ws = new WebSocket(`${serverUrl}/${roomId}`)
-    wsRef.current = ws
+    // --- Fix 4: Incremental updates ---
+    // Track last state vector to send only changes since last send
+    let lastSentStateVector: Uint8Array | null = null
+
+    // --- Fix 2: WebSocket reconnection with exponential backoff ---
+    let ws: WebSocket
+    let reconnectDelay = 500
+    const MAX_RECONNECT_DELAY = 30000
 
     // Send any doc update to the server (catches direct yRecords writes like ping signals)
     doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === 'remote') return  // don't echo back remote updates
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
       }
     })
 
-    ws.onopen = () => {
-      console.log(`[Yjs] Connected to ${roomId}`)
-    }
+    function connect() {
+      ws = new WebSocket(`${serverUrl}/${roomId}`)
+      wsRef.current = ws
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        if (msg.type === 'sync' || msg.type === 'update') {
-          isRemoteUpdate = true
-          try {
-            const update = new Uint8Array(msg.data)
-            Y.applyUpdate(doc, update, 'remote')
-          } catch (e) {
-            console.error('[Yjs] Failed to apply update:', e)
-          }
-          isRemoteUpdate = false
+      ws.onopen = () => {
+        console.log(`[Yjs] Connected to ${roomId}`)
+        reconnectDelay = 500  // reset backoff
 
-          // After receiving initial sync, set up bidirectional sync
-          if (msg.type === 'sync' && !hasReceivedInitialSync) {
-            hasReceivedInitialSync = true
-            console.log(`[Yjs] Initial sync received (${yRecords.size} records from server)`)
-            yRecords.forEach((r, id) => console.log(`[Yjs]   Record: ${id} (${r.typeName}) meta:`, (r as any).meta))
-
-            // Apply syncable records from server to editor
-            const toApply: TLRecord[] = []
-            yRecords.forEach((record, id) => {
-              if (shouldSync(record)) {
-                toApply.push(record)
-                serverShapeIds.add(id)
-              }
-            })
-            if (toApply.length > 0) {
-              console.log(`[Yjs] Applying ${toApply.length} records to editor:`)
-              toApply.forEach(r => console.log(`[Yjs]   Applying: ${r.id} meta:`, (r as any).meta))
-              editor.store.mergeRemoteChanges(() => {
-                editor.store.put(toApply)
-              })
-              // Check what's in the store after applying
-              const shapes = editor.getCurrentPageShapes()
-              const nonPage = shapes.filter(s => !s.id.includes('-page-'))
-              console.log(`[Yjs] After apply, non-page shapes:`, nonPage.map(s => ({ id: s.id, meta: s.meta })))
-            }
-
-            // Call onInitialSync callback if provided
-            if (onInitialSync) {
-              console.log('[Yjs] Calling onInitialSync callback')
-              onInitialSync()
-            }
-
-            try {
-              setupBidirectionalSync()
-              // Expire deletion protection after init settles
-              setTimeout(() => {
-                initProtectionActive = false
-                console.log(`[Yjs] Init protection expired (${serverShapeIds.size} shapes were protected)`)
-              }, 5000)
-            } catch (e) {
-              console.error('[Yjs] Failed to setup bidirectional sync:', e)
-            }
-          }
+        // On reconnect (not first connect), send our full state to merge with server
+        if (hasReceivedInitialSync) {
+          console.log('[Yjs] Reconnected — sending local state to server')
+          const update = Y.encodeStateAsUpdate(doc)
+          ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
+          lastSentStateVector = Y.encodeStateVector(doc)
         }
-      } catch (e) {
-        console.error('[Yjs] Message error:', e)
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'sync' || msg.type === 'update') {
+            isRemoteUpdate = true
+            try {
+              const update = new Uint8Array(msg.data)
+              Y.applyUpdate(doc, update, 'remote')
+            } catch (e) {
+              console.error('[Yjs] Failed to apply update:', e)
+            }
+            isRemoteUpdate = false
+
+            // After receiving initial sync, set up bidirectional sync
+            if (msg.type === 'sync' && !hasReceivedInitialSync) {
+              hasReceivedInitialSync = true
+              console.log(`[Yjs] Initial sync received (${yRecords.size} records from server)`)
+
+              // Apply syncable records from server to editor
+              const toApply: TLRecord[] = []
+              yRecords.forEach((record, id) => {
+                if (shouldSync(record)) {
+                  toApply.push(record)
+                  serverShapeIds.add(id)
+                }
+              })
+              if (toApply.length > 0) {
+                console.log(`[Yjs] Applying ${toApply.length} records to editor`)
+                editor.store.mergeRemoteChanges(() => {
+                  editor.store.put(toApply)
+                })
+              }
+
+              // Call onInitialSync callback if provided
+              if (onInitialSync) {
+                console.log('[Yjs] Calling onInitialSync callback')
+                onInitialSync()
+              }
+
+              try {
+                setupBidirectionalSync()
+                lastSentStateVector = Y.encodeStateVector(doc)
+
+                // --- Fix 3: Event-driven init protection ---
+                // Wait for SvgDocument to signal pages are ready instead of a fixed timer
+                const onPagesReady = () => {
+                  if (initProtectionActive) {
+                    initProtectionActive = false
+                    console.log(`[Yjs] Init protection expired (pages ready, ${serverShapeIds.size} shapes protected)`)
+                  }
+                  window.removeEventListener('tldraw-pages-ready', onPagesReady)
+                }
+                window.addEventListener('tldraw-pages-ready', onPagesReady)
+
+                // Safety fallback: 30s max (in case event never fires)
+                setTimeout(() => {
+                  if (initProtectionActive) {
+                    initProtectionActive = false
+                    console.log(`[Yjs] Init protection expired (30s timeout, ${serverShapeIds.size} shapes protected)`)
+                    window.removeEventListener('tldraw-pages-ready', onPagesReady)
+                  }
+                }, 30000)
+              } catch (e) {
+                console.error('[Yjs] Failed to setup bidirectional sync:', e)
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[Yjs] Message error:', e)
+        }
+      }
+
+      ws.onclose = () => {
+        if (destroyed) return
+        console.log(`[Yjs] Disconnected, reconnecting in ${reconnectDelay}ms`)
+        setTimeout(() => {
+          if (!destroyed) connect()
+        }, reconnectDelay)
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
+      }
+
+      ws.onerror = (err) => {
+        console.error('[Yjs] WebSocket error:', err)
+
+        // Fallback: load static annotations if sync server unavailable
+        if (!hasReceivedInitialSync) {
+          loadStaticAnnotations(editor, onInitialSync)
+        }
       }
     }
 
-    ws.onclose = () => {
-      console.log('[Yjs] Disconnected')
-    }
-
-    ws.onerror = (err) => {
-      console.error('[Yjs] WebSocket error:', err)
-
-      // Fallback: load static annotations if sync server unavailable
-      if (!hasReceivedInitialSync) {
-        loadStaticAnnotations(editor, onInitialSync)
-      }
-    }
+    connect()
 
     // Sync Y.Map changes to TLDraw
     yRecords.observe((event) => {
@@ -415,42 +461,39 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           }
         })
         // Send to server
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws?.readyState === WebSocket.OPEN) {
           const update = Y.encodeStateAsUpdate(doc)
           ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
         }
       }
 
-      // Throttle sending updates to server
-      let sendTimeout: ReturnType<typeof setTimeout> | null = null
-      let pendingSend = false
-
+      // --- Fix 4: Incremental updates ---
       function sendUpdate() {
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            const update = Y.encodeStateAsUpdate(doc)
-            console.log(`[Yjs] Sending update (${update.length} bytes, ${yRecords.size} records)`)
-            ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
-          } catch (e) {
-            console.error('[Yjs] Failed to send update:', e)
-          }
-        } else {
-          console.warn(`[Yjs] Cannot send - WebSocket state: ${ws.readyState}`)
+        if (ws?.readyState !== WebSocket.OPEN) return
+        try {
+          const sv = lastSentStateVector
+          const update = sv
+            ? Y.encodeStateAsUpdate(doc, sv)    // incremental: only changes since last send
+            : Y.encodeStateAsUpdate(doc)         // full state on first send
+          lastSentStateVector = Y.encodeStateVector(doc)
+          console.log(`[Yjs] Sending update (${update.length} bytes)`)
+          ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
+        } catch (e) {
+          console.error('[Yjs] Failed to send update:', e)
         }
-        pendingSend = false
       }
 
+      // Throttle: send immediately on first change, debounce subsequent within 100ms
+      let sendTimeout: ReturnType<typeof setTimeout> | null = null
+
       function throttledSend() {
-        if (sendTimeout) return // Already scheduled
-        if (pendingSend) {
-          sendTimeout = setTimeout(() => {
-            sendTimeout = null
-            sendUpdate()
-          }, 100) // Throttle to max 10 updates/second
-        } else {
-          pendingSend = true
-          sendUpdate()
+        if (sendTimeout) {
+          clearTimeout(sendTimeout)
         }
+        sendTimeout = setTimeout(() => {
+          sendTimeout = null
+          sendUpdate()
+        }, 100)
       }
 
       // Now listen for local changes and sync to server
@@ -464,7 +507,6 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
         if (added.length || updated.length || removed.length) {
           console.log(`[Yjs] Local change: +${added.length} ~${updated.length} -${removed.length}`)
-          added.forEach(r => console.log(`[Yjs]   Added: ${r.id} (${r.typeName}) meta:`, (r as any).meta))
         }
 
         try {
@@ -500,9 +542,11 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     }
 
     return () => {
+      destroyed = true
       activeYRecords = null
       if (unsubscribe) unsubscribe()
-      ws.close()
+      ws?.close()
+      idbProvider.destroy()
       doc.destroy()
     }
   }, [editor, roomId, serverUrl])

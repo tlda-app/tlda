@@ -415,6 +415,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           updateCameraBoundsRef.current = editorSetup.updateBounds
           ensurePagesAtBottomRef.current = editorSetup.ensurePagesAtBottom
 
+          // Signal that pages are ready — disables Yjs init deletion protection
+          window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
+
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
           editor.setStyleForNextShapes(DefaultSizeStyle, 's')

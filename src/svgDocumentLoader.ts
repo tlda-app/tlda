@@ -852,6 +852,7 @@ export async function loadProofData(
   currentPages: SvgPage[],
 ): Promise<ProofData> {
   console.log(`Loading proof data from ${basePath}`)
+  const cacheBust = `?t=${Date.now()}`
 
   const proofInfo = await fetch(basePath + 'proof-info.json' + cacheBust).then(r => r.json()) as ProofInfo
 

@@ -52,14 +52,11 @@ function parseHeadings(lines: Record<string, LookupEntry>): TocEntry[] {
 
   // Find \appendix line to demote subsequent headings one step
   // Matches both \appendix and \begin{appendix}
-  let appendixLine = Infinity
   let appendixEntry: LookupEntry | null = null
   for (const [lineStr, entry] of Object.entries(lines)) {
     const trimmed = entry.content.trim()
     if (trimmed === '\\appendix' || trimmed === '\\begin{appendix}') {
-      const lineNum = parseInt(lineStr)
-      if (!isNaN(lineNum)) {
-        appendixLine = lineNum
+      if (!isNaN(parseInt(lineStr))) {
         appendixEntry = entry
         break
       }
@@ -965,14 +962,6 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
 
 // Tool toggle regions — fixed squares at bottom-right (touch devices only)
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
-
-// TLDraw highlight color names → sRGB highlight values (from DefaultColorThemePalette)
-const highlightColors: Record<string, string> = {
-  black: '#fddd00', blue: '#10acff', green: '#00ffc8', grey: '#cbe7f1',
-  'light-blue': '#00f4ff', 'light-green': '#65f641', 'light-red': '#ff7fa3',
-  'light-violet': '#ff88ff', orange: '#ffa500', red: '#ff636e',
-  violet: '#c77cff', yellow: '#fddd00', white: '#fddd00',
-}
 
 function ToolToggleZones() {
   const editor = useEditor()
