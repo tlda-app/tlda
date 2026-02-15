@@ -124,8 +124,14 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
     pushTimeout = setTimeout(pushChanges, debounceMs)
   })
 
-  // Keep process alive
+  // Keep process alive, don't die on errors
   process.on('SIGINT', () => { console.log('\n[watch] Stopped.'); process.exit(0) })
+  process.on('uncaughtException', (e) => {
+    console.error(`[watch] Uncaught exception (continuing): ${e.message}`)
+  })
+  process.on('unhandledRejection', (e) => {
+    console.error(`[watch] Unhandled rejection (continuing): ${e?.message || e}`)
+  })
 }
 
 async function setupYjsConnection(url, texDir, onViewportUpdate) {

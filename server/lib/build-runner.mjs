@@ -14,7 +14,8 @@
 
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
-const execAsync = promisify(execCb)
+const _execAsync = promisify(execCb)
+const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'fs'
 import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -53,12 +54,18 @@ export function resetStaleBuildStates() {
   }
 }
 
+// Abort controllers for cancelling in-progress builds
+const buildAbortControllers = new Map()
+
 export async function runBuild(name, { priorityPages } = {}) {
-  // Prevent concurrent builds for the same project
+  // If a build is already running, kill it and restart
   const existing = activeBuilds.get(name)
   if (existing?.building) {
-    console.log(`[build:${name}] Build already in progress, skipping`)
-    return existing
+    console.log(`[build:${name}] Killing stale build, restarting`)
+    const ac = buildAbortControllers.get(name)
+    if (ac) ac.abort()
+    // Wait briefly for cleanup
+    await new Promise(r => setTimeout(r, 500))
   }
 
   const srcDir = sourceDir(name)
@@ -76,6 +83,10 @@ export async function runBuild(name, { priorityPages } = {}) {
     throw new Error(`Main file "${mainFile}" not found in source`)
   }
 
+  const ac = new AbortController()
+  buildAbortControllers.set(name, ac)
+  const { signal } = ac
+
   const log = []
   const status = {
     building: true,
@@ -84,6 +95,8 @@ export async function runBuild(name, { priorityPages } = {}) {
     log,
   }
   activeBuilds.set(name, status)
+
+  const run = (cmd, opts = {}) => execAsync(cmd, { signal, ...opts })
 
   const addLog = (msg) => {
     const line = `[${new Date().toISOString()}] ${msg}`
@@ -97,7 +110,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     // Clean stale build artifacts so latexmk does a fresh compile with synctex.
     // Use -dvi to match our build mode (user's latexmkrc might default to -pdf).
     try {
-      await execAsync(`latexmk -C -dvi "${texBase}.tex"`, { cwd: srcDir, timeout: 10000 })
+      await run(`latexmk -C -dvi "${texBase}.tex"`, { cwd: srcDir, timeout: 10000 })
     } catch {
       // latexmk -C may fail if no prior build — that's fine
     }
@@ -116,7 +129,7 @@ export async function runBuild(name, { priorityPages } = {}) {
 
     const pretex = '\\PassOptionsToPackage{draft,dvipdfmx}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
     try {
-      await execAsync(
+      await run(
         `latexmk -dvi -f ` +
         `-interaction=nonstopmode ` +
         `-pretex='${pretex}' ` +
@@ -144,7 +157,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     if (priorityPages?.length > 0) {
       const pageSpec = priorityPages.join(',')
       addLog(`Converting priority pages [${pageSpec}]...`)
-      await execAsync(
+      await run(
         `dvisvgm --page=${pageSpec} --font-format=woff2 --bbox=papersize --linkmark=none ` +
         `--output="${outDir}/page-%p.svg" "${dviFile}"`,
         { cwd: srcDir },
@@ -157,7 +170,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     // All pages
     addLog('Converting all pages...')
     const svgStart = Date.now()
-    await execAsync(
+    await run(
       `dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none ` +
       `--output="${outDir}/page-%p.svg" "${dviFile}"`,
       { cwd: srcDir, timeout: 120000 },
@@ -169,7 +182,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     // Phase 2b: Patch draft-mode image placeholders with actual images
     addLog('Patching image placeholders...')
     try {
-      const { stdout: patchStdout } = await execAsync(
+      const { stdout: patchStdout } = await run(
         `node "${join(SCRIPTS_DIR, 'patch-svg-images.mjs')}" "${outDir}" "${srcDir}"`,
         { cwd: PROJECT_ROOT, timeout: 60000 },
       )
@@ -190,7 +203,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     status.phase = 'extracting'
     addLog('Extracting preamble macros...')
     try {
-      await execAsync(
+      await run(
         `node "${join(SCRIPTS_DIR, 'extract-preamble.js')}" "${texPath}" "${join(outDir, 'macros.json')}"`,
         { cwd: PROJECT_ROOT },
       )
@@ -204,7 +217,7 @@ export async function runBuild(name, { priorityPages } = {}) {
       addLog('Extracting synctex lookup...')
       const synctexStart = Date.now()
       try {
-        await execAsync(
+        await run(
           `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texPath}" "${join(outDir, 'lookup.json')}"`,
           { cwd: PROJECT_ROOT, timeout: 600000 },
         )
@@ -213,7 +226,7 @@ export async function runBuild(name, { priorityPages } = {}) {
         // Phase 5: Proof pairing (depends on lookup.json)
         addLog('Computing proof pairing...')
         try {
-          await execAsync(
+          await run(
             `node "${join(SCRIPTS_DIR, 'compute-proof-pairing.mjs')}" "${texPath}" ` +
             `"${join(outDir, 'lookup.json')}" "${join(outDir, 'proof-info.json')}"`,
             { cwd: PROJECT_ROOT, timeout: 120000 },
@@ -247,6 +260,12 @@ export async function runBuild(name, { priorityPages } = {}) {
 
     return status
   } catch (e) {
+    if (signal.aborted) {
+      addLog('Build cancelled (newer build requested)')
+      status.building = false
+      status.phase = 'cancelled'
+      return status
+    }
     addLog(`BUILD FAILED: ${e.message}`)
     status.building = false
     status.phase = 'failed'
@@ -256,6 +275,8 @@ export async function runBuild(name, { priorityPages } = {}) {
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch {}
 
     throw e
+  } finally {
+    buildAbortControllers.delete(name)
   }
 }
 
