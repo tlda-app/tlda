@@ -185,28 +185,42 @@ export async function resolveAnchorStatic(
   return { page: entry.page, x: entry.x, y: entry.y }
 }
 
+export interface ReverseMatch {
+  file: string   // relative filename (e.g. "appendix.tex") or main file
+  line: number
+}
+
 /**
  * Build a reverse synctex index: given a page and y-coordinate, find the
- * closest source line. Returns a function that does the lookup.
+ * closest source line and file. Returns a function that does the lookup.
  */
-export async function buildReverseIndex(docName: string): Promise<((page: number, y: number) => number | null) | null> {
+export async function buildReverseIndex(docName: string): Promise<((page: number, y: number) => ReverseMatch | null) | null> {
   const lookup = await loadLookup(docName)
   if (!lookup) return null
 
+  const mainFile = lookup.meta.texFile
+
   // Group entries by page, sorted by y
-  // For keys like "file.tex:42", extract the line number portion
-  const byPage = new Map<number, { y: number; line: number }[]>()
+  // For keys like "file.tex:42", extract the file and line portions
+  const byPage = new Map<number, { y: number; line: number; file: string }[]>()
   for (const [key, entry] of Object.entries(lookup.lines)) {
     const colonIdx = key.indexOf(':')
-    const line = colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key)
+    let file: string, line: number
+    if (colonIdx >= 0) {
+      file = key.slice(0, colonIdx)
+      line = parseInt(key.slice(colonIdx + 1))
+    } else {
+      file = mainFile
+      line = parseInt(key)
+    }
     if (!byPage.has(entry.page)) byPage.set(entry.page, [])
-    byPage.get(entry.page)!.push({ y: entry.y, line })
+    byPage.get(entry.page)!.push({ y: entry.y, line, file })
   }
   for (const entries of byPage.values()) {
     entries.sort((a, b) => a.y - b.y)
   }
 
-  return (page: number, y: number): number | null => {
+  return (page: number, y: number): ReverseMatch | null => {
     const entries = byPage.get(page)
     if (!entries || entries.length === 0) return null
 
@@ -224,7 +238,7 @@ export async function buildReverseIndex(docName: string): Promise<((page: number
     }
     // Only match if within ~30pt (about 2 lines of text)
     if (Math.abs(entries[best].y - y) > 30) return null
-    return entries[best].line
+    return { file: entries[best].file, line: entries[best].line }
   }
 }
 

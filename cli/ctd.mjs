@@ -122,7 +122,7 @@ async function cmdCreate() {
   console.log(`  Main file: ${mainFile}`)
 
   // Create project on server
-  await api('POST', '/api/projects', { name, title, mainFile })
+  await api('POST', '/api/projects', { name, title, mainFile, sourceDir: dir })
   console.log('  Project created.')
 
   // Collect and push source files
@@ -143,7 +143,7 @@ async function cmdPush() {
 
   const files = collectSourceFiles(dir)
   console.log(`Pushing ${files.length} files to "${name}"...`)
-  await api('POST', `/api/projects/${name}/push`, { files })
+  await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
   console.log('Build triggered.')
 }
 

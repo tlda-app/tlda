@@ -35,6 +35,13 @@ export function setNavigateToAnchor(fn: ((anchorId: string, title: string) => vo
   navigateToAnchor = fn
 }
 
+// Callback for Cmd-click → open source in editor (set by SvgDocument)
+// shapeId identifies which page was clicked, clickY is relative to the shape (0..1 fraction)
+let onSourceClick: ((shapeId: string, clickY: number) => void) | null = null
+export function setOnSourceClick(fn: ((shapeId: string, clickY: number) => void) | null) {
+  onSourceClick = fn
+}
+
 // --- Change highlight store (local "unread" state, not synced via Yjs) ---
 
 export interface ChangeRegion {
@@ -184,6 +191,16 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     // Single delegated click handler on the container
     const onClick = (e: MouseEvent) => {
+      // Cmd-click: open source in editor
+      if (e.metaKey && onSourceClick) {
+        e.preventDefault()
+        e.stopPropagation()
+        const rect = el.getBoundingClientRect()
+        const clickY = (e.clientY - rect.top) / rect.height
+        onSourceClick(shape.id, clickY)
+        return
+      }
+
       const target = (e.target as Element).closest('a')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')

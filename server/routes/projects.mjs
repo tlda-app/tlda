@@ -16,7 +16,7 @@
 
 import { Router } from 'express'
 import {
-  createProject, readProject, listProjects, deleteProject,
+  createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, writeSourceFile, readBuildLog,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
@@ -31,12 +31,12 @@ router.get('/', (req, res) => {
 // Create project
 router.post('/', (req, res) => {
   try {
-    const { name, title, mainFile } = req.body
+    const { name, title, mainFile, sourceDir } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    const project = createProject({ name, title, mainFile })
+    const project = createProject({ name, title, mainFile, sourceDir })
     res.status(201).json(project)
   } catch (e) {
     res.status(409).json({ error: e.message })
@@ -77,7 +77,12 @@ router.post('/:name/push', async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const { files, priorityPages } = req.body
+  const { files, priorityPages, sourceDir } = req.body
+
+  // Update sourceDir if provided (so existing projects learn the path)
+  if (sourceDir && !project.sourceDir) {
+    updateProject(req.params.name, { sourceDir })
+  }
 
   // Write files, track if anything actually changed
   let anyChanged = false

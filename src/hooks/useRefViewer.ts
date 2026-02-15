@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Editor } from 'tldraw'
 import { broadcastRefViewer, writeSignal } from '../useYjsSync'
 import { canvasToPdf } from '../synctexAnchor'
-import { buildReverseIndex } from '../synctexLookup'
+import { buildReverseIndex, type ReverseMatch } from '../synctexLookup'
 import { PDF_HEIGHT } from '../layoutConstants'
 import type { SvgDocument, ProofData, LabelRegion } from '../svgDocumentLoader'
 
@@ -45,7 +45,7 @@ export function useRefViewer({
   }, [])
 
   // --- Reverse index for click-to-ref ---
-  const reverseIndexRef = useRef<((page: number, y: number) => number | null) | null>(null)
+  const reverseIndexRef = useRef<((page: number, y: number) => ReverseMatch | null) | null>(null)
   useEffect(() => {
     buildReverseIndex(document.name).then(fn => { reverseIndexRef.current = fn })
   }, [document.name])
@@ -164,8 +164,9 @@ export function useRefViewer({
     const pdf = canvasToPdf(point.x, point.y, pages)
     if (!pdf) return false
 
-    const line = reverseIndex(pdf.page, pdf.y)
-    if (!line) return false
+    const match = reverseIndex(pdf.page, pdf.y)
+    if (!match) return false
+    const line = match.line
 
     const resolved = resolveRefsOnLine(line)
     if (!resolved) return false
@@ -244,12 +245,12 @@ export function useRefViewer({
       const pdf = canvasToPdf(point.x, point.y, pages)
       if (!pdf) return
 
-      const line = reverseIndex(pdf.page, pdf.y)
-      if (!line) return
+      const match = reverseIndex(pdf.page, pdf.y)
+      if (!match) return
 
       e.preventDefault()
       e.stopPropagation()
-      writeSignal('signal:reverse-sync', { line })
+      writeSignal('signal:reverse-sync', { line: match.line, file: match.file })
     }
 
     container.addEventListener('click', handleClick)

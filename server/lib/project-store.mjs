@@ -40,7 +40,7 @@ export function readProject(name) {
   }
 }
 
-export function createProject({ name, title, mainFile = 'main.tex', format = 'svg' }) {
+export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -54,6 +54,7 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
     title: title || name,
     mainFile,
     format,
+    ...(srcDir && { sourceDir: srcDir }),
     pages: 0,
     createdAt: new Date().toISOString(),
     lastBuild: null,

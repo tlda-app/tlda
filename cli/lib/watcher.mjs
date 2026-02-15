@@ -40,7 +40,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
         const res = await fetch(`${server}/api/projects/${name}/push`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files }),
+          body: JSON.stringify({ files, sourceDir: dir }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {

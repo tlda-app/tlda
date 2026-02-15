@@ -30,7 +30,7 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, anchorIndex } from './SvgPageShape'
+import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, getYRecords, writeSignal, broadcastCamera } from './useYjsSync'
@@ -42,6 +42,7 @@ import { RefViewer } from './RefViewer'
 import { initSnapshots, getSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
+import { buildReverseIndex } from './synctexLookup'
 import { setupSvgEditor, anchorIdToLabel } from './editorSetup'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -534,6 +535,46 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               height: p.height
             }))
           })
+
+          // Cmd-click → open source in editor via texsync:// URL scheme
+          {
+            // Build page index: shapeId → pageIndex (1-based)
+            const shapeToPage = new Map<string, number>()
+            for (let i = 0; i < document.pages.length; i++) {
+              shapeToPage.set(document.pages[i].shapeId, i + 1)
+            }
+
+            // Fetch project info for sourceDir, then build reverse index
+            const base = import.meta.env.BASE_URL || '/'
+            Promise.all([
+              buildReverseIndex(document.name),
+              fetch(`${base}api/projects/${document.name}`).then(r => r.ok ? r.json() : null).catch(() => null),
+            ]).then(([reverseLookup, projectInfo]) => {
+              if (!reverseLookup) return
+              const sourceDir = projectInfo?.sourceDir
+
+              setOnSourceClick((shapeId: string, clickYFraction: number) => {
+                const page = shapeToPage.get(shapeId)
+                if (!page) return
+
+                // Convert click fraction to PDF y coordinate
+                const pdfY = clickYFraction * PDF_HEIGHT
+                const match = reverseLookup(page, pdfY)
+                if (!match) return
+
+                // Build absolute path
+                const filePath = sourceDir
+                  ? `${sourceDir.replace(/\/$/, '')}/${match.file}`
+                  : match.file
+                const url = `texsync://file${filePath}:${match.line}`
+                console.log(`[source-click] ${url}`)
+                // Use a temporary anchor to trigger the URL scheme without opening a blank tab
+                const a = window.document.createElement('a')
+                a.href = url
+                a.click()
+              })
+            })
+          }
 
           // Remapping is triggered by YjsSyncProvider after initial sync
 
