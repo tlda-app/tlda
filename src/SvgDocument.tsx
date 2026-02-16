@@ -250,6 +250,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
   const handleSelectChange = useCallback((id: string | null) => {
     setSelectedChangeId(id)
+
+    // Auto-activate overlay if selecting a change and overlay isn't active
+    if (id && !showHistoryPanel && activeHistoryIdx >= 0 && activeHistoryIdx < historyEntries.length) {
+      toggleHistoryOverlay(docName, historyEntries[activeHistoryIdx].id, historyChangedPages)
+    }
+
     // Re-apply highlights with selection coloring
     if (!historyChangedPages || historyChangedPages.length === 0) return
     const SELECTED_NEW = '#1d4ed8'  // blue for selected (new side)
@@ -289,7 +295,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       const oldShapeId = `shape:${docName}-hist-old-${pd.page}`
       if (oldRegions.length > 0) setChangeHighlights(oldShapeId, oldRegions)
     }
-  }, [historyChangedPages, document])
+  }, [historyChangedPages, document, showHistoryPanel, activeHistoryIdx, historyEntries, toggleHistoryOverlay, docName])
   // Legacy aliases for backward compatibility with panel context
   const snapshotCount = historyEntries.length
   const snapshotSliderIdx = activeHistoryIdx
@@ -821,7 +827,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             licenseKey={LICENSE_KEY}
           />
         )}
-        {showHistoryPanel && selectedChangeId && editorRef.current && (
+        {selectedChangeId && editorRef.current && (
           <ChangePreviewPanel
             mainEditor={editorRef.current}
             selectedChangeId={selectedChangeId}

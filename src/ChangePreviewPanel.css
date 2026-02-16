@@ -1,3 +1,67 @@
+/* Collapsed pill */
+.change-preview-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.06);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 100, 140, 0.45);
+  cursor: pointer;
+  pointer-events: all;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.change-preview-pill:hover {
+  color: rgba(80, 80, 120, 0.7);
+}
+
+.change-preview-pill-title {
+  font-weight: 500;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.change-preview-pill-page {
+  color: rgba(100, 100, 140, 0.3);
+  font-size: 8px;
+}
+
+.change-preview-pill-nav {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 1px;
+  line-height: 1;
+}
+
+.change-preview-pill-nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.change-preview-pill-close {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 140, 0.3);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 1px;
+  margin-left: 2px;
+  line-height: 1;
+}
+
+.change-preview-pill-close:hover {
+  color: rgba(100, 100, 140, 0.6);
+}
+
 /* Label bar — neutral blue-grey */
 .change-preview-label {
   height: 20px;
@@ -81,6 +145,27 @@
 }
 
 /* Dark mode */
+html[data-theme="dark"] .change-preview-pill {
+  background: rgba(20, 20, 32, 0.7);
+  color: rgba(160, 160, 180, 0.5);
+}
+
+html[data-theme="dark"] .change-preview-pill:hover {
+  color: rgba(200, 200, 220, 0.7);
+}
+
+html[data-theme="dark"] .change-preview-pill-page {
+  color: rgba(160, 160, 180, 0.35);
+}
+
+html[data-theme="dark"] .change-preview-pill-close {
+  color: rgba(160, 160, 180, 0.3);
+}
+
+html[data-theme="dark"] .change-preview-pill-close:hover {
+  color: rgba(200, 200, 220, 0.6);
+}
+
 html[data-theme="dark"] .change-preview-label {
   color: rgba(255, 255, 255, 0.25);
   background: transparent;

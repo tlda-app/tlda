@@ -133,11 +133,26 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
+// Number of page-heights beyond the viewport to keep SVG content injected
+const VIEWPORT_BUFFER_PAGES = 2
+
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
   const svgText = svgTextStore.get(shape.id)
+  // Track what's currently injected so we know when to re-inject vs skip
+  const injectedVersionRef = useRef<string | null>(null)
+
+  // Track whether this page is near the viewport (±2 pages buffer)
+  const isNearViewport = useValue('near-viewport-' + shape.id, () => {
+    const viewport = editor.getViewportPageBounds()
+    const margin = shape.props.h * VIEWPORT_BUFFER_PAGES
+    // Simple vertical check — pages are stacked vertically
+    const shapeTop = shape.y
+    const shapeBottom = shape.y + shape.props.h
+    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
+  }, [editor, shape.id, shape.y, shape.props.h])
 
   // Subscribe to change store for this shape's highlights
   const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])
@@ -147,13 +162,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
     })
   }, [shape.id])
 
-  // Inject SVG and wire up link clicks
-  // Re-runs when version changes (hot reload) or svgText changes
+  // Inject or clear SVG based on viewport proximity
+  const versionKey = `${shape.id}:${shape.props.version}:${svgText?.length ?? 0}`
   useEffect(() => {
     const el = containerRef.current
-    if (!el || !svgText) return
+    if (!el) return
+
+    if (!isNearViewport || !svgText) {
+      // Off-screen: clear DOM to free memory
+      if (injectedVersionRef.current) {
+        el.innerHTML = ''
+        injectedVersionRef.current = null
+      }
+      return
+    }
+
+    // Already injected for this exact version — skip
+    if (injectedVersionRef.current === versionKey) return
 
     el.innerHTML = svgText
+    injectedVersionRef.current = versionKey
 
     // Scale the SVG to fill the shape bounds
     const svgEl = el.querySelector('svg')
@@ -190,7 +218,15 @@ function SvgPageComponent({ shape }: { shape: any }) {
       link.style.cursor = 'pointer'
     }
 
-    // Single delegated click handler on the container
+    // Apply any pending tint highlights
+    applyTinting(el, highlights)
+  }, [isNearViewport, svgText, versionKey])
+
+  // Click handler — stable, doesn't depend on SVG content
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
     const onClick = (e: MouseEvent) => {
       // Cmd-click: open source in editor
       if (e.metaKey && onSourceClick) {
@@ -213,40 +249,15 @@ function SvgPageComponent({ shape }: { shape: any }) {
       }
     }
     el.addEventListener('click', onClick)
+    return () => { el.removeEventListener('click', onClick) }
+  }, [shape.id])
 
-    return () => {
-      el.removeEventListener('click', onClick)
-    }
-  }, [svgText, shape.id, shape.props.version])
-
-  // Apply text tinting: color SVG <text> elements that fall within tinted change regions
+  // Apply text tinting when highlights change (and SVG is injected)
   useEffect(() => {
+    if (!injectedVersionRef.current) return
     const el = containerRef.current
     if (!el) return
-    const svgEl = el.querySelector('svg')
-    if (!svgEl) return
-
-    // Reset all text fills first (remove previous tinting)
-    const textEls = svgEl.querySelectorAll('text')
-    for (const t of textEls) {
-      t.removeAttribute('data-tinted')
-      t.style.removeProperty('fill')
-    }
-
-    const tinted = highlights.filter(r => r.tint)
-    if (tinted.length === 0) return
-
-    // Walk text elements and color those within tinted regions
-    for (const t of textEls) {
-      const ty = parseFloat(t.getAttribute('y') || '0')
-      for (const r of tinted) {
-        if (ty >= r.y && ty <= r.y + r.height) {
-          t.style.fill = r.tint!
-          t.setAttribute('data-tinted', '1')
-          break
-        }
-      }
-    }
+    applyTinting(el, highlights)
   }, [highlights])
 
   return (
@@ -273,6 +284,33 @@ function SvgPageComponent({ shape }: { shape: any }) {
       </div>
     </HTMLContainer>
   )
+}
+
+/** Apply text tinting to SVG text elements within change regions. */
+function applyTinting(container: HTMLElement, highlights: ChangeRegion[]) {
+  const svgEl = container.querySelector('svg')
+  if (!svgEl) return
+
+  const textEls = svgEl.querySelectorAll('text')
+  // Reset all
+  for (const t of textEls) {
+    t.removeAttribute('data-tinted')
+    t.style.removeProperty('fill')
+  }
+
+  const tinted = highlights.filter(r => r.tint)
+  if (tinted.length === 0) return
+
+  for (const t of textEls) {
+    const ty = parseFloat(t.getAttribute('y') || '0')
+    for (const r of tinted) {
+      if (ty >= r.y && ty <= r.y + r.height) {
+        t.style.fill = r.tint!
+        t.setAttribute('data-tinted', '1')
+        break
+      }
+    }
+  }
 }
 
 /**

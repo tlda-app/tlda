@@ -656,13 +656,41 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 0 1px;
+  padding: 3px 8px 1px;
   flex-wrap: wrap;
+}
+
+.snapshot-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+
+.snapshot-step {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 1px;
+  line-height: 1;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.snapshot-step:hover {
+  opacity: 0.8;
+}
+
+.snapshot-step:disabled {
+  opacity: 0.15;
+  cursor: default;
 }
 
 .snapshot-range {
   flex: 1;
-  max-width: calc(100% - 40px);
+  min-width: 0;
   height: 2px;
   -webkit-appearance: none;
   appearance: none;
@@ -687,8 +715,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-left: 2px;
+  padding: 0 2px;
   box-sizing: border-box;
+}
+
+.snapshot-position {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (pointer: coarse) {

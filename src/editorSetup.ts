@@ -473,6 +473,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     shapeIdSet,
     shapeIds,
     updateBounds: (newBounds: any) => {
+      const prevW = targetBounds.w
       const cam = editor.getCamera()
       targetBounds = newBounds
       editor.setCameraOptions({
@@ -485,8 +486,13 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           behavior: 'free',
         },
       })
-      // Restore camera position (don't reset to top)
-      editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
+      if (newBounds.w > prevW * 1.2) {
+        // Bounds expanded significantly (overlay added) — refit to show both columns
+        editor.setCamera(editor.getCamera(), { reset: true })
+      } else {
+        // Bounds narrowed or unchanged — preserve camera position
+        editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
+      }
     },
     ensurePagesAtBottom: makeSureShapesAreAtBottom,
   }

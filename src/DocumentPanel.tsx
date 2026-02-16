@@ -400,39 +400,64 @@ function HistoryTab() {
     <div className="doc-panel-content">
       {entries.length >= 2 && (
         <div className="snapshot-slider">
-          <input
-            type="range"
-            className="snapshot-range"
-            min={0}
-            max={entries.length - 1}
-            value={ctx?.activeHistoryIdx !== undefined && ctx.activeHistoryIdx >= 0
+          {(() => {
+            const idx = ctx?.activeHistoryIdx !== undefined && ctx.activeHistoryIdx >= 0
               ? ctx.activeHistoryIdx
-              : entries.length - 1}
-            onChange={(e) => ctx?.onHistoryChange?.(parseInt(e.target.value))}
-          />
-          {showCompare && (
-            <button
-              className={`history-compare-btn${ctx?.showHistoryPanel ? ' active' : ''}`}
-              onClick={() => ctx?.onToggleHistoryPanel?.()}
-              title="Show side-by-side comparison"
-            >
-              ◧
-            </button>
-          )}
-          <span className="snapshot-label">
-            {ctx?.historyLoading ? '...' : (() => {
-              const idx = ctx?.activeHistoryIdx !== undefined && ctx.activeHistoryIdx >= 0
-                ? ctx.activeHistoryIdx
-                : entries.length - 1
-              const entry = entries[idx]
-              if (!entry) return ''
-              if (idx === entries.length - 1) return 'current'
-              const time = formatRelativeTime(entry.timestamp)
-              return entry.type === 'git'
-                ? `${entry.commitMessage?.slice(0, 25) || entry.id} (${time})`
-                : time
-            })()}
-          </span>
+              : entries.length - 1
+            const entry = entries[idx]
+            const atStart = idx <= 0
+            const atEnd = idx >= entries.length - 1
+            const step = (dir: number) => {
+              const next = Math.max(0, Math.min(entries.length - 1, idx + dir))
+              ctx?.onHistoryChange?.(next)
+            }
+            const label = !entry ? ''
+              : atEnd ? 'current'
+              : (() => {
+                  const time = formatRelativeTime(entry.timestamp)
+                  return entry.type === 'git'
+                    ? `${entry.commitMessage?.slice(0, 30) || entry.id} (${time})`
+                    : time
+                })()
+            return <>
+              <div className="snapshot-nav-row">
+                <button
+                  className="snapshot-step"
+                  disabled={atStart}
+                  onClick={() => step(-1)}
+                  title="Older"
+                >‹</button>
+                <input
+                  type="range"
+                  className="snapshot-range"
+                  min={0}
+                  max={entries.length - 1}
+                  value={idx}
+                  onChange={(e) => ctx?.onHistoryChange?.(parseInt(e.target.value))}
+                />
+                <button
+                  className="snapshot-step"
+                  disabled={atEnd}
+                  onClick={() => step(1)}
+                  title="Newer"
+                >›</button>
+                {showCompare && (
+                  <button
+                    className={`history-compare-btn${ctx?.showHistoryPanel ? ' active' : ''}`}
+                    onClick={() => ctx?.onToggleHistoryPanel?.()}
+                    title="Show side-by-side comparison"
+                  >
+                    ◧
+                  </button>
+                )}
+              </div>
+              <span className="snapshot-label">
+                <span className="snapshot-position">{idx + 1}/{entries.length}</span>
+                {' '}
+                {ctx?.historyLoading ? `${label} \u2026` : label}
+              </span>
+            </>
+          })()}
         </div>
       )}
       {ctx?.diffAvailable && (

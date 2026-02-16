@@ -37,6 +37,7 @@ export function ChangePreviewPanel({
 }: ChangePreviewPanelProps) {
   const cameraHistoryRef = useRef<Array<{ x: number; y: number; z: number }>>([])
   const [canGoBack, setCanGoBack] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   const selectedIndex = useMemo(() => {
     if (!selectedChangeId) return -1
@@ -114,6 +115,38 @@ export function ChangePreviewPanel({
     ? (selectedChange.oldText.length > 40 ? selectedChange.oldText.slice(0, 37) + '\u2026' : selectedChange.oldText)
     : 'old version'
 
+  if (!expanded) {
+    return (
+      <div
+        className="change-preview-pill"
+        onClick={() => setExpanded(true)}
+        onPointerDown={e => e.stopPropagation()}
+        onPointerUp={e => e.stopPropagation()}
+        onTouchStart={e => e.stopPropagation()}
+        onTouchEnd={e => e.stopPropagation()}
+        title="Show old version"
+      >
+        <button
+          className="change-preview-pill-nav"
+          onClick={(e) => { e.stopPropagation(); handlePrev() }}
+          disabled={selectedIndex <= 0}
+        >‹</button>
+        <span className="change-preview-pill-title">{snippet}</span>
+        <span className="change-preview-pill-page">p.{selectedChange.page}</span>
+        <button
+          className="change-preview-pill-nav"
+          onClick={(e) => { e.stopPropagation(); handleNext() }}
+          disabled={selectedIndex >= historyChanges.length - 1}
+        >›</button>
+        <button
+          className="change-preview-pill-close"
+          onClick={(e) => { e.stopPropagation(); onSelectChange(null) }}
+          title="Deselect"
+        >×</button>
+      </div>
+    )
+  }
+
   return (
     <CanvasClipPanel
       mainEditor={mainEditor}
@@ -158,6 +191,13 @@ export function ChangePreviewPanel({
             ↩
           </button>
         )}
+        <button
+          className="change-preview-action"
+          onClick={(e) => { e.stopPropagation(); setExpanded(false) }}
+          title="Collapse"
+        >
+          ▾
+        </button>
         <button
           className="change-preview-close"
           onClick={(e) => { e.stopPropagation(); onSelectChange(null) }}
