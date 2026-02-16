@@ -9,13 +9,15 @@
  * Label bar content is passed as children — each consumer renders its own
  * buttons and title.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, defaultShapeUtils } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
 const DEFAULT_MAX_HEIGHT_FRACTION = 0.4
+const MIN_VISIBLE_LINES = 5
+const LINE_HEIGHT_ESTIMATE = 14 // ~12pt in PDF coordinates
 
 export interface ClipBounds {
   x: number
@@ -80,27 +82,70 @@ export function CanvasClipPanel({
   }, [mainEditor.store, store])
 
   // Apply camera constraints when bounds change
+  // Use clip bounds for initial position, full page extent for scroll range
   useEffect(() => {
     if (!editor || !bounds) return
+
+    // Find the vertical extent of all page shapes for scroll range
+    let minY = bounds.y
+    let maxY = bounds.y + bounds.h
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type === 'svg-page') {
+        const geo = editor.getShapeGeometry(shape)
+        if (geo) {
+          minY = Math.min(minY, shape.y)
+          maxY = Math.max(maxY, shape.y + geo.bounds.h)
+        }
+      }
+    }
+
     editor.setCameraOptions({
       constraints: {
-        bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-        behavior: 'fixed',
-        origin: { x: 0.5, y: 0.5 },
+        bounds: { x: bounds.x, y: minY, w: bounds.w, h: maxY - minY },
+        behavior: 'inside',
+        origin: { x: 0.5, y: 0 },
         padding: { x: 0, y: 0 },
         initialZoom: 'fit-x',
         baseZoom: 'fit-x',
       },
-      zoomSteps: [1],
+      zoomSteps: [0.5, 1, 2],
     })
-    editor.setCamera(editor.getCamera(), { reset: true })
-  }, [editor, bounds])
 
-  // Panel height tracks content
+    // Position camera to show the clip region, centered vertically
+    const zoom = panelWidth / bounds.w
+    const contentScreenH = bounds.h * zoom
+    const minScreenH = MIN_VISIBLE_LINES * LINE_HEIGHT_ESTIMATE * zoom
+    const viewportH = Math.max(minScreenH, Math.min(contentScreenH, window.innerHeight * DEFAULT_MAX_HEIGHT_FRACTION))
+    // Center the bounds vertically if viewport is taller than content
+    const yOffset = (viewportH > contentScreenH)
+      ? (viewportH - contentScreenH) / (2 * zoom)
+      : 0
+    editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
+  }, [editor, bounds, panelWidth])
+
+  // Wheel to pan vertically
+  const canvasRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el || !editor) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const cam = editor.getCamera()
+      const dy = e.deltaY / cam.z
+      editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [editor])
+
+  // Panel height: at least 5 lines, at most maxHeightFraction of viewport
   const canvasHeight = useMemo(() => {
     if (!bounds) return 100
-    const h = bounds.h * (panelWidth / bounds.w)
-    return Math.max(36, Math.min(h, window.innerHeight * maxHeightFraction))
+    const zoom = panelWidth / bounds.w
+    const contentH = bounds.h * zoom
+    const minH = MIN_VISIBLE_LINES * LINE_HEIGHT_ESTIMATE * zoom
+    return Math.max(minH, Math.min(contentH, window.innerHeight * maxHeightFraction))
   }, [bounds, panelWidth, maxHeightFraction])
 
   if (!bounds) return null
@@ -115,7 +160,7 @@ export function CanvasClipPanel({
       onTouchEnd={stopPropagation}
     >
       {children}
-      <div className="clip-panel-canvas" style={{ height: canvasHeight }}>
+      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
         <Tldraw
           store={store}
           shapeUtils={shapeUtils}

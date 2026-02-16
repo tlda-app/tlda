@@ -3,7 +3,7 @@
   overflow: hidden;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
   background: white;
-  pointer-events: none;
+  pointer-events: auto;
   transition: height 0.2s ease, opacity 0.2s ease;
 }
 
@@ -13,17 +13,11 @@
   overflow: hidden;
   background: white;
   clip-path: inset(0);
-  pointer-events: none;
 }
 
 /* Hide TLDraw's background pattern in the mini editor */
 .clip-panel-canvas .tl-background {
   display: none;
-}
-
-/* Make the TLDraw canvas non-interactive */
-.clip-panel-canvas * {
-  pointer-events: none !important;
 }
 
 /* Dark mode */
