@@ -47,6 +47,9 @@ export function setOnSourceClick(fn: ((shapeId: string, clickY: number) => void)
 export interface ChangeRegion {
   y: number       // viewBox y coordinate (top of changed region)
   height: number  // region height in viewBox units
+  x?: number      // viewBox x (left edge); omit for full-width
+  width?: number  // region width in viewBox units; omit for full-width
+  tint?: string   // CSS color for text tinting (e.g. '#4488ff'); omit for default highlight
 }
 
 export const changeStore = new Map<string, ChangeRegion[]>()  // shapeId → regions
@@ -144,8 +147,6 @@ function SvgPageComponent({ shape }: { shape: any }) {
     })
   }, [shape.id])
 
-  const viewBox = svgViewBoxStore.get(shape.id)
-
   // Inject SVG and wire up link clicks
   // Re-runs when version changes (hot reload) or svgText changes
   useEffect(() => {
@@ -218,6 +219,36 @@ function SvgPageComponent({ shape }: { shape: any }) {
     }
   }, [svgText, shape.id, shape.props.version])
 
+  // Apply text tinting: color SVG <text> elements that fall within tinted change regions
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const svgEl = el.querySelector('svg')
+    if (!svgEl) return
+
+    // Reset all text fills first (remove previous tinting)
+    const textEls = svgEl.querySelectorAll('text')
+    for (const t of textEls) {
+      t.removeAttribute('data-tinted')
+      t.style.removeProperty('fill')
+    }
+
+    const tinted = highlights.filter(r => r.tint)
+    if (tinted.length === 0) return
+
+    // Walk text elements and color those within tinted regions
+    for (const t of textEls) {
+      const ty = parseFloat(t.getAttribute('y') || '0')
+      for (const r of tinted) {
+        if (ty >= r.y && ty <= r.y + r.height) {
+          t.style.fill = r.tint!
+          t.setAttribute('data-tinted', '1')
+          break
+        }
+      }
+    }
+  }, [highlights])
+
   return (
     <HTMLContainer>
       <div style={{ position: 'relative', width: shape.props.w, height: shape.props.h }}>
@@ -239,16 +270,6 @@ function SvgPageComponent({ shape }: { shape: any }) {
             }}
           />
         </div>
-        {highlights.length > 0 && viewBox && highlights.map((r, i) => (
-          <div
-            key={i}
-            className="change-highlight"
-            style={{
-              top: `${((r.y - viewBox.minY) / viewBox.height) * 100}%`,
-              height: `${(r.height / viewBox.height) * 100}%`,
-            }}
-          />
-        ))}
       </div>
     </HTMLContainer>
   )

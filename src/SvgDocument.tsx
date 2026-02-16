@@ -30,7 +30,8 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex } from './SvgPageShape'
+import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges } from './SvgPageShape'
+import type { ChangeRegion } from './SvgPageShape'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, getYRecords, writeSignal, broadcastCamera } from './useYjsSync'
@@ -39,8 +40,10 @@ import { PanelContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
-import { initSnapshots, getSnapshots } from './snapshotStore'
-import { PDF_HEIGHT } from './layoutConstants'
+import { ChangePreviewPanel } from './ChangePreviewPanel'
+import { useHistoryOverlay } from './hooks/useHistoryOverlay'
+import { initSnapshots } from './snapshotStore'
+import { PDF_HEIGHT, PAGE_HEIGHT, PAGE_GAP } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
 import { setupSvgEditor, anchorIdToLabel } from './editorSetup'
@@ -232,7 +235,65 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
   // --- Hooks ---
-  const { snapshotSliderIdx, snapshotCount, handleSliderChange } = useSnapshotTimeline(document)
+  const docName = new URLSearchParams(window.location.search).get('doc') || document.name
+  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, refreshHistory } = useSnapshotTimeline(document, docName)
+  const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(
+    editorRef, document, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef,
+  )
+  // Hide overlay when slider returns to current
+  const isAtEnd = activeHistoryIdx < 0 || activeHistoryIdx >= historyEntries.length - 1
+  useEffect(() => {
+    if (isAtEnd && showHistoryPanel) hideHistoryOverlay()
+  }, [isAtEnd])
+
+  // Selected change tracking — highlights selected change differently
+  const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
+  const handleSelectChange = useCallback((id: string | null) => {
+    setSelectedChangeId(id)
+    // Re-apply highlights with selection coloring
+    if (!historyChangedPages || historyChangedPages.length === 0) return
+    const SELECTED_NEW = '#1d4ed8'  // blue for selected (new side)
+    const DEFAULT_NEW = '#1d4ed8'   // blue when nothing selected (new side)
+    const SELECTED_OLD = '#dc2626'  // red for selected (old side)
+    const DEFAULT_OLD = '#dc2626'   // red when nothing selected (old side)
+    dismissAllChanges()
+    for (const pd of historyChangedPages) {
+      const pageData = document.pages[pd.page - 1]
+      if (!pageData?.shapeId) continue
+      if (!pd.changes || pd.changes.length === 0) continue
+
+      // New (current) side
+      const newRegions: Array<{ y: number; height: number; x?: number; width?: number; tint?: string }> = []
+      // Old side
+      const oldRegions: Array<{ y: number; height: number; x?: number; width?: number; tint?: string }> = []
+
+      for (const c of pd.changes) {
+        const newTint = id === null ? DEFAULT_NEW : c.id === id ? SELECTED_NEW : undefined
+        const oldTint = id === null ? DEFAULT_OLD : c.id === id ? SELECTED_OLD : undefined
+        if (c.newLines && c.newLines.length > 0) {
+          for (const l of c.newLines) {
+            newRegions.push({ y: l.y, height: l.height, x: l.x, width: l.width, tint: newTint })
+          }
+        } else if (c.y != null && c.height != null) {
+          newRegions.push({ y: c.y, height: c.height, x: c.x, width: c.width, tint: newTint })
+        }
+        if (c.oldLines && c.oldLines.length > 0) {
+          for (const l of c.oldLines) {
+            oldRegions.push({ y: l.y, height: l.height, x: l.x, width: l.width, tint: oldTint })
+          }
+        }
+      }
+      if (newRegions.length > 0) setChangeHighlights(pageData.shapeId, newRegions)
+
+      // Old page shape (only exists when overlay is active)
+      const oldShapeId = `shape:${docName}-hist-old-${pd.page}`
+      if (oldRegions.length > 0) setChangeHighlights(oldShapeId, oldRegions)
+    }
+  }, [historyChangedPages, document])
+  // Legacy aliases for backward compatibility with panel context
+  const snapshotCount = historyEntries.length
+  const snapshotSliderIdx = activeHistoryIdx
+  const handleSliderChange = handleHistoryChange
 
   const { cameraLinked, setCameraLinked, cameraLinkedRef, suppressBroadcastRef, broadcastTimerRef, toggleCameraLink } = useCameraLink(editorRef)
 
@@ -429,10 +490,24 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     panelsLocal,
     onTogglePanelsLocal: togglePanelsLocal,
     snapshotCount,
-    snapshotTimestamps: snapshotCount > 0 ? getSnapshots().map(s => s.timestamp) : undefined,
+    snapshotTimestamps: historyEntries.length > 0 ? historyEntries.map(e => e.timestamp) : undefined,
     activeSnapshotIdx: snapshotSliderIdx,
     onSliderChange: handleSliderChange,
-  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange])
+    historyEntries,
+    activeHistoryIdx,
+    historyLoading,
+    historyChangedPages,
+    historyChanges,
+    onHistoryChange: handleHistoryChange,
+    showHistoryPanel,
+    onToggleHistoryPanel: () => {
+      if (activeHistoryIdx >= 0 && activeHistoryIdx < historyEntries.length) {
+        toggleHistoryOverlay(docKey, historyEntries[activeHistoryIdx].id, historyChangedPages)
+      }
+    },
+    selectedChangeId,
+    onSelectChange: handleSelectChange,
+  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -687,12 +762,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
             if (e.key === 'm') {
               editor.setCurrentTool('math-note')
-            } else if (e.key === 'd') {
-              // Cycle: system → dark → light → system
-              const prefs = editor.user.getUserPreferences()
-              const scheme = prefs.colorScheme || 'system'
-              const next = scheme === 'system' ? 'dark' : scheme === 'dark' ? 'light' : 'system'
-              editor.user.updateUserPreferences({ colorScheme: next })
             }
           }
           window.addEventListener('keydown', handleKeyDown)
@@ -750,6 +819,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             shapeUtils={shapeUtils}
             tools={tools}
             licenseKey={LICENSE_KEY}
+          />
+        )}
+        {showHistoryPanel && selectedChangeId && editorRef.current && (
+          <ChangePreviewPanel
+            mainEditor={editorRef.current}
+            selectedChangeId={selectedChangeId}
+            historyChanges={historyChanges}
+            docName={docName}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+            onSelectChange={handleSelectChange}
           />
         )}
       </>,

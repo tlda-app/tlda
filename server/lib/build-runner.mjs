@@ -26,6 +26,7 @@ import { join, basename, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects } from './project-store.mjs'
 import { getDoc } from './yjs-sync.mjs'
+import { snapshotBeforeBuild } from './history-store.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -110,6 +111,14 @@ export async function runBuild(name, { priorityPages } = {}) {
   }
 
   try {
+    // Snapshot current output before overwriting
+    try {
+      const snap = snapshotBeforeBuild(name)
+      if (snap) addLog(`Snapshot saved: ${snap.id} (${snap.pages} pages)`)
+    } catch (e) {
+      addLog(`Snapshot failed (non-fatal): ${e.message}`)
+    }
+
     updateProject(name, { buildStatus: 'building', lastBuild: status.startedAt })
 
     // Clean stale build artifacts so latexmk does a fresh compile with synctex.

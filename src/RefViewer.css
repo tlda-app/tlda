@@ -1,12 +1,4 @@
-.ref-viewer {
-  width: 600px;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
-  background: white;
-  pointer-events: none;
-}
-
+/* Label bar */
 .ref-viewer-label {
   height: 20px;
   line-height: 20px;
@@ -102,29 +94,7 @@
   color: rgba(100, 100, 100, 0.8);
 }
 
-.ref-viewer-canvas {
-  position: relative;
-  width: 100%;
-  overflow: hidden;
-  background: white;
-  clip-path: inset(0);
-  pointer-events: none;
-}
-
-.ref-viewer-canvas .tl-background {
-  display: none;
-}
-
-.ref-viewer-canvas * {
-  pointer-events: none !important;
-}
-
 /* Dark mode */
-html[data-theme="dark"] .ref-viewer {
-  background: #141420;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
-}
-
 html[data-theme="dark"] .ref-viewer-label {
   color: rgba(255, 255, 255, 0.25);
   background: transparent;
@@ -169,8 +139,4 @@ html[data-theme="dark"] .ref-viewer-close {
 
 html[data-theme="dark"] .ref-viewer-close:hover {
   color: rgba(255, 255, 255, 0.5);
-}
-
-html[data-theme="dark"] .ref-viewer-canvas {
-  background: #141420;
 }

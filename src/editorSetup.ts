@@ -473,8 +473,20 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     shapeIdSet,
     shapeIds,
     updateBounds: (newBounds: any) => {
+      const cam = editor.getCamera()
       targetBounds = newBounds
-      applyCameraBounds()
+      editor.setCameraOptions({
+        constraints: {
+          bounds: targetBounds,
+          padding: { x: 100, y: 50 },
+          origin: { x: 0.5, y: 0 },
+          initialZoom: 'fit-x-100',
+          baseZoom: 'default',
+          behavior: 'free',
+        },
+      })
+      // Restore camera position (don't reset to top)
+      editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
     },
     ensurePagesAtBottom: makeSureShapesAreAtBottom,
   }

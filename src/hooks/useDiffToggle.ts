@@ -242,22 +242,6 @@ export function useDiffToggle({
       .catch(e => console.warn('[Diff] Pre-fetch failed:', e))
   }, [diffConfig, document, diffFetchSeq])
 
-  // Keyboard shortcut: 'd' for diff toggle
-  useEffect(() => {
-    if (!hasDiffToggle) return
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (isInputFocused()) return
-        const editor = editorRef.current
-        if (!editor) return
-        if (editor.getEditingShapeId()) return
-        toggleDiff()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hasDiffToggle, toggleDiff])
-
   return {
     diffMode, diffLoading, toggleDiff,
     diffDataRef, diffModeRef, toggleDiffRef,

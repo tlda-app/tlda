@@ -143,8 +143,12 @@ async function cmdPush() {
 
   const files = collectSourceFiles(dir)
   console.log(`Pushing ${files.length} files to "${name}"...`)
-  await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
-  console.log('Build triggered.')
+  const result = await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+  if (result.unchanged) {
+    console.log('No changes detected (use `ctd build` to force a rebuild).')
+  } else {
+    console.log('Build triggered.')
+  }
 }
 
 async function cmdWatch() {
@@ -214,6 +218,94 @@ async function cmdStatus() {
     console.log('\nBuild log:')
     console.log(data.log)
   }
+}
+
+async function cmdErrors() {
+  const name = getPositional(0) || inferProjectName()
+  if (!name) { console.error('Usage: ctd errors [name]'); process.exit(1) }
+
+  const data = await api('GET', `/api/projects/${name}/build/errors`)
+  if (data.building) {
+    console.log(`[building...]`)
+  } else if (data.lastBuild) {
+    const ago = Math.round((Date.now() - new Date(data.lastBuild).getTime()) / 1000)
+    const stamp = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago / 60)}m ago` : `${Math.round(ago / 3600)}h ago`
+    console.log(`Last build: ${stamp} (${data.status})`)
+  }
+  if (data.errors?.length > 0) {
+    console.log(`${data.errors.length} error(s):`)
+    for (const e of data.errors) console.log(`  ${e}`)
+  }
+  if (data.warnings?.length > 0) {
+    console.log(`${data.warnings.length} warning(s):`)
+    for (const w of data.warnings) console.log(`  ${w}`)
+  }
+  if (!data.errors?.length && !data.warnings?.length && !data.building) {
+    console.log('Clean.')
+  }
+}
+
+async function cmdBuild() {
+  const name = getPositional(0) || inferProjectName()
+  if (!name) { console.error('Usage: ctd build <name>'); process.exit(1) }
+
+  console.log(`Triggering rebuild for "${name}"...`)
+  await api('POST', `/api/projects/${name}/build`)
+  console.log('Build triggered.')
+}
+
+async function cmdPreview() {
+  const name = getPositional(0) || inferProjectName()
+  if (!name) { console.error('Usage: ctd preview <name> [page ...]'); process.exit(1) }
+
+  // Collect page numbers from remaining positional args
+  const requestedPages = []
+  for (let i = 1; ; i++) {
+    const p = getPositional(i)
+    if (p === null) break
+    const n = parseInt(p, 10)
+    if (isNaN(n) || n < 1) { console.error(`Invalid page number: ${p}`); process.exit(1) }
+    requestedPages.push(n)
+  }
+
+  // Get project info to find output dir and page count
+  const data = await api('GET', `/api/projects/${name}`)
+  const totalPages = data.pages || 0
+  if (totalPages === 0) { console.error(`Project "${name}" has no pages (not built yet?)`); process.exit(1) }
+
+  const pages = requestedPages.length > 0 ? requestedPages : Array.from({ length: totalPages }, (_, i) => i + 1)
+
+  // Resolve SVG source directory
+  const server = getServer()
+  const outDir = `/tmp/ctd-preview-${name}`
+  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
+
+  const { execFileSync } = await import('child_process')
+  const results = []
+
+  for (const page of pages) {
+    const svgUrl = `${server}/docs/${name}/page-${page}.svg`
+    const pngPath = join(outDir, `page-${page}.png`)
+
+    try {
+      // Fetch SVG and pipe to rsvg-convert
+      const svgRes = await fetch(svgUrl, { signal: AbortSignal.timeout(10000) })
+      if (!svgRes.ok) { console.error(`  page ${page}: not found`); continue }
+      const svgBuf = Buffer.from(await svgRes.arrayBuffer())
+
+      execFileSync('rsvg-convert', ['-f', 'png', '-o', pngPath], { input: svgBuf, timeout: 30000 })
+      results.push(pngPath)
+    } catch (e) {
+      console.error(`  page ${page}: ${e.message}`)
+    }
+  }
+
+  if (results.length === 0) {
+    console.error('No pages rendered.')
+    process.exit(1)
+  }
+
+  for (const p of results) console.log(p)
 }
 
 async function cmdConfig() {
@@ -482,6 +574,9 @@ async function main() {
       case 'list':   await ensureServer(); await cmdList(); break
       case 'ls':     await ensureServer(); await cmdList(); break
       case 'status': await ensureServer(); await cmdStatus(); break
+      case 'errors': await ensureServer(); await cmdErrors(); break
+      case 'build':   await ensureServer(); await cmdBuild(); break
+      case 'preview': await ensureServer(); await cmdPreview(); break
       case 'config': await cmdConfig(); break
       default:
         console.log(`ctd — Claude TLDraw CLI
@@ -494,6 +589,9 @@ Commands:
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status
+  build [name]   Trigger a rebuild (no file push)
+  errors [name]  Show LaTeX errors/warnings from last build
+  preview <name> [page ...]  Rasterize SVG pages to PNG for visual inspection
 
 The server auto-starts on first use. Explicit control: ctd server start/stop.
 

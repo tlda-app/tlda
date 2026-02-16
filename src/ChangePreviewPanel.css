@@ -1,0 +1,116 @@
+/* Label bar — neutral blue-grey */
+.change-preview-label {
+  height: 20px;
+  line-height: 20px;
+  padding: 0 8px;
+  font-size: 9px;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 100, 140, 0.5);
+  background: rgba(230, 230, 245, 0.15);
+  border-bottom: 1px solid rgba(200, 200, 220, 0.15);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: all;
+}
+
+.change-preview-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.change-preview-page {
+  font-size: 9px;
+  color: rgba(100, 100, 140, 0.35);
+  flex-shrink: 0;
+}
+
+.change-preview-close {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 140, 0.3);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.change-preview-nav {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 140, 0.5);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+}
+
+.change-preview-nav:hover {
+  color: rgba(100, 100, 140, 0.8);
+}
+
+.change-preview-nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.change-preview-action {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 140, 0.5);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.change-preview-action:hover {
+  color: rgba(100, 100, 140, 0.8);
+}
+
+.change-preview-close:hover {
+  color: rgba(100, 100, 140, 0.6);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .change-preview-label {
+  color: rgba(255, 255, 255, 0.25);
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .change-preview-page {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .change-preview-close {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .change-preview-nav {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .change-preview-nav:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .change-preview-action {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .change-preview-action:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .change-preview-close:hover {
+  color: rgba(255, 255, 255, 0.5);
+}

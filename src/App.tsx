@@ -182,6 +182,34 @@ function App() {
     } catch (e) {
       if (signal.aborted) return  // expected abort, don't show error
       console.error('Failed to load document:', e)
+
+      // Check if a build is in progress — if so, wait and retry
+      try {
+        const statusResp = await fetch(`/api/projects/${docName}/build/status`)
+        if (statusResp.ok) {
+          const status = await statusResp.json()
+          if (status.status === 'building') {
+            setState(s => s ? { ...s, message: `Building ${docName}...` } : s)
+            // Poll until build completes, then retry
+            const pollBuild = async () => {
+              while (gen === loadGeneration) {
+                await new Promise(r => setTimeout(r, 2000))
+                if (gen !== loadGeneration) return
+                try {
+                  const r = await fetch(`/api/projects/${docName}/build/status`)
+                  if (!r.ok) break
+                  const s = await r.json()
+                  if (s.status !== 'building') break
+                } catch { break }
+              }
+              if (gen === loadGeneration) loadDocument(docName, roomId)
+            }
+            pollBuild()
+            return
+          }
+        }
+      } catch { /* ignore status check failure */ }
+
       setState({ phase: 'error', message: `Failed to load "${docName}": ${(e as Error).message}` })
     }
   }

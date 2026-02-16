@@ -29,16 +29,7 @@
   font-size: 8px;
 }
 
-.proof-overlay {
-  width: 600px;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
-  background: white;
-  transition: height 0.2s ease, opacity 0.2s ease;
-  pointer-events: none;
-}
-
+/* Label bar */
 .proof-overlay-label {
   height: 20px;
   line-height: 20px;
@@ -92,29 +83,6 @@
   color: rgba(90, 138, 106, 0.6);
 }
 
-.proof-overlay-canvas {
-  position: relative;
-  width: 100%;
-  overflow: hidden;
-  background: white;
-  clip-path: inset(0);
-  pointer-events: none;
-}
-
-/* Hide TLDraw's background pattern in the mini editor */
-.proof-overlay-canvas .tl-background {
-  display: none;
-}
-
-/* Make the TLDraw canvas non-interactive so it doesn't block resize handles
-   and other pointer events on the main canvas underneath. The proof overlay's
-   TLDraw occupies a large screen area at z-index 1000 — without this, its
-   background/image layers capture clicks meant for the main canvas.
-   Must use * because children re-enable pointer-events individually. */
-.proof-overlay-canvas * {
-  pointer-events: none !important;
-}
-
 /* Dark mode */
 html[data-theme="dark"] .proof-overlay-pill {
   background: rgba(20, 20, 32, 0.7);
@@ -127,11 +95,6 @@ html[data-theme="dark"] .proof-overlay-pill:hover {
 
 html[data-theme="dark"] .proof-overlay-pill-page {
   color: rgba(160, 160, 160, 0.35);
-}
-
-html[data-theme="dark"] .proof-overlay {
-  background: #141420;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
 html[data-theme="dark"] .proof-overlay-label {
@@ -154,8 +117,4 @@ html[data-theme="dark"] .proof-overlay-close {
 
 html[data-theme="dark"] .proof-overlay-close:hover {
   color: rgba(255, 255, 255, 0.5);
-}
-
-html[data-theme="dark"] .proof-overlay-canvas {
-  background: #141420;
 }

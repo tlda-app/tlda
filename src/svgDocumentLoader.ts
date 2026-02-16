@@ -81,8 +81,13 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
   const [svgTexts, macrosData] = await Promise.all([
     Promise.all(
       svgUrls.map(async (url) => {
-        const response = await fetch(url + cacheBust)
-        if (!response.ok) throw new Error(`Failed to fetch ${url}`)
+        let response = await fetch(url + cacheBust)
+        if (!response.ok) {
+          // Retry once after 1s — SVGs may be mid-rebuild
+          await new Promise(r => setTimeout(r, 1000))
+          response = await fetch(url + `?t=${Date.now()}`)
+          if (!response.ok) throw new Error(`Failed to fetch ${url}`)
+        }
         return response.text()
       })
     ),

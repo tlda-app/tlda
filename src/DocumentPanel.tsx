@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
 import { createPortal } from 'react-dom'
-import { useEditor } from 'tldraw'
+import { useEditor, useValue } from 'tldraw'
 import type { Editor, TLShape } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from './katexMacros'
@@ -8,7 +8,6 @@ import { loadLookup, clearLookupCache, loadHtmlToc, loadHtmlSearch, type LookupE
 import { pdfToCanvas } from './synctexAnchor'
 import { PanelContext, type PanelContextValue } from './PanelContext'
 import { getYRecords, getLiveUrl, onReloadSignal, writeSignal, readSignal } from './useYjsSync'
-import { changedPages, onChangeStoreUpdate, dismissAllChanges } from './SvgPageShape'
 import './DocumentPanel.css'
 
 // --- Helpers ---
@@ -198,26 +197,6 @@ function TocTab() {
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
 
-  // Track recent changes (page-level "unread" indicators)
-  const [changedPageSet, setChangedPageSet] = useState<Set<string>>(() => new Set(changedPages))
-  useEffect(() => {
-    return onChangeStoreUpdate(() => {
-      setChangedPageSet(new Set(changedPages))
-    })
-  }, [])
-
-  // Map shapeIds to 1-indexed page numbers for display
-  const changedPageNumbers = useMemo(() => {
-    if (!ctx || changedPageSet.size === 0) return []
-    const nums: number[] = []
-    for (let i = 0; i < ctx.pages.length; i++) {
-      if (changedPageSet.has(ctx.pages[i].shapeId as string)) {
-        nums.push(i + 1)
-      }
-    }
-    return nums.sort((a, b) => a - b)
-  }, [ctx, changedPageSet])
-
   // Re-fetch TOC when reload signal arrives
   useEffect(() => {
     return onReloadSignal((signal) => {
@@ -322,58 +301,6 @@ function TocTab() {
           Join live session
         </a>
       )}
-      {(changedPageNumbers.length > 0 || (ctx && (ctx.snapshotCount ?? 0) >= 2)) && (
-        <div className="recent-changes">
-          {changedPageNumbers.length > 0 && (
-            <>
-              <div className="recent-changes-header">
-                <span className="recent-changes-label">Recent changes</span>
-                <span className="recent-changes-dismiss" onClick={() => {
-                  dismissAllChanges()
-                  if (ctx?.onSliderChange) ctx.onSliderChange(-1)
-                }}>
-                  mark read
-                </span>
-              </div>
-              <div className="recent-changes-pages">
-                {changedPageNumbers.map(n => (
-                  <span
-                    key={n}
-                    className="recent-changes-page"
-                    onClick={() => { if (ctx) navigateToPage(editor, ctx, n) }}
-                  >
-                    p.{n}
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-          {ctx && (ctx.snapshotCount ?? 0) >= 2 && ctx.snapshotTimestamps && (
-            <div className="snapshot-slider">
-              {changedPageNumbers.length === 0 && (
-                <span className="recent-changes-label" style={{ marginRight: 4 }}>history</span>
-              )}
-              <input
-                type="range"
-                className="snapshot-range"
-                min={0}
-                max={(ctx.snapshotCount ?? 1) - 1}
-                value={ctx.activeSnapshotIdx !== undefined && ctx.activeSnapshotIdx >= 0
-                  ? ctx.activeSnapshotIdx
-                  : (ctx.snapshotCount ?? 1) - 1}
-                onChange={(e) => ctx.onSliderChange?.(parseInt(e.target.value))}
-              />
-              <span className="snapshot-label">
-                {formatRelativeTime(ctx.snapshotTimestamps[
-                  ctx.activeSnapshotIdx !== undefined && ctx.activeSnapshotIdx >= 0
-                    ? ctx.activeSnapshotIdx
-                    : (ctx.snapshotCount ?? 1) - 1
-                ])}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
       {items.map((h, i) => {
         if (h.level === 'section') {
           currentSectionIdx = i
@@ -423,14 +350,6 @@ function TocTab() {
             dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
         )
       })}
-      {ctx?.diffAvailable && (
-        <div
-          className="toc-diff-hint"
-          onClick={() => ctx.onToggleDiff?.()}
-        >
-          <kbd>d</kbd> {ctx.diffLoading ? 'Loading diff\u2026' : ctx.diffMode ? 'Hide diff' : 'Show diff'}
-        </div>
-      )}
       {ctx?.onToggleCameraLink && (
         <div
           className="toc-diff-hint"
@@ -447,7 +366,188 @@ function TocTab() {
           {ctx.panelsLocal ? 'Hide panels here' : 'Show panels here'}
         </div>
       )}
+      <DarkModeToggle />
     </div>
+  )
+}
+
+function DarkModeToggle() {
+  const editor = useEditor()
+  const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
+  const label = scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
+  return (
+    <div
+      className="toc-diff-hint"
+      onClick={() => {
+        const next = scheme === 'system' ? 'dark' : scheme === 'dark' ? 'light' : 'system'
+        editor.user.updateUserPreferences({ colorScheme: next })
+      }}
+    >
+      {scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'} {label}
+    </div>
+  )
+}
+
+function HistoryTab() {
+  const ctx = useContext(PanelContext)
+  const hasDiff = !!(ctx?.diffChanges && ctx.diffChanges.length > 0)
+
+  const entries = ctx?.historyEntries || []
+  const isAtEnd = !ctx?.activeHistoryIdx || ctx.activeHistoryIdx < 0 || ctx.activeHistoryIdx >= entries.length - 1
+  const showCompare = !isAtEnd
+
+  return (
+    <div className="doc-panel-content">
+      {entries.length >= 2 && (
+        <div className="snapshot-slider">
+          <input
+            type="range"
+            className="snapshot-range"
+            min={0}
+            max={entries.length - 1}
+            value={ctx?.activeHistoryIdx !== undefined && ctx.activeHistoryIdx >= 0
+              ? ctx.activeHistoryIdx
+              : entries.length - 1}
+            onChange={(e) => ctx?.onHistoryChange?.(parseInt(e.target.value))}
+          />
+          {showCompare && (
+            <button
+              className={`history-compare-btn${ctx?.showHistoryPanel ? ' active' : ''}`}
+              onClick={() => ctx?.onToggleHistoryPanel?.()}
+              title="Show side-by-side comparison"
+            >
+              ◧
+            </button>
+          )}
+          <span className="snapshot-label">
+            {ctx?.historyLoading ? '...' : (() => {
+              const idx = ctx?.activeHistoryIdx !== undefined && ctx.activeHistoryIdx >= 0
+                ? ctx.activeHistoryIdx
+                : entries.length - 1
+              const entry = entries[idx]
+              if (!entry) return ''
+              if (idx === entries.length - 1) return 'current'
+              const time = formatRelativeTime(entry.timestamp)
+              return entry.type === 'git'
+                ? `${entry.commitMessage?.slice(0, 25) || entry.id} (${time})`
+                : time
+            })()}
+          </span>
+        </div>
+      )}
+      {ctx?.diffAvailable && (
+        <div
+          className="toc-diff-hint"
+          onClick={() => ctx.onToggleDiff?.()}
+        >
+          {ctx.diffLoading ? 'Loading diff\u2026' : ctx.diffMode ? 'Hide diff' : 'Show diff'}
+        </div>
+      )}
+      {hasDiff && <ChangesTab />}
+      {!hasDiff && <HistoryChanges />}
+    </div>
+  )
+}
+
+function HistoryChanges() {
+  const editor = useEditor()
+  const ctx = useContext(PanelContext)
+  const changes = ctx?.historyChanges
+  const [reviews, setReviews] = useState<ReviewMap>({})
+  const [summaries, setSummaries] = useState<SummaryMap>({})
+
+  // Load review state + summaries from Yjs and observe changes
+  useEffect(() => {
+    setReviews(readReviewState())
+    setSummaries(readSummaries())
+    const yRecords = getYRecords()
+    if (!yRecords) return
+    const handler = () => {
+      setReviews(readReviewState())
+      setSummaries(readSummaries())
+    }
+    yRecords.observe(handler)
+    return () => yRecords.unobserve(handler)
+  }, [])
+
+  const handleNav = useCallback((c: { page: number; y?: number }) => {
+    if (!ctx) return
+    if (c.y != null) {
+      // Convert viewBox y (origin -72) to synctex y (origin 0)
+      const pos = pdfToCanvas(c.page, 0, c.y + 72, ctx.pages)
+      if (pos) {
+        // Only scroll vertically — keep current camera x
+        const cam = editor.getCamera()
+        const vp = editor.getViewportScreenBounds()
+        const targetY = -(pos.y - vp.h / (2 * cam.z))
+        editor.setCamera({ x: cam.x, y: targetY, z: cam.z }, { animation: { duration: 300 } })
+        return
+      }
+    }
+    navigateToPage(editor, ctx, c.page)
+  }, [editor, ctx])
+
+  if (!changes || changes.length === 0) return null
+
+  const reviewed = changes.filter(c => reviews[c.id]).length
+
+  return (
+    <>
+      <div className="changes-header">
+        {reviewed}/{changes.length} reviewed
+      </div>
+      {changes.map((c) => {
+        const status = reviews[c.id] || null
+        const snippet = c.newText
+          ? (c.newText.length > 50 ? c.newText.slice(0, 47) + '\u2026' : c.newText)
+          : c.oldText
+            ? '\u2212 ' + (c.oldText.length > 47 ? c.oldText.slice(0, 44) + '\u2026' : c.oldText)
+            : null
+        const isSelected = ctx?.selectedChangeId === c.id
+        return (
+          <div
+            key={c.id}
+            className={`change-item ${status ? 'reviewed' : ''} ${isSelected ? 'selected' : ''}`}
+            onClick={() => {
+              ctx?.onSelectChange?.(isSelected ? null : c.id)
+              handleNav(c)
+            }}
+          >
+            <span className="change-page">
+              p.{c.page}
+            </span>
+            <span className="change-status-dots">
+              {STATUS_LABELS.map(s => (
+                <span
+                  key={s.key}
+                  className={`status-dot ${status === s.key ? 'active' : ''} status-${s.key}`}
+                  onClick={(e) => { e.stopPropagation(); setReviews(prev => {
+                    const next = { ...prev }
+                    if (next[c.id] === s.key) delete next[c.id]
+                    else next[c.id] = s.key
+                    writeReviewState(next)
+                    return next
+                  })}}
+                  data-tooltip={s.label}
+                >
+                  {status === s.key ? STATUS_FILLED : s.symbol}
+                </span>
+              ))}
+            </span>
+            {snippet && (
+              <div className="change-snippet">
+                {snippet}
+              </div>
+            )}
+            {summaries[c.id] && (
+              <div className="change-summary">
+                {summaries[c.id]}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -604,8 +704,8 @@ function SearchTab() {
 }
 
 type ReviewStatus = 'new' | 'old' | 'discuss' | null
-type ReviewMap = Record<number, ReviewStatus>  // currentPage → status
-type SummaryMap = Record<number, string>       // currentPage → one-line summary
+type ReviewMap = Record<string, ReviewStatus>  // changeId or page → status
+type SummaryMap = Record<string, string>       // changeId or page → one-line summary
 
 function readReviewState(): ReviewMap {
   return readSignal<{ reviews: ReviewMap }>('signal:diff-review')?.reviews || {}
@@ -679,18 +779,12 @@ function ChangesTab() {
   // n/p keyboard shortcuts are now handled at the SvgDocumentEditor level
   // so they work regardless of which panel tab is active
 
-  if (!changes || changes.length === 0) {
-    return (
-      <div className="doc-panel-content">
-        <div className="panel-empty">No changes</div>
-      </div>
-    )
-  }
+  if (!changes || changes.length === 0) return null
 
   const reviewed = changes.filter(c => reviews[c.currentPage]).length
 
   return (
-    <div className="doc-panel-content">
+    <>
       <div className="changes-header">
         {reviewed}/{changes.length} reviewed
       </div>
@@ -719,7 +813,7 @@ function ChangesTab() {
                   key={s.key}
                   className={`status-dot ${status === s.key ? 'active' : ''} status-${s.key}`}
                   onClick={(e) => { e.stopPropagation(); setStatus(c.currentPage, s.key) }}
-                  title={s.label}
+                  data-tooltip={s.label}
                 >
                   {status === s.key ? STATUS_FILLED : s.symbol}
                 </span>
@@ -736,7 +830,7 @@ function ChangesTab() {
       <div className="changes-hint">
         n / p to jump &middot; {STATUS_FILLED} new &middot; {STATUS_FILLED} old &middot; {STATUS_FILLED} discuss
       </div>
-    </div>
+    </>
   )
 }
 
@@ -952,7 +1046,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'diff' | 'toc' | 'proofs' | 'search' | 'notes'
+type Tab = 'history' | 'toc' | 'proofs' | 'search' | 'notes'
 
 // Stop pointer events from reaching tldraw's canvas event handlers
 function stopTldrawEvents(e: { stopPropagation: () => void }) {
@@ -962,15 +1056,8 @@ function stopTldrawEvents(e: { stopPropagation: () => void }) {
 
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
-  const hasDiff = !!(ctx?.diffChanges && ctx.diffChanges.length > 0)
   const hasProofs = !!(ctx?.proofPairs && ctx.proofPairs.length > 0)
-  const [tab, setTab] = useState<Tab>(hasDiff ? 'diff' : 'toc')
-
-  // Auto-switch to diff tab when changes appear, back to toc when they disappear
-  useEffect(() => {
-    if (hasDiff) setTab('diff')
-    else setTab(prev => prev === 'diff' ? 'toc' : prev)
-  }, [hasDiff])
+  const [tab, setTab] = useState<Tab>('toc')
 
   // Portal outside TLDraw's DOM tree to avoid event capture interference
   const portalRef = useRef<HTMLDivElement | null>(null)
@@ -994,13 +1081,11 @@ export function DocumentPanel() {
           onTouchStart={stopTldrawEvents}
           onTouchEnd={stopTldrawEvents}
         >
-          {hasDiff && (
-            <button className={`doc-panel-tab ${tab === 'diff' ? 'active' : ''}`} onClick={() => setTab('diff')}>
-              Diff
-            </button>
-          )}
           <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
             TOC
+          </button>
+          <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+            History
           </button>
           {hasProofs && (
             <button className={`doc-panel-tab ${tab === 'proofs' ? 'active' : ''}`} onClick={() => setTab('proofs')}>
@@ -1014,8 +1099,8 @@ export function DocumentPanel() {
             Notes
           </button>
         </div>
-        {tab === 'diff' && hasDiff && <ChangesTab />}
         {tab === 'toc' && <TocTab />}
+        {tab === 'history' && <HistoryTab />}
         {tab === 'proofs' && hasProofs && <ProofsTab />}
         {tab === 'search' && <SearchTab />}
         {tab === 'notes' && <NotesTab />}

@@ -72,6 +72,16 @@ app.use('/docs', (req, res, next) => {
   const name = parts[0]
   const filePath = parts.slice(1).join('/')
 
+  // Serve history snapshots: /docs/{name}/history/{snapshotId}/page-N.svg
+  if (filePath.startsWith('history/')) {
+    const histPath = join(PROJECTS_DIR, name, filePath)
+    if (existsSync(histPath)) {
+      res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
+      return res.sendFile(resolve(histPath))
+    }
+    return res.status(404).json({ error: 'Not found' })
+  }
+
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {

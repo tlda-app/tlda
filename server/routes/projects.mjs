@@ -15,13 +15,19 @@
  */
 
 import { Router } from 'express'
+import { existsSync, readFileSync, readdirSync } from 'fs'
+import { join } from 'path'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
-  listSourceFiles, writeSourceFile, readBuildLog,
+  listSourceFiles, writeSourceFile, readBuildLog, sourceDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
+import historyRoutes from './history.mjs'
 
 const router = Router()
+
+// Mount history sub-router
+router.use('/:name/history', historyRoutes)
 
 // List all projects
 router.get('/', (req, res) => {
@@ -140,6 +146,63 @@ router.get('/:name/build/status', (req, res) => {
     phase: activeBuild?.phase || null,
     lastBuild: project.lastBuild,
     log: buildLog,
+  })
+})
+
+// LaTeX errors from the build log
+router.get('/:name/build/errors', (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const activeBuild = getBuildStatus(req.params.name)
+  const building = activeBuild?.building || false
+
+  // Find the .log file in source dir
+  const srcDir = sourceDir(req.params.name)
+  const mainBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '')
+  const logPath = join(srcDir, `${mainBase}.log`)
+
+  if (!existsSync(logPath)) {
+    return res.json({ building, status: project.buildStatus, errors: [], warnings: [] })
+  }
+
+  const logText = readFileSync(logPath, 'utf8')
+  const lines = logText.split('\n')
+
+  const errors = []
+  const warnings = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    // LaTeX errors start with !
+    if (line.startsWith('!')) {
+      // Collect context: the error line + next few lines (up to blank or next !)
+      let msg = line
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        if (lines[j].startsWith('!') || lines[j] === '') break
+        msg += '\n' + lines[j]
+      }
+      errors.push(msg)
+    }
+    // LaTeX warnings
+    if (line.includes('LaTeX Warning:') || line.includes('Package natbib Warning:')) {
+      // Skip common noise
+      if (line.includes('Reference') || line.includes('Citation') || line.includes('Label(s) may have changed')) {
+        warnings.push(line.trim())
+      }
+    }
+    // Undefined control sequence (sometimes not prefixed with !)
+    if (line.includes('Undefined control sequence')) {
+      errors.push(line.trim())
+    }
+  }
+
+  res.json({
+    building,
+    status: project.buildStatus,
+    lastBuild: project.lastBuild,
+    errors,
+    warnings,
   })
 })
 
