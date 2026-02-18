@@ -3,11 +3,22 @@ import {
   HTMLContainer,
   T,
   useEditor,
+  useValue,
   stopEventPropagation,
   DefaultColorStyle,
 } from 'tldraw'
+import type { TLShapeId } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState } from 'react'
+import {
+  getThreadMeta,
+  getThreadMembers,
+  getActiveShape,
+  findRoot,
+  switchTab,
+  createReply,
+  detachFromThread,
+} from './noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getActiveMacros } from './katexMacros'
@@ -170,6 +181,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
 
+    const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
@@ -634,6 +646,162 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
+    // Thread tab bar
+    const meta = getThreadMeta(shape)
+    const isInThread = !!meta.threadId
+    const isActiveInThread = isInThread && (
+      !meta.threadRootId
+        ? !meta.activeReplyId  // root is active when activeReplyId is null/undefined
+        : meta.activeReplyId === undefined // shouldn't happen, but safe fallback
+    ) || (meta.threadRootId && (() => {
+      // Reply: check if root's activeReplyId points to us
+      const root = editor.getShape(meta.threadRootId as TLShapeId)
+      return root && (getThreadMeta(root).activeReplyId === shape.id)
+    })())
+
+    // Context menu state for tab detach
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; shapeId: string } | null>(null)
+
+    useEffect(() => {
+      if (!contextMenu) return
+      const dismiss = () => setContextMenu(null)
+      document.addEventListener('pointerdown', dismiss, true)
+      return () => document.removeEventListener('pointerdown', dismiss, true)
+    }, [contextMenu])
+
+    // Tab bar — only for threads with 2+ members. Renders inside the note like browser tabs.
+    let tabBar: React.ReactNode = null
+    const root = findRoot(editor, shape)
+    const members = isInThread ? getThreadMembers(editor, root) : [shape]
+    const showTabBar = isInThread && members.length >= 2 && shape.opacity !== 0
+
+    if (showTabBar) {
+      const inactiveBg = isDark ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'
+      const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
+      const activeColor = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.55)'
+      const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
+      const plusColor = isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)'
+
+      tabBar = (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            borderBottom: `1px solid ${borderColor}`,
+            flexShrink: 0,
+            pointerEvents: 'all',
+          }}
+          onPointerDown={stopIfNotPenTouch(editor)}
+        >
+          {members.map((m, i) => {
+            const mActive = m.id === (getThreadMeta(root).activeReplyId || root.id)
+            return (
+              <div
+                key={m.id}
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                  if (e.button === 2) return
+                  switchTab(editor, root, m.id)
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (getThreadMeta(m).threadRootId) {
+                    setContextMenu({ x: e.clientX, y: e.clientY, shapeId: m.id })
+                  }
+                }}
+                style={{
+                  padding: '3px 8px',
+                  fontSize: '9px',
+                  fontFamily: '-apple-system, sans-serif',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  color: mActive ? activeColor : inactiveColor,
+                  fontWeight: mActive ? 600 : 400,
+                  backgroundColor: mActive ? 'transparent' : inactiveBg,
+                  borderRight: `1px solid ${borderColor}`,
+                  borderBottom: mActive ? `1px solid ${bgColor}` : 'none',
+                  marginBottom: '-1px',
+                }}
+              >
+                {i + 1}
+              </div>
+            )
+          })}
+          {/* + button */}
+          <div
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              const replyId = createReply(editor, root)
+              requestAnimationFrame(() => {
+                editor.setEditingShape(replyId)
+              })
+            }}
+            style={{
+              padding: '3px 6px',
+              fontSize: '10px',
+              fontFamily: '-apple-system, sans-serif',
+              cursor: 'pointer',
+              userSelect: 'none',
+              color: plusColor,
+              backgroundColor: inactiveBg,
+              marginBottom: '-1px',
+            }}
+          >
+            +
+          </div>
+          {/* Spacer fills remaining width */}
+          <div style={{ flex: 1 }} />
+        </div>
+      )
+    }
+
+    // Context menu portal for detach
+    let contextMenuEl: React.ReactNode = null
+    if (contextMenu) {
+      contextMenuEl = (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            zIndex: 9999,
+            background: isDark ? '#2a2a2a' : '#fff',
+            border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'}`,
+            borderRadius: '4px',
+            boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.12)',
+            padding: '2px 0',
+            pointerEvents: 'all',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{
+              padding: '4px 12px',
+              fontSize: '12px',
+              cursor: 'pointer',
+              fontFamily: '-apple-system, sans-serif',
+              color: isDark ? '#ccc' : undefined,
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              const s = editor.getShape(contextMenu.shapeId as TLShapeId)
+              if (s) detachFromThread(editor, s)
+              setContextMenu(null)
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.backgroundColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'
+            }}
+          >
+            Detach from thread
+          </div>
+        </div>
+      )
+    }
+
     return (
       <HTMLContainer
         id={shape.id}
@@ -644,9 +812,30 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           borderRadius: '4px',
           boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
           pointerEvents: 'all',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
-        {content}
+        {tabBar}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+          {content}
+          {/* Standalone + button for non-threaded notes */}
+          {!showTabBar && !isEditing && shape.opacity !== 0 && (
+            <div
+              className="note-add-reply"
+              onPointerDown={(e) => {
+                e.stopPropagation()
+                const replyId = createReply(editor, shape)
+                requestAnimationFrame(() => {
+                  editor.setEditingShape(replyId)
+                })
+              }}
+            >
+              +
+            </div>
+          )}
+        </div>
+        {contextMenuEl}
       </HTMLContainer>
     )
   }

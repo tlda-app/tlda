@@ -4,9 +4,7 @@ import { useEditor } from 'tldraw'
 import { PanelContext } from './PanelContext'
 import { getYRecords, writeSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
-import { SearchTab } from './panels/SearchTab'
 import { HistoryTab } from './panels/HistoryTab'
-import { ProofsTab } from './panels/ProofsTab'
 import { NotesTab } from './panels/NotesTab'
 import './DocumentPanel.css'
 
@@ -100,11 +98,10 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'history' | 'toc' | 'proofs' | 'search' | 'notes'
+type Tab = 'history' | 'toc' | 'notes'
 
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
-  const hasProofs = !!(ctx?.proofPairs && ctx.proofPairs.length > 0)
   const [tab, setTab] = useState<Tab>('toc')
 
   // Portal outside TLDraw's DOM tree to avoid event capture interference
@@ -135,22 +132,12 @@ export function DocumentPanel() {
           <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
             History
           </button>
-          {hasProofs && (
-            <button className={`doc-panel-tab ${tab === 'proofs' ? 'active' : ''}`} onClick={() => setTab('proofs')}>
-              Proofs
-            </button>
-          )}
-          <button className={`doc-panel-tab ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-            Search
-          </button>
           <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
             Notes
           </button>
         </div>
         {tab === 'toc' && <TocTab />}
         {tab === 'history' && <HistoryTab />}
-        {tab === 'proofs' && hasProofs && <ProofsTab />}
-        {tab === 'search' && <SearchTab />}
         {tab === 'notes' && <NotesTab />}
       </div>
     </>,

@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useContext } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
 import { useEditor, useValue } from 'tldraw'
-import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
+import type { TLShape } from 'tldraw'
+import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
-import { navigateTo, navigateToPage, parseHeadings, renderTocTitle, type TocLevel, type TocEntry } from './helpers'
+import { navigateTo, navigateToPage, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
 export function TocTab() {
   const editor = useEditor()
@@ -89,6 +90,101 @@ export function TocTab() {
     })
   }, [])
 
+  // --- Search state (must be before any early returns) ---
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [searchLines, setSearchLines] = useState<Record<string, LookupEntry> | null>(null)
+  const [htmlSearchIndex, setHtmlSearchIndex] = useState<HtmlSearchEntry[] | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(null)
+
+  useEffect(() => {
+    if (!doc) return
+    loadLookup(doc.docName).then(data => {
+      if (data) {
+        setSearchLines(data.lines)
+      } else {
+        loadHtmlSearch(doc.docName).then(index => {
+          if (index) setHtmlSearchIndex(index)
+        })
+      }
+    })
+  }, [doc?.docName, reloadCount])
+
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [query])
+
+  const docResults = useMemo(() => {
+    if (!debouncedQuery) return []
+    const q = debouncedQuery.toLowerCase()
+    if (searchLines) {
+      const results: Array<{ line: string; entry: LookupEntry }> = []
+      for (const [line, entry] of Object.entries(searchLines)) {
+        if (entry.content.toLowerCase().includes(q)) {
+          results.push({ line, entry })
+          if (results.length >= 50) break
+        }
+      }
+      return results
+    }
+    if (htmlSearchIndex) {
+      const results: Array<{ page: number; snippet: string; label?: string }> = []
+      for (const entry of htmlSearchIndex) {
+        const idx = entry.text.toLowerCase().indexOf(q)
+        if (idx >= 0) {
+          const start = Math.max(0, idx - 30)
+          const end = Math.min(entry.text.length, idx + q.length + 50)
+          const snippet = (start > 0 ? '...' : '') + entry.text.slice(start, end) + (end < entry.text.length ? '...' : '')
+          results.push({ page: entry.page, snippet, label: entry.label })
+          if (results.length >= 50) break
+        }
+      }
+      return results
+    }
+    return []
+  }, [debouncedQuery, searchLines, htmlSearchIndex])
+
+  const noteResults = useMemo(() => {
+    if (!debouncedQuery) return []
+    const q = debouncedQuery.toLowerCase()
+    const shapes = editor.getCurrentPageShapes()
+    const results: Array<{ shape: TLShape; text: string }> = []
+    for (const shape of shapes) {
+      if ((shape.type as string) !== 'math-note' && shape.type !== 'note') continue
+      const text = getShapeText(shape)
+      if (text.toLowerCase().includes(q)) {
+        results.push({ shape, text })
+        if (results.length >= 50) break
+      }
+    }
+    return results
+  }, [debouncedQuery, editor])
+
+  const handleDocSearchClick = useCallback((entry: LookupEntry) => {
+    if (!doc) return
+    const pos = pdfToCanvas(entry.page, entry.x, entry.y, doc.pages)
+    if (!pos) return
+    const pageIndex = entry.page - 1
+    const page = doc.pages[pageIndex]
+    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
+    navigateTo(editor, pos.x, pos.y, pageCenterX)
+  }, [editor, doc])
+
+  const handlePageSearchClick = useCallback((pageNum: number) => {
+    if (!doc) return
+    navigateToPage(editor, doc, pageNum)
+  }, [editor, doc])
+
+  const handleNoteSearchClick = useCallback((shape: TLShape) => {
+    navigateTo(editor, shape.x, shape.y)
+  }, [editor])
+
+  const isHtmlSearch = !searchLines && !!htmlSearchIndex
+  const hasSearchResults = debouncedQuery && (docResults.length > 0 || noteResults.length > 0)
+  const hasNoResults = debouncedQuery && docResults.length === 0 && noteResults.length === 0
+
   // Use HTML TOC if no TeX headings
   const tocItems = htmlToc || null
   const useHtml = headings.length === 0 && tocItems !== null
@@ -108,7 +204,56 @@ export function TocTab() {
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
   return (
+    <>
+    <div className="search-input-wrap">
+      <input
+        className="search-input"
+        type="text"
+        placeholder="Search..."
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+      />
+    </div>
     <div className="doc-panel-content">
+      {/* Search results first */}
+      {hasSearchResults && (
+        <>
+          {docResults.length > 0 && (
+            <>
+              <div className="search-group-label">Document</div>
+              {isHtmlSearch
+                ? (docResults as Array<{ page: number; snippet: string; label?: string }>).map((r, i) => (
+                    <div key={`d-${i}`} className="search-result" onClick={() => handlePageSearchClick(r.page)}>
+                      <span className="line-num">p{r.page}</span>
+                      {r.snippet}
+                    </div>
+                  ))
+                : (docResults as Array<{ line: string; entry: LookupEntry }>).map((r, i) => (
+                    <div key={`d-${i}`} className="search-result" onClick={() => handleDocSearchClick(r.entry)}>
+                      <span className="line-num">L{r.line}</span>
+                      {stripTex(r.entry.content).slice(0, 80)}
+                    </div>
+                  ))
+              }
+            </>
+          )}
+          {noteResults.length > 0 && (
+            <>
+              <div className="search-group-label">Notes</div>
+              {noteResults.map((r, i) => (
+                <div key={`n-${i}`} className="search-result" onClick={() => handleNoteSearchClick(r.shape)}>
+                  {r.text.slice(0, 80)}
+                </div>
+              ))}
+            </>
+          )}
+          <div className="notes-section-divider" />
+        </>
+      )}
+      {hasNoResults && (
+        <div className="panel-empty">No results</div>
+      )}
+      {/* TOC */}
       {liveUrl && (
         <a
           href={liveUrl}
@@ -140,7 +285,6 @@ export function TocTab() {
             </div>
           )
         }
-        // Hidden if parent section is collapsed
         if (collapsed?.has(currentSectionIdx)) return null
         if (h.level === 'subsection') {
           currentSubsectionIdx = i
@@ -161,7 +305,6 @@ export function TocTab() {
             </div>
           )
         }
-        // subsubsection: hidden if parent subsection is collapsed
         if (collapsed?.has(currentSubsectionIdx)) return null
         return (
           <div key={i} className="toc-item subsubsection" onClick={h.nav}
@@ -186,6 +329,7 @@ export function TocTab() {
       )}
       <DarkModeToggle />
     </div>
+    </>
   )
 }
 

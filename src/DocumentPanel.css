@@ -316,6 +316,7 @@
   border-bottom: 1px solid rgba(0, 0, 0, 0.0);
   flex-shrink: 0;
   transition: border-color 0.3s;
+  pointer-events: all;
 }
 
 .doc-panel:hover .search-input-wrap {
@@ -325,24 +326,27 @@
 .search-input {
   width: 100%;
   padding: 4px 6px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  border: 1px solid transparent;
   border-radius: 3px;
   font-size: 11px;
   outline: none;
-  background: rgba(255, 255, 255, 0.05);
+  background: transparent;
   box-sizing: border-box;
   color: inherit;
-  transition: border-color 0.3s, background 0.3s;
+  transition: border-color 0.3s;
 }
 
 .doc-panel:hover .search-input {
-  border-color: rgba(0, 0, 0, 0.12);
-  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+.search-input::placeholder {
+  color: inherit;
+  opacity: 1;
 }
 
 .search-input:focus {
-  border-color: rgba(0, 0, 0, 0.25);
-  background: rgba(255, 255, 255, 0.8);
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 .search-group-label {
@@ -552,6 +556,118 @@
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+/* Notes toolbar */
+.notes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  flex-shrink: 0;
+  transition: border-color 0.3s;
+}
+
+.doc-panel:hover .notes-toolbar {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+.notes-sort-toggle {
+  padding: 4px 0;
+  font-size: 9px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.1);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.3s;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.doc-panel:hover .notes-sort-toggle {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+.notes-section-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px 2px;
+  color: rgba(0, 0, 0, 0.15);
+  transition: color 0.3s;
+}
+
+.doc-panel:hover .notes-section-label {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.notes-section-divider {
+  height: 0;
+  margin: 4px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  transition: border-color 0.3s;
+}
+
+.doc-panel:hover .notes-section-divider {
+  border-top-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Thread-specific note styles */
+.note-item.note-reply {
+  padding-left: 20px;
+}
+
+.note-thread-order {
+  font-size: 8px;
+  opacity: 0.3;
+  margin-right: 4px;
+  font-family: -apple-system, sans-serif;
+}
+
+.note-thread-toggle {
+  font-size: 7px;
+  opacity: 0.3;
+  margin-right: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.note-reply-count {
+  font-size: 9px;
+  opacity: 0.3;
+  margin-left: 4px;
+}
+
+.note-pending-dot {
+  font-size: 7px;
+  color: #f59e0b;
+  margin-left: 4px;
+}
+
+.note-add-reply {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 300;
+  font-family: -apple-system, sans-serif;
+  color: rgba(0,0,0,0.35);
+  cursor: pointer;
+  border-radius: 4px;
+  user-select: none;
+  pointer-events: all;
+  transition: color 0.15s, background 0.15s;
+}
+.note-add-reply:hover {
+  color: rgba(0,0,0,0.6);
+  background: rgba(0,0,0,0.08);
 }
 
 .panel-empty {
@@ -885,6 +1001,38 @@ html[data-theme="dark"] .toc-diff-hint:hover {
   background: rgba(255, 255, 255, 0.05);
 }
 
+html[data-theme="dark"] .notes-toolbar {
+  border-bottom-color: rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .doc-panel:hover .notes-toolbar {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .notes-sort-toggle {
+  color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .doc-panel:hover .notes-sort-toggle {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+html[data-theme="dark"] .notes-section-label {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .doc-panel:hover .notes-section-label {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .notes-section-divider {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .doc-panel:hover .notes-section-divider {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
 html[data-theme="dark"] .tool-toggle-zone.pen-hover {
   background: rgba(255, 255, 255, 0.03);
 }
@@ -893,19 +1041,12 @@ html[data-theme="dark"] .tool-toggle-zone-icon {
   background-color: rgba(255, 255, 255, 0.2);
 }
 
-html[data-theme="dark"] .search-input {
-  border-color: rgba(255, 255, 255, 0.05);
-  background: rgba(0, 0, 0, 0.05);
-}
-
 html[data-theme="dark"] .doc-panel:hover .search-input {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 html[data-theme="dark"] .search-input:focus {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 html[data-theme="dark"] .recent-changes {
