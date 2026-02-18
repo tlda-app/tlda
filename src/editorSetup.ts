@@ -9,6 +9,7 @@ import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighligh
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
+import { anchorShape } from './anchorCluster'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
@@ -24,69 +25,99 @@ export async function remapAnnotations(
 ) {
   const allShapes = editor.getCurrentPageShapes()
 
-  // Debug: log all shapes and their meta
-  console.log(`[SyncTeX] Total shapes: ${allShapes.length}`)
-  console.log(`[SyncTeX] All shapes:`, allShapes.map(s => ({ id: s.id, type: s.type, hasMeta: !!s.meta, metaKeys: Object.keys(s.meta || {}) })))
-
   // Find shapes with source anchors
   const anchored = allShapes.filter(shape => {
     const meta = shape.meta as { sourceAnchor?: SourceAnchor }
     return meta?.sourceAnchor?.file && meta?.sourceAnchor?.line
   })
 
-  if (anchored.length === 0) {
-    console.log('[SyncTeX] No anchored annotations to remap')
-    return
-  }
+  if (anchored.length === 0) return
 
   console.log(`[SyncTeX] Remapping ${anchored.length} anchored annotations...`)
 
-  // Resolve each anchor and update position
-  const updates: Array<{ id: TLShapeId, x: number, y: number }> = []
+  // Group by clusterId — clustered shapes move as a unit (same delta),
+  // solo shapes (math notes) position directly from the anchor.
+  const clusters = new Map<string, TLShape[]>()
+  const solo: TLShape[] = []
 
   for (const shape of anchored) {
-    const meta = shape.meta as unknown as { sourceAnchor: SourceAnchor }
-    const anchor = meta.sourceAnchor
+    const cid = (shape.meta as any).clusterId as string | undefined
+    if (cid) {
+      if (!clusters.has(cid)) clusters.set(cid, [])
+      clusters.get(cid)!.push(shape)
+    } else {
+      solo.push(shape)
+    }
+  }
 
+  const updates: TLShapePartial[] = []
+
+  // Solo shapes (math notes): resolve anchor, position directly
+  for (const shape of solo) {
+    const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
     try {
-      // Get new PDF position from synctex
       const pdfPos = await resolvAnchor(docName, anchor)
-      if (!pdfPos) {
-        console.warn(`[SyncTeX] Could not resolve anchor for ${anchor.file}:${anchor.line}`)
-        continue
-      }
-
-      // Convert to canvas coordinates
+      if (!pdfPos) continue
       const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
-      if (!canvasPos) {
-        console.warn(`[SyncTeX] Could not convert PDF pos to canvas for page ${pdfPos.page}`)
-        continue
-      }
+      if (!canvasPos) continue
 
-      // Only update if position actually changed
       const dx = Math.abs(shape.x - (canvasPos.x - 100))
       const dy = Math.abs(shape.y - (canvasPos.y - 100))
       if (dx > 1 || dy > 1) {
         updates.push({
           id: shape.id,
+          type: shape.type,
           x: canvasPos.x - 100, // Offset for note centering (matches MathNoteTool)
           y: canvasPos.y - 100,
         })
-        console.log(`[SyncTeX] Moving ${shape.id} to (${canvasPos.x}, ${canvasPos.y}) from ${anchor.file}:${anchor.line}`)
       }
     } catch (e) {
       console.warn(`[SyncTeX] Error resolving anchor:`, e)
     }
   }
 
+  // Clustered shapes: resolve anchor once, compute delta, apply to all
+  for (const [cid, shapes] of clusters) {
+    const anchor = (shapes[0].meta as any).sourceAnchor as SourceAnchor
+    const oldAnchorX = (shapes[0].meta as any).anchorCanvasX as number
+    const oldAnchorY = (shapes[0].meta as any).anchorCanvasY as number
+
+    if (oldAnchorX == null || oldAnchorY == null) continue
+
+    try {
+      const pdfPos = await resolvAnchor(docName, anchor)
+      if (!pdfPos) continue
+      const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
+      if (!canvasPos) continue
+
+      const deltaX = canvasPos.x - oldAnchorX
+      const deltaY = canvasPos.y - oldAnchorY
+
+      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) continue
+
+      for (const shape of shapes) {
+        updates.push({
+          id: shape.id,
+          type: shape.type,
+          x: shape.x + deltaX,
+          y: shape.y + deltaY,
+          meta: {
+            ...shape.meta,
+            anchorCanvasX: canvasPos.x,
+            anchorCanvasY: canvasPos.y,
+          },
+        })
+      }
+
+      console.log(`[SyncTeX] Cluster ${cid}: ${shapes.length} shapes moved by (${deltaX.toFixed(1)}, ${deltaY.toFixed(1)})`)
+    } catch (e) {
+      console.warn(`[SyncTeX] Error resolving cluster anchor:`, e)
+    }
+  }
+
   if (updates.length > 0) {
     console.log(`[SyncTeX] Applying ${updates.length} position updates`)
-    editor.updateShapes(updates.map(u => ({
-      id: u.id,
-      type: 'math-note' as const,
-      x: u.x,
-      y: u.y,
-    })) as any)
+    editor.updateShapes(updates)
   }
 }
 
@@ -568,7 +599,11 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // Skip the change handler entirely — page shapes are locked and can't move, so z-order
   // only needs fixing when new user shapes (notes, drawings) appear.
   editor.sideEffects.registerAfterCreateHandler('shape', (shape) => {
-    if (!shapeIdSet.has(shape.id)) makeSureShapesAreAtBottom()
+    if (!shapeIdSet.has(shape.id)) {
+      makeSureShapesAreAtBottom()
+      // Anchor user-created shapes to source lines (fire-and-forget)
+      anchorShape(editor, shape)
+    }
   })
 
   // Constrain the camera to the bounds of the pages
