@@ -15,8 +15,7 @@ import { snapshotPageUrl } from '../historyStore'
 import type { PageDiff, ChangeItem } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'
 import { TARGET_WIDTH } from '../layoutConstants'
-import { svgTextStore, svgViewBoxStore, setChangeHighlights, dismissAllChanges } from '../SvgPageShape'
-import type { ChangeRegion } from '../SvgPageShape'
+import { setSvgText, deleteSvgText, svgViewBoxStore, setChangeHighlights, dismissAllChanges, type ChangeRegion } from '../stores'
 
 const OLD_PAGE_GAP = 48
 
@@ -114,7 +113,7 @@ export function useHistoryOverlay(
         const oldY = currentPage.bounds.y
 
         // Store SVG text and viewBox for SvgPageShape rendering
-        svgTextStore.set(shapeId, op.svgText)
+        setSvgText(shapeId, op.svgText)
         svgViewBoxStore.set(shapeId, op.viewBox)
 
         // Create as svg-page shape (inline DOM, supports text coloring)
@@ -269,9 +268,9 @@ function removeOverlay(
     editor.store.remove(allIds)
   })
 
-  // Clean up svgTextStore entries for old pages
+  // Clean up svg text entries for old pages
   for (const id of state.shapeIds) {
-    svgTextStore.delete(id)
+    deleteSvgText(id)
     svgViewBoxStore.delete(id)
     shapeIdSetRef.current.delete(id)
   }

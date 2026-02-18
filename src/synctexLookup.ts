@@ -16,6 +16,7 @@ export interface LookupData {
     generated: string
     totalLines: number
     inputFiles?: string[]
+    appendixLine?: { line: number; file?: string }
   }
   lines: Record<string, LookupEntry>
 }

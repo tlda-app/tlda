@@ -3,6 +3,7 @@
  * CanvasClipPanel while reading a cross-page proof.
  */
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
+import { react } from 'tldraw'
 import type { Editor } from 'tldraw'
 import type { TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import type { ProofData } from './svgDocumentLoader'
@@ -41,9 +42,10 @@ export function ProofStatementOverlay({
   const dismissedPairRef = useRef(-1)
   const [expanded, setExpanded] = useState(false)
 
-  // Track which proof page is visible using polling
+  // Track which proof page is visible using TLDraw reactive subscription
+  // (reacts to camera changes instead of polling every 200ms)
   useEffect(() => {
-    const computeActivePair = () => {
+    const stop = react('proof-active-pair', () => {
       const cam = mainEditor.getCamera()
       const vb = mainEditor.getViewportScreenBounds()
       const centerY = -cam.y + (vb.y + vb.h / 2) / cam.z
@@ -73,11 +75,8 @@ export function ProofStatementOverlay({
         activePairRef.current = idx
         setActivePairIndex(idx)
       }
-    }
-
-    computeActivePair()
-    const timerId = setInterval(computeActivePair, 200)
-    return () => clearInterval(timerId)
+    })
+    return stop
   }, [mainEditor, pages, proofData])
 
   // Compute canvas bounds for a region (synctex coords → TLDraw canvas coords)

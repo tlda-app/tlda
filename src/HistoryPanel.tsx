@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { react } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { snapshotPageUrl } from './historyStore'
 import type { HistoryEntry } from './historyStore'
@@ -25,17 +26,16 @@ export function HistoryPanel({ docName, entry, totalPages, pageHeight, editor, o
   const containerRef = useRef<HTMLDivElement>(null)
   const [visiblePage, setVisiblePage] = useState(1)
 
-  // Sync scroll with main editor camera
+  // Sync scroll with main editor camera (reactive, fires only on camera changes)
   useEffect(() => {
-    const interval = setInterval(() => {
+    const stop = react('history-panel-sync', () => {
       const camera = editor.getCamera()
       const viewport = editor.getViewportScreenBounds()
-      // Compute which page is at the center of the viewport
       const centerY = (-camera.y + viewport.height / 2 / camera.z)
       const page = Math.max(1, Math.min(totalPages, Math.floor(centerY / pageHeight) + 1))
       setVisiblePage(page)
-    }, 100)
-    return () => clearInterval(interval)
+    })
+    return stop
   }, [editor, totalPages, pageHeight])
 
   // Scroll the panel to show the visible page

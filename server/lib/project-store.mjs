@@ -8,8 +8,9 @@
  *   build.log     — last build log
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { join, relative } from 'path'
+import { createHash } from 'crypto'
 
 let projectsDir = null
 
@@ -129,6 +130,22 @@ function walkDir(dir) {
 }
 
 /**
+ * Get MD5 hashes of all source files. Returns { "path": "hex", ... }
+ */
+export function hashSourceFiles(name) {
+  const dir = sourceDir(name)
+  if (!existsSync(dir)) return {}
+  const hashes = {}
+  for (const full of walkDir(dir)) {
+    const rel = relative(dir, full)
+    const ext = '.' + rel.split('.').pop()
+    if (BUILD_JUNK.has(ext)) continue
+    hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
+  }
+  return hashes
+}
+
+/**
  * Write a source file. Returns true if the file was actually changed.
  */
 export function writeSourceFile(name, filePath, content) {
@@ -148,8 +165,126 @@ export function writeSourceFile(name, filePath, content) {
   return true
 }
 
+/**
+ * Delete a source file. Returns true if the file existed and was removed.
+ */
+export function deleteSourceFile(name, filePath) {
+  const dir = sourceDir(name)
+  const full = join(dir, filePath)
+  if (!full.startsWith(dir)) throw new Error('Invalid file path')
+  if (!existsSync(full)) return false
+  unlinkSync(full)
+  return true
+}
+
 export function readBuildLog(name) {
   const logPath = join(projectsDir, name, 'build.log')
   if (!existsSync(logPath)) return null
   return readFileSync(logPath, 'utf8')
+}
+
+/**
+ * Extract structured errors and warnings from a LaTeX log file.
+ * Returns { errors: [{ message, line?, file? }], warnings: string[] }
+ */
+export function extractBuildErrors(name) {
+  const project = readProject(name)
+  if (!project) return { errors: [], warnings: [] }
+
+  // latex.log is preserved by build-runner after latexmk runs
+  const logPath = join(projectsDir, name, 'latex.log')
+  if (!existsSync(logPath)) return { errors: [], warnings: [] }
+
+  const logText = readFileSync(logPath, 'utf8')
+  const result = parseLatexErrors(logText)
+
+  // Enrich errors with source context (±2 lines around the error)
+  const srcDir = join(projectsDir, name, 'source')
+  const mainFile = project.mainFile || null
+  for (const err of result.errors) {
+    if (!err.line) continue
+    const file = err.file || mainFile
+    if (!file) continue
+    const srcPath = join(srcDir, file)
+    if (!existsSync(srcPath)) continue
+    try {
+      const srcLines = readFileSync(srcPath, 'utf8').split('\n')
+      const start = Math.max(0, err.line - 4)   // 3 lines before (0-indexed: line-1 is the error)
+      const end = Math.min(srcLines.length, err.line + 3)  // 3 lines after
+      err.context = srcLines.slice(start, end).map((text, i) => ({
+        line: start + i + 1,
+        text,
+      }))
+      err.errorLine = err.line  // which line in context is the actual error
+    } catch {}
+  }
+
+  return result
+}
+
+/**
+ * Parse LaTeX log text into structured errors and warnings.
+ */
+export function parseLatexErrors(logText) {
+  const lines = logText.split('\n')
+  const errors = []
+  const warnings = []
+
+  // Track current file from LaTeX's parenthesis-based file stack.
+  // Every ( pushes (filename or null), every ) pops — must stay balanced.
+  const fileStack = []  // stack of filenames (or null for non-file parens)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    for (let ci = 0; ci < line.length; ci++) {
+      if (line[ci] === '(') {
+        const rest = line.slice(ci + 1)
+        const fileMatch = rest.match(/^([^\s()]+\.tex)\b/)
+        if (fileMatch) {
+          fileStack.push(fileMatch[1].replace(/^\.\//, ''))
+        } else {
+          fileStack.push(null)  // non-file paren — still push to keep stack balanced
+        }
+      } else if (line[ci] === ')' && fileStack.length > 0) {
+        fileStack.pop()
+      }
+    }
+
+    // Current file = nearest .tex file on the stack
+    const currentFile = fileStack.findLast(f => f !== null) ?? null
+
+    // LaTeX errors start with !
+    if (line.startsWith('!')) {
+      let msg = line
+      let errorLine = null
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        if (lines[j].startsWith('!') || lines[j] === '') break
+        msg += '\n' + lines[j]
+        // Parse "l.NNN" line reference
+        const lMatch = lines[j].match(/^l\.(\d+)\s/)
+        if (lMatch) errorLine = parseInt(lMatch[1])
+      }
+      errors.push({ message: msg, line: errorLine, file: currentFile })
+    }
+
+    // Undefined control sequence (sometimes not prefixed with !)
+    if (line.includes('Undefined control sequence') && !line.startsWith('!')) {
+      // Next line often has l.NNN
+      let errorLine = null
+      if (i + 1 < lines.length) {
+        const lMatch = lines[i + 1].match(/^l\.(\d+)\s/)
+        if (lMatch) errorLine = parseInt(lMatch[1])
+      }
+      errors.push({ message: line.trim(), line: errorLine, file: currentFile })
+    }
+
+    // LaTeX warnings (reference/citation only — skip noise)
+    if (line.includes('LaTeX Warning:') || line.includes('Package natbib Warning:')) {
+      if (line.includes('Reference') || line.includes('Citation') || line.includes('Label(s) may have changed')) {
+        warnings.push(line.trim())
+      }
+    }
+  }
+
+  return { errors, warnings }
 }

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { setChangeHighlights, dismissAllChanges } from '../SvgPageShape'
-import type { ChangeRegion } from '../SvgPageShape'
+import { setChangeHighlights, dismissAllChanges, type ChangeRegion } from '../stores'
 import { fetchHistory, fetchDiff, triggerGitBuild, waitForGitBuild, flattenChanges } from '../historyStore'
 import type { HistoryEntry, PageDiff, ChangeItem } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'

@@ -6,8 +6,8 @@ import {
 import type { TLAssetId, TLShapeId } from 'tldraw'
 import { setActiveMacros } from './katexMacros'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
-import { svgTextStore, svgViewBoxStore, anchorIndex } from './SvgPageShape'
-import { TARGET_WIDTH, PAGE_GAP, PDF_HEIGHT } from './layoutConstants'
+import { setSvgText, svgViewBoxStore, anchorIndex } from './stores'
+import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
 
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
@@ -68,6 +68,49 @@ export interface SvgDocument {
 
 export const pageSpacing = PAGE_GAP
 
+/**
+ * Create SVG document layout using known page dimensions — no network.
+ * Pages are created as placeholders; SVGs are fetched later via fetchSvgPagesAsync.
+ */
+export function createSvgDocumentLayout(name: string, pageCount: number, basePath: string): SvgDocument {
+  const pages: SvgPage[] = []
+  const width = TARGET_WIDTH
+  const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+  let top = 0
+
+  for (let i = 0; i < pageCount; i++) {
+    const pageId = `${name}-page-${i}`
+    pages.push({
+      src: '',  // not used for svg-page shapes
+      bounds: new Box(0, top, width, height),
+      assetId: AssetRecordType.createId(pageId),
+      shapeId: createShapeId(pageId),
+      width,
+      height,
+    })
+    top += height + pageSpacing
+  }
+
+  // Kick off macros fetch (non-blocking — macros ready before user types a note)
+  const cacheBust = `?t=${Date.now()}`
+  fetch(basePath + 'macros.json' + cacheBust)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data?.macros) {
+        console.log(`Loaded ${Object.keys(data.macros).length} macros from preamble`)
+        setActiveMacros(data.macros)
+      }
+    })
+    .catch(() => {})
+
+  console.log(`SVG document layout ready: ${pageCount} pages`)
+  return { name, pages, basePath }
+}
+
+/**
+ * Legacy: fetch all SVGs synchronously and return a fully-loaded document.
+ * Used only for formats that need all content upfront (diff).
+ */
 export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<SvgDocument> {
   // Fetch all SVGs in parallel
   console.log(`Loading ${svgUrls.length} SVG pages...`)
@@ -155,7 +198,7 @@ export async function loadSvgDocument(name: string, svgUrls: string[]): Promise<
     const shapeId = createShapeId(pageId)
 
     // Store raw SVG text for inline rendering (not synced through Yjs)
-    svgTextStore.set(shapeId, svgText)
+    setSvgText(shapeId, svgText)
 
     // Store SVG viewBox for coordinate conversion (hyperref link navigation)
     if (svgEl) {

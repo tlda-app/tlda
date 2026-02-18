@@ -19,7 +19,7 @@ import { resolve, basename, dirname, join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
-import { collectSourceFiles } from './lib/source-files.mjs'
+import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 
 // --- Config ---
 
@@ -41,10 +41,31 @@ function saveConfig(config) {
 const args = process.argv.slice(2)
 const command = args[0]
 
+// Per-command help (shown with --help)
+const COMMAND_HELP = {
+  create:  'ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
+  push:    'ctd push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
+  watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
+  open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
+  status:  'ctd status [name]\n\n  Show build status for a project.',
+  errors:  'ctd errors [name]\n\n  Extract LaTeX errors and warnings from the last build log.',
+  build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.',
+  delete:  'ctd delete <name>\n\n  Delete a project and all its data.',
+  preview: 'ctd preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/ctd-preview-{name}/.',
+  server:  'ctd server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
+  config:  'ctd config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: ctd config set server http://myhost:5176',
+}
+
+// Flags that take a value (--flag value). All others are boolean.
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce'])
+
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
   if (idx === -1) return defaultVal
-  return args[idx + 1] || defaultVal
+  if (!VALUE_FLAGS.has(name)) return true  // boolean flag
+  const next = args[idx + 1]
+  if (!next || next.startsWith('--')) return defaultVal  // missing value
+  return next
 }
 
 function hasFlag(name) {
@@ -55,16 +76,34 @@ function getPositional(index) {
   // Skip flags and their values
   let pos = 0
   for (let i = 1; i < args.length; i++) {
-    if (args[i].startsWith('--')) { i++; continue } // skip --flag value
+    if (args[i].startsWith('--')) {
+      if (VALUE_FLAGS.has(args[i].slice(2))) i++  // skip value only for value flags
+      continue
+    }
     if (pos === index) return args[i]
     pos++
   }
   return null
 }
 
+// Per-command --help
+if (command && hasFlag('help') && COMMAND_HELP[command]) {
+  console.log(COMMAND_HELP[command])
+  process.exit(0)
+}
+
 function getServer() {
   return process.env.CTD_SERVER || getFlag('server') || loadConfig().server || 'http://localhost:5176'
 }
+
+// --- Output helpers ---
+
+const isTTY = process.stderr.isTTY
+const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
+const green = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
+const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
+const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
+const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
 // --- HTTP helpers ---
 
@@ -78,7 +117,13 @@ async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
   }
   if (body) opts.body = JSON.stringify(body)
 
-  const res = await fetch(url, opts)
+  let res
+  try {
+    res = await fetch(url, opts)
+  } catch (e) {
+    if (e.name === 'TimeoutError') throw new Error(`Request timed out: ${method} ${path}`)
+    throw new Error(`Server not reachable at ${server} (${e.cause?.code || e.message})`)
+  }
   const text = await res.text()
   let data
   try { data = JSON.parse(text) } catch { data = text }
@@ -91,6 +136,58 @@ async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
 }
 
 // --- Source file collection ---
+
+/**
+ * Incremental push: compute local hashes, fetch server hashes, diff, send only changed files.
+ * Falls back to full push if the hashes endpoint isn't available.
+ * Returns the push API response.
+ */
+async function incrementalPush(name, dir, extraBody = {}) {
+  // Compute local hashes (fast — just reads + MD5, no encoding)
+  const localHashes = collectSourceHashes(dir)
+  const localPaths = Object.keys(localHashes)
+
+  // Try to get server hashes
+  let serverHashes = null
+  try {
+    const data = await api('GET', `/api/projects/${name}/hashes`)
+    serverHashes = data.hashes
+  } catch {
+    // Endpoint not available (old server?) — fall back to full push
+  }
+
+  let files, deletedFiles
+  if (serverHashes) {
+    // Diff: find changed/new files
+    const changedPaths = localPaths.filter(p => localHashes[p] !== serverHashes[p])
+    // Find files on server that aren't local
+    deletedFiles = Object.keys(serverHashes).filter(p => !(p in localHashes))
+
+    if (changedPaths.length === 0 && deletedFiles.length === 0) {
+      return { unchanged: true }
+    }
+
+    files = collectSpecificFiles(dir, changedPaths)
+    const total = localPaths.length
+    const skipped = total - changedPaths.length
+    if (skipped > 0) {
+      console.log(dim(`  ${skipped}/${total} files unchanged, sending ${changedPaths.length} changed`))
+    }
+    if (deletedFiles.length > 0) {
+      console.log(dim(`  ${deletedFiles.length} files deleted on server`))
+    }
+  } else {
+    // Full push fallback
+    files = collectSourceFiles(dir)
+    deletedFiles = undefined
+  }
+
+  return await api('POST', `/api/projects/${name}/push`, {
+    files,
+    ...(deletedFiles?.length > 0 && { deletedFiles }),
+    ...extraBody,
+  })
+}
 
 function findMainTex(dir) {
   // Prefer a .tex file matching the directory name
@@ -117,37 +214,46 @@ async function cmdCreate() {
   const mainFile = getFlag('main') || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
-  console.log(`Creating project "${name}"...`)
-  console.log(`  Source: ${dir}`)
-  console.log(`  Main file: ${mainFile}`)
+  console.log(dim(`  Source: ${dir}`))
+  console.log(dim(`  Main file: ${mainFile}`))
 
-  // Create project on server
-  await api('POST', '/api/projects', { name, title, mainFile, sourceDir: dir })
-  console.log('  Project created.')
+  // Create or update project on server
+  try {
+    await api('POST', '/api/projects', { name, title, mainFile, sourceDir: dir })
+    console.log(green(`Created project "${name}".`))
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      console.log(`Project "${name}" exists, pushing files.`)
+    } else {
+      throw e
+    }
+  }
 
-  // Collect and push source files
-  const files = collectSourceFiles(dir)
-  console.log(`  Pushing ${files.length} source files...`)
-  await api('POST', `/api/projects/${name}/push`, { files })
-  console.log('  Build triggered.')
+  // Push source files (incremental)
+  console.log(`Pushing source files...`)
+  const result = await incrementalPush(name, dir, { sourceDir: dir })
+  if (result.unchanged) {
+    console.log(dim('No changes detected.'))
+  } else {
+    console.log(green('Build triggered.'))
+  }
 
   const server = getServer()
-  console.log(`\nViewer: ${server}/?doc=${name}`)
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
 }
 
 async function cmdPush() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd push [name] [--dir /path]'); process.exit(1) }
 
   const dir = resolve(getFlag('dir') || '.')
 
-  const files = collectSourceFiles(dir)
-  console.log(`Pushing ${files.length} files to "${name}"...`)
-  const result = await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+  console.log(`Pushing to "${name}"...`)
+  const result = await incrementalPush(name, dir, { sourceDir: dir })
   if (result.unchanged) {
-    console.log('No changes detected (use `ctd build` to force a rebuild).')
+    console.log(dim('No changes detected (use `ctd build` to force a rebuild).'))
   } else {
-    console.log('Build triggered.')
+    console.log(green('Build triggered.'))
   }
 }
 
@@ -170,11 +276,19 @@ async function cmdWatch() {
     name = basename(mainFile, '.tex')
   }
 
+  // Verify project exists on server
+  try {
+    await api('GET', `/api/projects/${name}`)
+  } catch {
+    console.error(red(`Project "${name}" not found on server. Run \`ctd create ${name}\` first.`))
+    process.exit(1)
+  }
+
   const debounceMs = parseInt(getFlag('debounce') || '200', 10)
 
-  console.log(`Watching ${dir} → "${name}"`)
-  console.log(`  Server: ${getServer()}`)
-  console.log(`  Debounce: ${debounceMs}ms`)
+  console.log(`Watching ${dir} → ${bold(name)}`)
+  console.log(dim(`  Server: ${getServer()}`))
+  console.log(dim(`  Debounce: ${debounceMs}ms`))
   console.log()
 
   const { startWatcher } = await import('./lib/watcher.mjs')
@@ -182,15 +296,15 @@ async function cmdWatch() {
 }
 
 async function cmdOpen() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd open [name]'); process.exit(1) }
 
   const server = getServer()
   const url = `${server}/?doc=${name}`
   console.log(`Opening ${url}`)
 
-  const { exec } = await import('child_process')
-  exec(`open "${url}"`)
+  const { execFile } = await import('child_process')
+  execFile('open', [url])
 }
 
 async function cmdList() {
@@ -200,18 +314,20 @@ async function cmdList() {
     return
   }
   for (const p of data.projects) {
-    const status = p.buildStatus === 'success' ? '' : ` [${p.buildStatus}]`
-    console.log(`  ${p.name}: ${p.title || p.name} (${p.pages} pages)${status}`)
+    const statusColor = p.buildStatus === 'success' ? green : p.buildStatus === 'error' ? red : dim
+    const status = p.buildStatus === 'success' ? '' : ` ${statusColor(`[${p.buildStatus}]`)}`
+    console.log(`  ${bold(p.name)}: ${p.title || p.name} ${dim(`(${p.pages} pages)`)}${status}`)
   }
 }
 
 async function cmdStatus() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd status [name]'); process.exit(1) }
 
   const data = await api('GET', `/api/projects/${name}/build/status`)
-  console.log(`Project: ${name}`)
-  console.log(`  Status: ${data.status}`)
+  const statusColor = data.status === 'success' ? green : data.status === 'error' ? red : dim
+  console.log(`Project: ${bold(name)}`)
+  console.log(`  Status: ${statusColor(data.status)}`)
   if (data.phase) console.log(`  Phase: ${data.phase}`)
   if (data.lastBuild) console.log(`  Last build: ${data.lastBuild}`)
   if (data.log) {
@@ -221,7 +337,7 @@ async function cmdStatus() {
 }
 
 async function cmdErrors() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd errors [name]'); process.exit(1) }
 
   const data = await api('GET', `/api/projects/${name}/build/errors`)
@@ -233,29 +349,37 @@ async function cmdErrors() {
     console.log(`Last build: ${stamp} (${data.status})`)
   }
   if (data.errors?.length > 0) {
-    console.log(`${data.errors.length} error(s):`)
-    for (const e of data.errors) console.log(`  ${e}`)
+    console.log(red(`${data.errors.length} error(s):`))
+    for (const e of data.errors) console.log(red(`  ${e}`))
   }
   if (data.warnings?.length > 0) {
     console.log(`${data.warnings.length} warning(s):`)
-    for (const w of data.warnings) console.log(`  ${w}`)
+    for (const w of data.warnings) console.log(dim(`  ${w}`))
   }
   if (!data.errors?.length && !data.warnings?.length && !data.building) {
-    console.log('Clean.')
+    console.log(green('Clean.'))
   }
 }
 
 async function cmdBuild() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd build <name>'); process.exit(1) }
 
   console.log(`Triggering rebuild for "${name}"...`)
   await api('POST', `/api/projects/${name}/build`)
-  console.log('Build triggered.')
+  console.log(green('Build triggered.'))
+}
+
+async function cmdDelete() {
+  const name = getPositional(0)
+  if (!name) { console.error('Usage: ctd delete <name>'); process.exit(1) }
+
+  await api('DELETE', `/api/projects/${name}`)
+  console.log(green(`Project "${name}" deleted.`))
 }
 
 async function cmdPreview() {
-  const name = getPositional(0) || inferProjectName()
+  const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd preview <name> [page ...]'); process.exit(1) }
 
   // Collect page numbers from remaining positional args
@@ -281,23 +405,30 @@ async function cmdPreview() {
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
 
   const { execFileSync } = await import('child_process')
+
+  // Convert pages in parallel (up to 8 at a time)
+  const CONCURRENCY = 8
   const results = []
 
-  for (const page of pages) {
+  async function convertPage(page) {
     const svgUrl = `${server}/docs/${name}/page-${page}.svg`
     const pngPath = join(outDir, `page-${page}.png`)
-
     try {
-      // Fetch SVG and pipe to rsvg-convert
       const svgRes = await fetch(svgUrl, { signal: AbortSignal.timeout(10000) })
-      if (!svgRes.ok) { console.error(`  page ${page}: not found`); continue }
+      if (!svgRes.ok) { console.error(`  page ${page}: not found`); return null }
       const svgBuf = Buffer.from(await svgRes.arrayBuffer())
-
       execFileSync('rsvg-convert', ['-f', 'png', '-o', pngPath], { input: svgBuf, timeout: 30000 })
-      results.push(pngPath)
+      return pngPath
     } catch (e) {
       console.error(`  page ${page}: ${e.message}`)
+      return null
     }
+  }
+
+  for (let i = 0; i < pages.length; i += CONCURRENCY) {
+    const batch = pages.slice(i, i + CONCURRENCY)
+    const batchResults = await Promise.all(batch.map(convertPage))
+    for (const r of batchResults) if (r) results.push(r)
   }
 
   if (results.length === 0) {
@@ -326,6 +457,67 @@ async function cmdConfig() {
     console.log(`Server: ${getServer()}`)
     console.log(`Config: ${CONFIG_FILE}`)
   }
+}
+
+function cmdCompletions() {
+  // Fetch project names at completion time via a helper function in the script
+  const commands = [
+    'server', 'create', 'push', 'watch', 'open', 'list', 'ls',
+    'status', 'errors', 'build', 'delete', 'rm', 'preview',
+    'logs', 'log', 'config', 'completions',
+  ]
+  const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
+
+  console.log(`#compdef ctd
+# Install: ctd completions > ~/.zsh/completions/_ctd && fpath=(~/.zsh/completions $fpath)
+# Then restart your shell or run: autoload -Uz compinit && compinit
+
+_ctd_projects() {
+  local -a projects
+  projects=(\${(f)"$(ctd list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
+  _describe 'project' projects
+}
+
+_ctd() {
+  local -a commands
+  commands=(
+    'server:Manage the server'
+    'create:Create project and upload files'
+    'push:Push source files and rebuild'
+    'watch:Watch for changes and auto-push'
+    'open:Open viewer in browser'
+    'list:List projects'
+    'status:Show build status'
+    'build:Trigger a rebuild'
+    'errors:Show LaTeX errors/warnings'
+    'logs:Show server log'
+    'delete:Delete a project'
+    'preview:Rasterize SVG pages to PNG'
+    'config:Manage configuration'
+    'completions:Output zsh completion script'
+  )
+
+  _arguments -C '1:command:->cmd' '*::arg:->args'
+
+  case $state in
+    cmd)
+      _describe 'command' commands
+      ;;
+    args)
+      case $words[1] in
+        server)
+          local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
+          _describe 'subcommand' subs
+          ;;
+        create|push|open|status|errors|build|delete|rm|preview)
+          _ctd_projects
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_ctd "$@"`)
 }
 
 const LOGFILE = join(homedir(), '.config', 'ctd', 'server.log')
@@ -424,19 +616,39 @@ async function cmdServer(action) {
     if (hasLaunchd) {
       try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
     }
-    // Also kill by port in case launchd didn't manage it
-    let pids
-    try { pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim() } catch { pids = '' }
-    if (pids) {
-      for (const pid of pids.split('\n')) {
-        try { process.kill(parseInt(pid), 'SIGTERM') } catch {}
-      }
-      for (let i = 0; i < 20; i++) {
-        await new Promise(r => setTimeout(r, 250))
-        try { execSync(`lsof -ti:${port}`, { stdio: 'pipe' }) } catch { break }
-      }
+
+    // Get the server's actual PID from /health so we only kill the server,
+    // not watchers or other processes connected to the same port
+    let serverPid = null
+    try {
+      const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
+      const data = await res.json()
+      serverPid = data.pid
+    } catch {}
+
+    if (serverPid) {
+      try { process.kill(serverPid, 'SIGTERM') } catch {}
+    } else {
+      // Fallback: kill by port (catches zombies that don't respond to /health)
+      try {
+        const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
+        if (pids) {
+          for (const pid of pids.split('\n')) {
+            try { process.kill(parseInt(pid), 'SIGTERM') } catch {}
+          }
+        }
+      } catch {}
     }
-    console.log('Server stopped.')
+
+    // Wait for the server to actually stop
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 250))
+      try {
+        await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
+      } catch { break } // connection refused = stopped
+    }
+
+    console.log(green('Server stopped.'))
     return
   }
 
@@ -444,9 +656,10 @@ async function cmdServer(action) {
     try {
       const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
       const data = await res.json()
-      console.log(`Server running (uptime: ${Math.floor(data.uptime)}s)`)
+      const pid = data.pid ? `, pid ${data.pid}` : ''
+      console.log(green(`Server running`) + dim(` (uptime: ${Math.floor(data.uptime)}s${pid})`))
     } catch {
-      console.log('Server not running.')
+      console.log(red('Server not running.'))
     }
     return
   }
@@ -513,16 +726,16 @@ async function cmdServer(action) {
       try {
         const res = await fetch(`${getServer()}/health`)
         if (res.ok) {
-          const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim().split('\n')[0]
-          console.log(`Server running at ${getServer()} (pid ${pids})`)
-          console.log(`  Log: ${LOGFILE}`)
-          if (hasLaunchd) console.log('  Managed by launchd (auto-restarts)')
+          const data = await res.json()
+          console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
+          console.log(dim(`  Log: ${LOGFILE}`))
+          if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
           return
         }
       } catch {}
     }
-    console.error('Server failed to start within 5s')
-    console.error(`Check log: ${LOGFILE}`)
+    console.error(red('Server failed to start within 5s'))
+    console.error(dim(`Check log: ${LOGFILE}`))
     process.exit(1)
   }
 
@@ -531,8 +744,18 @@ async function cmdServer(action) {
   process.exit(1)
 }
 
-function inferProjectName() {
+async function inferProjectName() {
   const dir = resolve(getFlag('dir') || '.')
+
+  // Try to match by sourceDir from the server
+  try {
+    const data = await api('GET', '/api/projects')
+    for (const p of data.projects) {
+      if (p.sourceDir && resolve(p.sourceDir) === dir) return p.name
+    }
+  } catch {}
+
+  // Fall back to basename
   return basename(dir)
 }
 
@@ -577,13 +800,18 @@ async function main() {
       case 'errors': await ensureServer(); await cmdErrors(); break
       case 'build':   await ensureServer(); await cmdBuild(); break
       case 'preview': await ensureServer(); await cmdPreview(); break
+      case 'delete':  await ensureServer(); await cmdDelete(); break
+      case 'rm':      await ensureServer(); await cmdDelete(); break
+      case 'logs':    await cmdServer('logs'); break
+      case 'log':     await cmdServer('logs'); break
+      case 'completions': cmdCompletions(); break
       case 'config': await cmdConfig(); break
       default:
         console.log(`ctd — Claude TLDraw CLI
 
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server
-  create <name>  Create project, upload files, trigger build
+  create <name>  Create project (or update existing), upload files, build
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   open [name]    Open viewer in browser
@@ -591,7 +819,10 @@ Commands:
   status [name]  Show build status
   build [name]   Trigger a rebuild (no file push)
   errors [name]  Show LaTeX errors/warnings from last build
-  preview <name> [page ...]  Rasterize SVG pages to PNG for visual inspection
+  logs           Show server log (alias: ctd server logs)
+  delete <name>  Delete a project (alias: rm)
+  preview <name> [page ...]  Rasterize SVG pages to PNG
+  completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: ctd server start/stop.
 
@@ -606,7 +837,7 @@ Config:
   CTD_SERVER=<url>`)
     }
   } catch (e) {
-    console.error(`Error: ${e.message}`)
+    console.error(red(`Error: ${e.message}`))
     process.exit(1)
   }
 }

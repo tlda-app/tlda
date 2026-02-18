@@ -87,43 +87,61 @@ function findPlaceholders(svgText) {
       })
     }
 
-    // Find the 4 rects that form the box:
-    // 2 vertical (thin width ≈ 0.4, tall height) and 2 horizontal (thin height ≈ 0.4, wide width)
+    // Find the 4 rects that form a consistent box containing the text.
+    // Draft mode draws: left vert, top horiz, bottom horiz, right vert.
+    // Their corners must align: two verts share y-range with two horiz.
+    // In grid layouts, multiple figures' rects appear nearby — match by corners.
     const thin = 1.0
     const verts = rects.filter(r => r.w < thin && r.h > thin)
     const horis = rects.filter(r => r.h < thin && r.w > thin)
 
     if (verts.length < 2 || horis.length < 2) continue
 
-    // Find the tightest box enclosing the text element.
-    // In grid layouts, multiple figures' rects appear in the search window.
-    // Pick the closest vertical rect to the left/right of the text x,
-    // and the closest horizontal rect above/below the text y.
     const textX = parseFloat(tx)
     const textY = parseFloat(ty)
+    const eps = 2.0
 
-    verts.sort((a, b) => a.x - b.x)
-    horis.sort((a, b) => a.y - b.y)
+    // Try all pairs of verts and horiz to find a box containing the text
+    let bestBox = null
+    for (let vi = 0; vi < verts.length; vi++) {
+      for (let vj = vi + 1; vj < verts.length; vj++) {
+        const v1 = verts[vi], v2 = verts[vj]
+        // Verts must share the same y-range
+        if (Math.abs(v1.y - v2.y) > eps || Math.abs(v1.h - v2.h) > eps) continue
+        const left = Math.min(v1.x, v2.x)
+        const right = Math.max(v1.x, v2.x)
+        // Text x must be inside
+        if (textX < left - eps || textX > right + eps) continue
 
-    const leftRect = [...verts].reverse().find(r => r.x <= textX)
-    const rightRect = verts.find(r => r.x >= textX)
-    const topRect = [...horis].reverse().find(r => r.y <= textY)
-    const bottomRect = horis.find(r => r.y >= textY)
+        for (let hi = 0; hi < horis.length; hi++) {
+          for (let hj = hi + 1; hj < horis.length; hj++) {
+            const h1 = horis[hi], h2 = horis[hj]
+            // Horiz must share the same x-range
+            if (Math.abs(h1.x - h2.x) > eps || Math.abs(h1.w - h2.w) > eps) continue
+            const top = Math.min(h1.y, h2.y)
+            const bottom = Math.max(h1.y, h2.y)
+            // Text y must be inside
+            if (textY < top - eps || textY > bottom + eps) continue
+            // Corners must align: horiz x-range ≈ vert x-range
+            if (Math.abs(h1.x - left) > eps || Math.abs(h1.x + h1.w - right) > eps) continue
 
-    if (!leftRect || !rightRect || !topRect || !bottomRect) continue
+            const w = right - left
+            const h = bottom - top
+            if (w < 5 || h < 5) continue
+            // Pick the tightest box containing the text
+            if (!bestBox || w * h < bestBox.area) {
+              bestBox = { left, right, top, bottom, w, h, area: w * h,
+                rects: [v1, v2, h1, h2] }
+            }
+          }
+        }
+      }
+    }
 
-    const left = leftRect.x
-    const right = rightRect.x
-    const top = topRect.y
-    const bottom = bottomRect.y
+    if (!bestBox) continue
 
-    const width = right - left
-    const height = bottom - top
-
-    if (width < 5 || height < 5) continue // too small to be a real image
-
-    // Collect all elements to remove (the 4 box rects + the filename text)
-    const boxRects = [leftRect, rightRect, topRect, bottomRect]
+    const { left, top, w: width, h: height } = bestBox
+    const boxRects = bestBox.rects
 
     placeholders.push({
       filename: trimmed,
@@ -193,7 +211,12 @@ function inlineSvg(svgContent, x, y, width, height) {
   const offsetX = x + (width - scaledW) / 2
   const offsetY = y + (height - scaledH) / 2
 
-  return `<g transform='translate(${offsetX},${offsetY}) scale(${scale})'>${inner}</g>`
+  // Clip to the viewBox bounds — <g transform> doesn't clip like <svg> does.
+  // Content extending beyond the viewBox (e.g. svglite background rects) would overflow.
+  const clipId = `figclip${figureCounter}`
+  const clip = `<defs><clipPath id='${clipId}'><rect x='0' y='0' width='${innerW}' height='${innerH}'/></clipPath></defs>`
+
+  return `<g transform='translate(${offsetX},${offsetY}) scale(${scale})'>${clip}<g clip-path='url(#${clipId})'>${inner}</g></g>`
 }
 
 /**
@@ -298,7 +321,25 @@ function patchSvg(svgPath, srcDir) {
     patched++
   }
 
+  // Clean up any remaining thin rects near placeholder positions.
+  // Stacked figures can share border rects that don't match as a clean box
+  // of 4, leaving orphan draft-mode borders.
   if (patched > 0) {
+    const thinRe = /<rect\s+x='([^']+)'\s+y='([^']+)'\s+height='([^']+)'\s+width='([^']+)'\s*\/>/g
+    const margin = 5
+    svgText = svgText.replace(thinRe, (match, rx, ry, rh, rw) => {
+      const w = parseFloat(rw), h = parseFloat(rh)
+      const x = parseFloat(rx), y = parseFloat(ry)
+      if (w >= 1.5 && h >= 1.5) return match  // not a draft border
+      // Check if near any matched placeholder
+      for (const ph of placeholders) {
+        if (x >= ph.x - margin && x <= ph.x + ph.width + margin &&
+            y >= ph.y - margin && y <= ph.y + ph.height + margin) {
+          return ''  // remove orphan border rect
+        }
+      }
+      return match
+    })
     writeFileSync(svgPath, svgText)
   }
   return patched

@@ -1,7 +1,7 @@
 import { useState, useEffect, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
-import { clearDocumentStores } from './SvgPageShape'
+import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
+import { clearDocumentStores } from './stores'
 import './App.css'
 
 // Error boundary to prevent blank screen on errors
@@ -48,6 +48,7 @@ type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
 
 interface DiffConfig {
   basePath: string
+  buildStatus?: string
 }
 
 type State =
@@ -57,10 +58,11 @@ type State =
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
 
 // Fetch document manifest at runtime — derives basePath from key
-async function fetchManifest(): Promise<Record<string, DocConfig>> {
+async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
   try {
     const base = import.meta.env.BASE_URL || '/'
-    const resp = await fetch(`${base}docs/manifest.json`)
+    const url = `${base}docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
+    const resp = await fetch(url)
     if (!resp.ok) return {}
     const data = await resp.json()
     const docs = data.documents || {}
@@ -123,9 +125,24 @@ function App() {
 
     const config = manifest[docName]
 
-    if (!config) {
-      console.error(`Document "${docName}" not found in manifest`)
-      setState({ phase: 'error', message: `Document "${docName}" not found.` })
+    // If project is missing, still building, or has no pages yet, poll until ready
+    if (!config || config.buildStatus === 'building' || config.pages === 0) {
+      const label = config?.name || docName
+      setState({ phase: 'loading', message: config ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
+      const waitForBuild = async () => {
+        while (gen === loadGeneration) {
+          await new Promise(r => setTimeout(r, 2000))
+          if (gen !== loadGeneration) return
+          // Re-fetch manifest to check for updated page count / build status
+          try {
+            const m = await fetchManifest(true)
+            const c = m[docName]
+            if (c && c.pages > 0 && c.buildStatus !== 'building') break
+          } catch { /* keep polling */ }
+        }
+        if (gen === loadGeneration) loadDocument(docName, roomId)
+      }
+      waitForBuild()
       return
     }
 
@@ -144,22 +161,21 @@ function App() {
         document = await loadDiffDocument(docName, fullBasePath)
       } else if (config.format === 'html') {
         document = await loadHtmlDocument(config.name, fullBasePath)
-      } else {
-        const ext = config.format === 'png' ? 'png' : 'svg'
+      } else if (config.format === 'png') {
+        const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
         // Probe beyond manifest hint to discover extra pages (handles stale page counts)
         let pageCount = config.pages
-        const makeUrl = (n: number) => `${fullBasePath}page-${n}.${ext}`
-        const expectedType = ext === 'svg' ? 'image/svg+xml' : 'image/png'
         while (true) {
-          if (signal.aborted) return  // navigated away during probe
+          if (signal.aborted) return
           const resp = await fetch(makeUrl(pageCount + 1), { method: 'HEAD', signal })
-          if (!resp.ok || !resp.headers.get('content-type')?.includes(expectedType)) break
+          if (!resp.ok || !resp.headers.get('content-type')?.includes('image/png')) break
           pageCount++
         }
         const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
-        document = config.format === 'png'
-          ? await loadImageDocument(config.name, urls, fullBasePath)
-          : await loadSvgDocument(config.name, urls)
+        document = await loadImageDocument(config.name, urls, fullBasePath)
+      } else {
+        // SVG: create layout immediately, pages fetched async after editor mounts
+        document = createSvgDocumentLayout(docName, config.pages, fullBasePath)
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
@@ -189,7 +205,7 @@ function App() {
         if (statusResp.ok) {
           const status = await statusResp.json()
           if (status.status === 'building') {
-            setState(s => s ? { ...s, message: `Building ${docName}...` } : s)
+            setState({ phase: 'loading', message: `Building ${docName}...`, roomId })
             // Poll until build completes, then retry
             const pollBuild = async () => {
               while (gen === loadGeneration) {

@@ -1,7 +1,7 @@
 // Shared word-level diff algorithm — longest common prefix/suffix, O(n).
 // Used by SvgDocument (live change detection) and snapshotStore (historical diffs).
 
-import type { ChangeRegion } from './SvgPageShape'
+import type { ChangeRegion } from './stores'
 import type { TextLine } from './TextSelectionLayer'
 
 interface WordEntry { word: string; lineIdx: number }

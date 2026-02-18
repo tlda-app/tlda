@@ -19,7 +19,8 @@ import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
-  listSourceFiles, writeSourceFile, readBuildLog, sourceDir,
+  listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir,
+  extractBuildErrors,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import historyRoutes from './history.mjs'
@@ -78,12 +79,19 @@ router.get('/:name/files', (req, res) => {
   res.json({ files: listSourceFiles(req.params.name) })
 })
 
+// Source file hashes (for incremental push)
+router.get('/:name/hashes', (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  res.json({ hashes: hashSourceFiles(req.params.name) })
+})
+
 // Push files + trigger build
 router.post('/:name/push', async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const { files, priorityPages, sourceDir } = req.body
+  const { files, deletedFiles, priorityPages, sourceDir } = req.body
 
   // Update sourceDir if provided (so existing projects learn the path)
   if (sourceDir && !project.sourceDir) {
@@ -103,8 +111,20 @@ router.post('/:name/push', async (req, res) => {
     }
   }
 
+  // Remove deleted files
+  if (deletedFiles?.length > 0) {
+    for (const filePath of deletedFiles) {
+      if (deleteSourceFile(req.params.name, filePath)) {
+        anyChanged = true
+      }
+    }
+  }
+
   if (!anyChanged) {
-    return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
+    // Still rebuild if last build wasn't successful (e.g. patcher was broken, figures missing)
+    if (project.buildStatus === 'success') {
+      return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
+    }
   }
 
   // Respond immediately, build runs async
@@ -157,51 +177,13 @@ router.get('/:name/build/errors', (req, res) => {
   const activeBuild = getBuildStatus(req.params.name)
   const building = activeBuild?.building || false
 
-  // Find the .log file in source dir
-  const srcDir = sourceDir(req.params.name)
-  const mainBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '')
-  const logPath = join(srcDir, `${mainBase}.log`)
-
-  if (!existsSync(logPath)) {
-    return res.json({ building, status: project.buildStatus, errors: [], warnings: [] })
-  }
-
-  const logText = readFileSync(logPath, 'utf8')
-  const lines = logText.split('\n')
-
-  const errors = []
-  const warnings = []
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    // LaTeX errors start with !
-    if (line.startsWith('!')) {
-      // Collect context: the error line + next few lines (up to blank or next !)
-      let msg = line
-      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
-        if (lines[j].startsWith('!') || lines[j] === '') break
-        msg += '\n' + lines[j]
-      }
-      errors.push(msg)
-    }
-    // LaTeX warnings
-    if (line.includes('LaTeX Warning:') || line.includes('Package natbib Warning:')) {
-      // Skip common noise
-      if (line.includes('Reference') || line.includes('Citation') || line.includes('Label(s) may have changed')) {
-        warnings.push(line.trim())
-      }
-    }
-    // Undefined control sequence (sometimes not prefixed with !)
-    if (line.includes('Undefined control sequence')) {
-      errors.push(line.trim())
-    }
-  }
+  const { errors, warnings } = extractBuildErrors(req.params.name)
 
   res.json({
     building,
     status: project.buildStatus,
     lastBuild: project.lastBuild,
-    errors,
+    errors: errors.map(e => e.message), // API returns flat strings for CLI compat
     warnings,
   })
 })

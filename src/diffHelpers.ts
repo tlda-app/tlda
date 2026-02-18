@@ -125,10 +125,35 @@ export function setupDiffHoverEffectFromData(
     }
   }
 
+  // Pre-compute bounding box that contains ALL highlights — fast reject for pointer moves
+  // that are far from any highlight (the common case during normal scrolling/panning).
+  let allMinX = Infinity, allMinY = Infinity, allMaxX = -Infinity, allMaxY = -Infinity
+  for (const hl of dd.highlights) {
+    allMinX = Math.min(allMinX, hl.x)
+    allMinY = Math.min(allMinY, hl.y)
+    allMaxX = Math.max(allMaxX, hl.x + hl.w)
+    allMaxY = Math.max(allMaxY, hl.y + hl.h)
+  }
+  const HOVER_PAD = 50 // generous padding so edge hovers still work
+
   let activeArrowIds = new Set<TLShapeId>()
 
   const handlePointerMove = (e: PointerEvent) => {
     const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+
+    // Fast reject: pointer is nowhere near any highlight
+    if (point.x < allMinX - HOVER_PAD || point.x > allMaxX + HOVER_PAD ||
+        point.y < allMinY - HOVER_PAD || point.y > allMaxY + HOVER_PAD) {
+      if (activeArrowIds.size === 0) return
+      // Clear active arrows
+      const updates: Array<{ id: TLShapeId; type: 'arrow'; opacity: number }> = []
+      for (const aid of activeArrowIds) {
+        updates.push({ id: aid, type: 'arrow', opacity: 0.2 })
+      }
+      if (updates.length > 0) editor.updateShapes(updates)
+      activeArrowIds = new Set()
+      return
+    }
 
     let hoveredHlId: TLShapeId | null = null
     for (const hlId of highlightShapeIds) {
@@ -241,10 +266,17 @@ export function setupDiffReviewEffectFromData(
   }
 
   applyReviewState()
-  yRecords.observe(applyReviewState)
+  // Only react to changes that touch the diff-review key, not every Yjs mutation
+  // (signals like ping, screenshot, reload would otherwise trigger unnecessary shape updates)
+  const filteredObserver = (event: any) => {
+    if (event.keysChanged?.has('signal:diff-review')) {
+      applyReviewState()
+    }
+  }
+  yRecords.observe(filteredObserver)
 
   return () => {
-    yRecords.unobserve(applyReviewState)
+    yRecords.unobserve(filteredObserver)
   }
 }
 

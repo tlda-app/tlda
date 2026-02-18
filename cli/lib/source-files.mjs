@@ -7,11 +7,25 @@
 
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join, extname } from 'path'
+import { createHash } from 'crypto'
 
-// Extensions that are part of a TeX project
+// Extensions that are part of a TeX project.
+//
+// IMAGE PIPELINE: SVG is the authoritative figure format.
+//   - .pdf figures are NOT pushed — LaTeX runs in draft mode (placeholder boxes)
+//   - Before latexmk, the build generates stub PDFs from SVGs so LaTeX reads
+//     the correct bounding boxes for figure sizing
+//   - After dvisvgm, patch-svg-images.mjs replaces placeholders with the SVGs
+//   - The SVG dimensions determine the figure layout. If your TeX says
+//     \includegraphics[width=\textwidth]{figs/plot.pdf}, the build finds
+//     figs/plot.svg, reads its viewBox, and creates a stub PDF with those
+//     dimensions. LaTeX uses that for sizing, then the SVG is inlined.
+//   - IMPORTANT: SVG width/height must match the intended print dimensions.
+//     If your SVG is 504x216pt but you want it 504x158pt on the page,
+//     the extra height will show as whitespace. Fix the SVG, not the pipeline.
 export const SOURCE_EXTENSIONS = new Set([
   '.tex', '.bib', '.sty', '.cls', '.bst', '.def',            // TeX source
-  '.svg', '.png', '.jpg', '.jpeg', '.eps',                     // Figures (no PDFs — those are compiled output)
+  '.svg', '.png', '.jpg', '.jpeg', '.eps',                     // Figures
   '.tikz', '.pgf', '.dtx', '.ins', '.fd',                    // TeX extras
 ])
 
@@ -50,21 +64,54 @@ export function readForUpload(fullPath) {
 /** Recursively collect all source files in a directory, encoded for upload. */
 export function collectSourceFiles(dir) {
   const files = []
-  walk(dir, dir, files)
+  walkCollect(dir, dir, files)
   return files
 }
 
-function walk(root, dir, files) {
+/** Recursively collect MD5 hashes of all source files (without reading full content for upload). */
+export function collectSourceHashes(dir) {
+  const hashes = {}
+  walkHash(dir, dir, hashes)
+  return hashes
+}
+
+/** Read and encode only the specified files for upload. */
+export function collectSpecificFiles(dir, paths) {
+  const files = []
+  for (const rel of paths) {
+    const full = join(dir, rel)
+    if (!existsSync(full)) continue
+    files.push({ path: rel, ...readForUpload(full) })
+  }
+  return files
+}
+
+function walkCollect(root, dir, files) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.')) continue
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name === '_site') continue
-      walk(root, full, files)
+      walkCollect(root, full, files)
     } else {
       if (!SOURCE_EXTENSIONS.has(extname(entry.name))) continue
       const rel = full.slice(root.length + 1)
       files.push({ path: rel, ...readForUpload(full) })
+    }
+  }
+}
+
+function walkHash(root, dir, hashes) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === '_site') continue
+      walkHash(root, full, hashes)
+    } else {
+      if (!SOURCE_EXTENSIONS.has(extname(entry.name))) continue
+      const rel = full.slice(root.length + 1)
+      hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
     }
   }
 }

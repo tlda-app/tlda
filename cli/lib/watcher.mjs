@@ -14,6 +14,45 @@ import { join, resolve } from 'path'
 import { spawn } from 'child_process'
 import { isSourceFile, isJunk, readForUpload } from './source-files.mjs'
 
+const isTTY = process.stderr.isTTY
+const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
+const green = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
+const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
+
+// Poll build status after a push, report result inline.
+// Fire-and-forget — doesn't block the watcher.
+async function awaitBuild(server, name) {
+  const start = Date.now()
+  const maxWait = 300_000 // 5 min
+  const poll = 2000
+
+  for (;;) {
+    await new Promise(r => setTimeout(r, poll))
+    if (Date.now() - start > maxWait) {
+      console.log('[watch] Build still running after 5m, giving up on status poll.')
+      return
+    }
+    try {
+      const res = await fetch(`${server}/api/projects/${name}/build/status`, {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.status === 'building') continue
+
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+      if (data.status === 'success') {
+        console.log(green(`[watch] Build succeeded`) + dim(` (${elapsed}s)`))
+      } else {
+        console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`ctd errors ${name}\` for details.`))
+      }
+      return
+    } catch {
+      return // server unreachable, don't spam
+    }
+  }
+}
+
 export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
   const server = getServer()
   let pushTimeout = null
@@ -46,7 +85,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
         if (res.ok) {
           const data = await res.json()
           if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
-          else console.log('[watch] Initial push accepted, build started.')
+          else awaitBuild(server, name)
           retryDelay = 1000
         } else {
           console.error(`[watch] Initial push failed: ${await res.text()}`)
@@ -74,23 +113,31 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
       files.push({ path: relPath, ...readForUpload(fullPath) })
     }
 
-    if (files.length === 0) { pushing = false; return }
-
     const priorityPages = cachedViewportPages || undefined
 
-    console.log(`[watch] Pushing ${files.length} file(s): ${filePaths.join(', ')}`)
+    // Detect deleted files
+    const deletedFiles = filePaths.filter(p => !existsSync(join(dir, p)))
+    const addedOrChanged = files  // already filtered by existsSync above
+
+    if (addedOrChanged.length === 0 && deletedFiles.length === 0) { pushing = false; return }
+
+    if (addedOrChanged.length > 0) console.log(`[watch] Pushing ${addedOrChanged.length} file(s): ${dim(addedOrChanged.map(f => f.path).join(', '))}`)
+    if (deletedFiles.length > 0) console.log(`[watch] Deleted: ${dim(deletedFiles.join(', '))}`)
+
     try {
       const res = await fetch(`${server}/api/projects/${name}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files, priorityPages }),
+        body: JSON.stringify({ files: addedOrChanged, deletedFiles, priorityPages }),
+        signal: AbortSignal.timeout(60000),
       })
       if (!res.ok) {
         const text = await res.text()
         console.error(`[watch] Push failed: ${text}`)
       } else {
-        console.log('[watch] Push accepted, build started on server.')
         retryDelay = 1000
+        // Poll for build result
+        awaitBuild(server, name)
       }
     } catch (e) {
       console.error(`[watch] Push failed: ${e.message}, retrying in ${retryDelay / 1000}s...`)
@@ -124,14 +171,21 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
     pushTimeout = setTimeout(pushChanges, debounceMs)
   })
 
-  // Keep process alive, don't die on errors
+  // Keep process alive, don't die on errors or signals
   process.on('SIGINT', () => { console.log('\n[watch] Stopped.'); process.exit(0) })
+  process.on('SIGTERM', () => { console.log('\n[watch] Got SIGTERM, ignoring (use SIGINT to stop).') })
+  process.on('SIGHUP', () => { console.log('[watch] Got SIGHUP, ignoring.') })
+  process.on('SIGPIPE', () => {}) // silently ignore broken pipes
   process.on('uncaughtException', (e) => {
-    console.error(`[watch] Uncaught exception (continuing): ${e.message}`)
+    console.error(`[watch] Uncaught exception (continuing): ${e.stack || e.message}`)
   })
   process.on('unhandledRejection', (e) => {
-    console.error(`[watch] Unhandled rejection (continuing): ${e?.message || e}`)
+    console.error(`[watch] Unhandled rejection (continuing): ${e?.stack || e?.message || e}`)
   })
+
+  // Safety net: keep the event loop alive even if all handles close.
+  // fs.watch should keep it alive, but this ensures it during reconnection gaps.
+  setInterval(() => {}, 30000)
 }
 
 async function setupYjsConnection(url, texDir, onViewportUpdate) {
@@ -172,8 +226,21 @@ async function setupYjsConnection(url, texDir, onViewportUpdate) {
   })
 
   let ws
+  let everConnected = false
+  let currentlyConnected = false
   function connect() {
-    ws = new WebSocket(url)
+    try {
+      ws = new WebSocket(url)
+    } catch (e) {
+      if (everConnected) console.log(`[watch] Yjs reconnect failed: ${e.message}`)
+      setTimeout(connect, 3000)
+      return
+    }
+    ws.on('open', () => {
+      if (everConnected) console.log('[watch] Yjs reconnected.')
+      everConnected = true
+      currentlyConnected = true
+    })
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString())
@@ -182,8 +249,14 @@ async function setupYjsConnection(url, texDir, onViewportUpdate) {
         }
       } catch {}
     })
-    ws.on('close', () => setTimeout(connect, 2000))
-    ws.on('error', () => {})
+    ws.on('close', () => {
+      if (currentlyConnected) {
+        console.log('[watch] Yjs disconnected, will reconnect...')
+        currentlyConnected = false
+      }
+      setTimeout(connect, 3000)
+    })
+    ws.on('error', () => {}) // errors followed by 'close', which reconnects
   }
 
   connect()

@@ -7,7 +7,7 @@
  */
 
 import type { PageTextData } from './TextSelectionLayer'
-import type { ChangeRegion } from './SvgPageShape'
+import type { ChangeRegion } from './stores'
 import { diffWords } from './wordDiff'
 
 interface TextSnapshot {

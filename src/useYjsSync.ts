@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react'
 import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import type { Editor, TLRecord } from 'tldraw'
+import { SignalBus } from './signalBus'
 
 interface YjsSyncOptions {
   editor: Editor
@@ -38,66 +39,86 @@ export function getYRecords() { return activeYRecords }
 let staticLiveUrl: string | null = null
 export function getLiveUrl() { return staticLiveUrl }
 
-// Reload signal callback registration
+// Stable random viewer ID for this tab (prevents applying own signals)
+const localViewerId = Math.random().toString(36).slice(2, 10)
+export function getViewerId() { return localViewerId }
+
+// --- Signal bus: one dispatch handles all signal types ---
+
+const bus = new SignalBus()
+
 type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
-type ReloadCallback = (signal: ReloadSignal) => void
-const reloadCallbacks = new Set<ReloadCallback>()
-export function onReloadSignal(cb: ReloadCallback) {
-  reloadCallbacks.add(cb)
-  return () => { reloadCallbacks.delete(cb) }
-}
-let lastReloadTimestamp = 0
+const reloadHandle = bus.register<ReloadSignal>({ key: 'signal:reload' })
+export const onReloadSignal = reloadHandle.on
 
-// Forward sync signal callback registration (scroll, highlight from Claude)
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
   | { type: 'highlight', x: number, y: number, page: number, timestamp: number }
+
+// Forward-scroll and forward-highlight are two Yjs keys that map to one callback set.
+// We register them separately but expose a unified onForwardSync.
+type RawScrollSignal = { x: number; y: number; timestamp: number }
+type RawHighlightSignal = { x: number; y: number; page: number; timestamp: number }
+
+const scrollHandle = bus.register<RawScrollSignal>({ key: 'signal:forward-scroll' })
+const highlightHandle = bus.register<RawHighlightSignal>({ key: 'signal:forward-highlight' })
+
 type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
 const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
+// Wire both raw handles into the shared callback set
+scrollHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...s }) })
+highlightHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...s }) })
+
 export function onForwardSync(cb: ForwardSyncCallback) {
   forwardSyncCallbacks.add(cb)
   return () => { forwardSyncCallbacks.delete(cb) }
 }
-let lastScrollTimestamp = 0
-let lastHighlightTimestamp = 0
 
-// Screenshot request callback (MCP asks viewer to capture viewport)
-type ScreenshotCallback = () => void
-const screenshotCallbacks = new Set<ScreenshotCallback>()
-export function onScreenshotRequest(cb: ScreenshotCallback) {
-  screenshotCallbacks.add(cb)
-  return () => { screenshotCallbacks.delete(cb) }
-}
-let lastScreenshotRequestTimestamp = 0
+const screenshotHandle = bus.register<{ timestamp: number }>({
+  key: 'signal:screenshot-request',
+  initBehavior: 'fire-if-recent',
+  recentMs: 10000,
+})
+export const onScreenshotRequest = screenshotHandle.on
 
-// Camera link: sync camera position between viewers
 export type CameraLinkSignal = { x: number; y: number; z: number; viewerId: string; timestamp: number }
-type CameraLinkCallback = (signal: CameraLinkSignal) => void
-const cameraLinkCallbacks = new Set<CameraLinkCallback>()
-export function onCameraLink(cb: CameraLinkCallback) {
-  cameraLinkCallbacks.add(cb)
-  return () => { cameraLinkCallbacks.delete(cb) }
-}
-let lastCameraLinkTimestamp = 0
+const cameraLinkHandle = bus.register<CameraLinkSignal>({
+  key: 'signal:camera-link',
+  accept: (s) => s.viewerId !== localViewerId,
+})
+export const onCameraLink = cameraLinkHandle.on
 
-// Ref viewer: sync click-to-reference state between viewers
+export type BuildError = {
+  message: string
+  line?: number
+  file: string
+  context?: Array<{ line: number; text: string }>
+  errorLine?: number
+}
+export type BuildStatusSignal = {
+  error: string | null
+  errors: BuildError[]
+  warnings: string[]
+  timestamp: number
+}
+const buildStatusHandle = bus.register<BuildStatusSignal>({
+  key: 'signal:build-status',
+  initBehavior: 'fire-if-recent',
+  recentMs: 600_000,  // show errors from last 10 min on reconnect
+})
+export const onBuildStatusSignal = buildStatusHandle.on
+
 export type RefViewerSignal = {
   refs: Array<{ label: string; region: { page: number; yTop: number; yBottom: number; displayLabel?: string } }> | null
   viewerId: string
   timestamp: number
 }
-type RefViewerCallback = (signal: RefViewerSignal) => void
-const refViewerCallbacks = new Set<RefViewerCallback>()
-export function onRefViewerSignal(cb: RefViewerCallback) {
-  refViewerCallbacks.add(cb)
-  return () => { refViewerCallbacks.delete(cb) }
-}
-let lastRefViewerTimestamp = 0
-
-// Stable random viewer ID for this tab (prevents applying own signals)
-const localViewerId = Math.random().toString(36).slice(2, 10)
-export function getViewerId() { return localViewerId }
+const refViewerHandle = bus.register<RefViewerSignal>({
+  key: 'signal:ref-viewer',
+  accept: (s) => s.viewerId !== localViewerId,
+})
+export const onRefViewerSignal = refViewerHandle.on
 
 /** Write a signal into Yjs. Timestamp is added automatically. */
 export function writeSignal(key: string, payload: Record<string, unknown>): void {
@@ -183,7 +204,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     docRef.current = doc
     let destroyed = false
 
-    // --- Fix 1: IndexedDB local persistence ---
+    // --- IndexedDB local persistence ---
     // Persists all Yjs updates locally. On reload, restores from IDB before WS connects.
     // CRDT merge ensures no conflicts between local and server state.
     const idbProvider = new IndexeddbPersistence(roomId, doc)
@@ -203,25 +224,52 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     const serverShapeIds = new Set<string>()
     let initProtectionActive = true
 
-    // --- Fix 4: Incremental updates ---
     // Track last state vector to send only changes since last send
     let lastSentStateVector: Uint8Array | null = null
 
-    // --- Fix 2: WebSocket reconnection with exponential backoff ---
+    // --- WebSocket reconnection with exponential backoff ---
     let ws: WebSocket
     let reconnectDelay = 500
     const MAX_RECONNECT_DELAY = 30000
 
+    // Binary WS protocol: [type byte][Yjs payload]
+    const MSG_SYNC = 0x01
+    const MSG_UPDATE = 0x02
+
+    function sendBinary(type: number, payload: Uint8Array) {
+      if (ws?.readyState !== WebSocket.OPEN) return
+      const msg = new Uint8Array(1 + payload.length)
+      msg[0] = type
+      msg.set(payload, 1)
+      ws.send(msg)
+    }
+
+    function parseMessage(data: ArrayBuffer | string): { type: 'sync' | 'update', payload: Uint8Array } | null {
+      if (data instanceof ArrayBuffer) {
+        const buf = new Uint8Array(data)
+        if (buf.length > 0 && (buf[0] === MSG_SYNC || buf[0] === MSG_UPDATE)) {
+          return { type: buf[0] === MSG_SYNC ? 'sync' : 'update', payload: buf.subarray(1) }
+        }
+      }
+      // JSON fallback for backward compatibility
+      try {
+        const msg = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(data))
+        if (msg.type === 'sync' || msg.type === 'update') {
+          return { type: msg.type, payload: new Uint8Array(msg.data) }
+        }
+      } catch {}
+      return null
+    }
+
     // Send any doc update to the server (catches direct yRecords writes like ping signals)
     doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === 'remote') return  // don't echo back remote updates
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
-      }
+      sendBinary(MSG_UPDATE, update)
     })
 
     function connect() {
       ws = new WebSocket(`${serverUrl}/${roomId}`)
+      ws.binaryType = 'arraybuffer'
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -231,27 +279,26 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
         // On reconnect (not first connect), send our full state to merge with server
         if (hasReceivedInitialSync) {
           console.log('[Yjs] Reconnected — sending local state to server')
-          const update = Y.encodeStateAsUpdate(doc)
-          ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
+          sendBinary(MSG_UPDATE, Y.encodeStateAsUpdate(doc))
           lastSentStateVector = Y.encodeStateVector(doc)
         }
       }
 
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'sync' || msg.type === 'update') {
-            isRemoteUpdate = true
-            try {
-              const update = new Uint8Array(msg.data)
-              Y.applyUpdate(doc, update, 'remote')
-            } catch (e) {
-              console.error('[Yjs] Failed to apply update:', e)
-            }
-            isRemoteUpdate = false
+          const msg = parseMessage(event.data)
+          if (!msg) return
 
-            // After receiving initial sync, set up bidirectional sync
-            if (msg.type === 'sync' && !hasReceivedInitialSync) {
+          isRemoteUpdate = true
+          try {
+            Y.applyUpdate(doc, msg.payload, 'remote')
+          } catch (e) {
+            console.error('[Yjs] Failed to apply update:', e)
+          }
+          isRemoteUpdate = false
+
+          // After receiving initial sync, set up bidirectional sync
+          if (msg.type === 'sync' && !hasReceivedInitialSync) {
               hasReceivedInitialSync = true
               console.log(`[Yjs] Initial sync received (${yRecords.size} records from server)`)
 
@@ -280,7 +327,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
                 setupBidirectionalSync()
                 lastSentStateVector = Y.encodeStateVector(doc)
 
-                // --- Fix 3: Event-driven init protection ---
+                // Event-driven init protection
                 // Wait for SvgDocument to signal pages are ready instead of a fixed timer
                 const onPagesReady = () => {
                   if (initProtectionActive) {
@@ -303,7 +350,6 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
                 console.error('[Yjs] Failed to setup bidirectional sync:', e)
               }
             }
-          }
         } catch (e) {
           console.error('[Yjs] Message error:', e)
         }
@@ -332,85 +378,10 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
     // Sync Y.Map changes to TLDraw
     yRecords.observe((event) => {
-      // Check for signals (reload, forward sync)
+      // Dispatch all signal changes through the bus
       event.changes.keys.forEach((change, key) => {
-        if (key === 'signal:reload' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as ReloadSignal & Record<string, unknown>
-          if (signal?.timestamp && signal.timestamp > lastReloadTimestamp) {
-            lastReloadTimestamp = signal.timestamp
-            console.log(`[Yjs] Reload signal: ${signal.type}`, signal)
-            for (const cb of reloadCallbacks) cb(signal)
-          }
-        }
-
-        // Forward sync: scroll
-        if (key === 'signal:forward-scroll' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as ForwardSyncSignal & { x: number, y: number, timestamp: number }
-          if (!hasReceivedInitialSync) {
-            // During initial sync, just record timestamp to skip stale signals
-            if (signal?.timestamp) lastScrollTimestamp = signal.timestamp
-          } else if (signal?.timestamp && signal.timestamp > lastScrollTimestamp) {
-            lastScrollTimestamp = signal.timestamp
-            console.log(`[Yjs] Forward scroll: (${signal.x}, ${signal.y})`)
-            const { type: _, ...rest } = signal
-            for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...rest })
-          }
-        }
-
-        // Screenshot request from MCP
-        if (key === 'signal:screenshot-request' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as { timestamp: number }
-          if (!hasReceivedInitialSync) {
-            // During initial sync, process recent requests (within 10s) instead of discarding
-            if (signal?.timestamp) {
-              if (Date.now() - signal.timestamp < 10000) {
-                lastScreenshotRequestTimestamp = signal.timestamp
-                console.log('[Yjs] Screenshot request received (during sync, recent)')
-                for (const cb of screenshotCallbacks) cb()
-              } else {
-                lastScreenshotRequestTimestamp = signal.timestamp
-              }
-            }
-          } else if (signal?.timestamp && signal.timestamp > lastScreenshotRequestTimestamp) {
-            lastScreenshotRequestTimestamp = signal.timestamp
-            console.log('[Yjs] Screenshot request received')
-            for (const cb of screenshotCallbacks) cb()
-          }
-        }
-
-        // Forward sync: highlight
-        if (key === 'signal:forward-highlight' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as ForwardSyncSignal & { x: number, y: number, page: number, timestamp: number }
-          if (!hasReceivedInitialSync) {
-            if (signal?.timestamp) lastHighlightTimestamp = signal.timestamp
-          } else if (signal?.timestamp && signal.timestamp > lastHighlightTimestamp) {
-            lastHighlightTimestamp = signal.timestamp
-            console.log(`[Yjs] Forward highlight: page ${signal.page} (${signal.x}, ${signal.y})`)
-            const { type: _hl, ...hlRest } = signal
-            for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...hlRest })
-          }
-        }
-
-        // Camera link: sync camera between viewers
-        if (key === 'signal:camera-link' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as CameraLinkSignal
-          if (!hasReceivedInitialSync) {
-            if (signal?.timestamp) lastCameraLinkTimestamp = signal.timestamp
-          } else if (signal?.timestamp && signal.timestamp > lastCameraLinkTimestamp && signal.viewerId !== localViewerId) {
-            lastCameraLinkTimestamp = signal.timestamp
-            for (const cb of cameraLinkCallbacks) cb(signal)
-          }
-        }
-
-        // Ref viewer: sync click-to-reference between viewers
-        if (key === 'signal:ref-viewer' && (change.action === 'add' || change.action === 'update')) {
-          const signal = yRecords.get(key) as unknown as RefViewerSignal
-          if (!hasReceivedInitialSync) {
-            if (signal?.timestamp) lastRefViewerTimestamp = signal.timestamp
-          } else if (signal?.timestamp && signal.timestamp > lastRefViewerTimestamp && signal.viewerId !== localViewerId) {
-            lastRefViewerTimestamp = signal.timestamp
-            for (const cb of refViewerCallbacks) cb(signal)
-          }
+        if (key.startsWith('signal:')) {
+          bus.dispatch(key, change.action, () => yRecords.get(key), !hasReceivedInitialSync)
         }
       })
 
@@ -461,13 +432,10 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
           }
         })
         // Send to server
-        if (ws?.readyState === WebSocket.OPEN) {
-          const update = Y.encodeStateAsUpdate(doc)
-          ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
-        }
+        sendBinary(MSG_UPDATE, Y.encodeStateAsUpdate(doc))
       }
 
-      // --- Fix 4: Incremental updates ---
+      // Incremental updates
       function sendUpdate() {
         if (ws?.readyState !== WebSocket.OPEN) return
         try {
@@ -477,7 +445,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
             : Y.encodeStateAsUpdate(doc)         // full state on first send
           lastSentStateVector = Y.encodeStateVector(doc)
           console.log(`[Yjs] Sending update (${update.length} bytes)`)
-          ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
+          sendBinary(MSG_UPDATE, update)
         } catch (e) {
           console.error('[Yjs] Failed to send update:', e)
         }

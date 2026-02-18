@@ -90,7 +90,8 @@
   .doc-panel-content .change-item,
   .doc-panel-content .changes-header,
   .doc-panel-content .snapshot-slider,
-  .doc-panel-content .status-dot {
+  .doc-panel-content .status-dot,
+  .doc-panel-content .warnings-section {
     pointer-events: all;
   }
   .doc-panel:hover {

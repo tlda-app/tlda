@@ -25,9 +25,9 @@ import { WebSocketServer } from 'ws'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync } from 'fs'
-import { initPersistence, setupWSConnection, startPingInterval } from './lib/yjs-sync.mjs'
+import { initPersistence, setupWSConnection, startPingInterval, flushAll } from './lib/yjs-sync.mjs'
 import { initProjectStore } from './lib/project-store.mjs'
-import { resetStaleBuildStates } from './lib/build-runner.mjs'
+import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -49,7 +49,7 @@ app.use(express.json({ limit: '50mb' }))
 
 // Health
 app.get('/health', (req, res) => {
-  res.json({ ok: true, uptime: process.uptime() })
+  res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
 // ---------- Doc asset serving ----------
@@ -181,6 +181,7 @@ function generateManifest() {
             pages: project.pages || 0,
             format: project.format || 'svg',
             ...(project.sourceDoc && { sourceDoc: project.sourceDoc }),
+            ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)
@@ -209,12 +210,33 @@ function generateManifest() {
 
 // ---------- Graceful shutdown ----------
 
+let shuttingDown = false
 function shutdown() {
+  if (shuttingDown) return // prevent double-shutdown
+  shuttingDown = true
   console.log('\nShutting down...')
+
+  // 1. Kill all active build child processes (latexmk, dvisvgm, etc.)
+  killAllBuilds()
+
+  // 2. Flush any pending Yjs saves to disk
+  flushAll()
+
+  // 3. Stop accepting new connections
   stopPing()
   wss.close()
-  server.close()
-  process.exit(0)
+
+  // 4. Close HTTP server, wait for in-flight requests (up to 5s)
+  server.close(() => {
+    console.log('Server closed cleanly.')
+    process.exit(0)
+  })
+
+  // Safety net: force exit after 5s if server.close() hangs
+  setTimeout(() => {
+    console.error('Shutdown timed out, forcing exit.')
+    process.exit(1)
+  }, 5000).unref()
 }
 
 process.on('SIGINT', shutdown)

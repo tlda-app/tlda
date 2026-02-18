@@ -5,105 +5,12 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { injectSvgFonts } from './svgFonts'
-
-// Client-side SVG text store — keyed by shape ID, not synced through Yjs
-// Populated by svgDocumentLoader, read by the shape component
-export const svgTextStore = new Map<string, string>()
-
-// SVG viewBox dimensions per shape, for coordinate conversion
-export interface SvgViewBox { minX: number; minY: number; width: number; height: number }
-export const svgViewBoxStore = new Map<string, SvgViewBox>()
-export function getSvgViewBox(shapeId: string): SvgViewBox | undefined {
-  return svgViewBoxStore.get(shapeId)
-}
-
-// Anchor index: anchorId → { pageShapeId, viewBox }
-// Built during SVG loading so cross-page links can be resolved
-export interface AnchorEntry {
-  pageShapeId: string
-  // view element's viewBox attribute gives us the scroll target
-  viewBox?: string
-}
-export const anchorIndex = new Map<string, AnchorEntry>()
-
-// Callback for cross-page navigation — set by SvgDocument
-// anchorId is the <view> element ID (e.g. "loc84"), title is xlink:title (e.g. "equation.28")
-let navigateToAnchor: ((anchorId: string, title: string) => void) | null = null
-export function setNavigateToAnchor(fn: ((anchorId: string, title: string) => void) | null) {
-  navigateToAnchor = fn
-}
-
-// Callback for Cmd-click → open source in editor (set by SvgDocument)
-// shapeId identifies which page was clicked, clickY is relative to the shape (0..1 fraction)
-let onSourceClick: ((shapeId: string, clickY: number) => void) | null = null
-export function setOnSourceClick(fn: ((shapeId: string, clickY: number) => void) | null) {
-  onSourceClick = fn
-}
-
-// --- Change highlight store (local "unread" state, not synced via Yjs) ---
-
-export interface ChangeRegion {
-  y: number       // viewBox y coordinate (top of changed region)
-  height: number  // region height in viewBox units
-  x?: number      // viewBox x (left edge); omit for full-width
-  width?: number  // region width in viewBox units; omit for full-width
-  tint?: string   // CSS color for text tinting (e.g. '#4488ff'); omit for default highlight
-}
-
-export const changeStore = new Map<string, ChangeRegion[]>()  // shapeId → regions
-export const changedPages = new Set<string>()                 // shapeIds with unread changes
-
-type ChangeListener = () => void
-const changeListeners = new Set<ChangeListener>()
-
-export function onChangeStoreUpdate(fn: ChangeListener): () => void {
-  changeListeners.add(fn)
-  return () => { changeListeners.delete(fn) }
-}
-
-function notifyChangeListeners() {
-  for (const fn of changeListeners) fn()
-}
-
-export function setChangeHighlights(shapeId: string, regions: ChangeRegion[]) {
-  if (regions.length > 0) {
-    changeStore.set(shapeId, regions)
-    changedPages.add(shapeId)
-  } else {
-    changeStore.delete(shapeId)
-    changedPages.delete(shapeId)
-  }
-  notifyChangeListeners()
-}
-
-export function dismissPageChanges(shapeId: string) {
-  changeStore.delete(shapeId)
-  changedPages.delete(shapeId)
-  notifyChangeListeners()
-}
-
-export function dismissAllChanges() {
-  changeStore.clear()
-  changedPages.clear()
-  notifyChangeListeners()
-}
-
-/** Clear all module-level stores — call on document switch to prevent stale data. */
-export function clearDocumentStores() {
-  svgTextStore.clear()
-  svgViewBoxStore.clear()
-  anchorIndex.clear()
-  changeStore.clear()
-  changedPages.clear()
-  notifyChangeListeners()
-}
-
-// Expose change store on window for testing/debugging
-if (typeof window !== 'undefined') {
-  (window as any).__changeStore__ = { changeStore, changedPages, setChangeHighlights, dismissAllChanges, dismissPageChanges, svgViewBoxStore }
-}
+import { injectWordSpaces } from './svgWordSpaces'
+import { subscribeSvgText, getSvgText } from './stores/svgTextStore'
+import { changeStore, onShapeChangeUpdate, type ChangeRegion } from './stores/changeStore'
+import { getNavigateToAnchor, getOnSourceClick } from './stores/anchorIndex'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -111,11 +18,10 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     pageIndex: T.number,
-    version: T.number,
   }
 
   getDefaultProps() {
-    return { w: 800, h: 1035, pageIndex: 0, version: 0 }
+    return { w: 800, h: 1035, pageIndex: 0 }
   }
 
   override canEdit = () => false
@@ -140,9 +46,18 @@ function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
-  const svgText = svgTextStore.get(shape.id)
-  // Track what's currently injected so we know when to re-inject vs skip
-  const injectedVersionRef = useRef<string | null>(null)
+
+  // Subscribe to reactive SVG text store
+  const svgText = useSyncExternalStore(
+    (cb) => subscribeSvgText(shape.id, cb),
+    () => getSvgText(shape.id),
+  )
+
+  // Track what's currently injected so we skip redundant DOM work
+  const injectedRef = useRef<string | null>(null)
+  // Cached text element Y-positions for fast tinting (rebuilt on SVG injection)
+  const textYCacheRef = useRef<{ el: SVGTextElement; y: number }[]>([])
+
 
   // Track whether this page is near the viewport (±2 pages buffer)
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
@@ -154,34 +69,34 @@ function SvgPageComponent({ shape }: { shape: any }) {
     return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
   }, [editor, shape.id, shape.y, shape.props.h])
 
-  // Subscribe to change store for this shape's highlights
+  // Subscribe to change store for THIS shape's highlights only (not all shapes)
   const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])
   useEffect(() => {
-    return onChangeStoreUpdate(() => {
+    return onShapeChangeUpdate(shape.id, () => {
       setHighlights(changeStore.get(shape.id) || [])
     })
   }, [shape.id])
 
   // Inject or clear SVG based on viewport proximity
-  const versionKey = `${shape.id}:${shape.props.version}:${svgText?.length ?? 0}`
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
     if (!isNearViewport || !svgText) {
       // Off-screen: clear DOM to free memory
-      if (injectedVersionRef.current) {
+      if (injectedRef.current !== null) {
         el.innerHTML = ''
-        injectedVersionRef.current = null
+        injectedRef.current = null
+        textYCacheRef.current = []
       }
       return
     }
 
-    // Already injected for this exact version — skip
-    if (injectedVersionRef.current === versionKey) return
+    // Already injected this exact content — skip
+    if (injectedRef.current === svgText) return
 
     el.innerHTML = svgText
-    injectedVersionRef.current = versionKey
+    injectedRef.current = svgText
 
     // Scale the SVG to fill the shape bounds
     const svgEl = el.querySelector('svg')
@@ -197,6 +112,16 @@ function SvgPageComponent({ shape }: { shape: any }) {
     if (svgEl) {
       injectSvgFonts(svgEl)
       document.fonts.ready.then(() => injectWordSpaces(svgEl))
+
+      // Build Y-position cache for fast tinting (avoids querySelectorAll + parseFloat on every highlight change)
+      const textEls = svgEl.querySelectorAll('text')
+      const cache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
+      for (let i = 0; i < textEls.length; i++) {
+        cache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
+      }
+      textYCacheRef.current = cache
+    } else {
+      textYCacheRef.current = []
     }
 
     // Process <a> elements: strip native href (prevents browser navigation),
@@ -219,8 +144,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
     }
 
     // Apply any pending tint highlights
-    applyTinting(el, highlights)
-  }, [isNearViewport, svgText, versionKey])
+    applyTinting(textYCacheRef.current, highlights)
+  }, [isNearViewport, svgText])
 
   // Click handler — stable, doesn't depend on SVG content
   useEffect(() => {
@@ -229,6 +154,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     const onClick = (e: MouseEvent) => {
       // Cmd-click: open source in editor
+      const onSourceClick = getOnSourceClick()
       if (e.metaKey && onSourceClick) {
         e.preventDefault()
         e.stopPropagation()
@@ -242,6 +168,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
       const title = target.getAttribute('data-title') || anchorId || ''
+      const navigateToAnchor = getNavigateToAnchor()
       if (anchorId && navigateToAnchor) {
         e.preventDefault()
         e.stopPropagation()
@@ -254,10 +181,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
   // Apply text tinting when highlights change (and SVG is injected)
   useEffect(() => {
-    if (!injectedVersionRef.current) return
-    const el = containerRef.current
-    if (!el) return
-    applyTinting(el, highlights)
+    if (injectedRef.current === null) return
+    applyTinting(textYCacheRef.current, highlights)
   }, [highlights])
 
   return (
@@ -286,14 +211,12 @@ function SvgPageComponent({ shape }: { shape: any }) {
   )
 }
 
-/** Apply text tinting to SVG text elements within change regions. */
-function applyTinting(container: HTMLElement, highlights: ChangeRegion[]) {
-  const svgEl = container.querySelector('svg')
-  if (!svgEl) return
-
-  const textEls = svgEl.querySelectorAll('text')
+/** Apply text tinting to SVG text elements within change regions.
+ *  Uses pre-built Y-position cache to avoid querySelectorAll + parseFloat on every call. */
+function applyTinting(cache: { el: SVGTextElement; y: number }[], highlights: ChangeRegion[]) {
   // Reset all
-  for (const t of textEls) {
+  for (let i = 0; i < cache.length; i++) {
+    const t = cache[i].el
     t.removeAttribute('data-tinted')
     t.style.removeProperty('fill')
   }
@@ -301,109 +224,13 @@ function applyTinting(container: HTMLElement, highlights: ChangeRegion[]) {
   const tinted = highlights.filter(r => r.tint)
   if (tinted.length === 0) return
 
-  for (const t of textEls) {
-    const ty = parseFloat(t.getAttribute('y') || '0')
+  for (let i = 0; i < cache.length; i++) {
+    const ty = cache[i].y
     for (const r of tinted) {
       if (ty >= r.y && ty <= r.y + r.height) {
-        t.style.fill = r.tint!
-        t.setAttribute('data-tinted', '1')
+        cache[i].el.style.fill = r.tint!
+        cache[i].el.setAttribute('data-tinted', '1')
         break
-      }
-    }
-  }
-}
-
-/**
- * Inject space characters between positioned SVG text fragments.
- *
- * dvisvgm outputs text as <text> elements with positioned <tspan> children,
- * but no actual space characters between words. This makes native browser
- * text selection produce run-together text like "BalancingWeights".
- *
- * We walk each <text> element, use getComputedTextLength() to measure fragment
- * widths (returns SVG user units), and insert a space text node wherever there's
- * a word-sized gap. Font sizes are parsed from the SVG stylesheet (also in SVG
- * units) rather than getComputedStyle (which returns scaled CSS pixels).
- */
-function injectWordSpaces(svgEl: SVGSVGElement) {
-  // Parse font info per CSS class from the SVG's own <style> (in SVG user units).
-  // Multiple page SVGs in the same document have conflicting class names (e.g.
-  // text.f21 means different fonts on different pages), so we parse THIS page's
-  // styles and apply them inline to ensure correct measurement.
-  const fontInfoMap: Record<string, { family: string; size: number }> = {}
-  const styleEl = svgEl.querySelector('style')
-  if (styleEl) {
-    const cssText = styleEl.textContent || ''
-    const re = /text\.(\w+)\s*\{font-family:(\w+);font-size:([\d.]+)px\}/g
-    let m
-    while ((m = re.exec(cssText)) !== null) {
-      fontInfoMap[m[1]] = { family: m[2], size: parseFloat(m[3]) }
-    }
-  }
-
-  const textEls = svgEl.querySelectorAll('text')
-
-  // Apply inline font styles to each text element so getComputedTextLength
-  // uses the correct font (not a conflicting class from another page's CSS)
-  for (const textEl of textEls) {
-    const textClass = textEl.getAttribute('class') || ''
-    const fi = fontInfoMap[textClass]
-    if (fi) {
-      textEl.style.fontFamily = fi.family
-      textEl.style.fontSize = fi.size + 'px'
-    }
-  }
-
-  for (const textEl of textEls) {
-    const textClass = textEl.getAttribute('class') || ''
-    const fontSize = fontInfoMap[textClass]?.size || 10
-
-    // Collect fragments: direct text nodes and tspan children, in DOM order
-    type Frag = { node: Node; x: number; y: number; width: number }
-    const frags: Frag[] = []
-    let baseX = parseFloat(textEl.getAttribute('x') || '0')
-    let baseY = parseFloat(textEl.getAttribute('y') || '0')
-    let currentY = baseY
-
-    for (const child of textEl.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const text = child.textContent || ''
-        if (!text.trim()) continue
-        // Wrap bare text in a temporary tspan to measure it
-        const tmp = document.createElementNS('http://www.w3.org/2000/svg', 'tspan')
-        tmp.textContent = text
-        textEl.insertBefore(tmp, child.nextSibling)
-        const width = tmp.getComputedTextLength()
-        textEl.removeChild(tmp)
-        frags.push({ node: child, x: baseX, y: currentY, width })
-      } else if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName === 'tspan') {
-        const tspan = child as SVGTSpanElement
-        const text = tspan.textContent || ''
-        if (!text.trim()) continue
-        const xAttr = tspan.getAttribute('x')
-        const yAttr = tspan.getAttribute('y')
-        if (yAttr) currentY = parseFloat(yAttr)
-        const x = xAttr ? parseFloat(xAttr) : baseX
-        const width = tspan.getComputedTextLength()
-        frags.push({ node: child, x, y: currentY, width })
-      }
-    }
-
-    if (frags.length < 2) continue
-
-    // Insert space text nodes (iterate backwards to preserve DOM indices).
-    // dvisvgm gap distribution is cleanly bimodal: kerns < 0.05em, word spaces > 0.23em.
-    // Threshold of 0.15em cleanly separates them with wide margin on both sides.
-    const threshold = fontSize * 0.15
-    for (let i = frags.length - 1; i >= 1; i--) {
-      if (frags[i].y !== frags[i - 1].y) {
-        // Different baseline = line break within same <text> element
-        textEl.insertBefore(document.createTextNode(' '), frags[i].node)
-        continue
-      }
-      const gap = frags[i].x - (frags[i - 1].x + frags[i - 1].width)
-      if (gap > threshold) {
-        textEl.insertBefore(document.createTextNode(' '), frags[i].node)
       }
     }
   }

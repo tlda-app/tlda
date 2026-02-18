@@ -4,13 +4,9 @@ import {
   Tldraw,
   react,
   useEditor,
-  useValue,
   DefaultToolbar,
   DefaultColorStyle,
   DefaultSizeStyle,
-  TldrawUiMenuToolItem,
-  useTools,
-  useIsToolSelected,
 } from 'tldraw'
 import {
   SelectToolbarItem,
@@ -30,23 +26,26 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
-import { SvgPageShapeUtil, getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges } from './SvgPageShape'
-import type { ChangeRegion } from './SvgPageShape'
+import { SvgPageShapeUtil } from './SvgPageShape'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, type ChangeRegion } from './stores'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, getYRecords, writeSignal, broadcastCamera } from './useYjsSync'
+import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError } from './useYjsSync'
 import { DocumentPanel, PingButton } from './DocumentPanel'
-import { PanelContext } from './PanelContext'
+import { MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
+import { DocContext, PanelContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
+import { BuildErrorOverlay } from './BuildErrorOverlay'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT, PAGE_HEIGHT, PAGE_GAP } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
-import { setupSvgEditor, anchorIdToLabel } from './editorSetup'
+import { openInEditor } from './texsync'
+import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel } from './editorSetup'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
@@ -88,134 +87,6 @@ interface SvgDocumentEditorProps {
   diffConfig?: { basePath: string }
 }
 
-
-function MathNoteToolbarItem() {
-  const tools = useTools()
-  const isSelected = useIsToolSelected(tools['math-note'])
-  return <TldrawUiMenuToolItem toolId="math-note" isSelected={isSelected} />
-}
-
-function TextSelectToolbarItem() {
-  const tools = useTools()
-  const isSelected = useIsToolSelected(tools['text-select'])
-  return <TldrawUiMenuToolItem toolId="text-select" isSelected={isSelected} />
-}
-
-function ExitPenModeButton() {
-  const editor = useEditor()
-  const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
-  if (!isPenMode) return null
-  return (
-    <button
-      className="exit-pen-mode-btn"
-      onClick={() => editor.updateInstanceState({ isPenMode: false })}
-    >
-      <span className="exit-pen-mode-stack">
-        <span className="exit-pen-mode-pen">{'\u270F\uFE0E'}</span>
-        <span className="exit-pen-mode-x">{'\u2715'}</span>
-      </span>
-    </button>
-  )
-}
-
-// --- Tool toggle zones (pen-only, inside TLDraw tree) ---
-
-const highlightColors: Record<string, string> = {
-  black: '#1d1d1d', grey: '#9fa1a4', 'light-violet': '#e0d4f5',
-  violet: '#c77cff', blue: '#4ea2e2', 'light-blue': '#b7d9f5',
-  yellow: '#ffc940', orange: '#ff8c40', green: '#65c365',
-  'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
-}
-
-const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
-
-function ToolToggleZones() {
-  const editor = useEditor()
-  const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
-  const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
-  const [highlightColor, setHighlightColor] = useState('#c77cff')
-  const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
-
-  // Track tool and color changes
-  useEffect(() => {
-    const update = () => {
-      setCurrentTool(editor.getCurrentToolId())
-      const colorName = (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'violet'
-      setHighlightColor(highlightColors[colorName] || '#c77cff')
-    }
-    editor.on('change', update)
-    update()
-    return () => { editor.off('change', update) }
-  }, [editor])
-
-  const handlePenEnter = useCallback((e: React.PointerEvent) => {
-    if (e.pointerType === 'pen') e.currentTarget.classList.add('pen-hover')
-  }, [])
-  const handlePenLeave = useCallback((e: React.PointerEvent) => {
-    e.currentTarget.classList.remove('pen-hover')
-  }, [])
-
-  const handleDoubleTap = useCallback((targetTool: string) => (e: React.PointerEvent) => {
-    if (e.pointerType !== 'pen') return
-    e.preventDefault()
-    e.stopPropagation()
-    editor.markEventAsHandled(e)
-
-    const now = Date.now()
-    const last = lastTapRef.current
-    if (last.tool === targetTool && now - last.time < 400) {
-      const cur = editor.getCurrentToolId()
-      editor.setCurrentTool(cur === targetTool ? 'draw' : targetTool)
-      lastTapRef.current = { tool: '', time: 0 }
-    } else {
-      lastTapRef.current = { tool: targetTool, time: now }
-    }
-  }, [editor])
-
-  // Only show on touch devices in pen mode
-  if (!isTouch || !isPenMode) return null
-
-  return (
-    <div className="tool-toggle-zones">
-      <div
-        className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
-        style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
-        onPointerDown={handleDoubleTap('highlight')}
-        onPointerEnter={handlePenEnter}
-        onPointerLeave={handlePenLeave}
-      >
-        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
-      </div>
-      <div
-        className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
-        onPointerDown={handleDoubleTap('eraser')}
-        onPointerEnter={handlePenEnter}
-        onPointerLeave={handlePenLeave}
-      >
-        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
-      </div>
-    </div>
-  )
-}
-
-function PenHelperButtons() {
-  return (
-    <>
-      <ExitPenModeButton />
-      <ToolToggleZones />
-    </>
-  )
-}
-
-/** Sync TLDraw dark mode to <html data-theme> for portaled elements */
-function DarkModeSync() {
-  const editor = useEditor()
-  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
-  useEffect(() => {
-    globalThis.document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
-  }, [isDark])
-  return null
-}
 
 export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
   const editorRef = useRef<Editor | null>(null)
@@ -336,6 +207,27 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     proofDataRef, setProofDataReady, setProofFetchSeq,
     setRefViewerRefs, refViewerLineRef, panelsLocalRef,
   })
+
+  // --- Build error state ---
+  const [buildErrors, setBuildErrors] = useState<BuildError[]>([])
+  const [buildWarnings, setBuildWarnings] = useState<string[]>([])
+
+  useEffect(() => {
+    return onBuildStatusSignal((signal) => {
+      const errors = signal.errors || []
+      setBuildErrors(errors)
+      setBuildWarnings(signal.warnings || [])
+      // When errors clear, immediately clean up error shapes on the canvas
+      // (belt-and-suspenders — BuildErrorOverlay also cleans up on unmount)
+      if (errors.length === 0 && editorRef.current) {
+        const editor = editorRef.current
+        const toDelete = editor.getCurrentPageShapes()
+          .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
+          .map(s => s.id)
+        if (toDelete.length > 0) editor.store.remove(toDelete)
+      }
+    })
+  }, [])
 
   // --- Shared portal for bottom-left panels (ref viewer + proof overlay) ---
   const bottomPanelsRef = useRef<HTMLDivElement | null>(null)
@@ -472,7 +364,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     setupPulseForDiffLayout(editorRef, document.name, diff, focusChangeRef)
   }, [document])
 
-  const panelContextValue = useMemo(() => ({
+  // Stable doc info — only changes when a different document loads
+  const docContextValue = useMemo(() => ({
     docName: docKey,
     pages: document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
@@ -481,6 +374,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       textData: p.textData,
       shapeId: p.shapeId,
     })),
+  }), [docKey, document])
+
+  // Volatile panel state — toggles, loading flags, history, etc.
+  const panelContextValue = useMemo(() => ({
     diffChanges: hasDiffBuiltin ? document.diffLayout?.changes : (diffMode ? diffDataRef.current?.changes : undefined),
     onFocusChange: (page: number) => focusChangeRef.current?.(page),
     diffAvailable: hasDiffToggle,
@@ -513,7 +410,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     },
     selectedChangeId,
     onSelectChange: handleSelectChange,
-  }), [docKey, document, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange])
+    buildErrors,
+    buildWarnings,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
 
   const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
@@ -551,6 +450,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   }), [])
 
   return (
+    <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <Tldraw
         licenseKey={LICENSE_KEY}
@@ -599,6 +499,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Signal that pages are ready — disables Yjs init deletion protection
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
+          // For SVG documents: fetch page content in background (layout is already displayed)
+          if (!document.format || document.format === 'svg') {
+            const hasContent = document.pages.some(p => hasSvgText(p.shapeId))
+            if (!hasContent) {
+              fetchSvgPagesAsync(editor, document)
+            }
+          }
+
           // Follow system dark/light mode preference
           editor.user.updateUserPreferences({ colorScheme: 'system' })
 
@@ -625,14 +533,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               shapeToPage.set(document.pages[i].shapeId, i + 1)
             }
 
-            // Fetch project info for sourceDir, then build reverse index
-            const base = import.meta.env.BASE_URL || '/'
-            Promise.all([
-              buildReverseIndex(document.name),
-              fetch(`${base}api/projects/${document.name}`).then(r => r.ok ? r.json() : null).catch(() => null),
-            ]).then(([reverseLookup, projectInfo]) => {
+            buildReverseIndex(document.name).then((reverseLookup) => {
               if (!reverseLookup) return
-              const sourceDir = projectInfo?.sourceDir
 
               setOnSourceClick((shapeId: string, clickYFraction: number) => {
                 const page = shapeToPage.get(shapeId)
@@ -643,16 +545,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 const match = reverseLookup(page, pdfY)
                 if (!match) return
 
-                // Build absolute path
-                const filePath = sourceDir
-                  ? `${sourceDir.replace(/\/$/, '')}/${match.file}`
-                  : match.file
-                const url = `texsync://file${filePath}:${match.line}`
-                console.log(`[source-click] ${url}`)
-                // Use a temporary anchor to trigger the URL scheme without opening a blank tab
-                const a = window.document.createElement('a')
-                a.href = url
-                a.click()
+                openInEditor(document.name, match.file, match.line)
               })
             })
           }
@@ -793,7 +686,17 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         components={components}
         forceMobile
     >
-      <YjsSyncProvider roomId={roomId} onInitialSync={() => ensurePagesAtBottomRef.current?.()} />
+      <YjsSyncProvider roomId={roomId} onInitialSync={() => {
+        ensurePagesAtBottomRef.current?.()
+        // Clean up stale build-error shapes that may have persisted in Yjs
+        const editor = editorRef.current
+        if (editor && buildErrors.length === 0) {
+          const toDelete = editor.getCurrentPageShapes()
+            .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
+            .map(s => s.id)
+          if (toDelete.length > 0) editor.store.remove(toDelete)
+        }
+      }} />
       <DarkModeSync />
     </Tldraw>
     {bottomPanelsRef.current && createPortal(
@@ -801,7 +704,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         {panelsLocal && refViewerRefs && editorRef.current && (
           <RefViewer
             mainEditor={editorRef.current}
-            pages={panelContextValue.pages}
+            pages={docContextValue.pages}
             refs={refViewerRefs}
             shapeUtils={shapeUtils}
             tools={tools}
@@ -821,7 +724,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           <ProofStatementOverlay
             mainEditor={editorRef.current}
             proofData={proofDataRef.current}
-            pages={panelContextValue.pages}
+            pages={docContextValue.pages}
             shapeUtils={shapeUtils}
             tools={tools}
             licenseKey={LICENSE_KEY}
@@ -839,9 +742,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             onSelectChange={handleSelectChange}
           />
         )}
+        {buildErrors.length > 0 && editorRef.current && (
+          <BuildErrorOverlay
+            mainEditor={editorRef.current}
+            errors={buildErrors}
+            doc={docContextValue}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+          />
+        )}
       </>,
       bottomPanelsRef.current,
     )}
     </PanelContext.Provider>
+    </DocContext.Provider>
   )
 }

@@ -5,7 +5,7 @@ import {
   sortByIndex,
 } from 'tldraw'
 import type { TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
-import { svgTextStore, svgViewBoxStore, anchorIndex, setChangeHighlights } from './SvgPageShape'
+import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
@@ -98,6 +98,138 @@ function diffTextLines(
   return diffWords(extractFlatWords(oldData.lines), newData.lines)
 }
 
+/** Process a single fetched SVG page: parse viewBox, index anchors, push to store. */
+function processPage(
+  page: SvgDocument['pages'][number],
+  svgText: string,
+) {
+  const parser = new DOMParser()
+  const svgDoc = parser.parseFromString(svgText, 'image/svg+xml')
+  const svgEl = svgDoc.querySelector('svg')
+  if (svgEl) {
+    const vb = svgEl.getAttribute('viewBox')
+    if (vb) {
+      const parts = vb.split(/\s+/).map(Number)
+      if (parts.length === 4) {
+        svgViewBoxStore.set(page.shapeId, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+      }
+    }
+  }
+  const views = svgDoc.querySelectorAll('view')
+  for (const view of views) {
+    const id = view.getAttribute('id')
+    if (id) {
+      anchorIndex.set(id, {
+        pageShapeId: page.shapeId,
+        viewBox: view.getAttribute('viewBox') || undefined,
+      })
+    }
+  }
+
+  // Populate reactive SVG text store — triggers component re-render immediately
+  setSvgText(page.shapeId, svgText)
+
+  return svgDoc
+}
+
+/** Fetch a single SVG page, process it immediately, return parsed doc for text extraction. */
+async function fetchPage(
+  page: SvgDocument['pages'][number],
+  basePath: string,
+  index: number,
+): Promise<{ index: number; svgDoc: Document } | null> {
+  const url = `${basePath}page-${index + 1}.svg`
+  try {
+    let resp = await fetch(url)
+    if (!resp.ok) {
+      // Retry once after 1s — page may still be building
+      await new Promise(r => setTimeout(r, 1000))
+      resp = await fetch(`${basePath}page-${index + 1}.svg?t=${Date.now()}`)
+      if (!resp.ok) return null
+    }
+    const svgText = await resp.text()
+    const svgDoc = processPage(page, svgText)
+    return { index, svgDoc }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch SVG pages with viewport-priority loading.
+ * Pages visible on initial load are fetched first for fast first-paint,
+ * then remaining pages load in parallel.
+ * Text extraction is deferred to idle time after all pages render.
+ */
+export async function fetchSvgPagesAsync(
+  editor: Editor,
+  document: SvgDocument,
+) {
+  const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  const pages = document.pages
+
+  // Determine which pages are visible in the initial viewport.
+  // Camera starts fit-x at the top (origin y=0), so estimate visible height
+  // from the viewport bounds. Pad by 1 page to prefetch just beyond the fold.
+  const vp = editor.getViewportScreenBounds()
+  const cam = editor.getCamera()
+  const viewHeight = vp.h / cam.z
+  const viewTop = -cam.y
+  const viewBottom = viewTop + viewHeight
+
+  const priorityIndices: number[] = []
+  const deferredIndices: number[] = []
+  for (let i = 0; i < pages.length; i++) {
+    const b = pages[i].bounds
+    const pageBottom = b.y + b.height
+    if (b.y < viewBottom && pageBottom > viewTop) {
+      priorityIndices.push(i)
+    } else {
+      deferredIndices.push(i)
+    }
+  }
+  // Always include at least one page beyond visible for smooth scrolling
+  if (deferredIndices.length > 0 && priorityIndices.length > 0) {
+    priorityIndices.push(deferredIndices.shift()!)
+  }
+
+  console.log(`[FetchAsync] Loading ${pages.length} pages (${priorityIndices.length} priority, ${deferredIndices.length} deferred)`)
+
+  // Phase 1: fetch priority pages — visible content appears ASAP
+  const svgDocs: Array<{ index: number; svgDoc: Document }> = []
+  const priorityResults = await Promise.all(
+    priorityIndices.map(i => fetchPage(pages[i], basePath, i))
+  )
+  for (const r of priorityResults) {
+    if (r) svgDocs.push(r)
+  }
+
+  console.log(`[FetchAsync] ${svgDocs.length} priority pages rendered`)
+
+  // Phase 2: fetch remaining pages in parallel
+  if (deferredIndices.length > 0) {
+    const deferredResults = await Promise.all(
+      deferredIndices.map(i => fetchPage(pages[i], basePath, i))
+    )
+    for (const r of deferredResults) {
+      if (r) svgDocs.push(r)
+    }
+  }
+
+  console.log(`[FetchAsync] ${svgDocs.length}/${pages.length} pages rendered (${anchorIndex.size} hyperref anchors)`)
+
+  // Defer text extraction to idle time — not needed for visual rendering,
+  // only for text selection overlay. Process in page order.
+  svgDocs.sort((a, b) => a.index - b.index)
+  for (const { index, svgDoc } of svgDocs) {
+    // Yield to the main thread between pages so interactions stays responsive
+    await new Promise(r => requestAnimationFrame(r))
+    pages[index].textData = await extractTextFromSvgAsync(svgDoc)
+  }
+
+  console.log(`[FetchAsync] Text extraction complete for ${svgDocs.length} pages`)
+}
+
 // Generation counter for reloadPages — prevents interleaved concurrent reloads
 let reloadGeneration = 0
 
@@ -156,7 +288,7 @@ export async function reloadPages(
   const oldTextDataMap = new Map<number, PageTextData | null | undefined>()
   for (const result of results) {
     if (!result) continue
-    oldSvgTextMap.set(result.index, svgTextStore.get(pages[result.index].shapeId))
+    oldSvgTextMap.set(result.index, getSvgText(pages[result.index].shapeId))
     oldTextDataMap.set(result.index, pages[result.index].textData)
   }
 
@@ -169,8 +301,9 @@ export async function reloadPages(
     const { index, svgText } = result
     const page = pages[index]
 
-    // Update the SVG text store for inline svg-page shapes
-    svgTextStore.set(page.shapeId, svgText)
+    // Skip if SVG content is identical (stale reload signal, no actual rebuild)
+    const oldSvg = getSvgText(page.shapeId)
+    if (oldSvg === svgText) continue
 
     // Rebuild anchor index and viewBox for this page
     const parser = new DOMParser()
@@ -196,17 +329,9 @@ export async function reloadPages(
       }
     }
 
-    // For svg-page shapes, bump version to trigger re-render
+    // For image shapes (PNG format), update the asset directly
     const shape = editor.getShape(page.shapeId)
-    if (shape && (shape.type as string) === 'svg-page') {
-      editor.updateShape({
-        id: shape.id,
-        type: 'svg-page' as any,
-        props: { version: ((shape as any).props.version || 0) + 1 },
-      })
-      console.log(`[Reload] Updated svg-page for page ${index + 1}`)
-    } else if (shape && shape.type === 'image') {
-      // Fallback for image shapes (PNG format)
+    if (shape && shape.type === 'image') {
       const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgText)))
       const asset = editor.getAsset(page.assetId)
       if (asset && asset.type === 'image') {
@@ -233,6 +358,10 @@ export async function reloadPages(
         console.log(`[Reload] Page ${index + 1}: ${regions.length} changed region(s)`)
       }
     }
+
+    // Update reactive SVG text store — triggers component re-render
+    setSvgText(page.shapeId, svgText)
+    console.log(`[Reload] Updated svg-page for page ${index + 1}`)
   }
 
   // After a full reload, remap annotations
@@ -435,8 +564,12 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   }
 
   makeSureShapesAreAtBottom()
-  editor.sideEffects.registerAfterCreateHandler('shape', makeSureShapesAreAtBottom)
-  editor.sideEffects.registerAfterChangeHandler('shape', makeSureShapesAreAtBottom)
+  // Only re-sort when a NEW shape is created (and only if it's not one of our page shapes).
+  // Skip the change handler entirely — page shapes are locked and can't move, so z-order
+  // only needs fixing when new user shapes (notes, drawings) appear.
+  editor.sideEffects.registerAfterCreateHandler('shape', (shape) => {
+    if (!shapeIdSet.has(shape.id)) makeSureShapesAreAtBottom()
+  })
 
   // Constrain the camera to the bounds of the pages
   let targetBounds = document.pages.reduce(

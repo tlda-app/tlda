@@ -2,10 +2,16 @@ import { createContext } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
 import type { DiffChange, ProofPair } from './svgDocumentLoader'
 import type { HistoryEntry, PageDiff, ChangeItem } from './historyStore'
+import type { BuildError } from './useYjsSync'
 
-export interface PanelContextValue {
+/** Stable document info — set once per document load, never changes during session. */
+export interface DocContextValue {
   docName: string
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string }>
+}
+
+/** Volatile panel state — toggles, loading flags, history slider, etc. */
+export interface PanelContextValue {
   diffChanges?: DiffChange[]
   onFocusChange?: (currentPage: number) => void
   diffAvailable?: boolean
@@ -36,6 +42,9 @@ export interface PanelContextValue {
   onToggleHistoryPanel?: () => void
   selectedChangeId?: string | null
   onSelectChange?: (id: string | null) => void
+  buildErrors?: BuildError[]
+  buildWarnings?: string[]
 }
 
+export const DocContext = createContext<DocContextValue | null>(null)
 export const PanelContext = createContext<PanelContextValue | null>(null)

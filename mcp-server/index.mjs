@@ -58,6 +58,27 @@ function scheduleBrowserClose() {
   }, BROWSER_IDLE_MS);
 }
 
+/** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
+async function checkDocBuildStatus(docName) {
+  const sUrl = process.env.CTD_SERVER || 'http://localhost:5176';
+  try {
+    const res = await fetch(`${sUrl}/api/projects/${docName}`);
+    if (!res.ok) return { ok: false, reason: `Project "${docName}" not found on server` };
+    const info = await res.json();
+    if (!info.pages || info.pages === 0) {
+      const status = info.buildStatus || 'unknown';
+      if (status === 'building') return { ok: false, reason: `Document "${docName}" is currently building — no pages available yet` };
+      return { ok: false, reason: `Document "${docName}" has no built pages (build status: ${status})` };
+    }
+    return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
+  } catch (e) {
+    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "ctd server start"' };
+    }
+    return { ok: true }; // transient error, proceed anyway
+  }
+}
+
 async function headlessScreenshot(docName, targetPage) {
   const serverUrl = process.env.CTD_SERVER || 'http://localhost:5176';
   const url = `${serverUrl}/?doc=${docName}`;
@@ -529,15 +550,26 @@ function connectYjs(docName) {
 
     ws.on('message', (data) => {
       try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'sync') {
-          Y.applyUpdate(doc, new Uint8Array(msg.data));
+        // Binary protocol: [type byte][Yjs payload]
+        let type, payload;
+        if (Buffer.isBuffer(data) && data.length > 0 && (data[0] === 0x01 || data[0] === 0x02)) {
+          type = data[0] === 0x01 ? 'sync' : 'update';
+          payload = data.subarray(1);
+        } else {
+          // JSON fallback
+          const msg = JSON.parse(data.toString());
+          type = msg.type;
+          payload = new Uint8Array(msg.data);
+        }
+
+        if (type === 'sync') {
+          Y.applyUpdate(doc, payload);
           entry.ready = true;
           clearTimeout(timeout);
           console.error(`[Yjs] Synced ${yRecords.size} records for ${docName}`);
           resolve(entry);
-        } else if (msg.type === 'update') {
-          Y.applyUpdate(doc, new Uint8Array(msg.data));
+        } else if (type === 'update') {
+          Y.applyUpdate(doc, payload);
         }
       } catch (e) {
         console.error('[Yjs] Message error:', e.message);
@@ -563,7 +595,11 @@ function connectYjs(docName) {
 function sendYjsUpdate(entry) {
   if (entry.ws?.readyState === WsClient.OPEN) {
     const update = Y.encodeStateAsUpdate(entry.doc);
-    entry.ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }));
+    // Binary protocol: [0x02][Yjs payload]
+    const msg = Buffer.alloc(1 + update.length);
+    msg[0] = 0x02;
+    msg.set(update, 1);
+    entry.ws.send(msg);
   }
 }
 
@@ -1443,9 +1479,27 @@ function formatPing(ping, entry) {
   return `Ping received! ${vp}\n\n${summarizeAnnotations(entry)}`;
 }
 
+// Tools that need built document pages to work
+const TOOLS_NEEDING_BUILD = new Set([
+  'wait_for_feedback', 'screenshot', 'get_latest_feedback',
+  'highlight_location', 'add_annotation', 'send_note',
+  'scroll_to_line', 'read_pen_annotations',
+]);
+
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // Pre-check: tools that depend on built pages should fail fast with a diagnostic
+  if (TOOLS_NEEDING_BUILD.has(name)) {
+    const docName = args?.doc;
+    if (docName) {
+      const buildCheck = await checkDocBuildStatus(docName);
+      if (!buildCheck.ok) {
+        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "ctd errors ${docName}" or "ctd build ${docName}" to investigate.` }], isError: true };
+      }
+    }
+  }
 
   if (name === 'wait_for_feedback') {
     const timeout = (args?.timeout || 300) * 1000;
@@ -1772,7 +1826,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch {}
     }
     return {
-      content: [{ type: 'text', text: 'No screenshot available. Ask the user to tap the ping button to capture one.' }],
+      content: [{ type: 'text', text: 'No screenshot available. No viewer is connected — open the document in a browser or tap the ping button on the iPad.' }],
     };
   }
 

@@ -17,7 +17,10 @@
     "collab": "node scripts/collab.mjs",
     "publish-snapshot": "node scripts/publish-snapshot.mjs",
     "start": "npm run sync & npm run dev",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "test": "node --test test/cli.test.mjs test/server.test.mjs",
+    "test:all": "node --test test/cli.test.mjs test/server.test.mjs test/pipeline.test.mjs",
+    "test:e2e": "node --test test/pipeline.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.1",

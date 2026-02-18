@@ -18,11 +18,17 @@
  * }
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, realpathSync } from 'fs'
 import { createReadStream } from 'fs'
 import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
+
+/** Resolve path and follow symlinks (e.g. /tmp → /private/tmp on macOS) */
+function realResolve(...args) {
+  const p = resolve(...args)
+  try { return realpathSync(p) } catch { return p }
+}
 
 const texPath = process.argv[2]
 const outputPath = process.argv[3]
@@ -65,9 +71,9 @@ const inputFiles = discoverInputFiles(texContent, dir)
 
 // Build a map of file content for snippets: path → lines[]
 const sourceLines = new Map()
-sourceLines.set(resolve(texPath), texLines)
+sourceLines.set(realResolve(texPath), texLines)
 for (const f of inputFiles) {
-  sourceLines.set(resolve(f.path), readFileSync(f.path, 'utf8').split('\n'))
+  sourceLines.set(realResolve(f.path), readFileSync(f.path, 'utf8').split('\n'))
 }
 
 console.log(`Extracting synctex data from ${synctexGz}`)
@@ -97,7 +103,7 @@ for await (const line of rl) {
   if (line.startsWith('Input:')) {
     const match = line.match(/^Input:(\d+):(.+)$/)
     if (match) {
-      inputMap.set(parseInt(match[1]), resolve(match[2]))
+      inputMap.set(parseInt(match[1]), realResolve(match[2]))
     }
     continue
   }
@@ -156,12 +162,37 @@ for await (const line of rl) {
   const y = parseFloat((rawY * scale).toFixed(1))
 
   // Build lookup key
-  const isMainFile = filePath === resolve(texPath)
+  const isMainFile = filePath === realResolve(texPath)
   const key = isMainFile ? `${lineNum}` : `${basename(filePath)}:${lineNum}`
 
   // First occurrence wins (gives the start position of the line)
   if (!lineData.has(key)) {
     lineData.set(key, { page: currentPage, x, y })
+  }
+}
+
+// Scan source files for \appendix or \begin{appendix}
+// Since these produce no typeset output, synctex won't map them — record in metadata
+let appendixLine = null  // { line, file? } — line number (1-indexed), file if in an input file
+for (let i = 0; i < texLines.length; i++) {
+  const t = texLines[i].trim()
+  if (t === '\\appendix' || t === '\\begin{appendix}') {
+    appendixLine = { line: i + 1 }
+    break
+  }
+}
+if (!appendixLine) {
+  for (const f of inputFiles) {
+    const fLines = sourceLines.get(realResolve(f.path))
+    if (!fLines) continue
+    for (let i = 0; i < fLines.length; i++) {
+      const t = fLines[i].trim()
+      if (t === '\\appendix' || t === '\\begin{appendix}') {
+        appendixLine = { line: i + 1, file: f.name }
+        break
+      }
+    }
+    if (appendixLine) break
   }
 }
 
@@ -172,6 +203,7 @@ const lookup = {
     generated: new Date().toISOString(),
     totalLines: texLines.length,
     inputFiles: inputFiles.map(f => f.name),
+    ...(appendixLine && { appendixLine }),
   },
   lines: {},
 }
@@ -185,7 +217,7 @@ for (const [key, data] of lineData) {
     const lineIdx = parseInt(lineStr) - 1
     const file = inputFiles.find(f => f.name === fileName)
     if (file) {
-      const lines = sourceLines.get(resolve(file.path))
+      const lines = sourceLines.get(realResolve(file.path))
       if (lines && lineIdx >= 0 && lineIdx < lines.length) {
         content = lines[lineIdx].slice(0, 80)
       }
