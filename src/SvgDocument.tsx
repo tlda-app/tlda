@@ -30,7 +30,7 @@ import { SvgPageShapeUtil } from './SvgPageShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, type ChangeRegion } from './stores'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError } from './useYjsSync'
+import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { DocumentPanel, PingButton } from './DocumentPanel'
 import { MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { DocContext, PanelContext } from './PanelContext'
@@ -38,6 +38,7 @@ import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
 import { BuildErrorOverlay } from './BuildErrorOverlay'
+import { BuildWarningPill } from './BuildWarningPill'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
@@ -210,7 +211,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
   // --- Build error state ---
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([])
-  const [buildWarnings, setBuildWarnings] = useState<string[]>([])
+  const [buildWarnings, setBuildWarnings] = useState<BuildWarning[]>([])
 
   useEffect(() => {
     return onBuildStatusSignal((signal) => {
@@ -752,6 +753,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             licenseKey={LICENSE_KEY}
           />
         )}
+        <BuildWarningPill warnings={buildWarnings} />
       </>,
       bottomPanelsRef.current,
     )}

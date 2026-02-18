@@ -96,10 +96,15 @@ export type BuildError = {
   context?: Array<{ line: number; text: string }>
   errorLine?: number
 }
+export type BuildWarning = {
+  message: string
+  line?: number | null
+  file?: string | null
+}
 export type BuildStatusSignal = {
   error: string | null
   errors: BuildError[]
-  warnings: string[]
+  warnings: BuildWarning[]
   timestamp: number
 }
 const buildStatusHandle = bus.register<BuildStatusSignal>({

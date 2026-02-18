@@ -2,7 +2,7 @@ import { createContext } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
 import type { DiffChange, ProofPair } from './svgDocumentLoader'
 import type { HistoryEntry, PageDiff, ChangeItem } from './historyStore'
-import type { BuildError } from './useYjsSync'
+import type { BuildError, BuildWarning } from './useYjsSync'
 
 /** Stable document info — set once per document load, never changes during session. */
 export interface DocContextValue {
@@ -43,7 +43,7 @@ export interface PanelContextValue {
   selectedChangeId?: string | null
   onSelectChange?: (id: string | null) => void
   buildErrors?: BuildError[]
-  buildWarnings?: string[]
+  buildWarnings?: BuildWarning[]
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

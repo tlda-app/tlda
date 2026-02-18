@@ -279,9 +279,26 @@ export function parseLatexErrors(logText) {
     }
 
     // LaTeX warnings (reference/citation only — skip noise)
+    // LaTeX hard-wraps at column 80, often mid-word (e.g. "line 1\n25.").
+    // Collect continuation lines until a period or blank line, joining without
+    // a space when the previous chunk ended mid-token (no trailing space/period).
     if (line.includes('LaTeX Warning:') || line.includes('Package natbib Warning:')) {
       if (line.includes('Reference') || line.includes('Citation') || line.includes('Label(s) may have changed')) {
-        warnings.push(line.trim())
+        let msg = line
+        for (let j = i + 1; j < lines.length; j++) {
+          const cont = lines[j]
+          if (cont === '' || cont.startsWith('!') || cont.includes('Warning:')) break
+          if (msg.endsWith(' ') || cont.startsWith(' ')) {
+            msg += cont.trimStart()
+          } else {
+            msg += cont.trim()
+          }
+        }
+        msg = msg.trim()
+        // Parse into structured warning: { message, line, file }
+        const lineMatch = msg.match(/on input line (\d+)/)
+        const warnLine = lineMatch ? parseInt(lineMatch[1]) : null
+        warnings.push({ message: msg, line: warnLine, file: currentFile })
       }
     }
   }

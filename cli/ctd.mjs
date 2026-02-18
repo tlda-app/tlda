@@ -354,7 +354,7 @@ async function cmdErrors() {
   }
   if (data.warnings?.length > 0) {
     console.log(`${data.warnings.length} warning(s):`)
-    for (const w of data.warnings) console.log(dim(`  ${w}`))
+    for (const w of data.warnings) console.log(dim(`  ${typeof w === 'string' ? w : w.message}`))
   }
   if (!data.errors?.length && !data.warnings?.length && !data.building) {
     console.log(green('Clean.'))
