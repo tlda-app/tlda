@@ -22,6 +22,7 @@ if (!process.env.PATH?.includes(texbin)) {
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync } from 'fs'
+import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
@@ -32,6 +33,18 @@ import { snapshotBeforeBuild } from './history-store.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
+
+/**
+ * Hash SVG content for change detection. Strips non-deterministic parts:
+ * - <style> blocks (WOFF2 font data varies between dvisvgm runs)
+ * - xlink:href attributes (contain temp build dir paths)
+ */
+function hashSvgContent(svgText) {
+  const stripped = svgText
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/xlink:href='[^']*'/g, '')
+  return createHash('md5').update(stripped).digest('hex')
+}
 
 /** Strip leading zeros from dvisvgm page numbers: page-01.svg → page-1.svg */
 function normalizeSvgNames(dir) {
@@ -324,7 +337,12 @@ export async function runBuild(name, { priorityPages } = {}) {
     // Phase 2: SVG conversion
     status.phase = 'converting'
 
-    // Priority pages: convert, patch, publish immediately
+    // Load previous page hashes for change detection
+    const hashesPath = join(outDir, 'page-hashes.json')
+    let oldHashes = {}
+    try { oldHashes = JSON.parse(readFileSync(hashesPath, 'utf8')) } catch {}
+
+    // Priority pages: convert, patch, publish only if changed
     if (priorityPages?.length > 0) {
       const pageSpec = priorityPages.join(',')
       addLog(`Converting priority pages [${pageSpec}]...`)
@@ -341,12 +359,24 @@ export async function runBuild(name, { priorityPages } = {}) {
           { cwd: PROJECT_ROOT, timeout: 60000 },
         )
       } catch {}
-      // Atomically publish each priority page
+      // Hash-check and publish only changed priority pages
+      const changedPriority = []
       for (const p of priorityPages) {
         const f = `page-${p}.svg`
-        if (existsSync(join(svgDir, f))) publishFile(join(svgDir, f), join(outDir, f))
+        const svgPath = join(svgDir, f)
+        if (!existsSync(svgPath)) continue
+        const hash = hashSvgContent(readFileSync(svgPath, 'utf8'))
+        if (hash !== oldHashes[f]) {
+          publishFile(svgPath, join(outDir, f))
+          changedPriority.push(p)
+        }
       }
-      signalReload(name, priorityPages)
+      if (changedPriority.length > 0) {
+        signalReload(name, changedPriority)
+        addLog(`Priority: ${changedPriority.length}/${priorityPages.length} pages changed`)
+      } else {
+        addLog(`Priority: 0/${priorityPages.length} pages changed, skipping reload`)
+      }
     }
 
     // All pages: convert into svgDir (overwrites priority pages, that's fine)
@@ -360,7 +390,10 @@ export async function runBuild(name, { priorityPages } = {}) {
     normalizeSvgNames(svgDir)
     addLog(`SVG conversion done in ${((Date.now() - svgStart) / 1000).toFixed(1)}s`)
 
-    // Patch all image placeholders in svgDir
+    const allPageFiles = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
+    const pageCount = allPageFiles.length
+
+    // Patch all image placeholders (fast, ~70ms — always patch everything)
     addLog('Patching image placeholders...')
     try {
       const { stdout: patchStdout } = await run(
@@ -373,13 +406,29 @@ export async function runBuild(name, { priorityPages } = {}) {
       addLog(`Image patching failed (non-fatal): ${e.message.split('\n')[0]}`)
     }
 
-    // Atomically publish each page SVG
-    const newPages = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
-    for (const f of newPages) {
-      publishFile(join(svgDir, f), join(outDir, f))
+    // Hash patched SVGs to detect which pages actually changed
+    const newHashes = {}
+    for (const f of allPageFiles) {
+      newHashes[f] = hashSvgContent(readFileSync(join(svgDir, f), 'utf8'))
     }
-    const pageCount = newPages.length
-    addLog(`Generated ${pageCount} pages`)
+
+    const changedPageFiles = allPageFiles.filter(f => newHashes[f] !== oldHashes[f])
+    const changedPageNums = changedPageFiles.map(f => parseInt(f.match(/page-(\d+)\.svg/)[1]))
+    const changedSet = new Set(changedPageNums)
+
+    writeFileSync(hashesPath, JSON.stringify(newHashes, null, 2))
+    addLog(`${changedPageFiles.length}/${pageCount} pages changed`)
+
+    // Publish only changed page SVGs
+    for (const f of allPageFiles) {
+      const pageNum = parseInt(f.match(/page-(\d+)\.svg/)[1])
+      if (changedSet.has(pageNum)) {
+        publishFile(join(svgDir, f), join(outDir, f))
+      }
+    }
+    if (changedPageFiles.length < pageCount) {
+      addLog(`Published ${changedPageFiles.length}/${pageCount} pages`)
+    }
 
     // Remove stale pages beyond new page count
     for (const f of readdirSync(outDir)) {
@@ -387,8 +436,12 @@ export async function runBuild(name, { priorityPages } = {}) {
       if (m && parseInt(m[1]) > pageCount) unlinkSync(join(outDir, f))
     }
 
-    // Signal full reload after all pages published
-    signalReload(name, null)
+    // Signal reload — partial if only some pages changed
+    if (changedPageFiles.length > 0 && changedPageFiles.length < allPageFiles.length) {
+      signalReload(name, changedPageNums)
+    } else {
+      signalReload(name, null)
+    }
 
     // Phase 3: Extract macros (stage in buildDir, publish atomically)
     status.phase = 'extracting'
