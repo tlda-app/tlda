@@ -41,11 +41,12 @@ export function isRemote() {
  */
 export function localPath(docName, filename) {
   if (!projectRoot) return null
-  const publicPath = path.join(projectRoot, 'public', 'docs', docName, filename)
-  if (fs.existsSync(publicPath)) return publicPath
+  // Prefer fresh build output over stale legacy public/docs/
   const serverPath = path.join(projectRoot, 'server', 'projects', docName, 'output', filename)
   if (fs.existsSync(serverPath)) return serverPath
-  return publicPath // default for cache miss / new files
+  const publicPath = path.join(projectRoot, 'public', 'docs', docName, filename)
+  if (fs.existsSync(publicPath)) return publicPath
+  return serverPath // default for new files
 }
 
 /**
@@ -54,11 +55,12 @@ export function localPath(docName, filename) {
  */
 export function localDocDir(docName) {
   if (!projectRoot) return null
-  const publicDir = path.join(projectRoot, 'public', 'docs', docName)
-  if (fs.existsSync(publicDir)) return publicDir
+  // Prefer fresh build output over stale legacy public/docs/
   const serverDir = path.join(projectRoot, 'server', 'projects', docName, 'output')
   if (fs.existsSync(serverDir)) return serverDir
-  return publicDir
+  const publicDir = path.join(projectRoot, 'public', 'docs', docName)
+  if (fs.existsSync(publicDir)) return publicDir
+  return serverDir
 }
 
 /**

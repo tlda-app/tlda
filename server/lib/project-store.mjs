@@ -303,5 +303,10 @@ export function parseLatexErrors(logText) {
     }
   }
 
-  return { errors, warnings }
+  // Filter out false positives from draft mode
+  const filteredErrors = errors.filter(e =>
+    !e.message.includes('Cannot determine size of graphic')
+  )
+
+  return { errors: filteredErrors, warnings }
 }

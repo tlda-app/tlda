@@ -213,6 +213,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
 /** Apply text tinting to SVG text elements within change regions.
  *  Uses pre-built Y-position cache to avoid querySelectorAll + parseFloat on every call. */
+const DEFAULT_CHANGE_TINT = '#3b82f6'  // blue — reload-sourced change regions without explicit tint
+
 function applyTinting(cache: { el: SVGTextElement; y: number }[], highlights: ChangeRegion[]) {
   // Reset all
   for (let i = 0; i < cache.length; i++) {
@@ -221,14 +223,13 @@ function applyTinting(cache: { el: SVGTextElement; y: number }[], highlights: Ch
     t.style.removeProperty('fill')
   }
 
-  const tinted = highlights.filter(r => r.tint)
-  if (tinted.length === 0) return
+  if (highlights.length === 0) return
 
   for (let i = 0; i < cache.length; i++) {
     const ty = cache[i].y
-    for (const r of tinted) {
+    for (const r of highlights) {
       if (ty >= r.y && ty <= r.y + r.height) {
-        cache[i].el.style.fill = r.tint!
+        cache[i].el.style.fill = r.tint || DEFAULT_CHANGE_TINT
         cache[i].el.setAttribute('data-tinted', '1')
         break
       }

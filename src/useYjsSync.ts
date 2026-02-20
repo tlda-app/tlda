@@ -114,6 +114,18 @@ const buildStatusHandle = bus.register<BuildStatusSignal>({
 })
 export const onBuildStatusSignal = buildStatusHandle.on
 
+export type BuildProgressSignal = {
+  phase: 'compiling' | 'converting' | 'hot' | 'done' | 'failed'
+  detail: string | null  // e.g. 'compiled in 17.2s', 'pages 3,5', '192.1s', error message
+  timestamp: number
+}
+const buildProgressHandle = bus.register<BuildProgressSignal>({
+  key: 'signal:build-progress',
+  initBehavior: 'fire-if-recent',
+  recentMs: 300_000,  // show recent build progress on reconnect
+})
+export const onBuildProgressSignal = buildProgressHandle.on
+
 export type RefViewerSignal = {
   refs: Array<{ label: string; region: { page: number; yTop: number; yBottom: number; displayLabel?: string } }> | null
   viewerId: string

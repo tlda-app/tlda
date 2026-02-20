@@ -27,7 +27,7 @@ import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './MathNoteShape'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { SvgPageShapeUtil } from './SvgPageShape'
-import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, type ChangeRegion } from './stores'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages, type ChangeRegion } from './stores'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
@@ -666,6 +666,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           }
           window.addEventListener('keydown', handleKeyDown)
 
+          // Dismiss reload-sourced change highlights on canvas click
+          const container = editor.getContainer()
+          container.addEventListener('pointerdown', () => {
+            if (changedPages.size > 0) dismissAllChanges()
+          })
+
           // Axis-lock two-finger scroll: snap to vertical or horizontal
           // when the gesture is approximately aligned (3:1 ratio).
           // Intercept at editor.dispatch since @use-gesture binds wheel internally.
@@ -743,7 +749,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             onSelectChange={handleSelectChange}
           />
         )}
-        {buildErrors.length > 0 && editorRef.current && (
+        {editorRef.current && (
           <BuildErrorOverlay
             mainEditor={editorRef.current}
             errors={buildErrors}

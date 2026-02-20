@@ -14,12 +14,14 @@
  * are cleaned up on reconnect.
  */
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+
 import { createShapeId, toRichText } from 'tldraw'
 import type { Editor, TLShapeId, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
 import { loadLookup, type LookupEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
-import type { BuildError } from './useYjsSync'
+import type { BuildError, BuildProgressSignal } from './useYjsSync'
+import { onBuildProgressSignal } from './useYjsSync'
 import type { DocContextValue } from './PanelContext'
 import { openInEditor } from './texsync'
 import './BuildErrorOverlay.css'
@@ -74,6 +76,30 @@ export function BuildErrorOverlay({
   const [resolved, setResolved] = useState<ResolvedError[]>([])
   const [activeIndex, setActiveIndex] = useState(0)
   const [expanded, setExpanded] = useState(true)
+
+  // Build progress tracking
+  const [progress, setProgress] = useState<BuildProgressSignal | null>(null)
+  const [progressVisible, setProgressVisible] = useState(false)
+  const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return onBuildProgressSignal((signal) => {
+      setProgress(signal)
+      setProgressVisible(true)
+
+      if (fadeTimer.current) {
+        clearTimeout(fadeTimer.current)
+        fadeTimer.current = null
+      }
+
+      if (signal.phase === 'done') {
+        fadeTimer.current = setTimeout(() => {
+          setProgressVisible(false)
+          fadeTimer.current = null
+        }, 4000)
+      }
+    })
+  }, [])
 
   // Resolve error line numbers to canvas positions and create text shapes
   useEffect(() => {
@@ -200,7 +226,33 @@ export function BuildErrorOverlay({
     goToError(next)
   }, [activeIndex, resolved.length, goToError])
 
-  if (resolved.length === 0) return null
+  // During active build phases, show progress pill (even if there are errors)
+  const buildActive = progressVisible && progress &&
+    (progress.phase === 'compiling' || progress.phase === 'converting' || progress.phase === 'hot')
+
+  if (buildActive || resolved.length === 0) {
+    if (!progressVisible || !progress) return null
+
+    const { phase, detail } = progress
+    let stage = ''
+    switch (phase) {
+      case 'compiling': stage = 'compiling'; break
+      case 'converting': stage = 'converting'; break
+      case 'hot': stage = 'patched'; break
+      case 'done': stage = 'rebuilt'; break
+      case 'failed': stage = 'failed'; break
+    }
+
+    return (
+      <div
+        className="build-progress-row"
+        onPointerDown={e => e.stopPropagation()}
+      >
+        <span className="build-progress-pill">{stage}</span>
+        {detail && <span className="build-progress-detail">{detail}</span>}
+      </div>
+    )
+  }
 
   const active = resolved[activeIndex]
   const errorLabel = active.error.line ? `l.${active.error.line}` : 'Error'

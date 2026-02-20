@@ -9,7 +9,7 @@ import {
 } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
 // Type imports not needed with 'any' approach
-import { useCallback, useRef, useEffect, useState } from 'react'
+import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
 import {
   getThreadMeta,
   getThreadMembers,
@@ -184,6 +184,15 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
 
+    // Memoize KaTeX rendering — only re-parse when text actually changes
+    const renderedHtml = useMemo(
+      () => {
+        const t = shape.props.text || ''
+        return hasMath(t) ? renderMath(t) : null
+      },
+      [shape.props.text],
+    )
+
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
       if (!isEditing) {
@@ -247,6 +256,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // Auto-size: measure rendered content and update shape height
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
+      if (shape.opacity === 0) return // hidden tab — skip measurement
       const el = contentRef.current
       if (!el) return
       const measured = el.scrollHeight
@@ -559,8 +569,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const hasChoices = choices && choices.length > 0
 
       let textContent
-      if (hasMath(text)) {
-        const rendered = renderMath(text)
+      if (renderedHtml) {
         textContent = (
           <div
             style={{
@@ -570,7 +579,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               lineHeight: 1.4,
               color: '#1a1a1a',
             }}
-            dangerouslySetInnerHTML={{ __html: rendered }}
+            dangerouslySetInnerHTML={{ __html: renderedHtml }}
           />
         )
       } else {
@@ -669,10 +678,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => document.removeEventListener('pointerdown', dismiss, true)
     }, [contextMenu])
 
-    // Tab bar — only for threads with 2+ members. Renders inside the note like browser tabs.
+    // Tab bar — only for threads with 2+ members. Only the visible tab renders it.
     let tabBar: React.ReactNode = null
-    const root = findRoot(editor, shape)
-    const members = isInThread ? getThreadMembers(editor, root) : [shape]
+    const root = isInThread ? findRoot(editor, shape) : shape
+    // Skip expensive getThreadMembers for hidden tabs
+    const members = isInThread && shape.opacity !== 0 ? getThreadMembers(editor, root) : isInThread ? [] : [shape]
     const showTabBar = isInThread && members.length >= 2 && shape.opacity !== 0
 
     if (showTabBar) {

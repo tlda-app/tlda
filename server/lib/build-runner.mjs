@@ -216,48 +216,158 @@ export function killAllBuilds() {
  * Copies source into a fresh build dir, seeds with cached .aux/.bbl,
  * runs latexmk, preserves the log, and signals build errors immediately.
  */
+// Pretex commands injected before \documentclass.
+// draft mode for graphicx (placeholder boxes instead of images),
+// hypertex driver for hyperref, and ensure hyperref loads.
+const PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+
+/**
+ * Extract preamble from a .tex file (everything before \begin{document}).
+ * Returns the preamble text, or null if \begin{document} not found.
+ */
+function extractPreamble(texPath) {
+  const src = readFileSync(texPath, 'utf8')
+  const idx = src.search(/^\s*\\begin\s*\{document\}/m)
+  if (idx < 0) return null
+  return src.slice(0, idx)
+}
+
+/**
+ * Ensure a precompiled .fmt exists for the project's preamble.
+ * Returns the format base name if available, null otherwise.
+ *
+ * The .fmt bakes in PRETEX + all preamble packages/macros, so subsequent
+ * builds skip ~3s of package loading.
+ */
+async function ensureFormat(ctx) {
+  const { srcDir, buildDir, projDir, texBase, texPath, addLog, run } = ctx
+  const cacheDir = join(projDir, 'build-cache')
+
+  const preamble = extractPreamble(join(srcDir, `${texBase}.tex`))
+  if (!preamble) {
+    addLog('Could not extract preamble — skipping format')
+    return null
+  }
+
+  // Hash preamble + pretex to detect changes
+  const preambleHash = createHash('md5').update(PRETEX + '\n' + preamble).digest('hex')
+  const fmtBase = `${texBase}-fmt`
+  const fmtFile = join(cacheDir, `${fmtBase}.fmt`)
+  const hashFile = join(cacheDir, 'fmt-hash.txt')
+
+  // Check if cached format matches
+  let cachedHash = null
+  try { cachedHash = readFileSync(hashFile, 'utf8').trim() } catch {}
+
+  if (cachedHash === preambleHash && existsSync(fmtFile)) {
+    cpSync(fmtFile, join(buildDir, `${fmtBase}.fmt`))
+    addLog('Using cached format')
+    return fmtBase
+  }
+
+  // Build new format: write .hdr with pretex + preamble + \endofdump
+  addLog('Building preamble format...')
+  const fmtStart = Date.now()
+  const hdrContent = PRETEX + '\n' + preamble + '\\csname endofdump\\endcsname\n'
+  writeFileSync(join(buildDir, `${fmtBase}.hdr`), hdrContent)
+
+  try {
+    await run(
+      `pdflatex -ini -interaction=nonstopmode -output-format=dvi ` +
+      `-jobname="${fmtBase}" "&pdflatex" mylatexformat.ltx "${fmtBase}.hdr"`,
+      { cwd: buildDir, timeout: 60000 },
+    )
+  } catch (e) {
+    addLog(`Format creation failed: ${e.message.split('\n')[0]}`)
+    return null
+  }
+
+  if (!existsSync(join(buildDir, `${fmtBase}.fmt`))) {
+    addLog('Format file not created — falling back to direct compilation')
+    return null
+  }
+
+  addLog(`Format built in ${((Date.now() - fmtStart) / 1000).toFixed(1)}s`)
+
+  // Cache the format + hash
+  mkdirSync(cacheDir, { recursive: true })
+  cpSync(join(buildDir, `${fmtBase}.fmt`), fmtFile)
+  writeFileSync(hashFile, preambleHash)
+
+  return fmtBase
+}
+
+/**
+ * Phase 1: LaTeX compilation.
+ * Runs pdflatex with source dir as cwd and -output-directory to the build dir.
+ * No source file copying — pdflatex reads .tex from source, writes .dvi/.log/.aux
+ * to the build dir. Cached .aux/.bbl/.fmt seeded into build dir from build-cache.
+ */
 async function compileLaTeX(ctx) {
   const { name, srcDir, buildDir, projDir, texBase, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
 
-  addLog('Running latexmk...')
-  const latexStart = Date.now()
-
-  // Copy source files into build dir
-  cpSync(srcDir, buildDir, { recursive: true })
-
-  // Seed with cached state from last successful build
+  // Seed build dir with cached state (.aux, .bbl, .fmt) from last build
   if (existsSync(cacheDir)) {
-    cpSync(cacheDir, buildDir, { recursive: true })
+    for (const f of readdirSync(cacheDir)) {
+      cpSync(join(cacheDir, f), join(buildDir, f))
+    }
   }
 
-  // Generate stub PDFs from SVG figures so LaTeX draft mode gets correct dimensions.
-  generateStubPdfs(buildDir, addLog)
-
-  // Write latexmkrc for DVI+synctex mode
-  writeFileSync(join(buildDir, '.latexmkrc'),
-    `$latex = 'pdflatex --output-format=dvi -synctex=1 %O %P';\n`)
-
+  // Generate stub PDFs in the source dir so LaTeX draft mode reads correct dimensions.
   // Image pipeline: SVG is the authoritative figure format.
-  //   1. generateStubPdfs() creates minimal PDFs from SVG dimensions (above)
-  //   2. latexmk runs in draft mode — reads stub PDFs for bounding boxes
+  //   1. generateStubPdfs() creates minimal PDFs from SVG dimensions
+  //   2. pdflatex runs in draft mode — reads stub PDFs for bounding boxes
   //   3. dvisvgm converts DVI → SVG pages with placeholder boxes
   //   4. patch-svg-images.mjs replaces placeholders with actual SVG content
   // Do NOT use dvipdfmx driver — it requires .xbb files, causing corrupt DVI.
-  const pretex = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
-  try {
-    await run(
-      `latexmk -dvi -f ` +
-      `-interaction=nonstopmode ` +
-      `-pretex='${pretex}' ` +
-      `"${texBase}.tex"`,
-      { cwd: buildDir, timeout: 120000 },
-    )
-  } catch (e) {
-    // latexmk may exit non-zero due to warnings — check for DVI below
-    addLog(`latexmk exited with warnings (continuing): ${e.message.split('\n')[0]}`)
+  generateStubPdfs(srcDir, addLog)
+
+  // Try to use precompiled preamble format
+  const fmtBase = await ensureFormat(ctx)
+
+  // TEXMFOUTPUT lets pdflatex write to buildDir even with cwd=srcDir.
+  // TEXINPUTS ensures pdflatex finds .aux/.bbl in buildDir alongside srcDir.
+  const env = {
+    ...process.env,
+    TEXMFOUTPUT: buildDir,
+    TEXINPUTS: `${buildDir}:${srcDir}:`,
   }
-  addLog(`latexmk done in ${((Date.now() - latexStart) / 1000).toFixed(1)}s`)
+
+  // Build the pdflatex command — cwd is srcDir, output goes to buildDir
+  let cmd
+  if (fmtBase) {
+    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+      `-output-directory="${buildDir}" -fmt="${fmtBase}" "${texBase}.tex"`
+  } else {
+    addLog('No format available — using pretex wrapper')
+    const wrapperContent = PRETEX + '\n\\input{' + texBase + '.tex}\n'
+    writeFileSync(join(buildDir, `${texBase}-wrapped.tex`), wrapperContent)
+    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+      `-output-directory="${buildDir}" -jobname="${texBase}" "${texBase}-wrapped.tex"`
+  }
+
+  const compileStart = Date.now()
+  addLog(`Compiling${fmtBase ? ' (fmt)' : ''}...`)
+  try {
+    await run(cmd, { cwd: srcDir, timeout: 120000, env })
+  } catch (e) {
+    addLog(`pdflatex exited with warnings (continuing): ${e.message.split('\n')[0]}`)
+  }
+
+  // Check if a second pass is needed (unresolved references)
+  const logPath = join(buildDir, `${texBase}.log`)
+  if (existsSync(logPath)) {
+    const logText = readFileSync(logPath, 'utf8')
+    if (logText.includes('Label(s) may have changed') || logText.includes('Rerun to get')) {
+      addLog('References changed — running second pass')
+      try {
+        await run(cmd, { cwd: srcDir, timeout: 120000, env })
+      } catch {}
+    }
+  }
+
+  addLog(`pdflatex done in ${((Date.now() - compileStart) / 1000).toFixed(1)}s`)
 
   // Preserve the LaTeX log for error extraction (build dir gets cleaned up later)
   const latexLog = join(buildDir, `${texBase}.log`)
@@ -265,7 +375,7 @@ async function compileLaTeX(ctx) {
     cpSync(latexLog, join(projDir, 'latex.log'))
   }
 
-  // Signal build errors (or clear previous ones) immediately after latexmk
+  // Signal build errors (or clear previous ones) immediately after pdflatex
   const { errors: logErrors } = extractBuildErrors(name)
   if (logErrors.length > 0) {
     addLog(`Found ${logErrors.length} error(s) in log — signaling immediately`)
@@ -319,6 +429,7 @@ async function convertSvgs(ctx, priorityPages, oldHashes) {
       }
     }
     if (changedPriority.length > 0) {
+      signalBuildProgress(name, 'hot', `${changedPriority.length === 1 ? 'page' : 'pages'} ${changedPriority.join(',')}`)
       signalReload(name, changedPriority)
       addLog(`Priority: ${changedPriority.length}/${priorityPages.length} pages changed`)
     } else {
@@ -410,18 +521,22 @@ async function extractMacros(ctx) {
 
 /** Phase 4: Extract synctex lookup. Returns true if successful. */
 async function extractSynctex(ctx) {
-  const { texBase, mainFile, buildDir, outDir, addLog, run } = ctx
+  const { texBase, mainFile, srcDir, buildDir, outDir, addLog, run } = ctx
   const synctexFile = join(buildDir, `${texBase}.synctex.gz`)
   if (!existsSync(synctexFile)) {
     addLog('No synctex.gz found, skipping lookup + proof pairing')
     return false
   }
 
+  // The extractor derives synctex.gz location from the .tex path's directory.
+  // Copy synctex.gz next to the source .tex so the script finds both.
+  cpSync(synctexFile, join(srcDir, `${texBase}.synctex.gz`))
+
   addLog('Extracting synctex lookup...')
   const synctexStart = Date.now()
   try {
     await run(
-      `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${join(buildDir, mainFile)}" "${join(buildDir, 'lookup.json')}"`,
+      `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${join(srcDir, mainFile)}" "${join(buildDir, 'lookup.json')}"`,
       { cwd: PROJECT_ROOT, timeout: 600000 },
     )
     publishFile(join(buildDir, 'lookup.json'), join(outDir, 'lookup.json'))
@@ -453,7 +568,7 @@ async function computeProofPairing(ctx) {
 function saveBuildCache(ctx) {
   const { buildDir, projDir, addLog } = ctx
   const cacheDir = join(projDir, 'build-cache')
-  const CACHE_EXTS = /\.(aux|bbl|toc|out|synctex\.gz)$/
+  const CACHE_EXTS = /\.(aux|bbl|toc|out|synctex\.gz|fmt)$/
   try {
     mkdirSync(cacheDir, { recursive: true })
     for (const f of readdirSync(buildDir)) {
@@ -466,7 +581,24 @@ function saveBuildCache(ctx) {
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { priorityPages } = {}) {
+export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
+  // If no priority pages specified, read viewport from Yjs (what the viewer is looking at)
+  let priorityPages = explicitPriority
+  if (!priorityPages) {
+    try {
+      const roomId = `doc-${name}`
+      const doc = getDoc(roomId)
+      const yRecords = doc.getMap('tldraw')
+      const viewport = yRecords.get('signal:viewport')
+      if (viewport?.pages?.length > 0) {
+        priorityPages = viewport.pages
+      }
+    } catch {}
+  }
+  // Fallback: at least page 1
+  if (!priorityPages || priorityPages.length === 0) {
+    priorityPages = [1]
+  }
   // If a build is already running, kill it and restart
   const existing = activeBuilds.get(name)
   if (existing?.building) {
@@ -522,27 +654,34 @@ export async function runBuild(name, { priorityPages } = {}) {
   }
 
   try {
-    // Snapshot current output before overwriting
-    try {
-      const snap = snapshotBeforeBuild(name)
-      if (snap) ctx.addLog(`Snapshot saved: ${snap.id} (${snap.pages} pages)`)
-    } catch (e) {
-      ctx.addLog(`Snapshot failed (non-fatal): ${e.message}`)
-    }
+    // Snapshot current output in background — don't block the build
+    Promise.resolve().then(() => {
+      try {
+        const snap = snapshotBeforeBuild(name)
+        if (snap) ctx.addLog(`Snapshot saved: ${snap.id} (${snap.pages} pages)`)
+      } catch (e) {
+        ctx.addLog(`Snapshot failed (non-fatal): ${e.message}`)
+      }
+    })
+
+    const buildStart = Date.now()
+    const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
     // Phase 1: LaTeX compilation
     status.phase = 'compiling'
+    signalBuildProgress(name, 'compiling', null)
     await compileLaTeX(ctx)
 
     // Phase 2+3: SVG conversion and macro extraction run in parallel
     status.phase = 'converting'
+    signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
     const oldHashes = loadPageHashes(outDir)
     const [svgResult] = await Promise.all([
       convertSvgs(ctx, priorityPages, oldHashes),
       extractMacros(ctx),
     ])
 
-    // Phase 4+5: Synctex → proof pairing (sequential)
+    // Phase 4+5: Synctex → proof pairing (sequential, post-reload)
     status.phase = 'extracting'
     const hasSynctex = await extractSynctex(ctx)
     if (hasSynctex) await computeProofPairing(ctx)
@@ -555,8 +694,9 @@ export async function runBuild(name, { priorityPages } = {}) {
     })
     saveBuildCache(ctx)
 
-    const totalElapsed = ((Date.now() - new Date(status.startedAt).getTime()) / 1000).toFixed(1)
+    const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
+    signalBuildProgress(name, 'done', `${totalElapsed}s`)
 
     status.building = false
     status.phase = 'done'
@@ -574,6 +714,7 @@ export async function runBuild(name, { priorityPages } = {}) {
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch {}
 
     signalBuildStatus(name, e.message)
+    signalBuildProgress(name, 'failed', e.message)
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
@@ -582,6 +723,23 @@ export async function runBuild(name, { priorityPages } = {}) {
 }
 
 // ─── Yjs signals ─────────────────────────────────────────────────────────────
+
+function signalBuildProgress(name, phase, detail) {
+  try {
+    const roomId = `doc-${name}`
+    const doc = getDoc(roomId)
+    const yRecords = doc.getMap('tldraw')
+    doc.transact(() => {
+      yRecords.set('signal:build-progress', {
+        phase,       // 'compiling' | 'converting' | 'extracting' | 'done' | 'failed'
+        detail,      // e.g. 'latexmk' | 'priority pages [3,5]' | 'all pages' | '12.3s'
+        timestamp: Date.now(),
+      })
+    })
+  } catch (e) {
+    console.error(`[build:${name}] Failed to send build progress signal: ${e.message}`)
+  }
+}
 
 function signalBuildStatus(name, errorMessage) {
   try {
