@@ -5,7 +5,7 @@ import {
   sortByIndex,
 } from 'tldraw'
 import type { TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
-import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights } from './stores'
+import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
@@ -414,6 +414,8 @@ export async function reloadPages(
       setChangeHighlights(page.shapeId, regions)
       if (regions.length > 0) {
         console.log(`[Reload] Page ${index + 1}: ${regions.length} changed region(s)`)
+        // Auto-dismiss after 3s — don't make the user stare at blue
+        setTimeout(() => dismissAllChanges(), 3000)
       }
     }
 
