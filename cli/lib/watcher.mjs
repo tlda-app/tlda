@@ -21,7 +21,7 @@ const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 
 // Poll build status after a push, report result inline.
 // Fire-and-forget — doesn't block the watcher.
-async function awaitBuild(server, name) {
+async function awaitBuild(server, name, authHeaders = {}) {
   const start = Date.now()
   const maxWait = 300_000 // 5 min
   const poll = 2000
@@ -34,6 +34,7 @@ async function awaitBuild(server, name) {
     }
     try {
       const res = await fetch(`${server}/api/projects/${name}/build/status`, {
+        headers: authHeaders,
         signal: AbortSignal.timeout(5000),
       })
       if (!res.ok) return
@@ -53,8 +54,10 @@ async function awaitBuild(server, name) {
   }
 }
 
-export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
+export async function startWatcher({ dir, name, debounceMs = 200, getServer, getToken }) {
   const server = getServer()
+  const token = getToken?.() || null
+  const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
   let pushTimeout = null
   let pendingFiles = new Set()
   let pushing = false
@@ -64,7 +67,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
   // Yjs connection for viewport + reverse sync
   let cachedViewportPages = null
   try {
-    const yjsUrl = server.replace(/^http/, 'ws') + `/doc-${name}`
+    const yjsUrl = server.replace(/^http/, 'ws') + `/doc-${name}` + (token ? `?token=${token}` : '')
     await setupYjsConnection(yjsUrl, dir, (pages) => { cachedViewportPages = pages })
   } catch (e) {
     console.log(`[watch] Yjs connection failed (non-fatal): ${e.message}`)
@@ -78,14 +81,14 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
         console.log(`[watch] Initial push: ${files.length} file(s)`)
         const res = await fetch(`${server}/api/projects/${name}/push`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
           body: JSON.stringify({ files, sourceDir: dir }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {
           const data = await res.json()
           if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
-          else awaitBuild(server, name)
+          else awaitBuild(server, name, authHeaders)
           retryDelay = 1000
         } else {
           console.error(`[watch] Initial push failed: ${await res.text()}`)
@@ -127,7 +130,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
     try {
       const res = await fetch(`${server}/api/projects/${name}/push`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ files: addedOrChanged, deletedFiles, priorityPages }),
         signal: AbortSignal.timeout(60000),
       })
@@ -137,7 +140,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer }) {
       } else {
         retryDelay = 1000
         // Poll for build result
-        awaitBuild(server, name)
+        awaitBuild(server, name, authHeaders)
       }
     } catch (e) {
       console.error(`[watch] Push failed: ${e.message}, retrying in ${retryDelay / 1000}s...`)

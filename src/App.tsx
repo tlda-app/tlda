@@ -2,7 +2,11 @@ import { useState, useEffect, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
+import { initToken } from './authToken'
 import './App.css'
+
+// Initialize auth token from URL query param — patches fetch() to inject Authorization header
+initToken()
 
 // Error boundary to prevent blank screen on errors
 class ErrorBoundary extends Component<

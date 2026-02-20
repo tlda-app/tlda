@@ -7,6 +7,7 @@ import * as Y from 'yjs'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import type { Editor, TLRecord } from 'tldraw'
 import { SignalBus } from './signalBus'
+import { appendToken } from './authToken'
 
 interface YjsSyncOptions {
   editor: Editor
@@ -285,7 +286,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     })
 
     function connect() {
-      ws = new WebSocket(`${serverUrl}/${roomId}`)
+      ws = new WebSocket(appendToken(`${serverUrl}/${roomId}`))
       ws.binaryType = 'arraybuffer'
       wsRef.current = ws
 

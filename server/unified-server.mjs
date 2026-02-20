@@ -29,6 +29,7 @@ import { initPersistence, setupWSConnection, startPingInterval, flushAll } from 
 import { initProjectStore } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
+import { initAuth, isAuthEnabled, validateToken, requireRead } from './lib/auth.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -43,6 +44,9 @@ initPersistence(DATA_DIR)
 initProjectStore(PROJECTS_DIR)
 resetStaleBuildStates()
 
+// Auth
+initAuth()
+
 // Express app
 const app = express()
 app.use(express.json({ limit: '50mb' }))
@@ -56,13 +60,13 @@ app.get('/health', (req, res) => {
 // Serves from server/projects/{name}/output/ at /docs/{name}/*
 // Falls back to public/docs/{name}/* for legacy/dev compatibility
 
-app.get('/docs/manifest.json', (req, res) => {
+app.get('/docs/manifest.json', requireRead, (req, res) => {
   const manifest = generateManifest()
   res.json(manifest)
 })
 
 // Serve doc assets: try projects output first, then legacy public/docs
-app.use('/docs', (req, res, next) => {
+app.use('/docs', requireRead, (req, res, next) => {
   // Skip manifest (handled above)
   if (req.path === '/manifest.json') return next()
 
@@ -143,6 +147,18 @@ const wss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
+
+  // Auth check: token from ?token= query param or Authorization header
+  if (isAuthEnabled()) {
+    const token = url.searchParams.get('token') ||
+      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null)
+    if (!validateToken(token)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
+  }
+
   let room = null
 
   if (url.pathname.startsWith('/yjs/')) {

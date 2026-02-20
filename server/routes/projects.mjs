@@ -17,6 +17,7 @@
 import { Router } from 'express'
 import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir,
@@ -31,12 +32,12 @@ const router = Router()
 router.use('/:name/history', historyRoutes)
 
 // List all projects
-router.get('/', (req, res) => {
+router.get('/', requireRead, (req, res) => {
   res.json({ projects: listProjects() })
 })
 
 // Create project
-router.post('/', (req, res) => {
+router.post('/', requireRw, (req, res) => {
   try {
     const { name, title, mainFile, sourceDir } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
@@ -51,7 +52,7 @@ router.post('/', (req, res) => {
 })
 
 // Get project
-router.get('/:name', (req, res) => {
+router.get('/:name', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
@@ -63,7 +64,7 @@ router.get('/:name', (req, res) => {
 })
 
 // Delete project
-router.delete('/:name', (req, res) => {
+router.delete('/:name', requireRw, (req, res) => {
   try {
     deleteProject(req.params.name)
     res.json({ ok: true })
@@ -73,21 +74,21 @@ router.delete('/:name', (req, res) => {
 })
 
 // List source files
-router.get('/:name/files', (req, res) => {
+router.get('/:name/files', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ files: listSourceFiles(req.params.name) })
 })
 
 // Source file hashes (for incremental push)
-router.get('/:name/hashes', (req, res) => {
+router.get('/:name/hashes', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ hashes: hashSourceFiles(req.params.name) })
 })
 
 // Push files + trigger build
-router.post('/:name/push', async (req, res) => {
+router.post('/:name/push', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
@@ -138,7 +139,7 @@ router.post('/:name/push', async (req, res) => {
 })
 
 // Trigger rebuild (no file changes)
-router.post('/:name/build', async (req, res) => {
+router.post('/:name/build', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
@@ -154,7 +155,7 @@ router.post('/:name/build', async (req, res) => {
 })
 
 // Build status + log
-router.get('/:name/build/status', (req, res) => {
+router.get('/:name/build/status', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
@@ -170,7 +171,7 @@ router.get('/:name/build/status', (req, res) => {
 })
 
 // LaTeX errors from the build log
-router.get('/:name/build/errors', (req, res) => {
+router.get('/:name/build/errors', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 

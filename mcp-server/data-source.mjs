@@ -13,6 +13,8 @@ import path from 'path'
 
 let projectRoot = null
 let serverUrl = null
+const CTD_TOKEN = process.env.CTD_TOKEN || null
+const authHeaders = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {}
 
 // In-memory cache: docName → { filename → { data, fetchedAt } }
 const cache = new Map()
@@ -120,7 +122,7 @@ export async function readManifest() {
     if (cached !== undefined) return cached
 
     try {
-      const res = await fetch(`${serverUrl}/docs/manifest.json`)
+      const res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
       if (!res.ok) return null
       const data = await res.json()
       setCache('_root', 'manifest.json', data)
@@ -163,7 +165,7 @@ export async function readText(docName, filename) {
 
   if (serverUrl) {
     try {
-      const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`)
+      const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`, { headers: authHeaders })
       if (!res.ok) return null
       const data = await res.text()
       setCache(docName, filename, data)
@@ -222,7 +224,7 @@ function readJsonFromDisk(docName, filename) {
 
 async function fetchJson(docName, filename) {
   try {
-    const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`)
+    const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`, { headers: authHeaders })
     if (!res.ok) return null
     const data = await res.json()
     setCache(docName, filename, data)

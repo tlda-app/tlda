@@ -24,6 +24,9 @@ import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readManifestSync, localDocDir, isRemote } from './data-source.mjs';
 
+const CTD_TOKEN = process.env.CTD_TOKEN || null;
+const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
@@ -62,7 +65,7 @@ function scheduleBrowserClose() {
 async function checkDocBuildStatus(docName) {
   const sUrl = process.env.CTD_SERVER || 'http://localhost:5176';
   try {
-    const res = await fetch(`${sUrl}/api/projects/${docName}`);
+    const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: CTD_AUTH_HEADERS });
     if (!res.ok) return { ok: false, reason: `Project "${docName}" not found on server` };
     const info = await res.json();
     if (!info.pages || info.pages === 0) {
@@ -530,9 +533,10 @@ function connectYjs(docName) {
   const doc = new Y.Doc();
   const yRecords = doc.getMap('tldraw');
   const roomId = `doc-${docName}`;
-  const url = `${SYNC_SERVER}/${roomId}`;
+  const baseUrl = `${SYNC_SERVER}/${roomId}`;
+  const url = CTD_TOKEN ? `${baseUrl}?token=${CTD_TOKEN}` : baseUrl;
 
-  console.error(`[Yjs] Connecting to ${url}`);
+  console.error(`[Yjs] Connecting to ${baseUrl}`);
   const entry = { doc, yRecords, ws: null, ready: false };
 
   entry.promise = new Promise((resolve, reject) => {
@@ -775,10 +779,13 @@ async function listAnnotations(doc) {
       ann.choices = record.props.choices;
       ann.selectedChoice = record.props.selectedChoice ?? -1;
     }
-    // Thread fields
-    if (record.meta?.threadId) ann.threadId = record.meta.threadId;
-    if (record.meta?.threadRootId) ann.threadRootId = record.meta.threadRootId;
-    if (record.meta?.threadOrder != null) ann.threadOrder = record.meta.threadOrder;
+    // Tab info (single-shape threading)
+    const tabs = record.props?.tabs;
+    if (tabs && tabs.length > 1) {
+      ann.tabCount = tabs.length;
+      ann.activeTab = record.props?.activeTab || 0;
+      ann.tabs = tabs;
+    }
     annotations.push(ann);
   });
 
@@ -791,93 +798,30 @@ async function replyAnnotation(doc, id, text) {
   const record = entry.yRecords.get(fullId);
   if (!record) return { ok: false, error: `Annotation not found: ${fullId}` };
 
-  // Find the thread root (may be the target itself or its root)
-  let rootId = fullId;
-  let rootRecord = record;
-  if (record.meta?.threadRootId) {
-    rootId = record.meta.threadRootId;
-    rootRecord = entry.yRecords.get(rootId);
-    if (!rootRecord) return { ok: false, error: `Thread root not found: ${rootId}` };
-  }
+  // Single-shape tab model: add a tab to the existing shape
+  const currentTabs = record.props?.tabs || [record.props?.text || ''];
+  const activeTab = record.props?.activeTab || 0;
 
-  // Ensure root has a threadId
-  let threadId = rootRecord.meta?.threadId;
-  if (!threadId) {
-    threadId = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const updatedRoot = { ...rootRecord, meta: { ...rootRecord.meta, threadId } };
-    entry.doc.transact(() => { entry.yRecords.set(rootId, updatedRoot); });
-  }
-
-  // Count existing thread members for ordering
-  let maxOrder = 0;
-  entry.yRecords.forEach((rec) => {
-    if (rec?.meta?.threadId === threadId && rec.meta.threadOrder != null) {
-      maxOrder = Math.max(maxOrder, rec.meta.threadOrder);
-    }
-  });
-
-  const replyId = generateShapeId();
-  const nextOrder = maxOrder + 1;
-
-  // Find highest z-index
-  let maxIndex = 'a1';
-  for (const [, val] of entry.yRecords.entries()) {
-    if (val && val.typeName === 'shape' && val.index && val.index > maxIndex) {
-      maxIndex = val.index;
-    }
-  }
-
-  const replyShape = {
-    id: replyId,
-    type: 'math-note',
-    typeName: 'shape',
-    x: rootRecord.x,
-    y: rootRecord.y,
-    rotation: 0,
-    isLocked: false,
-    opacity: 0, // hidden until tab is switched
-    props: {
-      w: rootRecord.props?.w || 200,
-      h: rootRecord.props?.h || 150,
-      text,
-      color: rootRecord.props?.color || 'violet',
-      autoSize: true,
-    },
-    meta: {
-      sourceAnchor: rootRecord.meta?.sourceAnchor || undefined,
-      threadId,
-      threadRootId: rootId,
-      threadOrder: nextOrder,
-    },
-    parentId: 'page:page',
-    index: getIndexAbove(maxIndex),
-  };
-
-  // Set activeReplyId on root to show the new reply
-  const updatedRoot = {
-    ...rootRecord,
-    opacity: 0,
-    meta: { ...rootRecord.meta, threadId, activeReplyId: replyId },
-  };
-
-  // Hide all other thread members
-  const updates = [];
-  entry.yRecords.forEach((rec, rid) => {
-    if (rec?.meta?.threadId === threadId && rid !== rootId && rid !== replyId && rec.opacity !== 0) {
-      updates.push([rid, { ...rec, opacity: 0 }]);
-    }
-  });
+  // Save current text into current tab slot, then add new tab
+  const updatedTabs = [...currentTabs];
+  updatedTabs[activeTab] = record.props?.text || '';
+  updatedTabs.push(text);
+  const newActiveTab = updatedTabs.length - 1;
 
   entry.doc.transact(() => {
-    entry.yRecords.set(rootId, updatedRoot);
-    entry.yRecords.set(replyId, { ...replyShape, opacity: 1 }); // new reply is visible
-    for (const [rid, rec] of updates) {
-      entry.yRecords.set(rid, rec);
-    }
+    entry.yRecords.set(fullId, {
+      ...record,
+      props: {
+        ...record.props,
+        tabs: updatedTabs,
+        activeTab: newActiveTab,
+        text: text,
+      },
+    });
   });
   sendYjsUpdate(entry);
 
-  return { ok: true, id: replyId, threadId, threadOrder: nextOrder };
+  return { ok: true, id: fullId, tabIndex: newActiveTab, tabCount: updatedTabs.length };
 }
 
 async function deleteAnnotation(doc, id) {
@@ -886,91 +830,8 @@ async function deleteAnnotation(doc, id) {
   const record = entry.yRecords.get(fullId);
   if (!record) return { ok: false, error: `Annotation not found: ${fullId}` };
 
-  const meta = record.meta || {};
-  const threadId = meta.threadId;
-  const isReplyShape = !!meta.threadRootId;
-
-  if (!threadId) {
-    // Not threaded — simple delete
-    entry.doc.transact(() => { entry.yRecords.delete(fullId); });
-    sendYjsUpdate(entry);
-    return { ok: true, id: fullId };
-  }
-
-  if (isReplyShape) {
-    // Deleting a reply: remove it, reorder remaining
-    const rootId = meta.threadRootId;
-    entry.doc.transact(() => {
-      entry.yRecords.delete(fullId);
-      // Reorder remaining replies
-      let order = 1;
-      entry.yRecords.forEach((rec, rid) => {
-        if (rec?.meta?.threadId === threadId && rec.meta.threadRootId && rid !== fullId) {
-          entry.yRecords.set(rid, { ...rec, meta: { ...rec.meta, threadOrder: order++ } });
-        }
-      });
-      // If no replies left, clean up root's thread meta
-      if (order === 1) {
-        const root = entry.yRecords.get(rootId);
-        if (root) {
-          const cleanMeta = { ...root.meta };
-          delete cleanMeta.threadId;
-          delete cleanMeta.activeReplyId;
-          entry.yRecords.set(rootId, { ...root, opacity: 1, meta: cleanMeta });
-        }
-      } else {
-        // If root was showing deleted reply, switch to root
-        const root = entry.yRecords.get(rootId);
-        if (root && root.meta?.activeReplyId === fullId) {
-          entry.yRecords.set(rootId, { ...root, opacity: 1, meta: { ...root.meta, activeReplyId: null } });
-        }
-      }
-    });
-  } else {
-    // Deleting root: promote first reply
-    const replies = [];
-    entry.yRecords.forEach((rec, rid) => {
-      if (rec?.meta?.threadId === threadId && rec.meta.threadRootId === fullId) {
-        replies.push({ id: rid, record: rec, order: rec.meta.threadOrder || 0 });
-      }
-    });
-    replies.sort((a, b) => a.order - b.order);
-
-    if (replies.length === 0) {
-      entry.doc.transact(() => { entry.yRecords.delete(fullId); });
-    } else {
-      const newRoot = replies[0];
-      const otherReplies = replies.slice(1);
-      entry.doc.transact(() => {
-        entry.yRecords.delete(fullId);
-        // Promote first reply to root
-        const newRootMeta = { ...newRoot.record.meta };
-        delete newRootMeta.threadRootId;
-        delete newRootMeta.threadOrder;
-        newRootMeta.activeReplyId = null;
-        entry.yRecords.set(newRoot.id, { ...newRoot.record, opacity: 1, meta: newRootMeta });
-        // Update remaining replies
-        for (let i = 0; i < otherReplies.length; i++) {
-          const r = otherReplies[i];
-          entry.yRecords.set(r.id, {
-            ...r.record,
-            meta: { ...r.record.meta, threadRootId: newRoot.id, threadOrder: i + 1 },
-          });
-        }
-        // If only one shape left, clean up thread
-        if (otherReplies.length === 0) {
-          const nr = entry.yRecords.get(newRoot.id);
-          if (nr) {
-            const cleanMeta = { ...nr.meta };
-            delete cleanMeta.threadId;
-            delete cleanMeta.activeReplyId;
-            entry.yRecords.set(newRoot.id, { ...nr, meta: cleanMeta });
-          }
-        }
-      });
-    }
-  }
-
+  // Single-shape model: just delete the shape (all tabs go with it)
+  entry.doc.transact(() => { entry.yRecords.delete(fullId); });
   sendYjsUpdate(entry);
   return { ok: true, id: fullId };
 }
@@ -2048,8 +1909,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let summary = `${annotations.length} annotation(s):\n\n`;
       annotations.forEach((a, i) => {
         summary += `${i + 1}. ${a.id}`;
-        if (a.threadRootId) summary += ` (reply in thread, root: ${a.threadRootId})`;
-        else if (a.threadId) summary += ` (thread root)`;
+        if (a.tabCount > 1) summary += ` (${a.tabCount} tabs, showing tab ${(a.activeTab || 0) + 1})`;
         summary += '\n';
         summary += `   pos: (${a.x}, ${a.y}) color: ${a.color}\n`;
         if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
@@ -2072,7 +1932,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const result = await replyAnnotation(doc, id, text);
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
-      return { content: [{ type: 'text', text: `Created reply ${result.id} (thread: ${result.threadId}, tab ${result.threadOrder}):\n"${text}"` }] };
+      return { content: [{ type: 'text', text: `Added tab ${result.tabIndex + 1}/${result.tabCount} to ${result.id}:\n"${text}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }

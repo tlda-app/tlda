@@ -20,6 +20,7 @@ import { resolve, basename, dirname, join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
+import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 
 // --- Config ---
@@ -59,7 +60,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -98,6 +99,10 @@ function getServer() {
   return process.env.CTD_SERVER || getFlag('server') || loadConfig().server || 'http://localhost:5176'
 }
 
+function getToken() {
+  return process.env.CTD_TOKEN || getFlag('token') || loadConfig().token || null
+}
+
 // --- Output helpers ---
 
 const isTTY = process.stderr.isTTY
@@ -111,10 +116,13 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
 async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
   const server = getServer()
+  const token = getToken()
   const url = `${server}${path}`
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     signal: AbortSignal.timeout(timeoutMs),
   }
   if (body) opts.body = JSON.stringify(body)
@@ -294,7 +302,7 @@ async function cmdWatch() {
   console.log()
 
   const { startWatcher } = await import('./lib/watcher.mjs')
-  await startWatcher({ dir, name, debounceMs, getServer })
+  await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
 const WATCH_ALL_LOGFILE = join(homedir(), '.config', 'ctd', 'watch-all.log')
@@ -417,7 +425,7 @@ async function watchAllRun() {
       }
 
       console.log(`[watch-all] Watching ${p.sourceDir} → ${p.name}`)
-      const watcher = await startWatcher({ dir: p.sourceDir, name: p.name, debounceMs, getServer })
+      const watcher = await startWatcher({ dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken })
       watchers.set(p.name, watcher)
     }
   }
@@ -455,7 +463,8 @@ async function cmdOpen() {
   if (!name) { console.error('Usage: ctd open [name]'); process.exit(1) }
 
   const server = getServer()
-  const url = `${server}/?doc=${name}`
+  const token = getToken()
+  const url = `${server}/?doc=${name}` + (token ? `&token=${token}` : '')
   console.log(`Opening ${url}`)
 
   const { execFile } = await import('child_process')
@@ -565,11 +574,14 @@ async function cmdPreview() {
   const CONCURRENCY = 8
   const results = []
 
+  const token = getToken()
+  const previewHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
+
   async function convertPage(page) {
     const svgUrl = `${server}/docs/${name}/page-${page}.svg`
     const pngPath = join(outDir, `page-${page}.png`)
     try {
-      const svgRes = await fetch(svgUrl, { signal: AbortSignal.timeout(10000) })
+      const svgRes = await fetch(svgUrl, { headers: previewHeaders, signal: AbortSignal.timeout(10000) })
       if (!svgRes.ok) { console.error(`  page ${page}: not found`); return null }
       const svgBuf = Buffer.from(await svgRes.arrayBuffer())
       execFileSync('rsvg-convert', ['-f', 'png', '-o', pngPath], { input: svgBuf, timeout: 30000 })
@@ -612,6 +624,41 @@ async function cmdConfig() {
     console.log(`Server: ${getServer()}`)
     console.log(`Config: ${CONFIG_FILE}`)
   }
+}
+
+async function cmdAuth() {
+  const sub = getPositional(0)
+
+  if (sub === 'init') {
+    const config = loadConfig()
+    const tokenRw = randomBytes(24).toString('base64url')
+    const tokenRead = randomBytes(24).toString('base64url')
+    config.tokenRw = tokenRw
+    config.tokenRead = tokenRead
+    config.token = tokenRw  // CLI uses the RW token
+    saveConfig(config)
+
+    console.log(green('Tokens generated and saved to config.'))
+    console.log()
+    console.log(`  RW token:   ${bold(tokenRw)}`)
+    console.log(`  Read token: ${bold(tokenRead)}`)
+    console.log()
+    console.log(dim(`Config: ${CONFIG_FILE}`))
+    console.log(dim(`Restart the server for tokens to take effect.`))
+    return
+  }
+
+  if (sub === 'show') {
+    const config = loadConfig()
+    console.log(`  RW token:   ${config.tokenRw || dim('(not set)')}`)
+    console.log(`  Read token: ${config.tokenRead || dim('(not set)')}`)
+    console.log(`  CLI token:  ${config.token || dim('(not set)')}`)
+    return
+  }
+
+  console.log('Usage: ctd auth [init|show]')
+  console.log('  init   Generate and save new tokens')
+  console.log('  show   Show current tokens')
 }
 
 function cmdCompletions() {
@@ -713,6 +760,11 @@ async function cmdServer(action) {
       nodePath = '/opt/homebrew/bin/node'
     }
 
+    const config = loadConfig()
+    const tokenEnvLines = []
+    if (config.tokenRw) tokenEnvLines.push(`        <key>CTD_TOKEN_RW</key>\n        <string>${config.tokenRw}</string>`)
+    if (config.tokenRead) tokenEnvLines.push(`        <key>CTD_TOKEN_READ</key>\n        <string>${config.tokenRead}</string>`)
+
     const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -730,6 +782,7 @@ async function cmdServer(action) {
         <string>${port}</string>
         <key>PATH</key>
         <string>${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin</string>
+${tokenEnvLines.join('\n')}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -962,6 +1015,7 @@ async function main() {
       case 'logs':    await cmdServer('logs'); break
       case 'log':     await cmdServer('logs'); break
       case 'completions': cmdCompletions(); break
+      case 'auth': await cmdAuth(); break
       case 'config': await cmdConfig(); break
       default:
         console.log(`ctd — Claude TLDraw CLI

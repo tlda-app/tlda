@@ -13,6 +13,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || process.argv[2] || 5176
 const PERSISTENCE_DIR = process.env.DATA_DIR || join(__dirname, 'data')
 
+// Auth: if CTD_TOKEN_READ or CTD_TOKEN_RW is set, require a valid token to connect
+const TOKEN_READ = process.env.CTD_TOKEN_READ || null
+const TOKEN_RW = process.env.CTD_TOKEN_RW || null
+const AUTH_ENABLED = !!(TOKEN_READ || TOKEN_RW)
+
+function validateToken(token) {
+  if (!AUTH_ENABLED) return true
+  if (!token) return false
+  if (TOKEN_RW && token === TOKEN_RW) return true
+  if (TOKEN_READ && token === TOKEN_READ) return true
+  return false
+}
+
 // Ensure data directory exists
 if (!existsSync(PERSISTENCE_DIR)) {
   mkdirSync(PERSISTENCE_DIR, { recursive: true })
@@ -120,12 +133,28 @@ const server = http.createServer((req, res) => {
   }
 })
 
-// WebSocket server
-const wss = new WebSocketServer({ server })
+// WebSocket server — use noServer mode for auth check on upgrade
+const wss = new WebSocketServer({ noServer: true })
+
+server.on('upgrade', (req, socket, head) => {
+  if (AUTH_ENABLED) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+    const token = url.searchParams.get('token')
+    if (!validateToken(token)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req)
+  })
+})
 
 wss.on('connection', (ws, req) => {
-  // Extract doc name from URL path: /doc-name
-  const docName = req.url?.slice(1) || 'default'
+  // Extract doc name from URL path: /doc-name (strip query string)
+  const pathname = req.url?.split('?')[0] || '/'
+  const docName = pathname.slice(1) || 'default'
   setupWSConnection(ws, docName)
 })
 
@@ -148,4 +177,5 @@ const HOST = process.env.HOST || '0.0.0.0'
 server.listen(PORT, HOST, () => {
   console.log(`Yjs sync server running on ws://${HOST}:${PORT}`)
   console.log(`Persistence dir: ${PERSISTENCE_DIR}`)
+  if (AUTH_ENABLED) console.log('Token auth enabled')
 })

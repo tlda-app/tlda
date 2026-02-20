@@ -9,6 +9,7 @@
 import { Router } from 'express'
 import { join } from 'path'
 import { existsSync, readdirSync } from 'fs'
+import { requireRead, requireRw } from '../lib/auth.mjs'
 import { readProject, outputDir } from '../lib/project-store.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
@@ -28,7 +29,7 @@ const router = Router({ mergeParams: true })
 /**
  * GET / — Unified timeline: build snapshots + git commits, newest first.
  */
-router.get('/', async (req, res) => {
+router.get('/', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
@@ -61,7 +62,7 @@ router.get('/', async (req, res) => {
 /**
  * POST /git/:hash/build — Trigger on-demand build for a git commit.
  */
-router.post('/git/:hash/build', async (req, res) => {
+router.post('/git/:hash/build', requireRw, async (req, res) => {
   const { name } = req.params
   const { hash } = req.params
 
@@ -95,7 +96,7 @@ router.post('/git/:hash/build', async (req, res) => {
 /**
  * GET /git/:hash/status — Check build status for a git snapshot.
  */
-router.get('/git/:hash/status', (req, res) => {
+router.get('/git/:hash/status', requireRead, (req, res) => {
   const { name } = req.params
   const { hash } = req.params
 
@@ -118,7 +119,7 @@ router.get('/git/:hash/status', (req, res) => {
  * GET /:id/diff — Text-based diff between a snapshot and current output.
  * Returns per-page change regions.
  */
-router.get('/:id/diff', async (req, res) => {
+router.get('/:id/diff', requireRead, async (req, res) => {
   const { name, id } = req.params
 
   const project = readProject(name)
