@@ -10,7 +10,7 @@ import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { anchorShape } from './anchorCluster'
-import { getThreadMeta, isReply, getThreadMembers, findRoot, mergeIntoThread } from './noteThreading'
+import { mergeTabs } from './noteThreading'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
@@ -54,17 +54,7 @@ export async function remapAnnotations(
   const updates: TLShapePartial[] = []
 
   // Solo shapes (math notes): resolve anchor, position directly
-  // For threaded notes, resolve the root and move all thread members together.
-  const processedThreads = new Set<string>()
-
   for (const shape of solo) {
-    // Skip reply shapes — they'll be moved when we process their root
-    if (isReply(shape)) continue
-
-    const threadMeta = getThreadMeta(shape)
-    if (threadMeta.threadId && processedThreads.has(threadMeta.threadId)) continue
-    if (threadMeta.threadId) processedThreads.add(threadMeta.threadId)
-
     const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
     try {
       const pdfPos = await resolvAnchor(docName, anchor)
@@ -83,20 +73,6 @@ export async function remapAnnotations(
           x: newX,
           y: newY,
         })
-
-        // Move all thread members (replies) to the same position
-        if (threadMeta.threadId) {
-          const members = getThreadMembers(editor, shape)
-          for (const member of members) {
-            if (member.id === shape.id) continue
-            updates.push({
-              id: member.id,
-              type: member.type,
-              x: newX,
-              y: newY,
-            })
-          }
-        }
       }
     } catch (e) {
       console.warn(`[SyncTeX] Error resolving anchor:`, e)
@@ -635,25 +611,16 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   })
 
-  // Drag-to-merge: when a math-note is dropped overlapping another, merge into thread
+  // Drag-to-merge: when a math-note is dropped overlapping another, merge tabs
   editor.sideEffects.registerAfterChangeHandler('shape', (prev, next) => {
-    // Only trigger on position changes of math-note shapes
     if (next.type !== 'math-note') return
     if (shapeIdSet.has(next.id)) return
     if (prev.x === next.x && prev.y === next.y) return
-    // Don't merge reply shapes (they're already in a thread and positioned by tab switching)
-    if (isReply(next)) return
 
-    // Check overlap with other math-note shapes
     const allShapes = editor.getCurrentPageShapes()
     for (const other of allShapes) {
       if (other.id === next.id) continue
       if (other.type !== 'math-note') continue
-      if (other.opacity === 0) continue // skip hidden thread members
-      // Skip if both are already in the same thread
-      const nextMeta = getThreadMeta(next)
-      const otherMeta = getThreadMeta(other)
-      if (nextMeta.threadId && nextMeta.threadId === otherMeta.threadId) continue
 
       // Simple bounding box overlap
       const ow = (other.props as any).w || 200
@@ -665,9 +632,8 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       const overlapY = next.y < other.y + oh && next.y + nh > other.y
 
       if (overlapX && overlapY) {
-        // Merge: dragged note joins target's thread
-        // Use setTimeout to avoid mutation during side-effect handler
-        setTimeout(() => mergeIntoThread(editor, next, other), 0)
+        // Merge: dragged note's tabs merge into target
+        setTimeout(() => mergeTabs(editor, next.id, other.id), 0)
         return
       }
     }

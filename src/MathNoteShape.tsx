@@ -11,13 +11,9 @@ import type { TLShapeId } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
 import {
-  getThreadMeta,
-  getThreadMembers,
-  getActiveShape,
-  findRoot,
   switchTab,
-  createReply,
-  detachFromThread,
+  addTab,
+  detachTab,
 } from './noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
@@ -131,6 +127,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     autoSize: T.optional(T.boolean),
     choices: T.optional(T.arrayOf(T.string)),
     selectedChoice: T.optional(T.number),
+    tabs: T.optional(T.arrayOf(T.string)),
+    activeTab: T.optional(T.number),
   }
 
   getDefaultProps() {
@@ -256,7 +254,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // Auto-size: measure rendered content and update shape height
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
-      if (shape.opacity === 0) return // hidden tab — skip measurement
       const el = contentRef.current
       if (!el) return
       const measured = el.scrollHeight
@@ -655,21 +652,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    // Thread tab bar
-    const meta = getThreadMeta(shape)
-    const isInThread = !!meta.threadId
-    const isActiveInThread = isInThread && (
-      !meta.threadRootId
-        ? !meta.activeReplyId  // root is active when activeReplyId is null/undefined
-        : meta.activeReplyId === undefined // shouldn't happen, but safe fallback
-    ) || (meta.threadRootId && (() => {
-      // Reply: check if root's activeReplyId points to us
-      const root = editor.getShape(meta.threadRootId as TLShapeId)
-      return root && (getThreadMeta(root).activeReplyId === shape.id)
-    })())
+    // Tab bar — single-shape model: tabs stored in props.tabs
+    const tabs = shape.props.tabs as string[] | undefined
+    const activeTabIdx = (shape.props.activeTab as number) || 0
+    const showTabBar = tabs && tabs.length > 1 && !isEditing
 
     // Context menu state for tab detach
-    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; shapeId: string } | null>(null)
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null)
 
     useEffect(() => {
       if (!contextMenu) return
@@ -678,19 +667,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => document.removeEventListener('pointerdown', dismiss, true)
     }, [contextMenu])
 
-    // Tab bar — only for threads with 2+ members. Only the visible tab renders it.
     let tabBar: React.ReactNode = null
-    const root = isInThread ? findRoot(editor, shape) : shape
-    // Skip expensive getThreadMembers for hidden tabs
-    const members = isInThread && shape.opacity !== 0 ? getThreadMembers(editor, root) : isInThread ? [] : [shape]
-    const showTabBar = isInThread && members.length >= 2 && shape.opacity !== 0
-
     if (showTabBar) {
-      const inactiveBg = isDark ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.06)'
-      const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
-      const activeColor = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.55)'
+      const inactiveColor = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)'
+      const activeColor = isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)'
       const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
-      const plusColor = isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)'
+      const plusColor = isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'
 
       tabBar = (
         <div
@@ -699,68 +681,62 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             alignItems: 'stretch',
             borderBottom: `1px solid ${borderColor}`,
             flexShrink: 0,
-            pointerEvents: 'all',
           }}
-          onPointerDown={stopIfNotPenTouch(editor)}
         >
-          {members.map((m, i) => {
-            const mActive = m.id === (getThreadMeta(root).activeReplyId || root.id)
-            return (
-              <div
-                key={m.id}
-                onPointerDown={(e) => {
-                  e.stopPropagation()
-                  if (e.button === 2) return
-                  switchTab(editor, root, m.id)
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  if (getThreadMeta(m).threadRootId) {
-                    setContextMenu({ x: e.clientX, y: e.clientY, shapeId: m.id })
-                  }
-                }}
-                style={{
-                  padding: '3px 8px',
-                  fontSize: '9px',
-                  fontFamily: '-apple-system, sans-serif',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  color: mActive ? activeColor : inactiveColor,
-                  fontWeight: mActive ? 600 : 400,
-                  backgroundColor: mActive ? 'transparent' : inactiveBg,
-                  borderRight: `1px solid ${borderColor}`,
-                  borderBottom: mActive ? `1px solid ${bgColor}` : 'none',
-                  marginBottom: '-1px',
-                }}
-              >
-                {i + 1}
-              </div>
-            )
-          })}
+          {tabs.map((_, i) => (
+            <div
+              key={i}
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                if (e.button === 2) return
+                switchTab(editor, shape.id, i)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                stopEventPropagation(e)
+                if (tabs.length > 1) {
+                  setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
+                }
+              }}
+              style={{
+                padding: '2px 7px',
+                fontSize: '8px',
+                fontFamily: '-apple-system, sans-serif',
+                cursor: 'pointer',
+                userSelect: 'none',
+                pointerEvents: 'all',
+                color: i === activeTabIdx ? activeColor : inactiveColor,
+                fontWeight: i === activeTabIdx ? 600 : 400,
+                borderBottom: i === activeTabIdx ? `1.5px solid ${activeColor}` : '1.5px solid transparent',
+                marginBottom: '-1px',
+              }}
+            >
+              {i + 1}
+            </div>
+          ))}
           {/* + button */}
           <div
             onPointerDown={(e) => {
-              e.stopPropagation()
-              const replyId = createReply(editor, root)
+              stopEventPropagation(e)
+              addTab(editor, shape.id, '')
               requestAnimationFrame(() => {
-                editor.setEditingShape(replyId)
+                editor.setEditingShape(shape.id)
               })
             }}
             style={{
-              padding: '3px 6px',
-              fontSize: '10px',
+              padding: '2px 5px',
+              fontSize: '9px',
               fontFamily: '-apple-system, sans-serif',
               cursor: 'pointer',
               userSelect: 'none',
+              pointerEvents: 'all',
               color: plusColor,
-              backgroundColor: inactiveBg,
               marginBottom: '-1px',
             }}
           >
             +
           </div>
-          {/* Spacer fills remaining width */}
+          {/* Spacer — no pointerEvents, so drags pass through to TLDraw */}
           <div style={{ flex: 1 }} />
         </div>
       )
@@ -783,7 +759,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             padding: '2px 0',
             pointerEvents: 'all',
           }}
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => stopEventPropagation(e)}
         >
           <div
             style={{
@@ -794,9 +770,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               color: isDark ? '#ccc' : undefined,
             }}
             onPointerDown={(e) => {
-              e.stopPropagation()
-              const s = editor.getShape(contextMenu.shapeId as TLShapeId)
-              if (s) detachFromThread(editor, s)
+              stopEventPropagation(e)
+              detachTab(editor, shape.id, contextMenu.tabIndex)
               setContextMenu(null)
             }}
             onMouseEnter={(e) => {
@@ -806,7 +781,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'
             }}
           >
-            Detach from thread
+            Detach tab
           </div>
         </div>
       )
@@ -816,8 +791,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       <HTMLContainer
         id={shape.id}
         style={{
-          width: shape.props.w,
-          height: shape.props.h,
           backgroundColor: bgColor,
           borderRadius: '4px',
           boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
@@ -826,26 +799,26 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           flexDirection: 'column',
         }}
       >
-        {tabBar}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-          {content}
-          {/* Standalone + button for non-threaded notes */}
-          {!showTabBar && !isEditing && shape.opacity !== 0 && (
-            <div
-              className="note-add-reply"
-              onPointerDown={(e) => {
-                e.stopPropagation()
-                const replyId = createReply(editor, shape)
-                requestAnimationFrame(() => {
-                  editor.setEditingShape(replyId)
-                })
-              }}
-            >
-              +
-            </div>
-          )}
-        </div>
-        {contextMenuEl}
+          {tabBar}
+          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+            {content}
+            {/* Standalone + button for non-tabbed notes */}
+            {!showTabBar && !isEditing && (
+              <div
+                className="note-add-reply"
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  addTab(editor, shape.id, '')
+                  requestAnimationFrame(() => {
+                    editor.setEditingShape(shape.id)
+                  })
+                }}
+              >
+                +
+              </div>
+            )}
+          </div>
+          {contextMenuEl}
       </HTMLContainer>
     )
   }
