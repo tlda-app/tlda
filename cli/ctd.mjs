@@ -6,6 +6,7 @@
  *   ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]
  *   ctd push [name] [--dir /path]
  *   ctd watch [/path/to/main.tex] [name]
+ *   ctd watch-all
  *   ctd open [name]
  *   ctd list
  *   ctd status [name]
@@ -16,7 +17,7 @@
  */
 
 import { resolve, basename, dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
@@ -46,6 +47,7 @@ const COMMAND_HELP = {
   create:  'ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
   push:    'ctd push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
+  'watch-all': 'ctd watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `ctd create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
   open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
   status:  'ctd status [name]\n\n  Show build status for a project.',
   errors:  'ctd errors [name]\n\n  Extract LaTeX errors and warnings from the last build log.',
@@ -295,6 +297,159 @@ async function cmdWatch() {
   await startWatcher({ dir, name, debounceMs, getServer })
 }
 
+const WATCH_ALL_LOGFILE = join(homedir(), '.config', 'ctd', 'watch-all.log')
+const WATCH_ALL_PIDFILE = join(homedir(), '.config', 'ctd', 'watch-all.pid')
+
+async function cmdWatchAll() {
+  const sub = getPositional(0) || 'start'
+
+  if (sub === 'stop') {
+    if (existsSync(WATCH_ALL_PIDFILE)) {
+      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+      try { process.kill(pid, 'SIGTERM') } catch {}
+      try { const fs = await import('fs'); fs.unlinkSync(WATCH_ALL_PIDFILE) } catch {}
+    }
+    console.log(green('Watchers stopped.'))
+    return
+  }
+
+  if (sub === 'status') {
+    if (existsSync(WATCH_ALL_PIDFILE)) {
+      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0) // test if alive
+        console.log(green('Watchers running') + dim(` (pid ${pid})`))
+        return
+      } catch {}
+    }
+    console.log(red('Watchers not running.'))
+    return
+  }
+
+  if (sub === 'log' || sub === 'logs') {
+    if (existsSync(WATCH_ALL_LOGFILE)) {
+      const { execSync } = await import('child_process')
+      execSync(`tail -50 "${WATCH_ALL_LOGFILE}"`, { stdio: 'inherit' })
+    } else {
+      console.log('No watcher log.')
+    }
+    return
+  }
+
+  if (sub === 'run') {
+    // Foreground mode — actually run the watchers (used by daemon spawn)
+    await watchAllRun()
+    return
+  }
+
+  if (sub === 'start') {
+    // Check if already running
+    if (existsSync(WATCH_ALL_PIDFILE)) {
+      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0)
+        console.log('Watchers already running' + dim(` (pid ${pid})`))
+        return
+      } catch {
+        // Stale PID file
+      }
+    }
+
+    // Daemonize: spawn ourselves with 'run' subcommand
+    const { spawn: cpSpawn } = await import('child_process')
+    const { openSync: fsOpenSync } = await import('fs')
+
+    if (!existsSync(dirname(WATCH_ALL_LOGFILE))) mkdirSync(dirname(WATCH_ALL_LOGFILE), { recursive: true })
+    const logFd = fsOpenSync(WATCH_ALL_LOGFILE, 'a')
+
+    const child = cpSpawn('node', [fileURLToPath(import.meta.url), 'watch-all', 'run'], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env },
+    })
+    child.unref()
+
+    // Wait briefly to confirm it started
+    await new Promise(r => setTimeout(r, 1000))
+    if (existsSync(WATCH_ALL_PIDFILE)) {
+      const pid = readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim()
+      console.log(green(`Watchers started`) + dim(` (pid ${pid})`))
+      console.log(dim(`  Log: ${WATCH_ALL_LOGFILE}`))
+    } else {
+      console.error(red('Watchers failed to start'))
+      console.error(dim(`Check log: ${WATCH_ALL_LOGFILE}`))
+      process.exit(1)
+    }
+    return
+  }
+
+  console.error(`Unknown subcommand: ctd watch-all ${sub}`)
+  console.error('Usage: ctd watch-all [start|stop|status|log|run]')
+  process.exit(1)
+}
+
+async function watchAllRun() {
+  // Write PID file
+  writeFileSync(WATCH_ALL_PIDFILE, String(process.pid))
+
+  const debounceMs = parseInt(getFlag('debounce') || '200', 10)
+  const pollInterval = 30_000 // check for new projects every 30s
+  const { startWatcher } = await import('./lib/watcher.mjs')
+
+  const watchers = new Map()
+
+  async function syncWatchers() {
+    let projects
+    try {
+      const data = await api('GET', '/api/projects')
+      projects = data.projects
+    } catch (e) {
+      console.error(`[watch-all] Failed to fetch projects: ${e.message}`)
+      return
+    }
+
+    for (const p of projects) {
+      if (watchers.has(p.name)) continue
+      if (!p.sourceDir || !p.mainFile) continue
+      if (!existsSync(p.sourceDir)) {
+        console.log(`[watch-all] Skipping ${p.name}: ${p.sourceDir} not found`)
+        continue
+      }
+
+      console.log(`[watch-all] Watching ${p.sourceDir} → ${p.name}`)
+      const watcher = await startWatcher({ dir: p.sourceDir, name: p.name, debounceMs, getServer })
+      watchers.set(p.name, watcher)
+    }
+  }
+
+  console.log(`[watch-all] Started (pid ${process.pid})`)
+  console.log(`[watch-all] Server: ${getServer()}`)
+  console.log(`[watch-all] Polling for new projects every ${pollInterval / 1000}s`)
+
+  await syncWatchers()
+
+  if (watchers.size === 0) {
+    console.log('[watch-all] No watchable projects yet — will poll for new ones.')
+  }
+
+  const timer = setInterval(syncWatchers, pollInterval)
+
+  // Clean shutdown — override watcher SIGTERM handlers that ignore the signal
+  const shutdown = () => {
+    clearInterval(timer)
+    try { unlinkSync(WATCH_ALL_PIDFILE) } catch {}
+    console.log('[watch-all] Stopped.')
+    process.exit(0)
+  }
+  process.removeAllListeners('SIGINT')
+  process.removeAllListeners('SIGTERM')
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+
+  // Keep alive
+  await new Promise(() => {})
+}
+
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd open [name]'); process.exit(1) }
@@ -462,7 +617,7 @@ async function cmdConfig() {
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
-    'server', 'create', 'push', 'watch', 'open', 'list', 'ls',
+    'server', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
     'status', 'errors', 'build', 'delete', 'rm', 'preview',
     'logs', 'log', 'config', 'completions',
   ]
@@ -485,6 +640,7 @@ _ctd() {
     'create:Create project and upload files'
     'push:Push source files and rebuild'
     'watch:Watch for changes and auto-push'
+    'watch-all:Watch all projects'
     'open:Open viewer in browser'
     'list:List projects'
     'status:Show build status'
@@ -793,6 +949,7 @@ async function main() {
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'watch':  await ensureServer(); await cmdWatch(); break
+      case 'watch-all': await ensureServer(); await cmdWatchAll(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'list':   await ensureServer(); await cmdList(); break
       case 'ls':     await ensureServer(); await cmdList(); break
@@ -814,6 +971,7 @@ Commands:
   create <name>  Create project (or update existing), upload files, build
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
+  watch-all      Watch all projects (auto-detects new ones)
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status
