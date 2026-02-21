@@ -51,7 +51,7 @@ const COMMAND_HELP = {
   'watch-all': 'ctd watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `ctd create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
   open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
   status:  'ctd status [name]\n\n  Show build status for a project.',
-  errors:  'ctd errors [name]\n\n  Extract LaTeX errors and warnings from the last build log.',
+  errors:  'ctd errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.',
   delete:  'ctd delete <name>\n\n  Delete a project and all its data.',
   preview: 'ctd preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/ctd-preview-{name}/.',
@@ -504,9 +504,28 @@ async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd errors [name]'); process.exit(1) }
 
-  const data = await api('GET', `/api/projects/${name}/build/errors`)
+  const wait = hasFlag('wait') || hasFlag('w')
+
+  let data = await api('GET', `/api/projects/${name}/build/errors`)
+
+  if (data.building && wait) {
+    const phaseLabel = p => p ? ` (${p})` : ''
+    process.stderr.write(`Waiting for build${phaseLabel(data.phase)}...`)
+    let lastPhase = data.phase
+    while (data.building) {
+      await new Promise(r => setTimeout(r, 2000))
+      data = await api('GET', `/api/projects/${name}/build/errors`)
+      if (data.phase !== lastPhase) {
+        process.stderr.write(`\rWaiting for build${phaseLabel(data.phase)}...`)
+        lastPhase = data.phase
+      }
+    }
+    process.stderr.write('\n')
+  }
+
   if (data.building) {
-    console.log(`[building...]`)
+    const phase = data.phase ? ` (${data.phase})` : ''
+    console.log(`[building${phase}...]`)
   } else if (data.lastBuild) {
     const ago = Math.round((Date.now() - new Date(data.lastBuild).getTime()) / 1000)
     const stamp = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago / 60)}m ago` : `${Math.round(ago / 3600)}h ago`

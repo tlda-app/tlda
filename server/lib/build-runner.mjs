@@ -443,7 +443,7 @@ async function convertSvgs(ctx, priorityPages, oldHashes) {
   await run(
     `dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none ` +
     `--output="${svgDir}/page-%p.svg" "${dviFile}"`,
-    { cwd: srcDir, timeout: 120000 },
+    { cwd: srcDir, timeout: 300000 },
   )
   normalizeSvgNames(svgDir)
   addLog(`SVG conversion done in ${((Date.now() - svgStart) / 1000).toFixed(1)}s`)

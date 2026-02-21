@@ -136,6 +136,10 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       })
       if (!res.ok) {
         const text = await res.text()
+        if (res.status === 401 || res.status === 403) {
+          console.error(`[watch] Authentication failed (${res.status}). Check your token with "ctd config".`)
+          process.exit(1)
+        }
         console.error(`[watch] Push failed: ${text}`)
       } else {
         retryDelay = 1000
@@ -231,6 +235,7 @@ async function setupYjsConnection(url, texDir, onViewportUpdate) {
   let ws
   let everConnected = false
   let currentlyConnected = false
+  let fastFailCount = 0
   function connect() {
     try {
       ws = new WebSocket(url)
@@ -239,12 +244,15 @@ async function setupYjsConnection(url, texDir, onViewportUpdate) {
       setTimeout(connect, 3000)
       return
     }
+    let gotData = false
     ws.on('open', () => {
       if (everConnected) console.log('[watch] Yjs reconnected.')
       everConnected = true
       currentlyConnected = true
     })
     ws.on('message', (data) => {
+      gotData = true
+      fastFailCount = 0
       try {
         const msg = JSON.parse(data.toString())
         if (msg.type === 'sync' || msg.type === 'update') {
@@ -256,6 +264,13 @@ async function setupYjsConnection(url, texDir, onViewportUpdate) {
       if (currentlyConnected) {
         console.log('[watch] Yjs disconnected, will reconnect...')
         currentlyConnected = false
+      }
+      if (!gotData && !everConnected) {
+        fastFailCount++
+        if (fastFailCount >= 3) {
+          console.error('[watch] Yjs connection rejected 3 times — likely auth failure. Check your token with "ctd config".')
+          return // stop reconnecting
+        }
       }
       setTimeout(connect, 3000)
     })
