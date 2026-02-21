@@ -127,6 +127,18 @@ const buildProgressHandle = bus.register<BuildProgressSignal>({
 })
 export const onBuildProgressSignal = buildProgressHandle.on
 
+export type AgentAttentionSignal = { x: number; y: number; timestamp: number }
+const agentAttentionHandle = bus.register<AgentAttentionSignal>({ key: 'signal:agent-attention' })
+export const onAgentAttention = agentAttentionHandle.on
+
+export type AgentHeartbeatSignal = { state: string; timestamp: number }
+const agentHeartbeatHandle = bus.register<AgentHeartbeatSignal>({
+  key: 'signal:agent-heartbeat',
+  initBehavior: 'fire-if-recent',
+  recentMs: 30_000,
+})
+export const onAgentHeartbeat = agentHeartbeatHandle.on
+
 export type RefViewerSignal = {
   refs: Array<{ label: string; region: { page: number; yTop: number; yBottom: number; displayLabel?: string } }> | null
   viewerId: string
@@ -253,6 +265,7 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
     // Binary WS protocol: [type byte][Yjs payload]
     const MSG_SYNC = 0x01
     const MSG_UPDATE = 0x02
+    const MSG_SIGNAL = 0x03  // Ephemeral broadcast — no CRDT
 
     function sendBinary(type: number, payload: Uint8Array) {
       if (ws?.readyState !== WebSocket.OPEN) return
@@ -262,9 +275,12 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
       ws.send(msg)
     }
 
-    function parseMessage(data: ArrayBuffer | string): { type: 'sync' | 'update', payload: Uint8Array } | null {
+    function parseMessage(data: ArrayBuffer | string): { type: 'sync' | 'update' | 'signal', payload: Uint8Array } | null {
       if (data instanceof ArrayBuffer) {
         const buf = new Uint8Array(data)
+        if (buf.length > 0 && buf[0] === MSG_SIGNAL) {
+          return { type: 'signal', payload: buf.subarray(1) }
+        }
         if (buf.length > 0 && (buf[0] === MSG_SYNC || buf[0] === MSG_UPDATE)) {
           return { type: buf[0] === MSG_SYNC ? 'sync' : 'update', payload: buf.subarray(1) }
         }
@@ -285,10 +301,13 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
       sendBinary(MSG_UPDATE, update)
     })
 
+    let authFailCount = 0
+
     function connect() {
       ws = new WebSocket(appendToken(`${serverUrl}/${roomId}`))
       ws.binaryType = 'arraybuffer'
       wsRef.current = ws
+      let gotMessage = false
 
       ws.onopen = () => {
         console.log(`[Yjs] Connected to ${roomId}`)
@@ -306,6 +325,20 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
         try {
           const msg = parseMessage(event.data)
           if (!msg) return
+          gotMessage = true
+          authFailCount = 0
+
+          // Ephemeral signals — dispatch directly, bypass CRDT
+          if (msg.type === 'signal') {
+            try {
+              const signal = JSON.parse(new TextDecoder().decode(msg.payload))
+              const { key, ...data } = signal
+              if (key) bus.dispatchDirect(key, data)
+            } catch (e) {
+              console.error('[Yjs] Failed to parse signal:', e)
+            }
+            return
+          }
 
           isRemoteUpdate = true
           try {
@@ -375,6 +408,14 @@ export function useYjsSync({ editor, roomId, serverUrl = 'ws://localhost:5176', 
 
       ws.onclose = () => {
         if (destroyed) return
+        if (!gotMessage && !hasReceivedInitialSync) {
+          authFailCount++
+          if (authFailCount >= 3) {
+            console.error('[Yjs] Connection rejected 3 times — likely auth failure. Falling back to static annotations.')
+            loadStaticAnnotations(editor, onInitialSync)
+            return
+          }
+        }
         console.log(`[Yjs] Disconnected, reconnecting in ${reconnectDelay}ms`)
         setTimeout(() => {
           if (!destroyed) connect()

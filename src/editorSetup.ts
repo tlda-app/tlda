@@ -15,6 +15,11 @@ import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
 
+export type ReloadResult = {
+  failedPages: number[]
+  remapResult?: { failed: number; total: number }
+}
+
 /**
  * Remap annotations with source anchors to their new positions
  * Called after document SVGs are loaded/updated
@@ -23,7 +28,7 @@ export async function remapAnnotations(
   editor: Editor,
   docName: string,
   pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
-) {
+): Promise<{ failed: number; total: number }> {
   const allShapes = editor.getCurrentPageShapes()
 
   // Find shapes with source anchors
@@ -32,7 +37,7 @@ export async function remapAnnotations(
     return meta?.sourceAnchor?.file && meta?.sourceAnchor?.line
   })
 
-  if (anchored.length === 0) return
+  if (anchored.length === 0) return { failed: 0, total: 0 }
 
   console.log(`[SyncTeX] Remapping ${anchored.length} anchored annotations...`)
 
@@ -122,6 +127,10 @@ export async function remapAnnotations(
     console.log(`[SyncTeX] Applying ${updates.length} position updates`)
     editor.updateShapes(updates)
   }
+
+  const total = anchored.length
+  const failed = total - updates.length
+  return { failed: Math.max(0, failed), total }
 }
 
 /** Diff old vs new page text using shared word-level diff. */
@@ -275,9 +284,9 @@ export async function reloadPages(
   editor: Editor,
   document: SvgDocument,
   pageNumbers: number[] | null, // null = all pages
-) {
+): Promise<ReloadResult> {
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
-  if (document.format === 'png' || document.format === 'diff') return
+  if (document.format === 'png' || document.format === 'diff') return { failedPages: [] }
 
   const gen = ++reloadGeneration
 
@@ -314,7 +323,13 @@ export async function reloadPages(
   // Superseded by a newer reload — discard these results
   if (gen !== reloadGeneration) {
     console.log('[Reload] Superseded by newer reload, discarding')
-    return
+    return { failedPages: [] }
+  }
+
+  // Track which pages failed to fetch
+  const failedPages: number[] = []
+  for (let i = 0; i < results.length; i++) {
+    if (!results[i]) failedPages.push(indices[i] + 1)
   }
 
   // Save old SVG text + text data before overwriting (for change detection)
@@ -401,13 +416,15 @@ export async function reloadPages(
   }
 
   // After a full reload, remap annotations
+  let remapResult: { failed: number; total: number } | undefined
   if (!pageNumbers) {
     if (currentDocumentInfo) {
-      await remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
+      remapResult = await remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
     }
   }
 
   console.log(`[Reload] Done — ${indices.length} page(s) updated`)
+  return { failedPages, remapResult }
 }
 
 /**

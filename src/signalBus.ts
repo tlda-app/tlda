@@ -1,8 +1,9 @@
 /**
- * Generic signal dispatch for Yjs-backed signals.
+ * Generic signal dispatch for Yjs-backed and ephemeral signals.
  *
- * Replaces the copy-pasted per-signal boilerplate in useYjsSync:
- * timestamp tracking, init guards, callback registration, accept filters.
+ * Two dispatch paths:
+ * - dispatch(): from Yjs observe — handles timestamp guards, init behavior, CRDT dedup
+ * - dispatchDirect(): from ephemeral 0x03 broadcast — fires callbacks immediately, no CRDT
  */
 
 export interface SignalDef<T> {
@@ -38,6 +39,20 @@ export class SignalBus {
         return () => { state.callbacks.delete(cb) }
       },
     }
+  }
+
+  /**
+   * Direct dispatch for ephemeral (0x03) signals — no CRDT guards, no timestamp dedup.
+   * Fires all registered callbacks immediately.
+   */
+  dispatchDirect(key: string, data: Record<string, unknown>): void {
+    const state = this.handlers.get(key)
+    if (!state) return
+    const signal = data as { timestamp: number }
+    if (!signal?.timestamp) return
+    if (state.def.accept && !state.def.accept(signal)) return
+    state.lastTimestamp = signal.timestamp
+    for (const cb of state.callbacks) cb(signal)
   }
 
   /**

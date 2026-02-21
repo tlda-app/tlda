@@ -1,4 +1,4 @@
-import { createContext } from 'react'
+import { createContext, type ReactNode } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
 import type { DiffChange, ProofPair } from './svgDocumentLoader'
 import type { HistoryEntry, PageDiff, ChangeItem } from './historyStore'
@@ -48,3 +48,7 @@ export interface PanelContextValue {
 
 export const DocContext = createContext<DocContextValue | null>(null)
 export const PanelContext = createContext<PanelContextValue | null>(null)
+
+/** Bottom-left panels + agent pill — rendered inside InFrontOfTheCanvas for TLDraw event handling */
+export const BottomPanelsContext = createContext<ReactNode>(null)
+export const AgentPillContext = createContext<ReactNode>(null)

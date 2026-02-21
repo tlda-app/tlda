@@ -10,7 +10,7 @@
  * buttons and title.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, defaultShapeUtils } from 'tldraw'
+import { Tldraw, createTLStore, defaultShapeUtils, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import './CanvasClipPanel.css'
 
@@ -154,10 +154,10 @@ export function CanvasClipPanel({
     <div
       className={`clip-panel ${className || ''}`}
       style={{ width: panelWidth, height: canvasHeight + 20 }}
-      onPointerDown={stopPropagation}
-      onPointerUp={stopPropagation}
-      onTouchStart={stopPropagation}
-      onTouchEnd={stopPropagation}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
     >
       {children}
       <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
@@ -181,6 +181,3 @@ function isDocRecord(record: TLRecord): boolean {
     record.typeName === 'page' || record.typeName === 'document'
 }
 
-function stopPropagation(e: { stopPropagation: () => void }) {
-  e.stopPropagation()
-}

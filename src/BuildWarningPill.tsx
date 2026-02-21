@@ -4,6 +4,7 @@
  * is clickable to open in editor via texsync.
  */
 import { useState, useEffect, useRef, useContext } from 'react'
+import { stopEventPropagation } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { openInEditor } from './texsync'
 import type { BuildWarning } from './useYjsSync'

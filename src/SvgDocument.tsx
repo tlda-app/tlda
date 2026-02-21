@@ -1,5 +1,4 @@
-import { useMemo, useEffect, useRef, useState, useCallback } from 'react'
-import { createPortal } from 'react-dom'
+import { useMemo, useEffect, useRef, useState, useCallback, useContext } from 'react'
 import {
   Tldraw,
   react,
@@ -31,9 +30,10 @@ import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasS
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
-import { DocumentPanel, PingButton } from './DocumentPanel'
+import { DocumentPanel, AgentPill } from './DocumentPanel'
+import { AgentAttentionOverlay } from './AgentAttentionOverlay'
 import { MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
-import { DocContext, PanelContext } from './PanelContext'
+import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { RefViewer } from './RefViewer'
@@ -46,7 +46,7 @@ import { PDF_HEIGHT, PAGE_HEIGHT, PAGE_GAP } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
-import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel } from './editorSetup'
+import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
@@ -63,6 +63,24 @@ const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
+
+// Agent attention overlay wrapper (needs useEditor context)
+function AgentAttentionCanvas() {
+  const editor = useEditor()
+  return <AgentAttentionOverlay editor={editor} />
+}
+
+// Slots rendered inside InFrontOfTheCanvas — read content from context
+// so the memoized components callback doesn't need to close over changing state
+function BottomPanelsSlot() {
+  const content = useContext(BottomPanelsContext)
+  return <>{content}</>
+}
+
+function AgentPillSlot() {
+  const content = useContext(AgentPillContext)
+  return <>{content}</>
+}
 
 // Inner component to set up Yjs sync (needs useEditor context)
 function YjsSyncProvider({ roomId, onInitialSync }: { roomId: string; onInitialSync?: () => void }) {
@@ -202,22 +220,44 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     editorRef, document, proofDataRef, proofDataReady,
   })
 
+  // --- Reload error state (page fetch failures → stale pill) ---
+  const [reloadErrors, setReloadErrors] = useState<ReloadResult | null>(null)
+  // Remap warnings from reload (merged into buildWarnings below)
+  const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
+
   useYjsSignals({
     editorRef, document,
     diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
     setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+    onReloadResult: useCallback((result: ReloadResult | null) => {
+      if (!result) {
+        setReloadErrors(null)
+        setRemapWarnings([])
+        return
+      }
+      setReloadErrors(result.failedPages.length > 0 ? result : null)
+      if (result.remapResult && result.remapResult.failed > 0) {
+        const { failed, total } = result.remapResult
+        setRemapWarnings([{
+          message: `${failed}/${total} annotations couldn't remap after rebuild`,
+          category: 'remap' as const,
+        }])
+      } else {
+        setRemapWarnings([])
+      }
+    }, []),
   })
 
   // --- Build error state ---
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([])
-  const [buildWarnings, setBuildWarnings] = useState<BuildWarning[]>([])
+  const [texWarnings, setTexWarnings] = useState<BuildWarning[]>([])
 
   useEffect(() => {
     return onBuildStatusSignal((signal) => {
       const errors = signal.errors || []
       setBuildErrors(errors)
-      setBuildWarnings(signal.warnings || [])
+      setTexWarnings((signal.warnings || []).map(w => ({ ...w, category: 'tex' as const })))
       // When errors clear, immediately clean up error shapes on the canvas
       // (belt-and-suspenders — BuildErrorOverlay also cleans up on unmount)
       if (errors.length === 0 && editorRef.current) {
@@ -230,19 +270,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     })
   }, [])
 
-  // --- Shared portal for bottom-left panels (ref viewer + proof overlay) ---
-  const bottomPanelsRef = useRef<HTMLDivElement | null>(null)
-  if (!bottomPanelsRef.current) {
-    bottomPanelsRef.current = window.document.createElement('div')
-    bottomPanelsRef.current.className = 'bottom-panels'
-    window.document.body.appendChild(bottomPanelsRef.current)
-  }
-  useEffect(() => {
-    return () => {
-      bottomPanelsRef.current?.remove()
-      bottomPanelsRef.current = null
-    }
-  }, [])
+  const buildWarnings = useMemo(() => [...texWarnings, ...remapWarnings], [texWarnings, remapWarnings])
 
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {
@@ -351,7 +379,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         </DefaultToolbar>
       ),
       HelperButtons: PenHelperButtons,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PingButton /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><BottomPanelsSlot /><AgentPillSlot /></>,
     }),
     [document, roomId]
   )
@@ -450,9 +478,74 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     },
   }), [])
 
+  // Bottom panels content — passed via context into InFrontOfTheCanvas
+  const bottomPanelsContent = (
+    <div className="bottom-panels">
+      {panelsLocal && refViewerRefs && editorRef.current && (
+        <RefViewer
+          mainEditor={editorRef.current}
+          pages={docContextValue.pages}
+          refs={refViewerRefs}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+          onClose={() => {
+            setRefViewerRefsLocal(null)
+            clearHistory()
+          }}
+          onPrevLine={() => navigateRef(-1)}
+          onNextLine={() => navigateRef(1)}
+          onGoThere={handleGoThere}
+          onGoBack={handleGoBack}
+          canGoBack={canGoBack}
+        />
+      )}
+      {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
+        <ProofStatementOverlay
+          mainEditor={editorRef.current}
+          proofData={proofDataRef.current}
+          pages={docContextValue.pages}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+        />
+      )}
+      {selectedChangeId && editorRef.current && (
+        <ChangePreviewPanel
+          mainEditor={editorRef.current}
+          selectedChangeId={selectedChangeId}
+          historyChanges={historyChanges}
+          docName={docName}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+          onSelectChange={handleSelectChange}
+        />
+      )}
+      <div className="build-pills-row">
+        <BuildWarningPill warnings={buildWarnings} />
+        {editorRef.current && (
+          <BuildErrorOverlay
+            mainEditor={editorRef.current}
+            errors={buildErrors}
+            reloadErrors={reloadErrors}
+            doc={docContextValue}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+          />
+        )}
+      </div>
+    </div>
+  )
+
+  const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
+
   return (
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
+    <BottomPanelsContext.Provider value={bottomPanelsContent}>
+    <AgentPillContext.Provider value={agentPillContent}>
     <Tldraw
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
@@ -706,63 +799,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       }} />
       <DarkModeSync />
     </Tldraw>
-    {bottomPanelsRef.current && createPortal(
-      <>
-        {panelsLocal && refViewerRefs && editorRef.current && (
-          <RefViewer
-            mainEditor={editorRef.current}
-            pages={docContextValue.pages}
-            refs={refViewerRefs}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-            onClose={() => {
-              setRefViewerRefsLocal(null)
-              clearHistory()
-            }}
-            onPrevLine={() => navigateRef(-1)}
-            onNextLine={() => navigateRef(1)}
-            onGoThere={handleGoThere}
-            onGoBack={handleGoBack}
-            canGoBack={canGoBack}
-          />
-        )}
-        {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
-          <ProofStatementOverlay
-            mainEditor={editorRef.current}
-            proofData={proofDataRef.current}
-            pages={docContextValue.pages}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-          />
-        )}
-        {selectedChangeId && editorRef.current && (
-          <ChangePreviewPanel
-            mainEditor={editorRef.current}
-            selectedChangeId={selectedChangeId}
-            historyChanges={historyChanges}
-            docName={docName}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-            onSelectChange={handleSelectChange}
-          />
-        )}
-        {editorRef.current && (
-          <BuildErrorOverlay
-            mainEditor={editorRef.current}
-            errors={buildErrors}
-            doc={docContextValue}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-          />
-        )}
-        <BuildWarningPill warnings={buildWarnings} />
-      </>,
-      bottomPanelsRef.current,
-    )}
+    </AgentPillContext.Provider>
+    </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
   )

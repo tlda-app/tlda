@@ -4,6 +4,7 @@
  * old text is on a different page or far away.
  */
 import { useMemo, useCallback, useRef, useState } from 'react'
+import { stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import type { ChangeItem } from './historyStore'
 import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
@@ -120,10 +121,10 @@ export function ChangePreviewPanel({
       <div
         className="change-preview-pill"
         onClick={() => setExpanded(true)}
-        onPointerDown={e => e.stopPropagation()}
-        onPointerUp={e => e.stopPropagation()}
-        onTouchStart={e => e.stopPropagation()}
-        onTouchEnd={e => e.stopPropagation()}
+        onPointerDown={stopEventPropagation}
+        onPointerUp={stopEventPropagation}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
         title="Show old version"
       >
         <button

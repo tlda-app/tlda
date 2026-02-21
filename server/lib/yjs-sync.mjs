@@ -18,6 +18,7 @@ import { join } from 'path'
 // Binary message type bytes
 const MSG_SYNC = 0x01
 const MSG_UPDATE = 0x02
+const MSG_SIGNAL = 0x03  // Ephemeral broadcast — no CRDT, no persistence
 
 /** Encode a binary WS message: [type byte][payload] */
 function encodeBinary(type, payload) {
@@ -34,9 +35,9 @@ function encodeBinary(type, payload) {
 function parseMessage(raw) {
   if (Buffer.isBuffer(raw) || raw instanceof ArrayBuffer || raw instanceof Uint8Array) {
     const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
-    if (buf.length > 0 && (buf[0] === MSG_SYNC || buf[0] === MSG_UPDATE)) {
+    if (buf.length > 0 && (buf[0] === MSG_SYNC || buf[0] === MSG_UPDATE || buf[0] === MSG_SIGNAL)) {
       return {
-        type: buf[0] === MSG_SYNC ? 'sync' : 'update',
+        type: buf[0] === MSG_SYNC ? 'sync' : buf[0] === MSG_SIGNAL ? 'signal' : 'update',
         data: buf.subarray(1),
       }
     }
@@ -172,7 +173,15 @@ export function setupWSConnection(ws, docName) {
   ws.on('message', (message) => {
     try {
       const { type, data } = parseMessage(message)
-      if (type === 'update') {
+      if (type === 'signal') {
+        // Ephemeral broadcast — relay to other clients, no CRDT, no persistence
+        const relay = encodeBinary(MSG_SIGNAL, data)
+        for (const conn of doc.conns) {
+          if (conn !== ws && conn.readyState === 1) {
+            conn.send(relay)
+          }
+        }
+      } else if (type === 'update') {
         Y.applyUpdate(doc, data, 'ws-client')
 
         // Broadcast to other clients as binary

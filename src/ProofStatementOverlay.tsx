@@ -3,7 +3,7 @@
  * CanvasClipPanel while reading a cross-page proof.
  */
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
-import { react } from 'tldraw'
+import { react, stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
 import type { TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import type { ProofData } from './svgDocumentLoader'
@@ -127,10 +127,10 @@ export function ProofStatementOverlay({
       <div
         className="proof-overlay-pill"
         onClick={() => setExpanded(true)}
-        onPointerDown={stopPropagation}
-        onPointerUp={stopPropagation}
-        onTouchStart={stopPropagation}
-        onTouchEnd={stopPropagation}
+        onPointerDown={stopEventPropagation}
+        onPointerUp={stopEventPropagation}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
         title="Show theorem statement"
       >
         <span className="proof-overlay-pill-title">{activePair?.title}</span>
@@ -170,6 +170,3 @@ export function ProofStatementOverlay({
   )
 }
 
-function stopPropagation(e: { stopPropagation: () => void }) {
-  e.stopPropagation()
-}

@@ -10,10 +10,11 @@
 
 import fs from 'fs'
 import path from 'path'
+import { resolveToken } from './resolve-token.mjs'
 
 let projectRoot = null
 let serverUrl = null
-const CTD_TOKEN = process.env.CTD_TOKEN || null
+const CTD_TOKEN = resolveToken()
 const authHeaders = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {}
 
 // In-memory cache: docName → { filename → { data, fetchedAt } }

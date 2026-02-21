@@ -48,6 +48,103 @@
   }
 }
 
+/* Agent indicator — just a logo, fixed bottom-right */
+.agent-indicator {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  pointer-events: all;
+  color: rgba(0, 0, 0, 0.15);
+  transition: color 0.3s;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.agent-indicator:hover {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+/* Offline: empty, but keep tap target */
+.agent-indicator.agent-offline {
+  color: transparent;
+}
+
+/* Listening / thinking: solid logo, same opacity */
+.agent-indicator.agent-listening,
+.agent-indicator.agent-thinking {
+  color: rgba(0, 0, 0, 0.15);
+}
+
+.agent-indicator.agent-listening:hover,
+.agent-indicator.agent-thinking:hover {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+/* Stale: outline logo via stroke, very faint */
+.agent-indicator.agent-stale {
+  color: rgba(0, 0, 0, 0.12);
+}
+
+.agent-indicator.agent-stale:hover {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.agent-indicator-logo {
+  flex-shrink: 0;
+}
+
+/* Dark mode */
+html[data-theme="dark"] .agent-indicator {
+  color: rgba(255, 255, 255, 0.15);
+}
+
+html[data-theme="dark"] .agent-indicator:hover {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .agent-indicator.agent-offline {
+  color: transparent;
+}
+
+html[data-theme="dark"] .agent-indicator.agent-listening,
+html[data-theme="dark"] .agent-indicator.agent-thinking {
+  color: rgba(255, 255, 255, 0.12);
+}
+
+html[data-theme="dark"] .agent-indicator.agent-listening:hover,
+html[data-theme="dark"] .agent-indicator.agent-thinking:hover {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+html[data-theme="dark"] .agent-indicator.agent-stale {
+  color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .agent-indicator.agent-stale:hover {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+@media (pointer: coarse) {
+  .agent-indicator {
+    bottom: 20px;
+    right: 20px;
+    width: 44px;
+    height: 44px;
+  }
+  .agent-indicator-logo {
+    width: 36px;
+    height: 36px;
+  }
+}
+
 .doc-panel {
   position: fixed;
   top: 0;

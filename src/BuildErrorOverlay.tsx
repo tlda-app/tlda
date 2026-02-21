@@ -21,6 +21,7 @@ import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
 import { loadLookup, type LookupEntry } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
 import type { BuildError, BuildProgressSignal } from './useYjsSync'
+import type { ReloadResult } from './editorSetup'
 import { onBuildProgressSignal } from './useYjsSync'
 import type { DocContextValue } from './PanelContext'
 import { openInEditor } from './texsync'
@@ -41,6 +42,7 @@ interface ResolvedError {
 interface BuildErrorOverlayProps {
   mainEditor: Editor
   errors: BuildError[]
+  reloadErrors: ReloadResult | null
   doc: DocContextValue
   shapeUtils: TLAnyShapeUtilConstructor[]
   tools: TLStateNodeConstructor[]
@@ -68,6 +70,7 @@ function cleanupAllErrorShapes(editor: Editor) {
 export function BuildErrorOverlay({
   mainEditor,
   errors,
+  reloadErrors,
   doc,
   shapeUtils,
   tools,

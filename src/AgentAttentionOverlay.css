@@ -1,0 +1,38 @@
+/* Agent attention flash — fading Claude logo at canvas positions */
+
+.agent-attention-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 500;
+  overflow: hidden;
+}
+
+.agent-attention-flash {
+  position: absolute;
+  animation: agent-attention-fade 60000ms ease-out forwards;
+}
+
+@keyframes agent-attention-fade {
+  0%    { opacity: 0; }
+  0.5%  { opacity: 1; }        /* 300ms fade in */
+  2.5%  { opacity: 1; }        /* hold until 1500ms */
+  5%    { opacity: 0.08; }     /* fade to faint by 3s */
+  98%   { opacity: 0.08; }     /* linger faint until ~59s */
+  100%  { opacity: 0; }        /* gone at 60s */
+}
+
+.agent-attention-flash svg {
+  color: rgba(0, 0, 0, 0.2);
+}
+
+html[data-theme="dark"] .agent-attention-flash svg {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+@media (pointer: coarse) {
+  .agent-attention-flash svg {
+    width: 48px;
+    height: 48px;
+  }
+}

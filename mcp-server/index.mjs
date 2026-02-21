@@ -23,8 +23,9 @@ import * as Y from 'yjs';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readManifestSync, localDocDir, isRemote } from './data-source.mjs';
+import { resolveToken } from './resolve-token.mjs';
 
-const CTD_TOKEN = process.env.CTD_TOKEN || null;
+const CTD_TOKEN = resolveToken();
 const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,19 +67,39 @@ async function checkDocBuildStatus(docName) {
   const sUrl = process.env.CTD_SERVER || 'http://localhost:5176';
   try {
     const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: CTD_AUTH_HEADERS });
-    if (!res.ok) return { ok: false, reason: `Project "${docName}" not found on server` };
-    const info = await res.json();
+    if (res.ok) {
+      const info = await res.json();
+      if (!info.pages || info.pages === 0) {
+        const status = info.buildStatus || 'unknown';
+        if (status === 'building') return { ok: false, reason: `Document "${docName}" is currently building — no pages available yet` };
+        return { ok: false, reason: `Document "${docName}" has no built pages (build status: ${status})` };
+      }
+      return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
+    }
+    // API returned error — fall back to disk check
+    return checkDocBuildStatusDisk(docName);
+  } catch (e) {
+    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "ctd server start"' };
+    }
+    return checkDocBuildStatusDisk(docName);
+  }
+}
+
+/** Disk-based fallback: check project.json directly. */
+function checkDocBuildStatusDisk(docName) {
+  const projDir = path.join(PROJECT_ROOT, 'server', 'projects', docName);
+  const projJson = path.join(projDir, 'project.json');
+  try {
+    const info = JSON.parse(fs.readFileSync(projJson, 'utf8'));
     if (!info.pages || info.pages === 0) {
       const status = info.buildStatus || 'unknown';
       if (status === 'building') return { ok: false, reason: `Document "${docName}" is currently building — no pages available yet` };
       return { ok: false, reason: `Document "${docName}" has no built pages (build status: ${status})` };
     }
     return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
-  } catch (e) {
-    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
-      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "ctd server start"' };
-    }
-    return { ok: true }; // transient error, proceed anyway
+  } catch {
+    return { ok: false, reason: `Project "${docName}" not found on server. Run "ctd errors ${docName}" or "ctd build ${docName}" to investigate.` };
   }
 }
 
@@ -526,8 +547,17 @@ const yjsDocs = new Map(); // docName → { doc, yRecords, ws, ready }
 function connectYjs(docName) {
   if (yjsDocs.has(docName)) {
     const entry = yjsDocs.get(docName);
-    if (entry.ready) return Promise.resolve(entry);
-    return entry.promise;
+    // Check if the cached WebSocket is still alive
+    if (entry.ready && entry.ws?.readyState === WsClient.OPEN) {
+      return Promise.resolve(entry);
+    }
+    if (entry.ws?.readyState === WsClient.CONNECTING) {
+      return entry.promise;
+    }
+    // Dead connection — drop cache and reconnect
+    console.error(`[Yjs] Stale connection to ${docName} (readyState=${entry.ws?.readyState}), reconnecting`);
+    try { entry.ws?.close(); } catch {}
+    yjsDocs.delete(docName);
   }
 
   const doc = new Y.Doc();
@@ -542,6 +572,7 @@ function connectYjs(docName) {
   entry.promise = new Promise((resolve, reject) => {
     const ws = new WsClient(url);
     entry.ws = ws;
+    const connectStart = Date.now();
 
     const timeout = setTimeout(() => {
       reject(new Error(`Yjs connection timeout connecting to ${url}`));
@@ -589,6 +620,15 @@ function connectYjs(docName) {
     ws.on('close', (code, reason) => {
       console.error(`[Yjs] Disconnected from ${roomId} (code=${code}, reason=${reason})`);
       yjsDocs.delete(docName);
+      if (!entry.ready) {
+        clearTimeout(timeout);
+        const elapsed = Date.now() - connectStart;
+        if (elapsed < 2000) {
+          reject(new Error(`Connection to ${roomId} rejected immediately — check auth token (CTD_TOKEN)`));
+        } else {
+          reject(new Error(`Yjs connection to ${roomId} closed before sync (code=${code})`));
+        }
+      }
     });
   });
 
@@ -596,14 +636,64 @@ function connectYjs(docName) {
   return entry.promise;
 }
 
-function sendYjsUpdate(entry) {
+function sendYjsUpdateRaw(entry) {
   if (entry.ws?.readyState === WsClient.OPEN) {
-    const update = Y.encodeStateAsUpdate(entry.doc);
-    // Binary protocol: [0x02][Yjs payload]
+    // Send pending incremental update if available (much smaller than full state)
+    const update = entry._pendingUpdate || Y.encodeStateAsUpdate(entry.doc);
     const msg = Buffer.alloc(1 + update.length);
     msg[0] = 0x02;
     msg.set(update, 1);
     entry.ws.send(msg);
+    entry._pendingUpdate = null;
+    return true;
+  }
+  return false;
+}
+
+async function sendYjsUpdate(entry, docName) {
+  if (sendYjsUpdateRaw(entry)) return;
+  // Socket dead — reconnect and retry once
+  if (docName) {
+    console.error(`[Yjs] Socket dead for ${docName}, reconnecting to send update`);
+    try {
+      const fresh = await connectYjs(docName);
+      // Merge our local doc state into the fresh connection
+      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(entry.doc));
+      sendYjsUpdateRaw(fresh);
+    } catch (e) {
+      console.error(`[Yjs] Reconnect failed for ${docName}: ${e.message}`);
+    }
+  } else {
+    console.error(`[Yjs] sendYjsUpdate: socket not open (readyState=${entry.ws?.readyState}), no docName for reconnect`);
+  }
+}
+
+// Ephemeral signal broadcast — bypasses Yjs CRDT entirely.
+// Sends a 0x03 message that the server relays to other clients without persistence.
+const MSG_SIGNAL = 0x03;
+function sendEphemeralSignal(entry, key, data) {
+  if (entry.ws?.readyState !== WsClient.OPEN) return false;
+  const payload = Buffer.from(JSON.stringify({ key, ...data }));
+  const msg = Buffer.alloc(1 + payload.length);
+  msg[0] = MSG_SIGNAL;
+  msg.set(payload, 1);
+  entry.ws.send(msg);
+  return true;
+}
+
+function writeAgentAttention(entry, docName, x, y) {
+  try {
+    sendEphemeralSignal(entry, 'signal:agent-attention', { x, y, timestamp: Date.now() });
+  } catch (e) {
+    console.warn('[Attention] Failed to write:', e.message);
+  }
+}
+
+function writeAgentHeartbeat(entry, docName, state) {
+  try {
+    sendEphemeralSignal(entry, 'signal:agent-heartbeat', { state, timestamp: Date.now() });
+  } catch (e) {
+    console.warn('[Heartbeat] Failed to write:', e.message);
   }
 }
 
@@ -619,15 +709,12 @@ async function scrollToLine(doc, line, file) {
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
 
-  // Write Yjs signal — works regardless of HTTP/WS server state
+  // Ephemeral signal — no CRDT persistence needed
   try {
     const entry = await connectYjs(doc);
-    entry.doc.transact(() => {
-      entry.yRecords.set('signal:forward-scroll', {
-        x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
-      });
+    sendEphemeralSignal(entry, 'signal:forward-scroll', {
+      x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
     });
-    sendYjsUpdate(entry);
   } catch (e) {
     // Fallback to WS broadcast if Yjs unavailable
     broadcast({ type: 'scroll', x: canvasPos.x, y: canvasPos.y });
@@ -654,12 +741,9 @@ async function highlightLine(doc, file, line) {
   async function sendHighlightSignal(x, y, page) {
     try {
       const entry = await connectYjs(doc);
-      entry.doc.transact(() => {
-        entry.yRecords.set('signal:forward-highlight', {
-          x, y, page, timestamp: Date.now(),
-        });
+      sendEphemeralSignal(entry, 'signal:forward-highlight', {
+        x, y, page, timestamp: Date.now(),
       });
-      sendYjsUpdate(entry);
     } catch {
       broadcastHighlight(x, y, page);
     }
@@ -743,7 +827,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   entry.doc.transact(() => {
     entry.yRecords.set(shapeId, shape);
   });
-  sendYjsUpdate(entry);
+  sendYjsUpdate(entry, doc);
 
   return { ok: true, shapeId, page: linePos.page, x, y };
 }
@@ -819,7 +903,7 @@ async function replyAnnotation(doc, id, text) {
       },
     });
   });
-  sendYjsUpdate(entry);
+  sendYjsUpdate(entry, doc);
 
   return { ok: true, id: fullId, tabIndex: newActiveTab, tabCount: updatedTabs.length };
 }
@@ -832,7 +916,7 @@ async function deleteAnnotation(doc, id) {
 
   // Single-shape model: just delete the shape (all tabs go with it)
   entry.doc.transact(() => { entry.yRecords.delete(fullId); });
-  sendYjsUpdate(entry);
+  sendYjsUpdate(entry, doc);
   return { ok: true, id: fullId };
 }
 
@@ -1236,6 +1320,10 @@ if (wss) {
       wsClients.delete(ws);
       console.error('TLDraw client disconnected');
     });
+    ws.on('error', (err) => {
+      console.error('TLDraw client WebSocket error:', err.message);
+      wsClients.delete(ws);
+    });
   });
 
   console.error(`WebSocket server running on port ${WS_PORT}`);
@@ -1246,7 +1334,12 @@ function broadcast(message) {
   const msg = typeof message === 'object' ? JSON.stringify(message) : message;
   if (wsClients.size > 0) {
     for (const client of wsClients) {
-      if (client.readyState === 1) client.send(msg);
+      if (client.readyState === 1) {
+        client.send(msg);
+      } else if (client.readyState > 1) {
+        // CLOSING or CLOSED — clean up zombie
+        wsClients.delete(client);
+      }
     }
   } else if (!httpRunning) {
     // Proxy to collab instance's HTTP raw endpoint
@@ -1257,7 +1350,9 @@ function broadcast(message) {
       hostname: 'localhost', port: HTTP_PORT, path: endpoint, method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     });
-    req.on('error', () => {});
+    req.on('error', (err) => {
+      console.error(`[broadcast] HTTP proxy error: ${err.message}`);
+    });
     req.end(body);
   }
 }
@@ -1532,15 +1627,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     }
 
+    let heartbeatInterval;
     try {
       const entry = await connectYjs(docName);
 
-      // Check if there's already a ping newer than what we've seen
+      // Signal that an agent is listening
+      writeAgentHeartbeat(entry, docName, 'listening');
+      heartbeatInterval = setInterval(() => writeAgentHeartbeat(entry, docName, 'listening'), 15000);
+
+      // Initialize ping timestamp from Yjs state so stale pings (from previous sessions) are ignored
       const existingPing = entry.yRecords.get('signal:ping');
       if (existingPing?.timestamp > lastPingTimestamp) {
+        // Only treat as new if this is a re-entry (not first call) — first call seeds the baseline
+        if (lastPingTimestamp > 0) {
+          lastPingTimestamp = existingPing.timestamp;
+          clearInterval(heartbeatInterval);
+          writeAgentHeartbeat(entry, docName, 'thinking');
+          return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
+        }
         lastPingTimestamp = existingPing.timestamp;
-        return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
       }
+
+      // Snapshot current shape keys so we can detect changes after reconnect
+      const knownShapeKeys = new Set();
+      entry.yRecords.forEach((_, key) => { if (key.startsWith('shape:')) knownShapeKeys.add(key); });
 
       // Watch for pings OR annotation changes (with debounce for edits)
       const DEBOUNCE_MS = 5000;
@@ -1619,10 +1729,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
         entry.yRecords.observe(observer);
 
+        // Detect dead WebSocket — resolve immediately so we can reconnect
+        const onWsClose = () => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          entry.yRecords.unobserve(observer);
+          resolve({ type: 'ws-closed' });
+        };
+        if (entry.ws) entry.ws.on('close', onWsClose);
+
         // Also resolve on HTTP snapshot (backward compat)
         waitingResolvers.push(() => {
           if (debounceTimer) clearTimeout(debounceTimer);
           entry.yRecords.unobserve(observer);
+          if (entry.ws) entry.ws.removeListener('close', onWsClose);
           resolve({ type: 'http-snapshot' });
         });
       });
@@ -1632,6 +1751,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       const result = await Promise.race([waitPromise, timeoutPromise]);
+      clearInterval(heartbeatInterval);
+      if (result?.type !== 'ws-closed') {
+        writeAgentHeartbeat(entry, docName, 'thinking');
+      }
+
+      // WebSocket died while waiting — reconnect and check for changes we missed
+      if (result?.type === 'ws-closed') {
+        console.error(`[Yjs] WebSocket closed while waiting for feedback on ${docName}, reconnecting`);
+        try {
+          const fresh = await connectYjs(docName);
+          // Diff: find shapes that appeared while we were disconnected
+          const newShapes = [];
+          fresh.yRecords.forEach((record, key) => {
+            if (key.startsWith('shape:') && !knownShapeKeys.has(key)) {
+              const type = record?.type || 'unknown';
+              const text = record?.props?.text || '';
+              const color = record?.props?.color || '';
+              newShapes.push(`${key} [${type}, ${color}]: ${text.substring(0, 120)}`);
+            }
+          });
+          if (newShapes.length > 0) {
+            return { content: [{ type: 'text', text: `Connection briefly lost. After reconnecting, found ${newShapes.length} new shape(s) created during the gap:\n\n${newShapes.join('\n')}\n\nInterpret and respond to these.` }] };
+          }
+          return { content: [{ type: 'text', text: `Connection to ${docName} briefly lost and re-established. No new shapes during the gap. Call wait_for_feedback again to resume listening.` }] };
+        } catch (e) {
+          return { content: [{ type: 'text', text: `Connection to ${docName} lost: ${e.message}. Server may be down.` }], isError: true };
+        }
+      }
 
       if (result?.type === 'http-snapshot') {
         return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
@@ -1682,6 +1829,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const rendered = getRenderedText(docName, arrowBBox);
               if (rendered) text += `\n  rendered: "${rendered}"`;
             }
+            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2);
             return { content: [{ type: 'text', text }] };
           }
         }
@@ -1708,6 +1856,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const rendered = getRenderedText(docName, bbox);
             if (rendered) text += `\n  rendered: "${rendered}"`;
           }
+          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           return { content: [{ type: 'text', text }] };
         }
 
@@ -1745,6 +1894,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const rendered = bbox ? getRenderedText(docName, bbox) : '';
         if (rendered) text += `\n  rendered: "${rendered}"`;
+        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
         return { content: [{ type: 'text', text }] };
       }
 
@@ -1752,8 +1902,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
+      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y);
       return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
     } catch (e) {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
@@ -1816,10 +1968,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (docName) {
       try {
         const entry = await connectYjs(docName);
-        entry.doc.transact(() => {
-          entry.yRecords.set('signal:screenshot-request', { timestamp: Date.now() });
-        });
-        sendYjsUpdate(entry);
+        sendEphemeralSignal(entry, 'signal:screenshot-request', { timestamp: Date.now() });
         const result = await new Promise((resolve) => {
           const observer = (event) => {
             event.changes.keys.forEach((change, key) => {
@@ -2196,10 +2345,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? { type: 'partial', pages, timestamp }
         : { type: 'full', timestamp };
 
-      entry.doc.transact(() => {
-        entry.yRecords.set('signal:reload', signal);
-      });
-      sendYjsUpdate(entry);
+      sendEphemeralSignal(entry, 'signal:reload', signal);
 
       const desc = signal.type === 'partial'
         ? `Partial reload signaled for pages ${pages.join(', ')}`

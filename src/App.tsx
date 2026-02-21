@@ -67,6 +67,9 @@ async function fetchManifest(bustCache = false): Promise<Record<string, DocConfi
     const base = import.meta.env.BASE_URL || '/'
     const url = `${base}docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
     const resp = await fetch(url)
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
+    }
     if (!resp.ok) return {}
     const data = await resp.json()
     const docs = data.documents || {}
@@ -75,7 +78,8 @@ async function fetchManifest(bustCache = false): Promise<Record<string, DocConfi
       config.basePath = `/docs/${key}/`
     }
     return docs
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('Authentication')) throw e
     return {}
   }
 }
@@ -98,22 +102,30 @@ function App() {
     } else {
       // No doc specified — show document picker or auto-load single doc
       setState({ phase: 'loading', message: 'Loading...', roomId: '' })
-      fetchManifest().then(manifest => {
-        const docs = Object.keys(manifest)
-        if (docs.length === 1) {
-          const name = docs[0]
-          const newUrl = new URL(window.location.href)
-          newUrl.searchParams.set('doc', name)
-          window.history.replaceState({}, '', newUrl.toString())
-          const roomId = `doc-${name}`
-          setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
-          loadDocument(name, roomId)
-        } else if (docs.length > 1) {
-          setState({ phase: 'picker', manifest })
-        } else {
-          setState({ phase: 'error', message: 'No documents found. Use `ctd create` to add a project.' })
+      // Retry manifest fetch a few times — server may still be initializing projects
+      const tryManifest = async (attempts = 4) => {
+        for (let i = 0; i < attempts; i++) {
+          const manifest = await fetchManifest()
+          const docs = Object.keys(manifest)
+          if (docs.length > 0) {
+            if (docs.length === 1) {
+              const name = docs[0]
+              const newUrl = new URL(window.location.href)
+              newUrl.searchParams.set('doc', name)
+              window.history.replaceState({}, '', newUrl.toString())
+              const roomId = `doc-${name}`
+              setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
+              loadDocument(name, roomId)
+            } else {
+              setState({ phase: 'picker', manifest })
+            }
+            return
+          }
+          if (i < attempts - 1) await new Promise(r => setTimeout(r, 1000))
         }
-      })
+        setState({ phase: 'error', message: 'No documents found. Use `ctd create` to add a project.' })
+      }
+      tryManifest()
     }
   }, [])
 
@@ -124,7 +136,13 @@ function App() {
     const abort = loadAbort = new AbortController()
     const { signal } = abort
 
-    const manifest = await fetchManifest()
+    let manifest: Record<string, DocConfig>
+    try {
+      manifest = await fetchManifest()
+    } catch (e) {
+      setState({ phase: 'error', message: (e as Error).message })
+      return
+    }
     if (gen !== loadGeneration) return  // superseded
 
     const config = manifest[docName]
@@ -142,7 +160,13 @@ function App() {
             const m = await fetchManifest(true)
             const c = m[docName]
             if (c && c.pages > 0 && c.buildStatus !== 'building') break
-          } catch { /* keep polling */ }
+          } catch (e) {
+            if (e instanceof Error && e.message.includes('Authentication')) {
+              setState({ phase: 'error', message: e.message })
+              return
+            }
+            /* keep polling for other errors */
+          }
         }
         if (gen === loadGeneration) loadDocument(docName, roomId)
       }

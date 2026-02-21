@@ -5,6 +5,7 @@ import { onReloadSignal, onForwardSync, onScreenshotRequest, onRefViewerSignal, 
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
+import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
 
 interface UseYjsSignalsParams {
@@ -18,6 +19,7 @@ interface UseYjsSignalsParams {
   setRefViewerRefs: (refs: { label: string; region: LabelRegion }[] | null) => void
   refViewerLineRef: React.MutableRefObject<number | null>
   panelsLocalRef: React.MutableRefObject<boolean>
+  onReloadResult?: (result: ReloadResult | null) => void
 }
 
 export function useYjsSignals({
@@ -25,6 +27,7 @@ export function useYjsSignals({
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+  onReloadResult,
 }: UseYjsSignalsParams) {
   // Subscribe to Yjs reload signals
   useEffect(() => {
@@ -32,7 +35,9 @@ export function useYjsSignals({
       const editor = editorRef.current
       if (!editor) return
       if (signal.type === 'partial') {
-        reloadPages(editor, document, signal.pages)
+        reloadPages(editor, document, signal.pages).then(result => {
+          onReloadResult?.(result)
+        })
       } else {
         clearLookupCache(document.name)
         diffDataRef.current = null
@@ -40,7 +45,9 @@ export function useYjsSignals({
         proofDataRef.current = null
         setProofDataReady(false)
         setProofFetchSeq(s => s + 1)
-        reloadPages(editor, document, null)
+        reloadPages(editor, document, null).then(result => {
+          onReloadResult?.(result)
+        })
       }
     })
   }, [document])
