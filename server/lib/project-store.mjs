@@ -184,6 +184,26 @@ export function readBuildLog(name) {
 }
 
 /**
+ * Extract pipeline warnings from the build log (non-fatal failures, skipped phases).
+ * These are build-runner issues, not LaTeX issues — synctex missing, image patching failed, etc.
+ */
+export function extractPipelineWarnings(name) {
+  const log = readBuildLog(name)
+  if (!log) return []
+  const warnings = []
+  for (const line of log.split('\n')) {
+    if (line.includes('(non-fatal)')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('skipping lookup') || line.includes('No synctex.gz found')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('BUILD FAILED')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    }
+  }
+  return warnings
+}
+
+/**
  * Extract structured errors and warnings from a LaTeX log file.
  * Returns { errors: [{ message, line?, file? }], warnings: string[] }
  */

@@ -49,13 +49,14 @@ const COMMAND_HELP = {
   push:    'ctd push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'ctd watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `ctd create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
+  'watch-agent': 'ctd watch-agent\n\n  Replaced by `ctd server start --agent`. The triage agent now\n  covers all documents automatically and runs alongside the server.',
   open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
   status:  'ctd status [name]\n\n  Show build status for a project.',
   errors:  'ctd errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.',
   delete:  'ctd delete <name>\n\n  Delete a project and all its data.',
   preview: 'ctd preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/ctd-preview-{name}/.',
-  server:  'ctd server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
+  server:  'ctd server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Always-on agent that listens for feedback on all documents\n             and handles lightweight responses (notes, acknowledgments).',
   config:  'ctd config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: ctd config set server http://myhost:5176',
 }
 
@@ -458,6 +459,16 @@ async function watchAllRun() {
   await new Promise(() => {})
 }
 
+async function cmdWatchAgent() {
+  console.log('The per-document watch-agent has been replaced by the triage agent.')
+  console.log('The triage agent covers all documents and runs alongside the server:')
+  console.log()
+  console.log(`  ${bold('ctd server start --agent')}`)
+  console.log()
+  console.log('It listens for feedback on all active projects, handles lightweight')
+  console.log('responses, and yields to terminal Claude Code sessions for heavy work.')
+}
+
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd open [name]'); process.exit(1) }
@@ -539,7 +550,11 @@ async function cmdErrors() {
     console.log(`${data.warnings.length} warning(s):`)
     for (const w of data.warnings) console.log(dim(`  ${typeof w === 'string' ? w : w.message}`))
   }
-  if (!data.errors?.length && !data.warnings?.length && !data.building) {
+  if (data.pipelineWarnings?.length > 0) {
+    console.log(`${data.pipelineWarnings.length} pipeline issue(s):`)
+    for (const w of data.pipelineWarnings) console.log(dim(`  ${w}`))
+  }
+  if (!data.errors?.length && !data.warnings?.length && !data.pipelineWarnings?.length && !data.building) {
     console.log(green('Clean.'))
   }
 }
@@ -683,7 +698,7 @@ async function cmdAuth() {
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
-    'server', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
+    'server', 'create', 'push', 'watch', 'watch-all', 'watch-agent', 'open', 'list', 'ls',
     'status', 'errors', 'build', 'delete', 'rm', 'preview',
     'logs', 'log', 'config', 'completions',
   ]
@@ -707,6 +722,7 @@ _ctd() {
     'push:Push source files and rebuild'
     'watch:Watch for changes and auto-push'
     'watch-all:Watch all projects'
+    'watch-agent:Run triage agent (use server --agent)'
     'open:Open viewer in browser'
     'list:List projects'
     'status:Show build status'
@@ -731,7 +747,7 @@ _ctd() {
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
-        create|push|open|status|errors|build|delete|rm|preview)
+        create|push|open|status|errors|build|delete|rm|preview|watch-agent)
           _ctd_projects
           ;;
       esac
@@ -940,7 +956,9 @@ ${tokenEnvLines.join('\n')}
       const { openSync: fsOpenSync } = await import('fs')
       const logFd = fsOpenSync(LOGFILE, 'a')
 
-      const child = spawn('node', [serverScript], {
+      const serverArgs = [serverScript]
+      if (hasFlag('agent')) serverArgs.push('--agent')
+      const child = spawn('node', serverArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
         env: { ...process.env, PORT: port },
@@ -1022,6 +1040,7 @@ async function main() {
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'watch':  await ensureServer(); await cmdWatch(); break
       case 'watch-all': await ensureServer(); await cmdWatchAll(); break
+      case 'watch-agent': await ensureServer(); await cmdWatchAgent(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'list':   await ensureServer(); await cmdList(); break
       case 'ls':     await ensureServer(); await cmdList(); break
@@ -1045,6 +1064,7 @@ Commands:
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   watch-all      Watch all projects (auto-detects new ones)
+  watch-agent    (use: ctd server start --agent)
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status

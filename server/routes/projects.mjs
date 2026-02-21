@@ -21,7 +21,7 @@ import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir,
-  extractBuildErrors,
+  extractBuildErrors, extractPipelineWarnings,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import historyRoutes from './history.mjs'
@@ -179,13 +179,16 @@ router.get('/:name/build/errors', requireRead, (req, res) => {
   const building = activeBuild?.building || false
 
   const { errors, warnings } = extractBuildErrors(req.params.name)
+  const pipelineWarnings = extractPipelineWarnings(req.params.name)
 
   res.json({
     building,
+    phase: activeBuild?.phase || null,
     status: project.buildStatus,
     lastBuild: project.lastBuild,
     errors: errors.map(e => e.message), // API returns flat strings for CLI compat
     warnings,
+    pipelineWarnings,
   })
 })
 
