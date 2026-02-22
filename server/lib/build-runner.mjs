@@ -367,7 +367,7 @@ async function compileLaTeX(ctx) {
     if (hasBrokenCites) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
-        ? `biber --input-directory="${buildDir}" --output-directory="${buildDir}" "${texBase}"`
+        ? `biber --input-directory="${srcDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
         : `BIBINPUTS="${srcDir}:" BSTINPUTS="${srcDir}:" bibtex "${join(buildDir, texBase)}"`
       const bibTool = useBiblatex ? 'biber' : 'bibtex'
       // Remove stale .bbl — if we're here, citations are broken anyway.
@@ -378,9 +378,14 @@ async function compileLaTeX(ctx) {
       try {
         await run(bibCmd, { cwd: buildDir, timeout: 60000 })
         addLog(`${bibTool} done — recompiling`)
-        await run(cmd, { cwd: srcDir, timeout: 120000, env })
       } catch (e) {
         addLog(`${bibTool} failed (non-fatal): ${e.message.split('\n')[0]}`)
+      }
+      // Recompile with bibliography — pdflatex may exit non-zero on warnings, that's fine
+      try {
+        await run(cmd, { cwd: srcDir, timeout: 120000, env })
+      } catch (e) {
+        addLog(`pdflatex exited with warnings after ${bibTool} (continuing): ${e.message.split('\n')[0]}`)
       }
     }
   }
