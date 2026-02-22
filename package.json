@@ -12,7 +12,6 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "sync": "node server/sync-server.js",
-
     "watch": "node scripts/watch.mjs",
     "collab": "node scripts/collab.mjs",
     "publish-snapshot": "node scripts/publish-snapshot.mjs",
@@ -23,6 +22,7 @@
     "test:e2e": "node --test test/pipeline.test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@codemirror/commands": "^6.10.1",
     "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",

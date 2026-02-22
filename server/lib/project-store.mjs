@@ -198,6 +198,8 @@ export function extractPipelineWarnings(name) {
       warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
     } else if (line.includes('BUILD FAILED')) {
       warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('pages missing')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
     }
   }
   return warnings

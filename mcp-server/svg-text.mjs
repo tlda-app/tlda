@@ -188,8 +188,13 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
   const docDir = localDocDir(docName) || path.join(projectRoot, 'public', 'docs', docName);
 
   // Load first page to get viewBox (all pages in a doc should share the same viewBox)
-  const firstPagePath = path.join(docDir, 'page-01.svg');
-  const firstPageData = loadPageTextCached(firstPagePath);
+  // Try both naming conventions: page-1.svg (current) and page-01.svg (legacy)
+  let firstPagePath = path.join(docDir, 'page-1.svg');
+  let firstPageData = loadPageTextCached(firstPagePath);
+  if (!firstPageData) {
+    firstPagePath = path.join(docDir, 'page-01.svg');
+    firstPageData = loadPageTextCached(firstPagePath);
+  }
   if (!firstPageData) return [];
 
   const vb = firstPageData.viewBox;
@@ -210,9 +215,15 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
   const svgMaxY = ((canvasBBox.maxY - pageTop) / scale) + vb.minY;
 
   // Load the page's text
-  const pageNum = String(pageIndex + 1).padStart(2, '0');
-  const svgPath = path.join(docDir, `page-${pageNum}.svg`);
-  const pageData = loadPageTextCached(svgPath);
+  // Try both naming conventions: page-N.svg (current) and page-0N.svg (legacy)
+  const pageNumUnpadded = String(pageIndex + 1);
+  const pageNumPadded = pageNumUnpadded.padStart(2, '0');
+  let svgPath = path.join(docDir, `page-${pageNumUnpadded}.svg`);
+  let pageData = loadPageTextCached(svgPath);
+  if (!pageData) {
+    svgPath = path.join(docDir, `page-${pageNumPadded}.svg`);
+    pageData = loadPageTextCached(svgPath);
+  }
   if (!pageData) return [];
 
   // Find text lines whose baseline falls within the y range (with margin)

@@ -355,8 +355,36 @@ async function compileLaTeX(ctx) {
     addLog(`pdflatex exited with warnings (continuing): ${e.message.split('\n')[0]}`)
   }
 
-  // Check if a second pass is needed (unresolved references)
+  // Check if bibliography processing is needed (missing .bbl or undefined citations)
+  const bblPath = join(buildDir, `${texBase}.bbl`)
+  const bcfPath = join(buildDir, `${texBase}.bcf`)
   const logPath = join(buildDir, `${texBase}.log`)
+  if (existsSync(logPath)) {
+    const logText = readFileSync(logPath, 'utf8')
+    const hasBrokenCites = !existsSync(bblPath) ||
+      (logText.includes('Citation') && logText.includes('undefined'))
+    if (hasBrokenCites) {
+      const useBiblatex = existsSync(bcfPath)
+      const bibCmd = useBiblatex
+        ? `biber --input-directory="${buildDir}" --output-directory="${buildDir}" "${texBase}"`
+        : `BIBINPUTS="${srcDir}:" BSTINPUTS="${srcDir}:" bibtex "${join(buildDir, texBase)}"`
+      const bibTool = useBiblatex ? 'biber' : 'bibtex'
+      // Remove stale .bbl — if we're here, citations are broken anyway.
+      // Prevents format-switch corruption (biblatex↔bibtex cached .bbl).
+      if (existsSync(bblPath)) unlinkSync(bblPath)
+      addLog(`Running ${bibTool} for citations...`)
+      signalBuildProgress(name, 'compiling', bibTool)
+      try {
+        await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+        addLog(`${bibTool} done — recompiling`)
+        await run(cmd, { cwd: srcDir, timeout: 120000, env })
+      } catch (e) {
+        addLog(`${bibTool} failed (non-fatal): ${e.message.split('\n')[0]}`)
+      }
+    }
+  }
+
+  // Check if a second pass is needed (unresolved references)
   if (existsSync(logPath)) {
     const logText = readFileSync(logPath, 'utf8')
     if (logText.includes('Label(s) may have changed') || logText.includes('Rerun to get')) {
@@ -386,6 +414,14 @@ async function compileLaTeX(ctx) {
 
   const dviFile = join(buildDir, `${texBase}.dvi`)
   if (!existsSync(dviFile)) throw new Error('DVI file not created')
+
+  // Parse expected page count from log for later verification against dvisvgm output
+  let expectedPages = null
+  if (existsSync(logPath)) {
+    const m = readFileSync(logPath, 'utf8').match(/Output written on .+\((\d+) pages?/)
+    if (m) expectedPages = parseInt(m[1])
+  }
+  return { expectedPages }
 }
 
 /**
@@ -395,7 +431,7 @@ async function compileLaTeX(ctx) {
  *
  * Returns { pageCount, newHashes }.
  */
-async function convertSvgs(ctx, priorityPages, oldHashes) {
+async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
   const { name, srcDir, outDir, buildDir, texBase, addLog, run } = ctx
   const dviFile = join(buildDir, `${texBase}.dvi`)
   const svgDir = join(buildDir, 'svg')
@@ -416,7 +452,9 @@ async function convertSvgs(ctx, priorityPages, oldHashes) {
         `node "${join(SCRIPTS_DIR, 'patch-svg-images.mjs')}" "${svgDir}" "${srcDir}"`,
         { cwd: PROJECT_ROOT, timeout: 60000 },
       )
-    } catch {}
+    } catch (e) {
+      addLog(`Image patching failed (non-fatal): ${e.message.split('\n')[0]}`)
+    }
     const changedPriority = []
     for (const p of priorityPages) {
       const f = `page-${p}.svg`
@@ -450,6 +488,11 @@ async function convertSvgs(ctx, priorityPages, oldHashes) {
 
   const allPageFiles = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
   const pageCount = allPageFiles.length
+
+  if (expectedPages && pageCount < expectedPages) {
+    addLog(`WARNING: dvisvgm produced ${pageCount}/${expectedPages} pages — ${expectedPages - pageCount} pages missing`)
+    signalBuildProgress(name, 'converting', `${expectedPages - pageCount} pages missing`)
+  }
 
   // Patch all image placeholders (fast, ~70ms)
   addLog('Patching image placeholders...')
@@ -670,14 +713,14 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Phase 1: LaTeX compilation
     status.phase = 'compiling'
     signalBuildProgress(name, 'compiling', null)
-    await compileLaTeX(ctx)
+    const { expectedPages } = await compileLaTeX(ctx)
 
     // Phase 2+3: SVG conversion and macro extraction run in parallel
     status.phase = 'converting'
     signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
     const oldHashes = loadPageHashes(outDir)
     const [svgResult] = await Promise.all([
-      convertSvgs(ctx, priorityPages, oldHashes),
+      convertSvgs(ctx, priorityPages, oldHashes, expectedPages),
       extractMacros(ctx),
     ])
 
@@ -724,6 +767,9 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
 // ─── Yjs signals ─────────────────────────────────────────────────────────────
 
+// Viewer pill convention: phase is the fixed-width pill label ("compiling", "converting",
+// "patched", "rebuilt", "failed"). detail is quiet text to the right ("biber", "3 pages
+// missing", "compiled in 2.1s"). Keep phase to a single word — the pill has min-width 56px.
 function signalBuildProgress(name, phase, detail) {
   try {
     const roomId = `doc-${name}`
@@ -731,8 +777,8 @@ function signalBuildProgress(name, phase, detail) {
     const yRecords = doc.getMap('tldraw')
     doc.transact(() => {
       yRecords.set('signal:build-progress', {
-        phase,       // 'compiling' | 'converting' | 'extracting' | 'done' | 'failed'
-        detail,      // e.g. 'latexmk' | 'priority pages [3,5]' | 'all pages' | '12.3s'
+        phase,       // 'compiling' | 'converting' | 'extracting' | 'hot' | 'done' | 'failed'
+        detail,      // quiet text beside pill: 'biber' | '3 pages missing' | 'compiled in 2.1s'
         timestamp: Date.now(),
       })
     })

@@ -22,7 +22,7 @@ import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import * as Y from 'yjs';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
-import { initDataSource, readJsonSync, readManifestSync, localDocDir, isRemote } from './data-source.mjs';
+import { initDataSource, readJsonSync, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 
 const CTD_TOKEN = resolveToken();
@@ -773,9 +773,17 @@ async function highlightLine(doc, file, line) {
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
 
-async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file, choices } = {}) {
-  const linePos = lookupLine(doc, line, file);
-  if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
+async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file, choices, page: pageNum } = {}) {
+  let linePos;
+  if (line) {
+    linePos = lookupLine(doc, line, file);
+    if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
+  } else if (pageNum) {
+    // Position at top of the given page when no source line is available
+    linePos = { page: pageNum, x: 0, y: 50, texFile: null, content: '' };
+  } else {
+    return { ok: false, error: 'Either line or page is required' };
+  }
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
   // Position note at left or right margin of the page
@@ -1397,6 +1405,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'wait_for_any_feedback',
+      description: 'Wait for feedback from ANY active document. Connects to all project Yjs rooms simultaneously and returns the first feedback from any of them. Yields to terminal agents: skips docs where another agent has a recent heartbeat. Returns the same format as wait_for_feedback, plus a "doc" field identifying which document.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timeout: {
+            type: 'number',
+            description: 'Max seconds to wait (default: 300)',
+          },
+        },
+      },
+    },
+    {
       name: 'check_feedback',
       description: 'Check if there is new feedback since last check. Non-blocking.',
       inputSchema: {
@@ -1470,7 +1491,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          line: { type: 'number', description: 'Source line number to anchor the note to' },
+          line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
+          page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
           width: { type: 'number', description: 'Note width in pixels (default: 200)' },
@@ -1479,7 +1501,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
-        required: ['doc', 'line', 'text'],
+        required: ['doc', 'text'],
       },
     },
     {
@@ -1565,13 +1587,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          line: { type: 'number', description: 'Source line number to place the note at' },
+          line: { type: 'number', description: 'Source line number to place the note at. Required unless page is given.' },
+          page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
-        required: ['doc', 'line', 'text'],
+        required: ['doc', 'text'],
       },
     },
   ],
@@ -1688,6 +1711,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             // Annotation created or edited — debounce to wait for typing/drawing to finish
             if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
+              // Skip updates to pre-existing shapes — only react to new shapes
+              if (change.action === 'update' && knownShapeKeys.has(key)) return;
               const record = entry.yRecords.get(key);
               if (record?.type === 'math-note') {
                 // Choice selection — resolve immediately, no debounce
@@ -1701,7 +1726,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
                 const text = record.props?.text || '';
                 // Skip if the last line is our reply
-                if (text.trimEnd().endsWith('—Claude:')) return;
+                if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) return;
                 pendingResult = { type: 'annotation', key, action: change.action, record };
                 if (debounceTimer) clearTimeout(debounceTimer);
                 debounceTimer = setTimeout(() => {
@@ -1910,6 +1935,337 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'wait_for_any_feedback') {
+    const timeout = (args?.timeout || 300) * 1000;
+
+    // Discover active docs from manifest
+    const manifest = await readManifest();
+    const docNames = manifest?.documents ? Object.keys(manifest.documents) : [];
+    if (docNames.length === 0) {
+      return { content: [{ type: 'text', text: 'No documents found. Is the server running with projects?' }], isError: true };
+    }
+
+    // Connect to all docs, skip failures
+    const entries = new Map(); // docName → entry
+    for (const docName of docNames) {
+      try {
+        const entry = await connectYjs(docName);
+        entries.set(docName, entry);
+      } catch (e) {
+        console.error(`[wait_for_any] Failed to connect to ${docName}: ${e.message}`);
+      }
+    }
+    if (entries.size === 0) {
+      return { content: [{ type: 'text', text: 'Failed to connect to any document rooms.' }], isError: true };
+    }
+
+    // Filter out docs where a terminal agent is actively thinking (recent heartbeat)
+    const HEARTBEAT_STALE_MS = 60000;
+    const activeDocs = new Map();
+    for (const [docName, entry] of entries) {
+      const hb = entry.yRecords.get('signal:agent-heartbeat');
+      if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) {
+        console.error(`[wait_for_any] Skipping ${docName} — terminal agent active`);
+        continue;
+      }
+      activeDocs.set(docName, entry);
+    }
+
+    // Send listening heartbeat on all active docs
+    const heartbeatIntervals = [];
+    for (const [docName, entry] of activeDocs) {
+      writeAgentHeartbeat(entry, docName, 'listening');
+      heartbeatIntervals.push(setInterval(() => {
+        // Re-check: if a terminal agent appeared, stop heartbeating this doc
+        const hb = entry.yRecords.get('signal:agent-heartbeat');
+        if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
+        writeAgentHeartbeat(entry, docName, 'listening');
+      }, 15000));
+    }
+
+    // Per-doc ping baselines (use module-level map to persist across calls)
+    if (!global._anyFeedbackPingBaselines) global._anyFeedbackPingBaselines = new Map();
+    const pingBaselines = global._anyFeedbackPingBaselines;
+
+    // Seed baselines for new docs
+    for (const [docName, entry] of activeDocs) {
+      if (!pingBaselines.has(docName)) {
+        const existingPing = entry.yRecords.get('signal:ping');
+        pingBaselines.set(docName, existingPing?.timestamp || 0);
+      }
+    }
+
+    // Snapshot shape keys per doc for ws-close recovery
+    const knownShapeKeys = new Map();
+    for (const [docName, entry] of activeDocs) {
+      const keys = new Set();
+      entry.yRecords.forEach((_, key) => { if (key.startsWith('shape:')) keys.add(key); });
+      knownShapeKeys.set(docName, keys);
+    }
+
+    const DEBOUNCE_MS = 5000;
+
+    try {
+      const waitPromise = new Promise(resolve => {
+        let debounceTimer = null;
+        let pendingResult = null;
+        const observers = []; // for cleanup
+
+        function cleanup() {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          for (const { entry, observer, onWsClose } of observers) {
+            entry.yRecords.unobserve(observer);
+            if (onWsClose && entry.ws) entry.ws.removeListener('close', onWsClose);
+          }
+        }
+
+        for (const [docName, entry] of activeDocs) {
+          const observer = (event) => {
+            // Skip if a terminal agent took over this doc mid-wait
+            const hb = entry.yRecords.get('signal:agent-heartbeat');
+            if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
+
+            event.changes.keys.forEach((change, key) => {
+              if (key === 'signal:ping') {
+                const ping = entry.yRecords.get('signal:ping');
+                const baseline = pingBaselines.get(docName) || 0;
+                if (ping?.timestamp > baseline) {
+                  pingBaselines.set(docName, ping.timestamp);
+                  cleanup();
+                  resolve({ type: 'ping', ping, docName, entry });
+                }
+                return;
+              }
+              if (key === 'signal:text-selection') {
+                const sel = entry.yRecords.get('signal:text-selection');
+                if (sel?.text) {
+                  pendingResult = { type: 'text-selection', sel, docName, entry };
+                  if (debounceTimer) clearTimeout(debounceTimer);
+                  debounceTimer = setTimeout(() => {
+                    const latest = entry.yRecords.get('signal:text-selection');
+                    if (latest) pendingResult.sel = latest;
+                    cleanup();
+                    resolve(pendingResult);
+                  }, 2000);
+                }
+                return;
+              }
+              if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
+                const known = knownShapeKeys.get(docName);
+                // Skip updates to pre-existing shapes — only react to new shapes
+                // or edits to shapes that appeared during this wait cycle
+                if (change.action === 'update' && known?.has(key)) return;
+                const record = entry.yRecords.get(key);
+                if (record?.type === 'math-note') {
+                  const choices = record.props?.choices;
+                  const sel = record.props?.selectedChoice;
+                  if (choices?.length && sel != null && sel >= 0) {
+                    if (debounceTimer) clearTimeout(debounceTimer);
+                    cleanup();
+                    resolve({ type: 'choice', key, record, choiceIndex: sel, choiceText: choices[sel], docName, entry });
+                    return;
+                  }
+                  const text = record.props?.text || '';
+                  if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) return;
+                  pendingResult = { type: 'annotation', key, action: change.action, record, docName, entry };
+                  if (debounceTimer) clearTimeout(debounceTimer);
+                  debounceTimer = setTimeout(() => {
+                    const latest = entry.yRecords.get(key);
+                    if (latest) pendingResult.record = latest;
+                    cleanup();
+                    resolve(pendingResult);
+                  }, DEBOUNCE_MS);
+                }
+                if (record?.type === 'draw' || record?.type === 'highlight' ||
+                    record?.type === 'arrow' || record?.type === 'geo' ||
+                    record?.type === 'text' || record?.type === 'line') {
+                  pendingResult = { type: 'stroke', key, action: change.action, record, docName, entry };
+                  if (debounceTimer) clearTimeout(debounceTimer);
+                  debounceTimer = setTimeout(() => {
+                    const latest = entry.yRecords.get(key);
+                    if (latest) pendingResult.record = latest;
+                    cleanup();
+                    resolve(pendingResult);
+                  }, DEBOUNCE_MS);
+                }
+              }
+            });
+          };
+
+          const onWsClose = () => {
+            cleanup();
+            resolve({ type: 'ws-closed', docName, entry });
+          };
+
+          entry.yRecords.observe(observer);
+          if (entry.ws) entry.ws.on('close', onWsClose);
+          observers.push({ entry, observer, onWsClose });
+        }
+      });
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout waiting for feedback')), timeout);
+      });
+
+      const result = await Promise.race([waitPromise, timeoutPromise]);
+      heartbeatIntervals.forEach(i => clearInterval(i));
+
+      const docName = result.docName;
+      const entry = result.entry;
+
+      if (result.type !== 'ws-closed') {
+        writeAgentHeartbeat(entry, docName, 'thinking');
+      }
+
+      // Format result — same as wait_for_feedback but with doc prefix
+      const prefix = `[${docName}] `;
+
+      if (result.type === 'ws-closed') {
+        try {
+          const fresh = await connectYjs(docName);
+          const known = knownShapeKeys.get(docName) || new Set();
+          const newShapes = [];
+          fresh.yRecords.forEach((record, key) => {
+            if (key.startsWith('shape:') && !known.has(key)) {
+              const type = record?.type || 'unknown';
+              const text = record?.props?.text || '';
+              const color = record?.props?.color || '';
+              newShapes.push(`${key} [${type}, ${color}]: ${text.substring(0, 120)}`);
+            }
+          });
+          if (newShapes.length > 0) {
+            return { content: [{ type: 'text', text: `${prefix}Connection briefly lost. After reconnecting, found ${newShapes.length} new shape(s):\n\n${newShapes.join('\n')}` }] };
+          }
+          return { content: [{ type: 'text', text: `${prefix}Connection briefly lost and re-established. No new shapes. Call wait_for_any_feedback again.` }] };
+        } catch (e) {
+          return { content: [{ type: 'text', text: `${prefix}Connection lost: ${e.message}` }], isError: true };
+        }
+      }
+
+      if (result.type === 'text-selection') {
+        return { content: [{ type: 'text', text: `${prefix}Text selected (page ${result.sel.page}):\n  "${result.sel.text}"` }] };
+      }
+
+      if (result.type === 'ping') {
+        return { content: [{ type: 'text', text: `${prefix}${formatPing(result.ping, entry)}` }] };
+      }
+
+      if (result.type === 'choice') {
+        const r = result.record;
+        const anchor = r.meta?.sourceAnchor;
+        let text = `${prefix}Choice selected on ${result.key}:\n`;
+        text += `  question: "${r.props?.text || ''}"\n`;
+        text += `  selected: ${result.choiceIndex} — "${result.choiceText}"\n`;
+        text += `  all choices: ${r.props.choices.map((c, i) => i === result.choiceIndex ? `[${c}]` : c).join(' | ')}\n`;
+        if (anchor) text += `  anchor: ${anchor.file}:${anchor.line}`;
+        return { content: [{ type: 'text', text }] };
+      }
+
+      if (result.type === 'stroke') {
+        const r = result.record;
+        const color = r.props?.color || 'black';
+
+        if (r.type === 'arrow') {
+          const ep = getArrowEndpoints(r);
+          if (ep) {
+            const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
+            const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
+            const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+            const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+            const label = r.props?.text || '';
+            let text = `${prefix}Arrow (${color})`;
+            if (label) text += ` "${label}"`;
+            if (startLines.length > 0) text += `\n  from: page ${pdfStart.page}, line ${startLines[0].line} "${startLines[0].content}"`;
+            else text += `\n  from: page ${pdfStart.page}`;
+            if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
+            else text += `\n  to:   page ${pdfEnd.page}`;
+            const arrowBBox = getArrowBBox(r);
+            if (arrowBBox) {
+              const rendered = getRenderedText(docName, arrowBBox);
+              if (rendered) text += `\n  rendered: "${rendered}"`;
+            }
+            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2);
+            return { content: [{ type: 'text', text }] };
+          }
+        }
+
+        if (r.type === 'geo') {
+          const bbox = getGeoBBox(r);
+          const geo = r.props?.geo || 'rectangle';
+          const label = r.props?.text || '';
+          let text = `${prefix}${geo} (${color})`;
+          if (label) text += ` "${label}"`;
+          if (bbox) {
+            const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+            const nearbyLines = findNearbyLines(docName, bbox);
+            text += `\n  page ${pdfPos.page}`;
+            if (nearbyLines.length > 0) {
+              const lineRange = nearbyLines.length === 1
+                ? `line ${nearbyLines[0].line}`
+                : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+              text += `\n  encloses ${lineRange}`;
+              text += `\n  first: "${nearbyLines[0].content}"`;
+              if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+            }
+            const rendered = getRenderedText(docName, bbox);
+            if (rendered) text += `\n  rendered: "${rendered}"`;
+          }
+          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          return { content: [{ type: 'text', text }] };
+        }
+
+        if (r.type === 'text') {
+          const textContent = r.props?.text || '';
+          const bbox = getTextBBox(r);
+          const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
+          const nearbyLines = findNearbyLines(docName, bbox);
+          let text = `${prefix}Text (${color}): "${textContent}"`;
+          text += `\n  page ${pdfPos.page}`;
+          if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
+          const rendered = getRenderedText(docName, bbox);
+          if (rendered) text += `\n  rendered: "${rendered}"`;
+          return { content: [{ type: 'text', text }] };
+        }
+
+        const bbox = getDrawShapeBBox(r);
+        const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
+        const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
+        const gesture = bbox ? classifyGesture(bbox) : 'unknown';
+        const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
+        const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+
+        let text = `${prefix}Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
+        if (pdfPos) text += `\n  page ${pdfPos.page}`;
+        if (nearbyLines.length > 0) {
+          const lineRange = nearbyLines.length === 1
+            ? `line ${nearbyLines[0].line}`
+            : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+          text += `\n  covers ${lineRange}`;
+          text += `\n  first: "${nearbyLines[0].content}"`;
+          if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+        }
+        const rendered = bbox ? getRenderedText(docName, bbox) : '';
+        if (rendered) text += `\n  rendered: "${rendered}"`;
+        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+        return { content: [{ type: 'text', text }] };
+      }
+
+      // Annotation
+      const r = result.record;
+      const anchor = r.meta?.sourceAnchor;
+      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
+      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y);
+      return { content: [{ type: 'text', text: `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
+
+    } catch (e) {
+      heartbeatIntervals.forEach(i => clearInterval(i));
+      if (e.message === 'Timeout waiting for feedback') {
+        return { content: [{ type: 'text', text: `No feedback on any document for ${timeout / 1000}s.` }] };
+      }
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'check_feedback') {
     const docName = args?.doc;
     if (!docName) {
@@ -2035,14 +2391,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'add_annotation') {
-    const { doc, line, text, color, width, height, side, file, choices } = args;
-    if (!doc || !line || !text) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
+    const { doc, line, page: pageNum, text, color, width, height, side, file, choices } = args;
+    if (!doc || (!line && !pageNum) || !text) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page), text' }], isError: true };
     }
     try {
-      const result = await addAnnotation(doc, line, text, { color, width, height, side, file, choices });
+      const result = await addAnnotation(doc, line, text, { color, width, height, side, file, choices, page: pageNum });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
-      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  line ${line} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
+      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
     }
@@ -2319,11 +2675,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'send_note') {
-    const { doc, line, text, color, file, choices } = args;
-    if (!doc || !line || !text) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, line, text' }], isError: true };
+    const { doc, line, page: pageNum, text, color, file, choices } = args;
+    if (!doc || (!line && !pageNum) || !text) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page), text' }], isError: true };
     }
-    const result = await sendNote(doc, line, text, color, file, choices);
+    const result = line
+      ? await sendNote(doc, line, text, color, file, choices)
+      : await addAnnotation(doc, null, text, { color, file, choices, page: pageNum });
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }
