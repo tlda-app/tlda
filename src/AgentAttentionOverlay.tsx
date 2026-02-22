@@ -11,6 +11,7 @@ interface Flash {
   canvasX: number
   canvasY: number
   born: number
+  agent?: string
 }
 
 let nextId = 0
@@ -28,6 +29,7 @@ export function AgentAttentionOverlay({ editor }: { editor: Editor }) {
         canvasX: signal.x,
         canvasY: signal.y,
         born: Date.now(),
+        agent: signal.agent,
       }
       setFlashes(prev => [...prev, flash])
       // Auto-remove after animation completes
@@ -81,6 +83,7 @@ export function AgentAttentionOverlay({ editor }: { editor: Editor }) {
           <div
             key={flash.id}
             className="agent-attention-flash"
+            data-agent={flash.agent}
             style={{
               left: pos.x - LOGO_SIZE / 2,
               top: pos.y - LOGO_SIZE / 2,

@@ -53,7 +53,7 @@ const COMMAND_HELP = {
   open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
   status:  'ctd status [name]\n\n  Show build status for a project.',
   errors:  'ctd errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
-  build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.',
+  build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'ctd delete <name>\n\n  Delete a project and all its data.',
   preview: 'ctd preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/ctd-preview-{name}/.',
   server:  'ctd server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Always-on agent that listens for feedback on all documents\n             and handles lightweight responses (notes, acknowledgments).',
@@ -563,6 +563,7 @@ async function cmdBuild() {
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: ctd build <name>'); process.exit(1) }
 
+  console.log(dim('Note: prefer the watcher pipeline. ctd build bypasses change detection.'))
   console.log(`Triggering rebuild for "${name}"...`)
   await api('POST', `/api/projects/${name}/build`)
   console.log(green('Build triggered.'))
@@ -699,7 +700,7 @@ function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
     'server', 'create', 'push', 'watch', 'watch-all', 'watch-agent', 'open', 'list', 'ls',
-    'status', 'errors', 'build', 'delete', 'rm', 'preview',
+    'status', 'errors', 'delete', 'rm', 'preview',
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
@@ -726,7 +727,6 @@ _ctd() {
     'open:Open viewer in browser'
     'list:List projects'
     'status:Show build status'
-    'build:Trigger a rebuild'
     'errors:Show LaTeX errors/warnings'
     'logs:Show server log'
     'delete:Delete a project'
@@ -1068,7 +1068,6 @@ Commands:
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status
-  build [name]   Trigger a rebuild (no file push)
   errors [name]  Show LaTeX errors/warnings from last build
   logs           Show server log (alias: ctd server logs)
   delete <name>  Delete a project (alias: rm)

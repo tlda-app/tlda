@@ -105,7 +105,13 @@ function App() {
       // Retry manifest fetch a few times — server may still be initializing projects
       const tryManifest = async (attempts = 4) => {
         for (let i = 0; i < attempts; i++) {
-          const manifest = await fetchManifest()
+          let manifest: Record<string, DocConfig>
+          try {
+            manifest = await fetchManifest()
+          } catch (e) {
+            setState({ phase: 'error', message: (e as Error).message })
+            return
+          }
           const docs = Object.keys(manifest)
           if (docs.length > 0) {
             if (docs.length === 1) {

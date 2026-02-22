@@ -26,8 +26,26 @@
   color: rgba(0, 0, 0, 0.2);
 }
 
+/* Claude: subtle orange flash */
+.agent-attention-flash[data-agent="claude"] svg {
+  color: rgba(204, 108, 29, 0.25);
+}
+
+/* Todd: subtle green flash */
+.agent-attention-flash[data-agent="todd"] svg {
+  color: rgba(46, 139, 87, 0.25);
+}
+
 html[data-theme="dark"] .agent-attention-flash svg {
   color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark"] .agent-attention-flash[data-agent="claude"] svg {
+  color: rgba(227, 152, 68, 0.25);
+}
+
+html[data-theme="dark"] .agent-attention-flash[data-agent="todd"] svg {
+  color: rgba(80, 200, 120, 0.25);
 }
 
 @media (pointer: coarse) {

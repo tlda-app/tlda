@@ -681,17 +681,17 @@ function sendEphemeralSignal(entry, key, data) {
   return true;
 }
 
-function writeAgentAttention(entry, docName, x, y) {
+function writeAgentAttention(entry, docName, x, y, agent) {
   try {
-    sendEphemeralSignal(entry, 'signal:agent-attention', { x, y, timestamp: Date.now() });
+    sendEphemeralSignal(entry, 'signal:agent-attention', { x, y, timestamp: Date.now(), agent });
   } catch (e) {
     console.warn('[Attention] Failed to write:', e.message);
   }
 }
 
-function writeAgentHeartbeat(entry, docName, state) {
+function writeAgentHeartbeat(entry, docName, state, agent) {
   try {
-    sendEphemeralSignal(entry, 'signal:agent-heartbeat', { state, timestamp: Date.now() });
+    sendEphemeralSignal(entry, 'signal:agent-heartbeat', { state, timestamp: Date.now(), agent });
   } catch (e) {
     console.warn('[Heartbeat] Failed to write:', e.message);
   }
@@ -779,8 +779,8 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
     linePos = lookupLine(doc, line, file);
     if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
   } else if (pageNum) {
-    // Position at top of the given page when no source line is available
-    linePos = { page: pageNum, x: 0, y: 50, texFile: null, content: '' };
+    // Position near top of the given page when no source line is available
+    linePos = { page: pageNum, x: 0, y: 150, texFile: null, content: '' };
   } else {
     return { ok: false, error: 'Either line or page is required' };
   }
@@ -1655,8 +1655,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const entry = await connectYjs(docName);
 
       // Signal that an agent is listening
-      writeAgentHeartbeat(entry, docName, 'listening');
-      heartbeatInterval = setInterval(() => writeAgentHeartbeat(entry, docName, 'listening'), 15000);
+      writeAgentHeartbeat(entry, docName, 'listening', 'claude');
+      heartbeatInterval = setInterval(() => writeAgentHeartbeat(entry, docName, 'listening', 'claude'), 15000);
 
       // Initialize ping timestamp from Yjs state so stale pings (from previous sessions) are ignored
       const existingPing = entry.yRecords.get('signal:ping');
@@ -1665,7 +1665,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (lastPingTimestamp > 0) {
           lastPingTimestamp = existingPing.timestamp;
           clearInterval(heartbeatInterval);
-          writeAgentHeartbeat(entry, docName, 'thinking');
+          writeAgentHeartbeat(entry, docName, 'thinking', 'claude');
           return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
         }
         lastPingTimestamp = existingPing.timestamp;
@@ -1778,7 +1778,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await Promise.race([waitPromise, timeoutPromise]);
       clearInterval(heartbeatInterval);
       if (result?.type !== 'ws-closed') {
-        writeAgentHeartbeat(entry, docName, 'thinking');
+        writeAgentHeartbeat(entry, docName, 'thinking', 'claude');
       }
 
       // WebSocket died while waiting — reconnect and check for changes we missed
@@ -1854,7 +1854,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const rendered = getRenderedText(docName, arrowBBox);
               if (rendered) text += `\n  rendered: "${rendered}"`;
             }
-            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2);
+            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'claude');
             return { content: [{ type: 'text', text }] };
           }
         }
@@ -1881,7 +1881,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const rendered = getRenderedText(docName, bbox);
             if (rendered) text += `\n  rendered: "${rendered}"`;
           }
-          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
           return { content: [{ type: 'text', text }] };
         }
 
@@ -1919,7 +1919,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const rendered = bbox ? getRenderedText(docName, bbox) : '';
         if (rendered) text += `\n  rendered: "${rendered}"`;
-        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
         return { content: [{ type: 'text', text }] };
       }
 
@@ -1927,7 +1927,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y);
+      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y, 'claude');
       return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
     } catch (e) {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
@@ -1974,12 +1974,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Send listening heartbeat on all active docs
     const heartbeatIntervals = [];
     for (const [docName, entry] of activeDocs) {
-      writeAgentHeartbeat(entry, docName, 'listening');
+      writeAgentHeartbeat(entry, docName, 'listening', 'todd');
       heartbeatIntervals.push(setInterval(() => {
         // Re-check: if a terminal agent appeared, stop heartbeating this doc
         const hb = entry.yRecords.get('signal:agent-heartbeat');
         if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
-        writeAgentHeartbeat(entry, docName, 'listening');
+        writeAgentHeartbeat(entry, docName, 'listening', 'todd');
       }, 15000));
     }
 
@@ -2114,7 +2114,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const entry = result.entry;
 
       if (result.type !== 'ws-closed') {
-        writeAgentHeartbeat(entry, docName, 'thinking');
+        writeAgentHeartbeat(entry, docName, 'thinking', 'todd');
       }
 
       // Format result — same as wait_for_feedback but with doc prefix
@@ -2184,7 +2184,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const rendered = getRenderedText(docName, arrowBBox);
               if (rendered) text += `\n  rendered: "${rendered}"`;
             }
-            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2);
+            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'todd');
             return { content: [{ type: 'text', text }] };
           }
         }
@@ -2210,7 +2210,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const rendered = getRenderedText(docName, bbox);
             if (rendered) text += `\n  rendered: "${rendered}"`;
           }
-          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'todd');
           return { content: [{ type: 'text', text }] };
         }
 
@@ -2246,7 +2246,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const rendered = bbox ? getRenderedText(docName, bbox) : '';
         if (rendered) text += `\n  rendered: "${rendered}"`;
-        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'todd');
         return { content: [{ type: 'text', text }] };
       }
 
@@ -2254,7 +2254,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y);
+      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y, 'todd');
       return { content: [{ type: 'text', text: `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
 
     } catch (e) {

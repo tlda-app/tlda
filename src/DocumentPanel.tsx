@@ -14,11 +14,6 @@ import './DocumentPanel.css'
 // Ping button
 // ======================
 
-// Stop pointer events from reaching tldraw's canvas event handlers
-function stopTldrawEvents(e: { stopPropagation: () => void }) {
-  e.stopPropagation()
-}
-
 export function PingButton() {
   const editor = useEditor()
   const [state, setState] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
@@ -81,10 +76,10 @@ export function PingButton() {
     <button
       className={`ping-button-standalone ping-button-standalone--${state}`}
       onClick={ping}
-      onPointerDown={stopTldrawEvents}
-      onPointerUp={stopTldrawEvents}
-      onTouchStart={stopTldrawEvents}
-      onTouchEnd={stopTldrawEvents}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
       disabled={state === 'sending'}
       title="Ping Claude"
     >
@@ -105,45 +100,53 @@ type Tab = 'history' | 'toc' | 'notes'
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
   const [tab, setTab] = useState<Tab>('toc')
+  const [open, setOpen] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
 
-  // Portal outside TLDraw's DOM tree to avoid event capture interference
-  const portalRef = useRef<HTMLDivElement | null>(null)
-  if (!portalRef.current) {
-    portalRef.current = document.createElement('div')
-    document.body.appendChild(portalRef.current)
-  }
+  // Close on outside touch (touch devices only — desktop uses CSS :hover)
   useEffect(() => {
-    return () => { portalRef.current?.remove(); portalRef.current = null }
-  }, [])
+    if (!open) return
+    function onPointerDown(e: PointerEvent) {
+      if (e.pointerType === 'mouse') return // desktop hover handles this
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [open])
 
-  return createPortal(
-    <>
-      <div
-        className="doc-panel"
-      >
-        <div
-          className="doc-panel-tabs"
-          onPointerDown={stopTldrawEvents}
-          onPointerUp={stopTldrawEvents}
-          onTouchStart={stopTldrawEvents}
-          onTouchEnd={stopTldrawEvents}
-        >
-          <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-            TOC
-          </button>
-          <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-            History
-          </button>
-          <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-            Notes
-          </button>
-        </div>
-        {tab === 'toc' && <TocTab />}
-        {tab === 'history' && <HistoryTab />}
-        {tab === 'notes' && <NotesTab />}
+  return (
+    <div
+      ref={panelRef}
+      className={`doc-panel${open ? ' doc-panel-open' : ''}`}
+      onPointerDown={(e) => {
+        stopEventPropagation(e)
+        // Touch tap on collapsed strip → open
+        if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse' && !open) {
+          setOpen(true)
+        }
+      }}
+      onPointerUp={stopEventPropagation}
+      onPointerMove={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+    >
+      <div className="doc-panel-tabs">
+        <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+          TOC
+        </button>
+        <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+          History
+        </button>
+        <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+          Notes
+        </button>
       </div>
-    </>,
-    portalRef.current,
+      {tab === 'toc' && <TocTab />}
+      {tab === 'history' && <HistoryTab />}
+      {tab === 'notes' && <NotesTab />}
+    </div>
   )
 }
 
@@ -160,6 +163,7 @@ const OFFLINE_MS = 60_000
 
 export function AgentPill({ editor }: { editor: Editor }) {
   const [agentState, setAgentState] = useState<AgentState>('offline')
+  const [agentName, setAgentName] = useState<string>('claude')
   const [pinging, setPinging] = useState(false)
   const lastHeartbeatRef = useRef<number>(0)
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -169,6 +173,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
     function resetTimers(signal: AgentHeartbeatSignal) {
       lastHeartbeatRef.current = signal.timestamp
       setAgentState(signal.state)
+      if (signal.agent) setAgentName(signal.agent)
 
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)
       if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current)
@@ -231,6 +236,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
   return (
     <span
       className={`agent-indicator agent-${agentState}`}
+      data-agent={agentName}
       onClick={handlePing}
       onPointerDown={e => e.stopPropagation()}
       onPointerUp={e => e.stopPropagation()}
@@ -238,8 +244,8 @@ export function AgentPill({ editor }: { editor: Editor }) {
       onTouchEnd={e => e.stopPropagation()}
       title={
         agentState === 'offline' ? 'No agent connected — tap to ping' :
-        agentState === 'listening' ? 'Agent listening — tap to ping' :
-        agentState === 'thinking' ? 'Agent thinking' :
+        agentState === 'listening' ? `${agentName === 'todd' ? 'Todd' : 'Claude'} listening — tap to ping` :
+        agentState === 'thinking' ? `${agentName === 'todd' ? 'Todd' : 'Claude'} thinking` :
         'Agent may be disconnected — tap to ping'
       }
     >

@@ -128,16 +128,17 @@ function findSvgFigures(dir) {
   return results
 }
 
+/** Hash the actual published SVGs on disk — no cached JSON that can drift. */
 function loadPageHashes(outDir) {
+  const hashes = {}
   try {
-    return JSON.parse(readFileSync(join(outDir, 'page-hashes.json'), 'utf8'))
-  } catch {
-    return {}
-  }
-}
-
-function savePageHashes(outDir, hashes) {
-  writeFileSync(join(outDir, 'page-hashes.json'), JSON.stringify(hashes, null, 2))
+    for (const f of readdirSync(outDir)) {
+      if (/^page-\d+\.svg$/.test(f)) {
+        hashes[f] = hashSvgContent(readFileSync(join(outDir, f), 'utf8'))
+      }
+    }
+  } catch { /* outDir doesn't exist yet */ }
+  return hashes
 }
 
 // ─── Build state management ──────────────────────────────────────────────────
@@ -517,7 +518,6 @@ async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
   const changedPageNums = changedPageFiles.map(f => parseInt(f.match(/page-(\d+)\.svg/)[1]))
   const changedSet = new Set(changedPageNums)
 
-  savePageHashes(outDir, newHashes)
   addLog(`${changedPageFiles.length}/${pageCount} pages changed`)
 
   // Publish only changed page SVGs

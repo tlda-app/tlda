@@ -127,11 +127,11 @@ const buildProgressHandle = bus.register<BuildProgressSignal>({
 })
 export const onBuildProgressSignal = buildProgressHandle.on
 
-export type AgentAttentionSignal = { x: number; y: number; timestamp: number }
+export type AgentAttentionSignal = { x: number; y: number; timestamp: number; agent?: string }
 const agentAttentionHandle = bus.register<AgentAttentionSignal>({ key: 'signal:agent-attention' })
 export const onAgentAttention = agentAttentionHandle.on
 
-export type AgentHeartbeatSignal = { state: string; timestamp: number }
+export type AgentHeartbeatSignal = { state: string; timestamp: number; agent?: string }
 const agentHeartbeatHandle = bus.register<AgentHeartbeatSignal>({
   key: 'signal:agent-heartbeat',
   initBehavior: 'fire-if-recent',

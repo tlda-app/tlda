@@ -17,6 +17,11 @@ let tokenRw = null
 let authEnabled = false
 
 export function initAuth() {
+  if (process.env.CTD_NO_AUTH === '1') {
+    authEnabled = false
+    return
+  }
+
   tokenRead = process.env.CTD_TOKEN_READ || null
   tokenRw = process.env.CTD_TOKEN_RW || null
 
