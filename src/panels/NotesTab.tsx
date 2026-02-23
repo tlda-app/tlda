@@ -82,21 +82,31 @@ export function NotesTab() {
     const anchor = meta?.sourceAnchor as { line?: number } | undefined
     const tabCount = getTabCount(shape)
 
+    // Strip math delimiters for cleaner preview
+    const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
+
     const shapeDone = isDone(shape)
     return (
       <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
-        style={shapeDone ? { opacity: 0.4, textDecoration: 'line-through' } : undefined}
+        style={shapeDone ? { opacity: 0.4 } : undefined}
       >
-        <div className="note-preview">
-          <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc' }} />
-          {text.slice(0, 60) || '(empty)'}
-          {tabCount > 1 && (
-            <span className="note-reply-count">{tabCount} tabs</span>
-          )}
+        <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+          <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />
+          <span style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical' as any,
+            overflow: 'hidden',
+            lineHeight: '1.3',
+            textDecoration: shapeDone ? 'line-through' : undefined,
+          }}>
+            {cleanText || '(empty)'}
+          </span>
         </div>
-        {anchor?.line && (
-          <div className="note-meta">Line {anchor.line}</div>
-        )}
+        <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
+          {anchor?.line && <span>L{anchor.line}</span>}
+          {tabCount > 1 && <span>{tabCount} tabs</span>}
+        </div>
       </div>
     )
   }

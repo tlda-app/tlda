@@ -470,7 +470,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         ? (hasMath(replyContext) ? renderMath(replyContext) : replyContext.replace(/\n/g, '<br>'))
         : null
       const contextHeight = replyContext ? Math.min(120, shape.props.h * 0.3) : 0
-      const availH = shape.props.h - 20 - contextHeight // 20 for status bar
+      const availH = shape.props.h - 16 - contextHeight // 16 for status bar
       const editorHeight = showPreview
         ? (splitPx ?? Math.round(availH * 0.6))
         : availH
@@ -559,14 +559,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           <div
             className="math-note-statusbar"
             style={{
-              height: '20px',
-              lineHeight: '20px',
-              fontSize: '10px',
+              height: '16px',
+              lineHeight: '16px',
+              fontSize: '9px',
               fontFamily: '"SF Mono", Menlo, monospace',
               padding: '0 8px',
-              color: 'rgba(0,0,0,0.45)',
-              backgroundColor: 'rgba(0,0,0,0.03)',
-              borderTop: '1px solid rgba(0,0,0,0.06)',
+              color: 'rgba(0,0,0,0.25)',
+              backgroundColor: 'rgba(0,0,0,0.02)',
+              borderTop: '1px solid rgba(0,0,0,0.04)',
               flexShrink: 0,
               userSelect: 'none',
               display: 'flex',
@@ -719,7 +719,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const tabCount = tabs?.length ?? 0
     useEffect(() => {
       if (tabCount < 2) return
-      const TAB_WIDTH = 28 // ~padding + digit
+      const TAB_WIDTH = 70 // ~padding + preview text
       const PADDING = 40 // + button + margin
       const needed = tabCount * TAB_WIDTH + PADDING
       const currentW = shape.props.w as number
@@ -758,39 +758,48 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             scrollbarWidth: 'none',
           }}
         >
-          {tabs.map((_, i) => (
-            <div
-              key={i}
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                if (e.button === 2) return
-                switchTab(editor, shape.id, i)
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                stopEventPropagation(e)
-                if (tabs.length > 1) {
-                  setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
-                }
-              }}
-              style={{
-                padding: '3px 8px',
-                fontSize: '10px',
-                fontFamily: '-apple-system, sans-serif',
-                cursor: 'pointer',
-                userSelect: 'none',
-                pointerEvents: 'all',
-                flexShrink: 0,
-                color: i === activeTabIdx ? activeColor : inactiveColor,
-                fontWeight: i === activeTabIdx ? 600 : 400,
-                borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
-                backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
-                marginBottom: '-1px',
-              }}
-            >
-              {i + 1}
-            </div>
-          ))}
+          {tabs.map((tabText, i) => {
+            // Show content preview: first few words, stripped of $ delimiters
+            const preview = (tabText || '').replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim()
+            const label = preview ? preview.slice(0, 12).trim() + (preview.length > 12 ? '..' : '') : `${i + 1}`
+            return (
+              <div
+                key={i}
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  if (e.button === 2) return
+                  switchTab(editor, shape.id, i)
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  stopEventPropagation(e)
+                  if (tabs.length > 1) {
+                    setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
+                  }
+                }}
+                style={{
+                  padding: '3px 8px',
+                  fontSize: '10px',
+                  fontFamily: '-apple-system, sans-serif',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  pointerEvents: 'all',
+                  flexShrink: 0,
+                  color: i === activeTabIdx ? activeColor : inactiveColor,
+                  fontWeight: i === activeTabIdx ? 600 : 400,
+                  borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
+                  backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
+                  marginBottom: '-1px',
+                  maxWidth: '80px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {label}
+              </div>
+            )
+          })}
           {/* Spacer — no pointerEvents, so drags pass through to TLDraw */}
           <div style={{ flex: 1 }} />
         </div>
@@ -883,11 +892,36 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 className="note-done-toggle"
                 onPointerDown={(e) => {
                   stopEventPropagation(e)
+                  const newDone = !isDone
                   editor.updateShape({
                     id: shape.id,
                     type: shape.type,
-                    props: { done: !isDone },
+                    props: { done: newDone },
                   })
+                  // Teleport to right margin gutter when marking done
+                  if (newDone) {
+                    const pages = editor.getCurrentPageShapes()
+                      .filter(s => s.type === 'svg-page')
+                    let bestPage: typeof pages[0] | null = null
+                    let bestDist = Infinity
+                    for (const p of pages) {
+                      const pb = editor.getShapePageBounds(p.id)
+                      if (!pb) continue
+                      const cy = shape.y + (shape.props as any).h / 2
+                      const dist = cy < pb.minY ? pb.minY - cy : cy > pb.maxY ? cy - pb.maxY : 0
+                      if (dist < bestDist) { bestDist = dist; bestPage = p }
+                    }
+                    if (bestPage) {
+                      const pb = editor.getShapePageBounds(bestPage.id)
+                      if (pb) {
+                        editor.updateShape({
+                          id: shape.id,
+                          type: shape.type,
+                          x: pb.maxX + 20,
+                        } as any)
+                      }
+                    }
+                  }
                 }}
               >
                 {isDone ? '\u2713' : '\u25CB'}

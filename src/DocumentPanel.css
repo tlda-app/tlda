@@ -201,8 +201,8 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   position: fixed;
   top: 0;
   right: 0;
-  width: 200px;
-  max-height: 60vh;
+  width: 250px;
+  max-height: 85vh;
   z-index: 999;
   background: transparent;
   display: flex;
@@ -855,7 +855,7 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 /* iPad / touch-device overrides */
 @media (pointer: coarse) {
   .doc-panel {
-    width: 250px;
+    width: 300px;
     font-size: 14px;
     color: rgba(0, 0, 0, 0.25);
   }

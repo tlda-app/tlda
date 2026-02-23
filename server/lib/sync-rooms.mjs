@@ -9,7 +9,7 @@ import { TLSocketRoom, InMemorySyncStorage } from '@tldraw/sync-core'
 import { createTLSchema, defaultShapeSchemas, defaultBindingSchemas, DefaultColorStyle } from '@tldraw/tlschema'
 import { T } from '@tldraw/validate'
 import { createMigrationSequence } from '@tldraw/store'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 
 // --- Custom shape schemas (prop validators only, no React) ---
@@ -26,6 +26,7 @@ const customShapeSchemas = {
       selectedChoice: T.optional(T.number),
       tabs: T.optional(T.arrayOf(T.string)),
       activeTab: T.optional(T.number),
+      done: T.optional(T.boolean),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
@@ -150,6 +151,108 @@ function notifyChangeListeners(docName) {
   }
 }
 
+// --- Change log: append-only JSONL of shape mutations ---
+
+/** @type {Map<string, Map<string, { state: object, clock: number }>>} */
+const prevSnapshots = new Map()
+
+/**
+ * Get changelog file path for a document.
+ */
+function changelogPath(docName) {
+  const projectName = docName.startsWith('doc-') ? docName.slice(4) : docName
+  return join(projectsDir, projectName, 'changelog.jsonl')
+}
+
+/**
+ * Build a lookup map from a snapshot's documents array.
+ * @param {{ state: object, lastChangedClock: number }[]} docs
+ * @returns {Map<string, { state: object, clock: number }>}
+ */
+function buildDocMap(docs) {
+  const m = new Map()
+  for (const d of docs) {
+    if (d.state?.id) m.set(d.state.id, { state: d.state, clock: d.lastChangedClock })
+  }
+  return m
+}
+
+/**
+ * Diff current snapshot against previous, append changes to JSONL log.
+ */
+function recordChanges(docName, room) {
+  const snapshot = room.getCurrentSnapshot()
+  const current = buildDocMap(snapshot.documents)
+  const prev = prevSnapshots.get(docName)
+
+  // First call for this room: just record baseline, no diff
+  if (!prev) {
+    prevSnapshots.set(docName, current)
+    return
+  }
+
+  const entries = []
+  const ts = Date.now()
+
+  // Created or updated
+  for (const [id, { state, clock }] of current) {
+    const old = prev.get(id)
+    if (!old) {
+      entries.push({ ts, action: 'create', id, type: state.typeName, shapeType: state.type, state })
+    } else if (old.clock !== clock) {
+      // Only log shape records, skip internal tldraw records (camera, page, instance, etc.)
+      const diff = shallowDiff(old.state, state)
+      if (diff) {
+        entries.push({ ts, action: 'update', id, type: state.typeName, shapeType: state.type, diff })
+      }
+    }
+  }
+
+  // Deleted
+  for (const [id, { state }] of prev) {
+    if (!current.has(id)) {
+      entries.push({ ts, action: 'delete', id, type: state.typeName, shapeType: state.type })
+    }
+  }
+
+  prevSnapshots.set(docName, current)
+
+  if (entries.length === 0) return
+
+  // Filter to interesting records (shapes, not camera/pointer/instance state)
+  const interesting = entries.filter(e =>
+    e.type === 'shape' || e.action === 'delete'
+  )
+  if (interesting.length === 0) return
+
+  const path = changelogPath(docName)
+  const lines = interesting.map(e => JSON.stringify(e)).join('\n') + '\n'
+  try {
+    appendFileSync(path, lines)
+  } catch (e) {
+    console.error(`[changelog] Failed to write ${path}:`, e.message)
+  }
+}
+
+/**
+ * Shallow diff two record states. Returns changed fields or null if identical.
+ */
+function shallowDiff(a, b) {
+  const diff = {}
+  let changed = false
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const av = a[key], bv = b[key]
+    if (av === bv) continue
+    // Deep compare for objects (props, meta)
+    if (typeof av === 'object' && typeof bv === 'object' && av !== null && bv !== null) {
+      if (JSON.stringify(av) === JSON.stringify(bv)) continue
+    }
+    diff[key] = { from: av, to: bv }
+    changed = true
+  }
+  return changed ? diff : null
+}
+
 /**
  * Get or create a TLSocketRoom for a document.
  * @param {string} docName
@@ -163,11 +266,14 @@ export function getOrCreateRoom(docName) {
     schema,
     onDataChange: () => {
       scheduleSave(docName, room)
+      recordChanges(docName, room)
       notifyChangeListeners(docName)
     },
   }
   if (snapshot) {
     opts.initialSnapshot = snapshot
+    // Seed changelog baseline from loaded snapshot
+    prevSnapshots.set(docName, buildDocMap(snapshot.documents))
   }
 
   const room = new TLSocketRoom(opts)
