@@ -6,6 +6,10 @@ import { getTabCount, switchTab } from '../noteThreading'
 
 type SortMode = 'document' | 'recency'
 
+function isDone(shape: TLShape): boolean {
+  return (shape.props as Record<string, unknown>).done === true
+}
+
 function isPendingMC(shape: TLShape): boolean {
   const props = shape.props as Record<string, unknown>
   const choices = props.choices as string[] | undefined
@@ -18,6 +22,7 @@ export function NotesTab() {
   const editor = useEditor()
   const [notes, setNotes] = useState<TLShape[]>([])
   const [sort, setSort] = useState<SortMode>('document')
+  const [hideDone, setHideDone] = useState(false)
 
   useEffect(() => {
     function updateNotes() {
@@ -44,6 +49,7 @@ export function NotesTab() {
     const rest: TLShape[] = []
 
     for (const shape of notes) {
+      if (hideDone && isDone(shape)) continue
       if (isPendingMC(shape)) {
         pending.push(shape)
       } else {
@@ -55,7 +61,7 @@ export function NotesTab() {
     rest.sort(sortFn)
 
     return { pendingItems: pending, restItems: rest }
-  }, [notes, sort])
+  }, [notes, sort, hideDone])
 
   const handleClick = useCallback((shape: TLShape) => {
     navigateTo(editor, shape.x, shape.y)
@@ -76,8 +82,11 @@ export function NotesTab() {
     const anchor = meta?.sourceAnchor as { line?: number } | undefined
     const tabCount = getTabCount(shape)
 
+    const shapeDone = isDone(shape)
     return (
-      <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}>
+      <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
+        style={shapeDone ? { opacity: 0.4, textDecoration: 'line-through' } : undefined}
+      >
         <div className="note-preview">
           <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc' }} />
           {text.slice(0, 60) || '(empty)'}
@@ -102,6 +111,14 @@ export function NotesTab() {
           title={sort === 'document' ? 'Sorted by position' : 'Sorted by newest'}
         >
           {sort === 'document' ? '\u2193 Position' : '\u21BB Recent'}
+        </button>
+        <button
+          className="notes-sort-toggle"
+          onClick={() => setHideDone(h => !h)}
+          title={hideDone ? 'Showing active only' : 'Showing all'}
+          style={{ opacity: hideDone ? 1 : 0.5 }}
+        >
+          {hideDone ? '\u2713 Hide done' : '\u2713 All'}
         </button>
       </div>
 

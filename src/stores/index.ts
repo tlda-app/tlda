@@ -10,11 +10,13 @@ export {
   setChangeHighlights, dismissPageChanges, dismissAllChanges,
   type ChangeRegion,
 } from './changeStore'
+export { subscribeSearchFilter, getSearchFilter, setSearchFilter, clearSearchFilter } from './searchFilterStore'
 
 import { clearSvgTextStore } from './svgTextStore'
 import { svgViewBoxStore } from './svgViewBoxStore'
 import { anchorIndex } from './anchorIndex'
 import { changeStore, changedPages } from './changeStore'
+import { clearSearchFilter } from './searchFilterStore'
 
 /** Clear all module-level stores — call on document switch to prevent stale data. */
 export function clearDocumentStores() {
@@ -23,4 +25,5 @@ export function clearDocumentStores() {
   anchorIndex.clear()
   changeStore.clear()
   changedPages.clear()
+  clearSearchFilter()
 }

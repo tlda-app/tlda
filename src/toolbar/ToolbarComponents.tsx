@@ -96,6 +96,14 @@ export function ToolToggleZones() {
   return (
     <div className="tool-toggle-zones">
       <div
+        className={`tool-toggle-zone tool-toggle-zone--select ${currentTool === 'select' ? 'active' : ''}`}
+        onPointerDown={handleDoubleTap('select')}
+        onPointerEnter={handlePenEnter}
+        onPointerLeave={handlePenLeave}
+      >
+        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--select" />
+      </div>
+      <div
         className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
         style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
         onPointerDown={handleDoubleTap('highlight')}

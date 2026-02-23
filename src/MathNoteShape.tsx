@@ -9,7 +9,7 @@ import {
 } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
 // Type imports not needed with 'any' approach
-import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
+import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
 import {
   switchTab,
   addTab,
@@ -18,6 +18,7 @@ import {
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getActiveMacros } from './katexMacros'
+import { subscribeSearchFilter, getSearchFilter } from './stores'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -79,6 +80,10 @@ export const NOTE_COLORS: Record<string, string> = {
 let pendingEntryMode: 'i' | ':' | null = null
 export function setMathNoteEntryMode(mode: 'i' | ':' | null) { pendingEntryMode = mode }
 
+// Reply context: set before entering edit mode to show the tab being replied to
+let pendingReplyContext: string | null = null
+export function setReplyContext(text: string | null) { pendingReplyContext = text }
+
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
   '&': {
@@ -129,6 +134,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     selectedChoice: T.optional(T.number),
     tabs: T.optional(T.arrayOf(T.string)),
     activeTab: T.optional(T.number),
+    done: T.optional(T.boolean),
   }
 
   getDefaultProps() {
@@ -173,6 +179,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const previewRef = useRef<HTMLDivElement>(null)
     const contentRef = useRef<HTMLDivElement>(null)
     const [cursorFraction, setCursorFraction] = useState(0)
+    const [replyContext, setReplyContextState] = useState<string | null>(null)
 
     // Refs for sync coordination
     const suppressUpdateRef = useRef(false)
@@ -181,6 +188,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
+    const isDone = shape.props.done === true
+    const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
+    const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
 
     // Memoize KaTeX rendering — only re-parse when text actually changes
     const renderedHtml = useMemo(
@@ -248,6 +258,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
       if (isEditing) {
         setSplitPx(null) // reset split on edit start
+        // Pick up reply context if set
+        if (pendingReplyContext) {
+          setReplyContextState(pendingReplyContext)
+          pendingReplyContext = null
+        }
+      } else {
+        setReplyContextState(null)
       }
     }, [isEditing])
 
@@ -360,6 +377,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         Vim.defineEx('write', 'w', () => {
           exitEditing()
         })
+
+        // :q to mark note as done and exit
+        Vim.defineEx('quit', 'q', () => {
+          editor.updateShape({
+            id: shape.id,
+            type: shape.type,
+            props: { done: true },
+          })
+          exitEditing()
+        })
       }
 
       // Capture Tab before TLDraw's global handler steals it
@@ -439,11 +466,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     let content: React.ReactNode
     if (isEditing) {
       const showPreview = hasMath(localText) && previewHtml
+      const replyContextHtml = replyContext
+        ? (hasMath(replyContext) ? renderMath(replyContext) : replyContext.replace(/\n/g, '<br>'))
+        : null
+      const contextHeight = replyContext ? Math.min(120, shape.props.h * 0.3) : 0
+      const availH = shape.props.h - 20 - contextHeight // 20 for status bar
       const editorHeight = showPreview
-        ? (splitPx ?? Math.round(shape.props.h * 0.6))
-        : shape.props.h - 20 // leave room for status bar
+        ? (splitPx ?? Math.round(availH * 0.6))
+        : availH
       const previewHeight = showPreview
-        ? shape.props.h - editorHeight - 20 - 6 // 20 for status, 6 for divider
+        ? availH - editorHeight - 6 // 6 for divider
         : 0
 
       content = (
@@ -457,6 +489,23 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           onKeyDown={handleKeyDown}
           onPointerDown={stopIfNotPenTouch(editor)}
         >
+          {/* Reply context — read-only view of the tab being replied to */}
+          {replyContextHtml && (
+            <div
+              style={{
+                height: contextHeight,
+                overflow: 'auto',
+                padding: '6px 8px',
+                fontSize: '12px',
+                lineHeight: 1.35,
+                color: 'rgba(0,0,0,0.55)',
+                backgroundColor: 'rgba(0,0,0,0.03)',
+                borderBottom: '1px solid rgba(0,0,0,0.08)',
+                flexShrink: 0,
+              }}
+              dangerouslySetInnerHTML={{ __html: replyContextHtml }}
+            />
+          )}
           {/* CodeMirror editor */}
           <div
             ref={cmContainerRef}
@@ -564,7 +613,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const autoH = shape.props.autoSize
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
-      const hasChoices = choices && choices.length > 0
+      const shapeTabs = shape.props.tabs as string[] | undefined
+      const hasChoices = choices && choices.length > 0 && (!shapeTabs || shapeTabs.length <= 1 || ((shape.props.activeTab as number) || 0) === 0)
 
       let textContent
       if (renderedHtml) {
@@ -600,6 +650,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       content = (
         <div
           ref={contentRef}
+          onPointerUp={(e) => {
+            // Trackpad click in pen mode: enter editing if shape is already selected
+            if (!editor.getInstanceState().isPenMode) return
+            if (e.pointerType !== 'mouse') return
+            if (!editor.getSelectedShapeIds().includes(shape.id)) return
+            editor.setEditingShape(shape.id)
+          }}
           style={{
             overflow: autoH ? 'hidden' : 'auto',
             height: autoH ? 'auto' : '100%',
@@ -658,6 +715,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const activeTabIdx = (shape.props.activeTab as number) || 0
     const showTabBar = tabs && tabs.length > 1 && !isEditing
 
+    // Auto-widen shape when tabs overflow (up to 400px)
+    const tabCount = tabs?.length ?? 0
+    useEffect(() => {
+      if (tabCount < 2) return
+      const TAB_WIDTH = 28 // ~padding + digit
+      const PADDING = 40 // + button + margin
+      const needed = tabCount * TAB_WIDTH + PADDING
+      const currentW = shape.props.w as number
+      if (needed > currentW && currentW < 400) {
+        const newW = Math.min(400, needed)
+        editor.updateShape({ id: shape.id, type: shape.type, props: { w: newW } })
+      }
+    }, [tabCount]) // eslint-disable-line react-hooks/exhaustive-deps
+
     // Context menu state for tab detach
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null)
 
@@ -670,18 +741,21 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     let tabBar: React.ReactNode = null
     if (showTabBar) {
-      const inactiveColor = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)'
-      const activeColor = isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)'
-      const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
-      const plusColor = isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'
+      const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
+      const activeColor = isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)'
+      const activeBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'
+      const borderColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'
 
       tabBar = (
         <div
+          className="math-note-tabbar"
           style={{
             display: 'flex',
             alignItems: 'stretch',
             borderBottom: `1px solid ${borderColor}`,
             flexShrink: 0,
+            overflowX: 'auto',
+            scrollbarWidth: 'none',
           }}
         >
           {tabs.map((_, i) => (
@@ -700,43 +774,23 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 }
               }}
               style={{
-                padding: '2px 7px',
-                fontSize: '8px',
+                padding: '3px 8px',
+                fontSize: '10px',
                 fontFamily: '-apple-system, sans-serif',
                 cursor: 'pointer',
                 userSelect: 'none',
                 pointerEvents: 'all',
+                flexShrink: 0,
                 color: i === activeTabIdx ? activeColor : inactiveColor,
                 fontWeight: i === activeTabIdx ? 600 : 400,
-                borderBottom: i === activeTabIdx ? `1.5px solid ${activeColor}` : '1.5px solid transparent',
+                borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
+                backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
                 marginBottom: '-1px',
               }}
             >
               {i + 1}
             </div>
           ))}
-          {/* + button */}
-          <div
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              addTab(editor, shape.id, '')
-              requestAnimationFrame(() => {
-                editor.setEditingShape(shape.id)
-              })
-            }}
-            style={{
-              padding: '2px 5px',
-              fontSize: '9px',
-              fontFamily: '-apple-system, sans-serif',
-              cursor: 'pointer',
-              userSelect: 'none',
-              pointerEvents: 'all',
-              color: plusColor,
-              marginBottom: '-1px',
-            }}
-          >
-            +
-          </div>
           {/* Spacer — no pointerEvents, so drags pass through to TLDraw */}
           <div style={{ flex: 1 }} />
         </div>
@@ -798,13 +852,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           pointerEvents: 'all',
           display: 'flex',
           flexDirection: 'column',
+          opacity: isFilteredOut ? 0.15 : undefined,
+          transition: 'opacity 0.2s',
         }}
       >
           {tabBar}
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+          <div style={{
+            flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
+            ...(isDone && !isEditing ? { maxHeight: '28px', opacity: 0.35 } : {}),
+          }}>
             {content}
-            {/* Standalone + button for non-tabbed notes */}
-            {!showTabBar && !isEditing && (
+            {/* + button — always top-right, browser-style */}
+            {!isEditing && (
               <div
                 className="note-add-reply"
                 onPointerDown={(e) => {
@@ -816,6 +875,22 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 }}
               >
                 +
+              </div>
+            )}
+            {/* Done toggle — top-left, visible on hover */}
+            {!isEditing && (
+              <div
+                className="note-done-toggle"
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  editor.updateShape({
+                    id: shape.id,
+                    type: shape.type,
+                    props: { done: !isDone },
+                  })
+                }}
+              >
+                {isDone ? '\u2713' : '\u25CB'}
               </div>
             )}
           </div>

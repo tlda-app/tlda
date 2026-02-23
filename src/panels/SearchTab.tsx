@@ -5,6 +5,7 @@ import { loadLookup, loadHtmlSearch, type LookupEntry, type HtmlSearchEntry } fr
 import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext } from '../PanelContext'
 import { navigateTo, navigateToPage, stripTex, getShapeText } from './helpers'
+import { setSearchFilter } from '../stores'
 
 export function SearchTab() {
   const editor = useEditor()
@@ -87,6 +88,16 @@ export function SearchTab() {
     }
     return results
   }, [debouncedQuery, editor])
+
+  // Push matching note IDs to canvas visibility filter
+  useEffect(() => {
+    if (!debouncedQuery || noteResults.length === 0) {
+      setSearchFilter(null)
+      return
+    }
+    setSearchFilter(new Set(noteResults.map(r => r.shape.id)))
+    return () => setSearchFilter(null)
+  }, [debouncedQuery, noteResults])
 
   const handleDocClick = useCallback((entry: LookupEntry) => {
     if (!ctx) return

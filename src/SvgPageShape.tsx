@@ -77,6 +77,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     })
   }, [shape.id])
 
+
   // Inject or clear SVG based on viewport proximity
   useEffect(() => {
     const el = containerRef.current
@@ -216,9 +217,10 @@ function SvgPageComponent({ shape }: { shape: any }) {
 const DEFAULT_CHANGE_TINT = '#3b82f6'  // blue — reload-sourced change regions without explicit tint
 
 function applyTinting(cache: { el: SVGTextElement; y: number }[], highlights: ChangeRegion[]) {
-  // Reset all
+  // Reset all (skip elements being flash-tinted by highlighterSnap)
   for (let i = 0; i < cache.length; i++) {
     const t = cache[i].el
+    if (t.hasAttribute('data-hl-tint')) continue
     t.removeAttribute('data-tinted')
     t.style.removeProperty('fill')
   }
@@ -226,6 +228,7 @@ function applyTinting(cache: { el: SVGTextElement; y: number }[], highlights: Ch
   if (highlights.length === 0) return
 
   for (let i = 0; i < cache.length; i++) {
+    if (cache[i].el.hasAttribute('data-hl-tint')) continue
     const ty = cache[i].y
     for (const r of highlights) {
       if (ty >= r.y && ty <= r.y + r.height) {

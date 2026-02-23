@@ -340,6 +340,11 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
     mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-highlight");
   }
 
+  .tool-toggle-zone-icon--select {
+    -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-pointer");
+    mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-pointer");
+  }
+
   .tool-toggle-zone-icon--eraser {
     -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-eraser");
     mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-eraser");
@@ -781,6 +786,40 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   font-size: 7px;
   color: #f59e0b;
   margin-left: 4px;
+}
+
+/* Tab bar scrollbar hidden */
+.math-note-tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.note-done-toggle {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-family: -apple-system, sans-serif;
+  color: rgba(0,0,0,0.2);
+  cursor: pointer;
+  border-radius: 4px;
+  user-select: none;
+  pointer-events: all;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+/* Show on hover over parent (the note content area) */
+*:hover > .note-done-toggle,
+.note-done-toggle:hover {
+  opacity: 1;
+}
+.note-done-toggle:hover {
+  color: rgba(0,0,0,0.5);
+  background: rgba(0,0,0,0.06);
 }
 
 .note-add-reply {

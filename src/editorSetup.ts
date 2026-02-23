@@ -11,6 +11,7 @@ import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { anchorShape } from './anchorCluster'
 import { mergeTabs } from './noteThreading'
+import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
@@ -625,6 +626,32 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       makeSureShapesAreAtBottom()
       // Anchor user-created shapes to source lines (fire-and-forget)
       anchorShape(editor, shape)
+      // Magic highlighter: snap highlight strokes to text
+      // Shape is created on pointer-down with no segments. Wait for the stroke
+      // to complete (user lifts pen), then snap. We detect completion by watching
+      // for the editing shape to clear (user finishes the stroke).
+      if (shape.type === 'highlight') {
+        let attempts = 0
+        const checkSnap = () => {
+          attempts++
+          if (attempts > 30) return // give up after 6s
+          const s = editor.getShape(shape.id as any)
+          if (!s) return
+          // Check if user is still drawing (highlight tool is active and pointing)
+          const currentTool = editor.getCurrentToolId()
+          if (currentTool === 'highlight' && editor.inputs.isPointing) {
+            setTimeout(checkSnap, 200)
+            return
+          }
+          const bounds = editor.getShapePageBounds(shape.id as any)
+          if (!bounds || bounds.width < 5) {
+            setTimeout(checkSnap, 200)
+            return
+          }
+          snapHighlighterToText(editor, shape.id)
+        }
+        setTimeout(checkSnap, 300)
+      }
     }
   })
 
@@ -687,7 +714,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
 
   applyCameraBounds()
 
-  return {
+  const result = {
     shapeIdSet,
     shapeIds,
     updateBounds: (newBounds: any) => {
@@ -714,4 +741,31 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     },
     ensurePagesAtBottom: makeSureShapesAreAtBottom,
   }
+
+  // Restore magic highlights from persisted metadata shapes
+  setTimeout(() => restoreHighlightsFromShapes(editor), 1000)
+
+  // Hover glow: tint text when hovering a highlight shape in select mode.
+  // Uses store.listen on pointer scope to detect hoveredShapeId changes.
+  {
+    let glowCleanup: (() => void) | null = null
+    let glowShapeId: string | null = null
+    editor.store.listen(() => {
+      try {
+        const hoveredId = editor.getHoveredShapeId()
+        const id = hoveredId ?? null
+        if (id === glowShapeId) return
+        if (glowCleanup) { glowCleanup(); glowCleanup = null }
+        glowShapeId = id
+        if (id) {
+          const shape = editor.getShape(id)
+          if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
+            glowCleanup = showGlow(editor, id)
+          }
+        }
+      } catch { /* editor not ready */ }
+    }, { source: 'all', scope: 'session' })
+  }
+
+  return result
 }
