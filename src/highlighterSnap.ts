@@ -255,6 +255,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
       type: shape.type,
       meta: {
         highlightText: matchedText,
+        highlightLines: lines,
         sourceLine,
         pageShapeId: pageShape.id,
         glowRects,

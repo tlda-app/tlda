@@ -1699,6 +1699,25 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
   // Draw / highlight
   const bbox = getDrawShapeBBox(r);
   const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
+
+  // Magic highlighter: has extracted text metadata from SVG
+  if (r.type === 'highlight' && r.meta?.highlightText) {
+    const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+    const lines = r.meta.highlightLines || [r.meta.highlightText];
+    let text = `${prefix}Highlight (${color})`;
+    if (pdfPos) text += ` page ${pdfPos.page}`;
+    if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
+    if (lines.length === 1) {
+      text += `\n  text: "${lines[0]}"`;
+    } else {
+      text += `\n  text (${lines.length} lines):`;
+      for (const line of lines) text += `\n    "${line}"`;
+    }
+    text += `\n  NOTE: edge lines and first/last words may bleed from adjacent text`;
+    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    return { content: [{ type: 'text', text }] };
+  }
+
   const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
   const gesture = bbox ? classifyGesture(bbox) : 'unknown';
   const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];

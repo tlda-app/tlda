@@ -18,6 +18,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     pageIndex: T.number,
+    version: T.optional(T.number),
   }
 
   getDefaultProps() {
