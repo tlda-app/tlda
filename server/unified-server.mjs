@@ -15,7 +15,7 @@
  * Environment:
  *   PORT       — listen port (default: 5176)
  *   HOST       — bind address (default: 0.0.0.0)
- *   DATA_DIR   — Yjs persistence directory (default: server/data/)
+ *   DATA_DIR   — (legacy, unused)
  *   PROJECTS_DIR — project storage (default: server/projects/)
  */
 
@@ -27,23 +27,22 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
 import { homedir } from 'os'
-import { initPersistence, setupWSConnection, startPingInterval, flushAll } from './lib/yjs-sync.mjs'
 import { initProjectStore } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, requireRead } from './lib/auth.mjs'
+import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const PORT = process.env.PORT || 5176
 const HOST = process.env.HOST || '0.0.0.0'
-const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data')
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 const PUBLIC_DIR = process.env.PUBLIC_DIR || join(__dirname, 'public')
 
-// Initialize persistence
-initPersistence(DATA_DIR)
+// Initialize stores
 initProjectStore(PROJECTS_DIR)
+initSyncRooms(PROJECTS_DIR)
 resetStaleBuildStates()
 
 // Auth
@@ -145,7 +144,7 @@ app.get('/{*path}', (req, res) => {
 
 const server = createServer(app)
 
-const wss = new WebSocketServer({ noServer: true })
+const syncWss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
@@ -161,26 +160,22 @@ server.on('upgrade', (req, socket, head) => {
     }
   }
 
-  let room = null
-
-  if (url.pathname.startsWith('/yjs/')) {
-    room = url.pathname.slice(5)
-  } else if (!url.pathname.startsWith('/api/')) {
-    // Backward compat: /{room}
-    room = url.pathname.slice(1)
-  }
-
-  if (!room) {
-    socket.destroy()
+  // @tldraw/sync protocol for shape CRDT sync + signal custom messages
+  if (url.pathname.startsWith('/sync/')) {
+    const docName = url.pathname.slice(6)
+    if (!docName) { socket.destroy(); return }
+    const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const room = getOrCreateRoom(docName)
+    syncWss.handleUpgrade(req, socket, head, (ws) => {
+      room.handleSocketConnect({ sessionId, socket: ws })
+      // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
+      setTimeout(() => replayCachedSignals(docName, sessionId), 500)
+    })
     return
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    setupWSConnection(ws, room)
-  })
+  socket.destroy()
 })
-
-const stopPing = startPingInterval(wss)
 
 // ---------- Manifest generation ----------
 
@@ -285,12 +280,8 @@ function shutdown() {
   // 2. Kill all active build child processes (latexmk, dvisvgm, etc.)
   killAllBuilds()
 
-  // 2. Flush any pending Yjs saves to disk
-  flushAll()
-
-  // 3. Stop accepting new connections
-  stopPing()
-  wss.close()
+  // 3. Flush and close @tldraw/sync rooms
+  closeAllRooms()
 
   // 4. Close HTTP server, wait for in-flight requests (up to 5s)
   server.close(() => {
@@ -328,7 +319,6 @@ process.on('unhandledRejection', (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Unified server running on http://${HOST}:${PORT}`)
-  console.log(`  Yjs persistence: ${DATA_DIR}`)
   console.log(`  Projects: ${PROJECTS_DIR}`)
   if (existsSync(PUBLIC_DIR)) {
     console.log(`  Viewer SPA: ${PUBLIC_DIR}`)

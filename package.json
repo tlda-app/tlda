@@ -18,8 +18,9 @@
     "start": "npm run sync & npm run dev",
     "smoke": "node scripts/smoke-test.mjs",
     "test": "node --test test/cli.test.mjs test/server.test.mjs",
-    "test:all": "node --test test/cli.test.mjs test/server.test.mjs test/pipeline.test.mjs",
-    "test:e2e": "node --test test/pipeline.test.mjs"
+    "test:all": "node --test test/cli.test.mjs test/server.test.mjs test/pipeline.test.mjs test/annotations.test.mjs",
+    "test:e2e": "node --test test/pipeline.test.mjs test/annotations.test.mjs",
+    "test:annotations": "node --test test/annotations.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.50",
@@ -35,17 +36,13 @@
     "codemirror-lang-latex": "^0.2.0",
     "jsdom": "^27.0.1",
     "katex": "^0.16.28",
-    "lib0": "^0.2.117",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",
     "qrcode-terminal": "^0.12.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tldraw": "^4.3.1",
-    "y-indexeddb": "^9.0.12",
-    "y-websocket": "^3.0.0",
-    "yaml": "^2.8.2",
-    "yjs": "^13.6.29"
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -58,11 +55,9 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "gh-pages": "^6.3.0",
     "globals": "^16.5.0",
-    "partykit": "^0.0.115",
     "puppeteer": "^24.36.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4",
-    "y-partykit": "^0.0.33"
+    "vite": "^7.2.4"
   }
 }

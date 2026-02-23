@@ -1,6 +1,6 @@
 import { createShapeId, toRichText } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
-import { getYRecords } from './useYjsSync'
+import { isSignalConnected, readSignal, onDiffReview } from './useYjsSync'
 import type { SvgDocument, DiffData, DiffHighlight } from './svgDocumentLoader'
 
 /**
@@ -213,8 +213,7 @@ export function setupDiffReviewEffectFromData(
   docName: string,
   dd: Pick<DiffData, 'highlights'>,
 ): () => void {
-  const yRecords = getYRecords()
-  if (!yRecords) return () => {}
+  if (!isSignalConnected()) return () => {}
 
   const pageHighlights = new Map<number, { current: TLShapeId[], old: TLShapeId[] }>()
   for (let i = 0; i < dd.highlights.length; i++) {
@@ -232,10 +231,7 @@ export function setupDiffReviewEffectFromData(
 
   let lastReviews: Record<number, string> = {}
 
-  function applyReviewState() {
-    const signal = yRecords!.get('signal:diff-review' as any) as any
-    const reviews: Record<number, string> = signal?.reviews || {}
-
+  function applyReviewState(reviews: Record<number, string>) {
     const updates: Array<{ id: TLShapeId; type: 'geo'; opacity: number }> = []
 
     for (const [page, { current, old }] of pageHighlights) {
@@ -265,19 +261,16 @@ export function setupDiffReviewEffectFromData(
     lastReviews = reviews
   }
 
-  applyReviewState()
-  // Only react to changes that touch the diff-review key, not every Yjs mutation
-  // (signals like ping, screenshot, reload would otherwise trigger unnecessary shape updates)
-  const filteredObserver = (event: any) => {
-    if (event.keysChanged?.has('signal:diff-review')) {
-      applyReviewState()
-    }
-  }
-  yRecords.observe(filteredObserver)
+  // Apply current state from cache
+  const cached = readSignal<{ reviews: Record<number, string> }>('signal:diff-review')
+  applyReviewState(cached?.reviews || {})
 
-  return () => {
-    yRecords.unobserve(filteredObserver)
-  }
+  // Subscribe to future changes via signal bus
+  const unsub = onDiffReview((signal) => {
+    applyReviewState(signal.reviews || {})
+  })
+
+  return unsub
 }
 
 /**

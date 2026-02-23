@@ -18,8 +18,7 @@ import fs from 'fs';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { WebSocketServer, WebSocket as WsClient } from 'ws';
-import * as Y from 'yjs';
+import { WebSocketServer } from 'ws';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
@@ -27,6 +26,170 @@ import { resolveToken } from './resolve-token.mjs';
 
 const CTD_TOKEN = resolveToken();
 const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
+const CTD_SERVER = process.env.CTD_SERVER || 'http://localhost:5176';
+
+// ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
+
+async function serverFetch(urlPath, options = {}) {
+  const url = `${CTD_SERVER}${urlPath}`;
+  const headers = { ...CTD_AUTH_HEADERS, ...(options.headers || {}) };
+  const res = await fetch(url, { ...options, headers });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`${options.method || 'GET'} ${urlPath} → ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+async function fetchShapes(docName, typeFilter) {
+  const qs = typeFilter ? `?type=${typeFilter}` : '';
+  return serverFetch(`/api/projects/${docName}/shapes${qs}`);
+}
+
+async function fetchShape(docName, shapeId) {
+  const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
+  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`);
+}
+
+async function createShapeRest(docName, shape) {
+  return serverFetch(`/api/projects/${docName}/shapes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(shape),
+  });
+}
+
+async function updateShapeRest(docName, shapeId, updates) {
+  const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
+  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}
+
+async function deleteShapeRest(docName, shapeId) {
+  const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
+  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+async function broadcastSignalRest(docName, key, data) {
+  return serverFetch(`/api/projects/${docName}/signal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, ...data }),
+  });
+}
+
+async function readSignalRest(docName, key) {
+  try {
+    return await serverFetch(`/api/projects/${docName}/signal/${encodeURIComponent(key)}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Connect to signal SSE stream. Returns { close() }.
+ * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
+ */
+function connectSignalStream(docName, onSignal) {
+  const url = `${CTD_SERVER}/api/projects/${docName}/signal/stream`;
+  const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
+
+  const urlObj = new URL(url);
+  const req = http.request({
+    hostname: urlObj.hostname,
+    port: urlObj.port,
+    path: urlObj.pathname,
+    method: 'GET',
+    headers,
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      console.error(`[SSE] Signal stream ${docName}: HTTP ${res.statusCode}`);
+      return;
+    }
+    let buffer = '';
+    res.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop();
+      for (const block of lines) {
+        const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+        if (!dataLine) continue;
+        try {
+          const event = JSON.parse(dataLine.slice(6));
+          if (event.type !== 'connected') {
+            onSignal(event);
+          }
+        } catch {}
+      }
+    });
+  });
+  req.on('error', (e) => {
+    console.error(`[SSE] Signal stream ${docName} error: ${e.message}`);
+  });
+  req.end();
+
+  return {
+    close() {
+      try { req.destroy(); } catch {}
+    },
+  };
+}
+
+/**
+ * Connect to shape change SSE stream. Returns { eventSource, close() }.
+ * Calls onChange() whenever shapes change in the sync room.
+ */
+function connectShapeStream(docName, onChange) {
+  const url = `${CTD_SERVER}/api/projects/${docName}/shapes/stream`;
+  const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
+
+  // Node doesn't have native EventSource, so use raw HTTP
+  const urlObj = new URL(url);
+  const req = http.request({
+    hostname: urlObj.hostname,
+    port: urlObj.port,
+    path: urlObj.pathname,
+    method: 'GET',
+    headers,
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      console.error(`[SSE] Shape stream ${docName}: HTTP ${res.statusCode}`);
+      return;
+    }
+    let buffer = '';
+    res.on('data', (chunk) => {
+      buffer += chunk.toString();
+      // Parse SSE: lines starting with "data: " followed by \n\n
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop(); // keep incomplete last chunk
+      for (const block of lines) {
+        const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+        if (!dataLine) continue;
+        try {
+          const event = JSON.parse(dataLine.slice(6));
+          if (event.type !== 'connected') {
+            onChange(event);
+          }
+        } catch {}
+      }
+    });
+  });
+  req.on('error', (e) => {
+    console.error(`[SSE] Shape stream ${docName} error: ${e.message}`);
+  });
+  req.end();
+
+  return {
+    close() {
+      try { req.destroy(); } catch {}
+    },
+  };
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -538,163 +701,16 @@ function getTextBBox(shape) {
   };
 }
 
-// ---- Yjs connection management ----
+// ---- Signal writers ----
 
-const SYNC_SERVER = process.env.SYNC_SERVER || 'ws://localhost:5176';
-console.error(`[Yjs] SYNC_SERVER = ${SYNC_SERVER}`);
-const yjsDocs = new Map(); // docName → { doc, yRecords, ws, ready }
-
-function connectYjs(docName) {
-  if (yjsDocs.has(docName)) {
-    const entry = yjsDocs.get(docName);
-    // Check if the cached WebSocket is still alive
-    if (entry.ready && entry.ws?.readyState === WsClient.OPEN) {
-      return Promise.resolve(entry);
-    }
-    if (entry.ws?.readyState === WsClient.CONNECTING) {
-      return entry.promise;
-    }
-    // Dead connection — drop cache and reconnect
-    console.error(`[Yjs] Stale connection to ${docName} (readyState=${entry.ws?.readyState}), reconnecting`);
-    try { entry.ws?.close(); } catch {}
-    yjsDocs.delete(docName);
-  }
-
-  const doc = new Y.Doc();
-  const yRecords = doc.getMap('tldraw');
-  const roomId = `doc-${docName}`;
-  const baseUrl = `${SYNC_SERVER}/${roomId}`;
-  const url = CTD_TOKEN ? `${baseUrl}?token=${CTD_TOKEN}` : baseUrl;
-
-  console.error(`[Yjs] Connecting to ${baseUrl}`);
-  const entry = { doc, yRecords, ws: null, ready: false };
-
-  entry.promise = new Promise((resolve, reject) => {
-    const ws = new WsClient(url);
-    entry.ws = ws;
-    const connectStart = Date.now();
-
-    const timeout = setTimeout(() => {
-      reject(new Error(`Yjs connection timeout connecting to ${url}`));
-      ws.close();
-    }, 10000);
-
-    ws.on('open', () => {
-      console.error(`[Yjs] Connected to ${roomId}`);
-    });
-
-    ws.on('message', (data) => {
-      try {
-        // Binary protocol: [type byte][Yjs payload]
-        let type, payload;
-        if (Buffer.isBuffer(data) && data.length > 0 && (data[0] === 0x01 || data[0] === 0x02)) {
-          type = data[0] === 0x01 ? 'sync' : 'update';
-          payload = data.subarray(1);
-        } else {
-          // JSON fallback
-          const msg = JSON.parse(data.toString());
-          type = msg.type;
-          payload = new Uint8Array(msg.data);
-        }
-
-        if (type === 'sync') {
-          Y.applyUpdate(doc, payload);
-          entry.ready = true;
-          clearTimeout(timeout);
-          console.error(`[Yjs] Synced ${yRecords.size} records for ${docName}`);
-          resolve(entry);
-        } else if (type === 'update') {
-          Y.applyUpdate(doc, payload);
-        }
-      } catch (e) {
-        console.error('[Yjs] Message error:', e.message);
-      }
-    });
-
-    ws.on('error', (err) => {
-      clearTimeout(timeout);
-      console.error(`[Yjs] WebSocket error:`, err);
-      reject(new Error(`Yjs connection error: ${err.message || err.code || JSON.stringify(err)}`));
-    });
-
-    ws.on('close', (code, reason) => {
-      console.error(`[Yjs] Disconnected from ${roomId} (code=${code}, reason=${reason})`);
-      yjsDocs.delete(docName);
-      if (!entry.ready) {
-        clearTimeout(timeout);
-        const elapsed = Date.now() - connectStart;
-        if (elapsed < 2000) {
-          reject(new Error(`Connection to ${roomId} rejected immediately — check auth token (CTD_TOKEN)`));
-        } else {
-          reject(new Error(`Yjs connection to ${roomId} closed before sync (code=${code})`));
-        }
-      }
-    });
-  });
-
-  yjsDocs.set(docName, entry);
-  return entry.promise;
+function writeAgentAttention(docName, x, y, agent) {
+  broadcastSignalRest(docName, 'signal:agent-attention', { x, y, timestamp: Date.now(), agent })
+    .catch(e => console.warn('[Attention] Failed to write:', e.message));
 }
 
-function sendYjsUpdateRaw(entry) {
-  if (entry.ws?.readyState === WsClient.OPEN) {
-    // Send pending incremental update if available (much smaller than full state)
-    const update = entry._pendingUpdate || Y.encodeStateAsUpdate(entry.doc);
-    const msg = Buffer.alloc(1 + update.length);
-    msg[0] = 0x02;
-    msg.set(update, 1);
-    entry.ws.send(msg);
-    entry._pendingUpdate = null;
-    return true;
-  }
-  return false;
-}
-
-async function sendYjsUpdate(entry, docName) {
-  if (sendYjsUpdateRaw(entry)) return;
-  // Socket dead — reconnect and retry once
-  if (docName) {
-    console.error(`[Yjs] Socket dead for ${docName}, reconnecting to send update`);
-    try {
-      const fresh = await connectYjs(docName);
-      // Merge our local doc state into the fresh connection
-      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(entry.doc));
-      sendYjsUpdateRaw(fresh);
-    } catch (e) {
-      console.error(`[Yjs] Reconnect failed for ${docName}: ${e.message}`);
-    }
-  } else {
-    console.error(`[Yjs] sendYjsUpdate: socket not open (readyState=${entry.ws?.readyState}), no docName for reconnect`);
-  }
-}
-
-// Ephemeral signal broadcast — bypasses Yjs CRDT entirely.
-// Sends a 0x03 message that the server relays to other clients without persistence.
-const MSG_SIGNAL = 0x03;
-function sendEphemeralSignal(entry, key, data) {
-  if (entry.ws?.readyState !== WsClient.OPEN) return false;
-  const payload = Buffer.from(JSON.stringify({ key, ...data }));
-  const msg = Buffer.alloc(1 + payload.length);
-  msg[0] = MSG_SIGNAL;
-  msg.set(payload, 1);
-  entry.ws.send(msg);
-  return true;
-}
-
-function writeAgentAttention(entry, docName, x, y, agent) {
-  try {
-    sendEphemeralSignal(entry, 'signal:agent-attention', { x, y, timestamp: Date.now(), agent });
-  } catch (e) {
-    console.warn('[Attention] Failed to write:', e.message);
-  }
-}
-
-function writeAgentHeartbeat(entry, docName, state, agent) {
-  try {
-    sendEphemeralSignal(entry, 'signal:agent-heartbeat', { state, timestamp: Date.now(), agent });
-  } catch (e) {
-    console.warn('[Heartbeat] Failed to write:', e.message);
-  }
+function writeAgentHeartbeat(docName, state, agent) {
+  broadcastSignalRest(docName, 'signal:agent-heartbeat', { state, timestamp: Date.now(), agent })
+    .catch(e => console.warn('[Heartbeat] Failed to write:', e.message));
 }
 
 function generateShapeId() {
@@ -709,14 +725,11 @@ async function scrollToLine(doc, line, file) {
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
 
-  // Ephemeral signal — no CRDT persistence needed
   try {
-    const entry = await connectYjs(doc);
-    sendEphemeralSignal(entry, 'signal:forward-scroll', {
+    await broadcastSignalRest(doc, 'signal:forward-scroll', {
       x: canvasPos.x, y: canvasPos.y, timestamp: Date.now(),
     });
   } catch (e) {
-    // Fallback to WS broadcast if Yjs unavailable
     broadcast({ type: 'scroll', x: canvasPos.x, y: canvasPos.y });
   }
 
@@ -740,8 +753,7 @@ async function highlightLine(doc, file, line) {
 
   async function sendHighlightSignal(x, y, page) {
     try {
-      const entry = await connectYjs(doc);
-      sendEphemeralSignal(entry, 'signal:forward-highlight', {
+      await broadcastSignalRest(doc, 'signal:forward-highlight', {
         x, y, page, timestamp: Date.now(),
       });
     } catch {
@@ -799,16 +811,18 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   }
   const y = canvasPos.y - height / 2;
 
-  const entry = await connectYjs(doc);
   const shapeId = generateShapeId();
 
   // Find the highest index among existing shapes so the note renders on top
   let maxIndex = 'a1';
-  for (const [, val] of entry.yRecords.entries()) {
-    if (val && val.typeName === 'shape' && val.index && val.index > maxIndex) {
-      maxIndex = val.index;
+  try {
+    const allShapes = await fetchShapes(doc);
+    for (const s of allShapes) {
+      if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
+        maxIndex = s.index;
+      }
     }
-  }
+  } catch {}
   const noteIndex = getIndexAbove(maxIndex);
 
   const shape = {
@@ -832,10 +846,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
     index: noteIndex,
   };
 
-  entry.doc.transact(() => {
-    entry.yRecords.set(shapeId, shape);
-  });
-  sendYjsUpdate(entry, doc);
+  await createShapeRest(doc, shape);
 
   return { ok: true, shapeId, page: linePos.page, x, y };
 }
@@ -852,14 +863,14 @@ async function sendNote(doc, line, text, color = 'violet', file, choices) {
 }
 
 async function listAnnotations(doc) {
-  const entry = await connectYjs(doc);
+  const shapes = await fetchShapes(doc, 'math-note');
   const annotations = [];
 
-  entry.yRecords.forEach((record, id) => {
-    if (!record || record.type !== 'math-note') return;
+  for (const record of shapes) {
+    if (!record || record.type !== 'math-note') continue;
     const anchor = record.meta?.sourceAnchor;
     const ann = {
-      id,
+      id: record.id,
       x: Math.round(record.x || 0),
       y: Math.round(record.y || 0),
       color: record.props?.color,
@@ -879,16 +890,19 @@ async function listAnnotations(doc) {
       ann.tabs = tabs;
     }
     annotations.push(ann);
-  });
+  }
 
   return { ok: true, annotations };
 }
 
 async function replyAnnotation(doc, id, text) {
   const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
-  const entry = await connectYjs(doc);
-  const record = entry.yRecords.get(fullId);
-  if (!record) return { ok: false, error: `Annotation not found: ${fullId}` };
+  let record;
+  try {
+    record = await fetchShape(doc, fullId);
+  } catch {
+    return { ok: false, error: `Annotation not found: ${fullId}` };
+  }
 
   // Single-shape tab model: add a tab to the existing shape
   const currentTabs = record.props?.tabs || [record.props?.text || ''];
@@ -900,32 +914,27 @@ async function replyAnnotation(doc, id, text) {
   updatedTabs.push(text);
   const newActiveTab = updatedTabs.length - 1;
 
-  entry.doc.transact(() => {
-    entry.yRecords.set(fullId, {
-      ...record,
-      props: {
-        ...record.props,
-        tabs: updatedTabs,
-        activeTab: newActiveTab,
-        text: text,
-      },
-    });
+  await updateShapeRest(doc, fullId, {
+    props: {
+      ...record.props,
+      tabs: updatedTabs,
+      activeTab: newActiveTab,
+      text: text,
+    },
   });
-  sendYjsUpdate(entry, doc);
 
   return { ok: true, id: fullId, tabIndex: newActiveTab, tabCount: updatedTabs.length };
 }
 
 async function deleteAnnotation(doc, id) {
   const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
-  const entry = await connectYjs(doc);
-  const record = entry.yRecords.get(fullId);
-  if (!record) return { ok: false, error: `Annotation not found: ${fullId}` };
-
-  // Single-shape model: just delete the shape (all tabs go with it)
-  entry.doc.transact(() => { entry.yRecords.delete(fullId); });
-  sendYjsUpdate(entry, doc);
-  return { ok: true, id: fullId };
+  try {
+    await deleteShapeRest(doc, fullId);
+    return { ok: true, id: fullId };
+  } catch (e) {
+    if (e.message.includes('404')) return { ok: false, error: `Annotation not found: ${fullId}` };
+    throw e;
+  }
 }
 
 // Track snapshot state
@@ -1249,7 +1258,7 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /shapes?doc=<name> — read all shapes + signals from Yjs
+  // GET /shapes?doc=<name> — read all shapes from sync room + signals from Yjs
   if (req.method === 'GET' && req.url?.startsWith('/shapes')) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const docName = url.searchParams.get('doc');
@@ -1259,21 +1268,15 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const entry = await connectYjs(docName);
-      const shapes = [];
+      // Shapes from @tldraw/sync room via REST
+      const records = await fetchShapes(docName);
+      const shapes = records.filter(r => r.id?.startsWith('shape:') || r.id?.startsWith('binding:'));
+
+      // Signals from cache (no longer in Yjs)
       const signals = {};
-      const other = [];
-      entry.yRecords.forEach((record, id) => {
-        if (id.startsWith('signal:')) {
-          signals[id] = record;
-        } else if (id.startsWith('shape:') || id.startsWith('binding:')) {
-          shapes.push({ id, ...(typeof record === 'object' ? record : { value: record }) });
-        } else {
-          other.push(id);
-        }
-      });
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ shapes, signals, other, total: entry.yRecords.size }));
+      res.end(JSON.stringify({ shapes, signals, total: shapes.length }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
@@ -1604,21 +1607,117 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 let lastCheckedTime = 0;
 let lastPingTimestamp = 0;
 
-function summarizeAnnotations(entry) {
-  const annotations = [];
-  entry.yRecords.forEach((record, id) => {
-    if (!record || record.type !== 'math-note') return;
-    const anchor = record.meta?.sourceAnchor;
-    const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${record.x?.toFixed(0)}, ${record.y?.toFixed(0)})`;
-    annotations.push(`- [${record.props?.color || '?'}] ${loc}: ${record.props?.text || '(empty)'}`);
-  });
-  if (annotations.length === 0) return 'No annotations.';
-  return `${annotations.length} annotation(s):\n${annotations.join('\n')}`;
+async function summarizeAnnotations(docName) {
+  try {
+    const shapes = await fetchShapes(docName, 'math-note');
+    const annotations = [];
+    for (const record of shapes) {
+      if (!record || record.type !== 'math-note') continue;
+      const anchor = record.meta?.sourceAnchor;
+      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${record.x?.toFixed(0)}, ${record.y?.toFixed(0)})`;
+      annotations.push(`- [${record.props?.color || '?'}] ${loc}: ${record.props?.text || '(empty)'}`);
+    }
+    if (annotations.length === 0) return 'No annotations.';
+    return `${annotations.length} annotation(s):\n${annotations.join('\n')}`;
+  } catch (e) {
+    return `(Failed to fetch annotations: ${e.message})`;
+  }
 }
 
-function formatPing(ping, entry) {
+async function formatPing(ping, docName) {
   const vp = ping.viewport ? `Viewport: (${ping.viewport.x?.toFixed(0)}, ${ping.viewport.y?.toFixed(0)})` : '';
-  return `Ping received! ${vp}\n\n${summarizeAnnotations(entry)}`;
+  const summary = await summarizeAnnotations(docName);
+  return `Ping received! ${vp}\n\n${summary}`;
+}
+
+/** Format a stroke result (draw/highlight/arrow/geo/text/line) for MCP response. */
+function formatStrokeResult(r, docName, prefix, entry, agent) {
+  const color = r.props?.color || 'black';
+
+  if (r.type === 'arrow') {
+    const ep = getArrowEndpoints(r);
+    if (ep) {
+      const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
+      const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
+      const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+      const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+      const label = r.props?.text || '';
+      let text = `${prefix}Arrow (${color})`;
+      if (label) text += ` "${label}"`;
+      if (startLines.length > 0) text += `\n  from: page ${pdfStart.page}, line ${startLines[0].line} "${startLines[0].content}"`;
+      else text += `\n  from: page ${pdfStart.page}`;
+      if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
+      else text += `\n  to:   page ${pdfEnd.page}`;
+      const arrowBBox = getArrowBBox(r);
+      if (arrowBBox) {
+        const rendered = getRenderedText(docName, arrowBBox);
+        if (rendered) text += `\n  rendered: "${rendered}"`;
+      }
+      writeAgentAttention(docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, agent);
+      return { content: [{ type: 'text', text }] };
+    }
+  }
+
+  if (r.type === 'geo') {
+    const bbox = getGeoBBox(r);
+    const geo = r.props?.geo || 'rectangle';
+    const label = r.props?.text || '';
+    let text = `${prefix}${geo} (${color})`;
+    if (label) text += ` "${label}"`;
+    if (bbox) {
+      const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+      const nearbyLines = findNearbyLines(docName, bbox);
+      text += `\n  page ${pdfPos.page}`;
+      if (nearbyLines.length > 0) {
+        const lineRange = nearbyLines.length === 1
+          ? `line ${nearbyLines[0].line}`
+          : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+        text += `\n  encloses ${lineRange}`;
+        text += `\n  first: "${nearbyLines[0].content}"`;
+        if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+      }
+      const rendered = getRenderedText(docName, bbox);
+      if (rendered) text += `\n  rendered: "${rendered}"`;
+    }
+    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    return { content: [{ type: 'text', text }] };
+  }
+
+  if (r.type === 'text') {
+    const textContent = r.props?.text || '';
+    const bbox = getTextBBox(r);
+    const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
+    const nearbyLines = findNearbyLines(docName, bbox);
+    let text = `${prefix}Text (${color}): "${textContent}"`;
+    text += `\n  page ${pdfPos.page}`;
+    if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
+    const rendered = getRenderedText(docName, bbox);
+    if (rendered) text += `\n  rendered: "${rendered}"`;
+    return { content: [{ type: 'text', text }] };
+  }
+
+  // Draw / highlight
+  const bbox = getDrawShapeBBox(r);
+  const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
+  const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
+  const gesture = bbox ? classifyGesture(bbox) : 'unknown';
+  const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
+  const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+
+  let text = `${prefix}Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
+  if (pdfPos) text += `\n  page ${pdfPos.page}`;
+  if (nearbyLines.length > 0) {
+    const lineRange = nearbyLines.length === 1
+      ? `line ${nearbyLines[0].line}`
+      : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
+    text += `\n  covers ${lineRange}`;
+    text += `\n  first: "${nearbyLines[0].content}"`;
+    if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
+  }
+  const rendered = bbox ? getRenderedText(docName, bbox) : '';
+  if (rendered) text += `\n  rendered: "${rendered}"`;
+  if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+  return { content: [{ type: 'text', text }] };
 }
 
 // Tools that need built document pages to work
@@ -1651,123 +1750,140 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     let heartbeatInterval;
+    let shapeStream;
+    let signalStream;
     try {
-      const entry = await connectYjs(docName);
-
       // Signal that an agent is listening
-      writeAgentHeartbeat(entry, docName, 'listening', 'claude');
-      heartbeatInterval = setInterval(() => writeAgentHeartbeat(entry, docName, 'listening', 'claude'), 15000);
+      writeAgentHeartbeat(docName, 'listening', 'claude');
+      heartbeatInterval = setInterval(() => writeAgentHeartbeat(docName, 'listening', 'claude'), 15000);
 
-      // Initialize ping timestamp from Yjs state so stale pings (from previous sessions) are ignored
-      const existingPing = entry.yRecords.get('signal:ping');
+      // Initialize ping timestamp from signal cache so stale pings are ignored
+      const existingPing = await readSignalRest(docName, 'signal:ping');
       if (existingPing?.timestamp > lastPingTimestamp) {
-        // Only treat as new if this is a re-entry (not first call) — first call seeds the baseline
         if (lastPingTimestamp > 0) {
           lastPingTimestamp = existingPing.timestamp;
           clearInterval(heartbeatInterval);
-          writeAgentHeartbeat(entry, docName, 'thinking', 'claude');
-          return { content: [{ type: 'text', text: formatPing(existingPing, entry) }] };
+          writeAgentHeartbeat(docName, 'thinking', 'claude');
+          return { content: [{ type: 'text', text: await formatPing(existingPing, docName) }] };
         }
         lastPingTimestamp = existingPing.timestamp;
       }
 
-      // Snapshot current shape keys so we can detect changes after reconnect
-      const knownShapeKeys = new Set();
-      entry.yRecords.forEach((_, key) => { if (key.startsWith('shape:')) knownShapeKeys.add(key); });
+      // Snapshot current shapes (from @tldraw/sync via REST) for diffing
+      const knownShapes = new Map(); // id → shape
+      try {
+        const allShapes = await fetchShapes(docName);
+        for (const s of allShapes) {
+          if (s.typeName === 'shape') knownShapes.set(s.id, s);
+        }
+      } catch (e) {
+        console.error(`[wait] Failed to snapshot shapes for ${docName}: ${e.message}`);
+      }
 
-      // Watch for pings OR annotation changes (with debounce for edits)
       const DEBOUNCE_MS = 5000;
       const waitPromise = new Promise(resolve => {
         let debounceTimer = null;
         let pendingResult = null;
+        let resolved = false;
 
-        const observer = (event) => {
-          event.changes.keys.forEach((change, key) => {
-            // Ping signal — resolve immediately, no debounce
-            if (key === 'signal:ping') {
-              const ping = entry.yRecords.get('signal:ping');
-              if (ping?.timestamp > lastPingTimestamp) {
-                lastPingTimestamp = ping.timestamp;
-                if (debounceTimer) clearTimeout(debounceTimer);
-                entry.yRecords.unobserve(observer);
-                resolve({ type: 'ping', ping });
-              }
-              return;
-            }
-            // Text selection — debounce briefly (user may still be adjusting)
-            if (key === 'signal:text-selection') {
-              const sel = entry.yRecords.get('signal:text-selection');
-              if (sel?.text) {
-                pendingResult = { type: 'text-selection', sel };
-                if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(() => {
-                  const latest = entry.yRecords.get('signal:text-selection');
-                  if (latest) pendingResult.sel = latest;
-                  entry.yRecords.unobserve(observer);
-                  resolve(pendingResult);
-                }, 2000); // shorter debounce for text selection
-              }
-              return;
-            }
-            // Annotation created or edited — debounce to wait for typing/drawing to finish
-            if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
-              // Skip updates to pre-existing shapes — only react to new shapes
-              if (change.action === 'update' && knownShapeKeys.has(key)) return;
-              const record = entry.yRecords.get(key);
-              if (record?.type === 'math-note') {
-                // Choice selection — resolve immediately, no debounce
-                const choices = record.props?.choices;
-                const sel = record.props?.selectedChoice;
-                if (choices?.length && sel != null && sel >= 0) {
-                  if (debounceTimer) clearTimeout(debounceTimer);
-                  entry.yRecords.unobserve(observer);
-                  resolve({ type: 'choice', key, record, choiceIndex: sel, choiceText: choices[sel] });
-                  return;
-                }
-                const text = record.props?.text || '';
-                // Skip if the last line is our reply
-                if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) return;
-                pendingResult = { type: 'annotation', key, action: change.action, record };
-                if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(() => {
-                  const latest = entry.yRecords.get(key);
-                  if (latest) pendingResult.record = latest;
-                  entry.yRecords.unobserve(observer);
-                  resolve(pendingResult);
-                }, DEBOUNCE_MS);
-              }
-              // Draw, highlight, arrow, geo, text, or line shape
-              if (record?.type === 'draw' || record?.type === 'highlight' ||
-                  record?.type === 'arrow' || record?.type === 'geo' ||
-                  record?.type === 'text' || record?.type === 'line') {
-                pendingResult = { type: 'stroke', key, action: change.action, record };
-                if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(() => {
-                  const latest = entry.yRecords.get(key);
-                  if (latest) pendingResult.record = latest;
-                  entry.yRecords.unobserve(observer);
-                  resolve(pendingResult);
-                }, DEBOUNCE_MS);
-              }
-            }
-          });
-        };
-        entry.yRecords.observe(observer);
-
-        // Detect dead WebSocket — resolve immediately so we can reconnect
-        const onWsClose = () => {
+        function cleanup() {
           if (debounceTimer) clearTimeout(debounceTimer);
-          entry.yRecords.unobserve(observer);
-          resolve({ type: 'ws-closed' });
-        };
-        if (entry.ws) entry.ws.on('close', onWsClose);
+          if (signalStream) { signalStream.close(); signalStream = null; }
+          if (shapeStream) { shapeStream.close(); shapeStream = null; }
+        }
+
+        function doResolve(result) {
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+          resolve(result);
+        }
+
+        // --- Signal SSE stream: ping, text-selection ---
+        signalStream = connectSignalStream(docName, (signal) => {
+          if (resolved) return;
+          if (signal.key === 'signal:ping') {
+            if (signal.timestamp > lastPingTimestamp) {
+              lastPingTimestamp = signal.timestamp;
+              doResolve({ type: 'ping', ping: signal });
+            }
+            return;
+          }
+          if (signal.key === 'signal:text-selection') {
+            if (signal.text) {
+              pendingResult = { type: 'text-selection', sel: signal };
+              if (debounceTimer) clearTimeout(debounceTimer);
+              debounceTimer = setTimeout(() => {
+                doResolve(pendingResult);
+              }, 2000);
+            }
+            return;
+          }
+        });
+
+        // --- SSE stream: shape changes (from @tldraw/sync rooms) ---
+        shapeStream = connectShapeStream(docName, async () => {
+          if (resolved) return;
+          // Debounce shape changes
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(async () => {
+            if (resolved) return;
+            try {
+              // Fetch current shapes and diff against snapshot
+              const currentShapes = await fetchShapes(docName);
+              for (const record of currentShapes) {
+                if (record.typeName !== 'shape') continue;
+                const known = knownShapes.get(record.id);
+
+                if (!known) {
+                  // New shape
+                  knownShapes.set(record.id, record);
+                  if (record.type === 'math-note') {
+                    const choices = record.props?.choices;
+                    const sel = record.props?.selectedChoice;
+                    if (choices?.length && sel != null && sel >= 0) {
+                      doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel] });
+                      return;
+                    }
+                    const text = record.props?.text || '';
+                    if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
+                    doResolve({ type: 'annotation', key: record.id, action: 'add', record });
+                    return;
+                  }
+                  if (['draw', 'highlight', 'arrow', 'geo', 'text', 'line'].includes(record.type)) {
+                    doResolve({ type: 'stroke', key: record.id, action: 'add', record });
+                    return;
+                  }
+                } else {
+                  // Updated shape — check for meaningful changes
+                  const oldJson = JSON.stringify(known.props);
+                  const newJson = JSON.stringify(record.props);
+                  if (oldJson !== newJson) {
+                    knownShapes.set(record.id, record);
+                    if (record.type === 'math-note') {
+                      const choices = record.props?.choices;
+                      const sel = record.props?.selectedChoice;
+                      if (choices?.length && sel != null && sel >= 0 && sel !== known.props?.selectedChoice) {
+                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel] });
+                        return;
+                      }
+                      const text = record.props?.text || '';
+                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
+                      doResolve({ type: 'annotation', key: record.id, action: 'update', record });
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.error(`[wait] Shape diff error: ${e.message}`);
+            }
+          }, DEBOUNCE_MS);
+        });
 
         // Also resolve on HTTP snapshot (backward compat)
         waitingResolvers.push(() => {
-          if (debounceTimer) clearTimeout(debounceTimer);
-          entry.yRecords.unobserve(observer);
-          if (entry.ws) entry.ws.removeListener('close', onWsClose);
-          resolve({ type: 'http-snapshot' });
+          doResolve({ type: 'http-snapshot' });
         });
       });
 
@@ -1777,33 +1893,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const result = await Promise.race([waitPromise, timeoutPromise]);
       clearInterval(heartbeatInterval);
-      if (result?.type !== 'ws-closed') {
-        writeAgentHeartbeat(entry, docName, 'thinking', 'claude');
-      }
-
-      // WebSocket died while waiting — reconnect and check for changes we missed
-      if (result?.type === 'ws-closed') {
-        console.error(`[Yjs] WebSocket closed while waiting for feedback on ${docName}, reconnecting`);
-        try {
-          const fresh = await connectYjs(docName);
-          // Diff: find shapes that appeared while we were disconnected
-          const newShapes = [];
-          fresh.yRecords.forEach((record, key) => {
-            if (key.startsWith('shape:') && !knownShapeKeys.has(key)) {
-              const type = record?.type || 'unknown';
-              const text = record?.props?.text || '';
-              const color = record?.props?.color || '';
-              newShapes.push(`${key} [${type}, ${color}]: ${text.substring(0, 120)}`);
-            }
-          });
-          if (newShapes.length > 0) {
-            return { content: [{ type: 'text', text: `Connection briefly lost. After reconnecting, found ${newShapes.length} new shape(s) created during the gap:\n\n${newShapes.join('\n')}\n\nInterpret and respond to these.` }] };
-          }
-          return { content: [{ type: 'text', text: `Connection to ${docName} briefly lost and re-established. No new shapes during the gap. Call wait_for_feedback again to resume listening.` }] };
-        } catch (e) {
-          return { content: [{ type: 'text', text: `Connection to ${docName} lost: ${e.message}. Server may be down.` }], isError: true };
-        }
-      }
+      if (shapeStream) { shapeStream.close(); shapeStream = null; }
+      if (signalStream) { signalStream.close(); signalStream = null; }
+      writeAgentHeartbeat(docName, 'thinking', 'claude');
 
       if (result?.type === 'http-snapshot') {
         return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
@@ -1815,7 +1907,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (result?.type === 'ping') {
-        return { content: [{ type: 'text', text: formatPing(result.ping, entry) }] };
+        return { content: [{ type: 'text', text: await formatPing(result.ping, docName) }] };
       }
 
       if (result?.type === 'choice') {
@@ -1834,7 +1926,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const r = result.record;
         const color = r.props?.color || 'black';
 
-        // Arrow
         if (r.type === 'arrow') {
           const ep = getArrowEndpoints(r);
           if (ep) {
@@ -1854,12 +1945,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const rendered = getRenderedText(docName, arrowBBox);
               if (rendered) text += `\n  rendered: "${rendered}"`;
             }
-            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'claude');
+            writeAgentAttention(docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'claude');
             return { content: [{ type: 'text', text }] };
           }
         }
 
-        // Geo shape
         if (r.type === 'geo') {
           const bbox = getGeoBBox(r);
           const geo = r.props?.geo || 'rectangle';
@@ -1881,11 +1971,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const rendered = getRenderedText(docName, bbox);
             if (rendered) text += `\n  rendered: "${rendered}"`;
           }
-          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
+          if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
           return { content: [{ type: 'text', text }] };
         }
 
-        // Text shape
         if (r.type === 'text') {
           const textContent = r.props?.text || '';
           const bbox = getTextBBox(r);
@@ -1899,7 +1988,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text }] };
         }
 
-        // Draw / highlight (original path)
+        // Draw / highlight
         const bbox = getDrawShapeBBox(r);
         const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
         const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
@@ -1919,7 +2008,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const rendered = bbox ? getRenderedText(docName, bbox) : '';
         if (rendered) text += `\n  rendered: "${rendered}"`;
-        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
+        if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
         return { content: [{ type: 'text', text }] };
       }
 
@@ -1927,10 +2016,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y, 'claude');
-      return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
+      if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'claude');
+      const summary = await summarizeAnnotations(docName);
+      return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summary}` }] };
     } catch (e) {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
+      if (shapeStream) { shapeStream.close(); shapeStream = null; }
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
@@ -1945,161 +2036,152 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'No documents found. Is the server running with projects?' }], isError: true };
     }
 
-    // Connect to all docs, skip failures
-    const entries = new Map(); // docName → entry
-    for (const docName of docNames) {
-      try {
-        const entry = await connectYjs(docName);
-        entries.set(docName, entry);
-      } catch (e) {
-        console.error(`[wait_for_any] Failed to connect to ${docName}: ${e.message}`);
-      }
-    }
-    if (entries.size === 0) {
-      return { content: [{ type: 'text', text: 'Failed to connect to any document rooms.' }], isError: true };
-    }
-
-    // Filter out docs where a terminal agent is actively thinking (recent heartbeat)
+    // Filter docs by agent heartbeat — skip docs where a terminal agent is active
     const HEARTBEAT_STALE_MS = 60000;
-    const activeDocs = new Map();
-    for (const [docName, entry] of entries) {
-      const hb = entry.yRecords.get('signal:agent-heartbeat');
+    const activeDocs = [];
+    for (const docName of docNames) {
+      const hb = await readSignalRest(docName, 'signal:agent-heartbeat');
       if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) {
         console.error(`[wait_for_any] Skipping ${docName} — terminal agent active`);
         continue;
       }
-      activeDocs.set(docName, entry);
+      activeDocs.push(docName);
     }
 
-    // Send listening heartbeat on all active docs
+    if (activeDocs.length === 0) {
+      return { content: [{ type: 'text', text: 'All documents have active terminal agents. No docs to monitor.' }], isError: true };
+    }
+
     const heartbeatIntervals = [];
-    for (const [docName, entry] of activeDocs) {
-      writeAgentHeartbeat(entry, docName, 'listening', 'todd');
-      heartbeatIntervals.push(setInterval(() => {
-        // Re-check: if a terminal agent appeared, stop heartbeating this doc
-        const hb = entry.yRecords.get('signal:agent-heartbeat');
+    for (const docName of activeDocs) {
+      writeAgentHeartbeat(docName, 'listening', 'todd');
+      heartbeatIntervals.push(setInterval(async () => {
+        const hb = await readSignalRest(docName, 'signal:agent-heartbeat');
         if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
-        writeAgentHeartbeat(entry, docName, 'listening', 'todd');
+        writeAgentHeartbeat(docName, 'listening', 'todd');
       }, 15000));
     }
 
-    // Per-doc ping baselines (use module-level map to persist across calls)
     if (!global._anyFeedbackPingBaselines) global._anyFeedbackPingBaselines = new Map();
     const pingBaselines = global._anyFeedbackPingBaselines;
-
-    // Seed baselines for new docs
-    for (const [docName, entry] of activeDocs) {
+    for (const docName of activeDocs) {
       if (!pingBaselines.has(docName)) {
-        const existingPing = entry.yRecords.get('signal:ping');
+        const existingPing = await readSignalRest(docName, 'signal:ping');
         pingBaselines.set(docName, existingPing?.timestamp || 0);
       }
     }
 
-    // Snapshot shape keys per doc for ws-close recovery
-    const knownShapeKeys = new Map();
-    for (const [docName, entry] of activeDocs) {
-      const keys = new Set();
-      entry.yRecords.forEach((_, key) => { if (key.startsWith('shape:')) keys.add(key); });
-      knownShapeKeys.set(docName, keys);
+    // Snapshot shapes per doc via REST
+    const knownShapes = new Map(); // docName → Map(id → shape)
+    for (const docName of activeDocs) {
+      try {
+        const shapes = await fetchShapes(docName);
+        const m = new Map();
+        for (const s of shapes) { if (s.typeName === 'shape') m.set(s.id, s); }
+        knownShapes.set(docName, m);
+      } catch {
+        knownShapes.set(docName, new Map());
+      }
     }
 
     const DEBOUNCE_MS = 5000;
+    const shapeStreams = [];
+    const signalStreams = [];
 
     try {
       const waitPromise = new Promise(resolve => {
         let debounceTimer = null;
-        let pendingResult = null;
-        const observers = []; // for cleanup
+        let resolved = false;
 
-        function cleanup() {
+        function doResolve(result) {
+          if (resolved) return;
+          resolved = true;
           if (debounceTimer) clearTimeout(debounceTimer);
-          for (const { entry, observer, onWsClose } of observers) {
-            entry.yRecords.unobserve(observer);
-            if (onWsClose && entry.ws) entry.ws.removeListener('close', onWsClose);
-          }
+          for (const s of signalStreams) s.close();
+          for (const s of shapeStreams) s.close();
+          signalStreams.length = 0;
+          shapeStreams.length = 0;
+          resolve(result);
         }
 
-        for (const [docName, entry] of activeDocs) {
-          const observer = (event) => {
-            // Skip if a terminal agent took over this doc mid-wait
-            const hb = entry.yRecords.get('signal:agent-heartbeat');
-            if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
+        // --- Signal SSE streams: ping, text-selection ---
+        for (const docName of activeDocs) {
+          const stream = connectSignalStream(docName, (signal) => {
+            if (resolved) return;
 
-            event.changes.keys.forEach((change, key) => {
-              if (key === 'signal:ping') {
-                const ping = entry.yRecords.get('signal:ping');
-                const baseline = pingBaselines.get(docName) || 0;
-                if (ping?.timestamp > baseline) {
-                  pingBaselines.set(docName, ping.timestamp);
-                  cleanup();
-                  resolve({ type: 'ping', ping, docName, entry });
-                }
-                return;
+            if (signal.key === 'signal:ping') {
+              const baseline = pingBaselines.get(docName) || 0;
+              if (signal.timestamp > baseline) {
+                pingBaselines.set(docName, signal.timestamp);
+                doResolve({ type: 'ping', ping: signal, docName });
               }
-              if (key === 'signal:text-selection') {
-                const sel = entry.yRecords.get('signal:text-selection');
-                if (sel?.text) {
-                  pendingResult = { type: 'text-selection', sel, docName, entry };
-                  if (debounceTimer) clearTimeout(debounceTimer);
-                  debounceTimer = setTimeout(() => {
-                    const latest = entry.yRecords.get('signal:text-selection');
-                    if (latest) pendingResult.sel = latest;
-                    cleanup();
-                    resolve(pendingResult);
-                  }, 2000);
-                }
-                return;
+              return;
+            }
+            if (signal.key === 'signal:text-selection') {
+              if (signal.text) {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                const pending = { type: 'text-selection', sel: signal, docName };
+                debounceTimer = setTimeout(() => doResolve(pending), 2000);
               }
-              if (key.startsWith('shape:') && (change.action === 'add' || change.action === 'update')) {
-                const known = knownShapeKeys.get(docName);
-                // Skip updates to pre-existing shapes — only react to new shapes
-                // or edits to shapes that appeared during this wait cycle
-                if (change.action === 'update' && known?.has(key)) return;
-                const record = entry.yRecords.get(key);
-                if (record?.type === 'math-note') {
-                  const choices = record.props?.choices;
-                  const sel = record.props?.selectedChoice;
-                  if (choices?.length && sel != null && sel >= 0) {
-                    if (debounceTimer) clearTimeout(debounceTimer);
-                    cleanup();
-                    resolve({ type: 'choice', key, record, choiceIndex: sel, choiceText: choices[sel], docName, entry });
-                    return;
+              return;
+            }
+          });
+          signalStreams.push(stream);
+        }
+
+        // --- SSE streams: shape changes ---
+        for (const docName of activeDocs) {
+          const stream = connectShapeStream(docName, async () => {
+            if (resolved) return;
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(async () => {
+              if (resolved) return;
+              try {
+                const currentShapes = await fetchShapes(docName);
+                const known = knownShapes.get(docName) || new Map();
+                for (const record of currentShapes) {
+                  if (record.typeName !== 'shape') continue;
+                  const prev = known.get(record.id);
+                  if (!prev) {
+                    known.set(record.id, record);
+                    if (record.type === 'math-note') {
+                      const choices = record.props?.choices;
+                      const sel = record.props?.selectedChoice;
+                      if (choices?.length && sel != null && sel >= 0) {
+                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel], docName });
+                        return;
+                      }
+                      const text = record.props?.text || '';
+                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
+                      doResolve({ type: 'annotation', key: record.id, action: 'add', record, docName });
+                      return;
+                    }
+                    if (['draw', 'highlight', 'arrow', 'geo', 'text', 'line'].includes(record.type)) {
+                      doResolve({ type: 'stroke', key: record.id, action: 'add', record, docName });
+                      return;
+                    }
+                  } else if (JSON.stringify(prev.props) !== JSON.stringify(record.props)) {
+                    known.set(record.id, record);
+                    if (record.type === 'math-note') {
+                      const choices = record.props?.choices;
+                      const sel = record.props?.selectedChoice;
+                      if (choices?.length && sel != null && sel >= 0 && sel !== prev.props?.selectedChoice) {
+                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel], docName });
+                        return;
+                      }
+                      const text = record.props?.text || '';
+                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
+                      doResolve({ type: 'annotation', key: record.id, action: 'update', record, docName });
+                      return;
+                    }
                   }
-                  const text = record.props?.text || '';
-                  if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) return;
-                  pendingResult = { type: 'annotation', key, action: change.action, record, docName, entry };
-                  if (debounceTimer) clearTimeout(debounceTimer);
-                  debounceTimer = setTimeout(() => {
-                    const latest = entry.yRecords.get(key);
-                    if (latest) pendingResult.record = latest;
-                    cleanup();
-                    resolve(pendingResult);
-                  }, DEBOUNCE_MS);
                 }
-                if (record?.type === 'draw' || record?.type === 'highlight' ||
-                    record?.type === 'arrow' || record?.type === 'geo' ||
-                    record?.type === 'text' || record?.type === 'line') {
-                  pendingResult = { type: 'stroke', key, action: change.action, record, docName, entry };
-                  if (debounceTimer) clearTimeout(debounceTimer);
-                  debounceTimer = setTimeout(() => {
-                    const latest = entry.yRecords.get(key);
-                    if (latest) pendingResult.record = latest;
-                    cleanup();
-                    resolve(pendingResult);
-                  }, DEBOUNCE_MS);
-                }
+              } catch (e) {
+                console.error(`[wait_for_any] Shape diff error for ${docName}: ${e.message}`);
               }
-            });
-          };
-
-          const onWsClose = () => {
-            cleanup();
-            resolve({ type: 'ws-closed', docName, entry });
-          };
-
-          entry.yRecords.observe(observer);
-          if (entry.ws) entry.ws.on('close', onWsClose);
-          observers.push({ entry, observer, onWsClose });
+            }, DEBOUNCE_MS);
+          });
+          shapeStreams.push(stream);
         }
       });
 
@@ -2109,45 +2191,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const result = await Promise.race([waitPromise, timeoutPromise]);
       heartbeatIntervals.forEach(i => clearInterval(i));
+      for (const s of shapeStreams) s.close();
+      for (const s of signalStreams) s.close();
 
       const docName = result.docName;
-      const entry = result.entry;
+      writeAgentHeartbeat(docName, 'thinking', 'todd');
 
-      if (result.type !== 'ws-closed') {
-        writeAgentHeartbeat(entry, docName, 'thinking', 'todd');
-      }
-
-      // Format result — same as wait_for_feedback but with doc prefix
       const prefix = `[${docName}] `;
-
-      if (result.type === 'ws-closed') {
-        try {
-          const fresh = await connectYjs(docName);
-          const known = knownShapeKeys.get(docName) || new Set();
-          const newShapes = [];
-          fresh.yRecords.forEach((record, key) => {
-            if (key.startsWith('shape:') && !known.has(key)) {
-              const type = record?.type || 'unknown';
-              const text = record?.props?.text || '';
-              const color = record?.props?.color || '';
-              newShapes.push(`${key} [${type}, ${color}]: ${text.substring(0, 120)}`);
-            }
-          });
-          if (newShapes.length > 0) {
-            return { content: [{ type: 'text', text: `${prefix}Connection briefly lost. After reconnecting, found ${newShapes.length} new shape(s):\n\n${newShapes.join('\n')}` }] };
-          }
-          return { content: [{ type: 'text', text: `${prefix}Connection briefly lost and re-established. No new shapes. Call wait_for_any_feedback again.` }] };
-        } catch (e) {
-          return { content: [{ type: 'text', text: `${prefix}Connection lost: ${e.message}` }], isError: true };
-        }
-      }
 
       if (result.type === 'text-selection') {
         return { content: [{ type: 'text', text: `${prefix}Text selected (page ${result.sel.page}):\n  "${result.sel.text}"` }] };
       }
 
       if (result.type === 'ping') {
-        return { content: [{ type: 'text', text: `${prefix}${formatPing(result.ping, entry)}` }] };
+        return { content: [{ type: 'text', text: `${prefix}${await formatPing(result.ping, docName)}` }] };
       }
 
       if (result.type === 'choice') {
@@ -2162,103 +2219,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (result.type === 'stroke') {
-        const r = result.record;
-        const color = r.props?.color || 'black';
-
-        if (r.type === 'arrow') {
-          const ep = getArrowEndpoints(r);
-          if (ep) {
-            const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
-            const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
-            const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
-            const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
-            const label = r.props?.text || '';
-            let text = `${prefix}Arrow (${color})`;
-            if (label) text += ` "${label}"`;
-            if (startLines.length > 0) text += `\n  from: page ${pdfStart.page}, line ${startLines[0].line} "${startLines[0].content}"`;
-            else text += `\n  from: page ${pdfStart.page}`;
-            if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
-            else text += `\n  to:   page ${pdfEnd.page}`;
-            const arrowBBox = getArrowBBox(r);
-            if (arrowBBox) {
-              const rendered = getRenderedText(docName, arrowBBox);
-              if (rendered) text += `\n  rendered: "${rendered}"`;
-            }
-            writeAgentAttention(entry, docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'todd');
-            return { content: [{ type: 'text', text }] };
-          }
-        }
-
-        if (r.type === 'geo') {
-          const bbox = getGeoBBox(r);
-          const geo = r.props?.geo || 'rectangle';
-          const label = r.props?.text || '';
-          let text = `${prefix}${geo} (${color})`;
-          if (label) text += ` "${label}"`;
-          if (bbox) {
-            const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
-            const nearbyLines = findNearbyLines(docName, bbox);
-            text += `\n  page ${pdfPos.page}`;
-            if (nearbyLines.length > 0) {
-              const lineRange = nearbyLines.length === 1
-                ? `line ${nearbyLines[0].line}`
-                : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
-              text += `\n  encloses ${lineRange}`;
-              text += `\n  first: "${nearbyLines[0].content}"`;
-              if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
-            }
-            const rendered = getRenderedText(docName, bbox);
-            if (rendered) text += `\n  rendered: "${rendered}"`;
-          }
-          if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'todd');
-          return { content: [{ type: 'text', text }] };
-        }
-
-        if (r.type === 'text') {
-          const textContent = r.props?.text || '';
-          const bbox = getTextBBox(r);
-          const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
-          const nearbyLines = findNearbyLines(docName, bbox);
-          let text = `${prefix}Text (${color}): "${textContent}"`;
-          text += `\n  page ${pdfPos.page}`;
-          if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
-          const rendered = getRenderedText(docName, bbox);
-          if (rendered) text += `\n  rendered: "${rendered}"`;
-          return { content: [{ type: 'text', text }] };
-        }
-
-        const bbox = getDrawShapeBBox(r);
-        const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
-        const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
-        const gesture = bbox ? classifyGesture(bbox) : 'unknown';
-        const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
-        const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
-
-        let text = `${prefix}Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
-        if (pdfPos) text += `\n  page ${pdfPos.page}`;
-        if (nearbyLines.length > 0) {
-          const lineRange = nearbyLines.length === 1
-            ? `line ${nearbyLines[0].line}`
-            : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
-          text += `\n  covers ${lineRange}`;
-          text += `\n  first: "${nearbyLines[0].content}"`;
-          if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
-        }
-        const rendered = bbox ? getRenderedText(docName, bbox) : '';
-        if (rendered) text += `\n  rendered: "${rendered}"`;
-        if (bbox) writeAgentAttention(entry, docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'todd');
-        return { content: [{ type: 'text', text }] };
+        return formatStrokeResult(result.record, docName, prefix, null, 'todd');
       }
 
       // Annotation
       const r = result.record;
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(entry, docName, r.x, r.y, 'todd');
-      return { content: [{ type: 'text', text: `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summarizeAnnotations(entry)}` }] };
+      if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'todd');
+      const summary = await summarizeAnnotations(docName);
+      return { content: [{ type: 'text', text: `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summary}` }] };
 
     } catch (e) {
       heartbeatIntervals.forEach(i => clearInterval(i));
+      for (const s of shapeStreams) s.close();
+      for (const s of signalStreams) s.close();
       if (e.message === 'Timeout waiting for feedback') {
         return { content: [{ type: 'text', text: `No feedback on any document for ${timeout / 1000}s.` }] };
       }
@@ -2273,13 +2248,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     try {
-      const entry = await connectYjs(docName);
-      const ping = entry.yRecords.get('signal:ping');
+      const ping = await readSignalRest(docName, 'signal:ping');
 
-      // Check Yjs ping first
       if (ping?.timestamp > lastPingTimestamp) {
         lastPingTimestamp = ping.timestamp;
-        return { content: [{ type: 'text', text: formatPing(ping, entry) }] };
+        return { content: [{ type: 'text', text: await formatPing(ping, docName) }] };
       }
 
       // Fall back to HTTP snapshot check
@@ -2296,11 +2269,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'get_latest_feedback') {
     const docName = args?.doc;
-    // Try Yjs screenshot signal first
+    // Try cached screenshot signal first
     if (docName) {
       try {
-        const entry = await connectYjs(docName);
-        const screenshot = entry.yRecords.get('signal:screenshot');
+        const screenshot = await readSignalRest(docName, 'signal:screenshot');
         if (screenshot?.data) {
           return {
             content: [
@@ -2320,29 +2292,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     }
-    // Request screenshot on demand
+    // Request screenshot on demand via signal broadcast + listen for response
     if (docName) {
       try {
-        const entry = await connectYjs(docName);
-        sendEphemeralSignal(entry, 'signal:screenshot-request', { timestamp: Date.now() });
+        await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now() });
         const result = await new Promise((resolve) => {
-          const observer = (event) => {
-            event.changes.keys.forEach((change, key) => {
-              if (key === 'signal:screenshot') {
-                const ss = entry.yRecords.get('signal:screenshot');
-                if (ss?.data) {
-                  clearTimeout(timer);
-                  entry.yRecords.unobserve(observer);
-                  resolve(ss);
-                }
-              }
-            });
-          };
+          const stream = connectSignalStream(docName, (signal) => {
+            if (signal.key === 'signal:screenshot' && signal.data) {
+              clearTimeout(timer);
+              stream.close();
+              resolve(signal);
+            }
+          });
           const timer = setTimeout(() => {
-            entry.yRecords.unobserve(observer);
+            stream.close();
             resolve(null);
           }, 8000);
-          entry.yRecords.observe(observer);
         });
         if (result?.data) {
           return {
@@ -2400,7 +2365,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
@@ -2427,7 +2392,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
@@ -2439,7 +2404,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       return { content: [{ type: 'text', text: `Added tab ${result.tabIndex + 1}/${result.tabCount} to ${result.id}:\n"${text}"` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
@@ -2451,7 +2416,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       return { content: [{ type: 'text', text: `Deleted: ${result.id}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
@@ -2462,12 +2427,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     try {
-      const entry = await connectYjs(doc);
+      // Fetch all shapes from @tldraw/sync via REST, then filter client-side
+      const allRecords = await fetchShapes(doc);
       const shapes = [];
 
-      entry.yRecords.forEach((record, id) => {
-        if (!record || record.typeName !== 'shape') return;
-        if (id.startsWith('signal:')) return;
+      for (const record of allRecords) {
+        if (!record || record.typeName !== 'shape') continue;
+        const id = record.id;
 
         const shapeType = record.type;
         const color = record.props?.color || 'black';
@@ -2475,21 +2441,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // --- Draw / Highlight strokes ---
         if (shapeType === 'draw' || shapeType === 'highlight') {
           const bbox = getDrawShapeBBox(record);
-          if (!bbox) return;
+          if (!bbox) continue;
           const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
           const gesture = classifyGesture(bbox);
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          return;
+          continue;
         }
 
         // --- Arrow ---
         if (shapeType === 'arrow') {
           const ep = getArrowEndpoints(record);
           const bbox = getArrowBBox(record);
-          if (!ep || !bbox) return;
+          if (!ep || !bbox) continue;
           const pdfStart = canvasToDoc(doc, ep.start.x, ep.start.y);
           const pdfEnd = canvasToDoc(doc, ep.end.x, ep.end.y);
           const startLines = findNearbyLines(doc, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
@@ -2504,39 +2470,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             startPage: pdfStart.page, endPage: pdfEnd.page,
             startLines, endLines, startBound, endBound, rendered,
           });
-          return;
+          continue;
         }
 
         // --- Geo (rectangle, ellipse, diamond, etc.) ---
         if (shapeType === 'geo') {
           const bbox = getGeoBBox(record);
-          if (!bbox) return;
+          if (!bbox) continue;
           const geo = record.props?.geo || 'rectangle';
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
           const label = record.props?.text || '';
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          return;
+          continue;
         }
 
         // --- Text ---
         if (shapeType === 'text') {
           const bbox = getTextBBox(record);
           const text = record.props?.text || '';
-          if (!text.trim()) return;
+          if (!text.trim()) continue;
           const pdfPos = canvasToDoc(doc, bbox.minX, bbox.minY);
           const nearbyLines = findNearbyLines(doc, bbox);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          return;
+          continue;
         }
 
         // --- Line ---
         if (shapeType === 'line') {
           // Line shapes use handles for vertices
           const handles = record.props?.handles;
-          if (!handles) return;
+          if (!handles) continue;
           let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           for (const h of Object.values(handles)) {
             const ax = record.x + (h.x || 0);
@@ -2546,18 +2512,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (ax > maxX) maxX = ax;
             if (ay > maxY) maxY = ay;
           }
-          if (!isFinite(minX)) return;
+          if (!isFinite(minX)) continue;
           const bbox = { minX, minY, maxX, maxY };
           const nearbyLines = findNearbyLines(doc, bbox);
           const pdfPos = canvasToDoc(doc, (minX + maxX) / 2, (minY + maxY) / 2);
           const rendered = getRenderedText(doc, bbox);
           shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          return;
+          continue;
         }
-      });
+      }
 
       // Check for text selection signal
-      const textSel = entry.yRecords.get('signal:text-selection');
+      let textSel = null;
+      try {
+        textSel = await readSignalRest(doc, 'signal:text-selection');
+      } catch {}
       const hasTextSel = textSel?.text && (Date.now() - (textSel.timestamp || 0)) < 300000; // within 5 min
 
       if (shapes.length === 0 && !hasTextSel) {
@@ -2697,20 +2666,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     try {
-      const entry = await connectYjs(doc);
       const timestamp = Date.now();
       const signal = pages && pages.length > 0
         ? { type: 'partial', pages, timestamp }
         : { type: 'full', timestamp };
 
-      sendEphemeralSignal(entry, 'signal:reload', signal);
+      await broadcastSignalRest(doc, 'signal:reload', signal);
 
       const desc = signal.type === 'partial'
         ? `Partial reload signaled for pages ${pages.join(', ')}`
         : 'Full reload signaled';
       return { content: [{ type: 'text', text: `${desc} (doc: ${doc}, t=${timestamp})` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Yjs error: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Signal error: ${e.message}` }], isError: true };
     }
   }
 

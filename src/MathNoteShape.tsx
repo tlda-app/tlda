@@ -251,14 +251,15 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
-    // Auto-size: measure rendered content and update shape height
+    // Auto-size: measure rendered content and grow shape height (never shrink)
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
       const measured = el.scrollHeight
       const target = Math.max(40, measured)
-      if (Math.abs(target - shape.props.h) > 2) {
+      // Only grow — never shrink unless user manually resizes
+      if (target > shape.props.h + 2) {
         editor.updateShape({
           id: shape.id,
           type: 'math-note' as any,

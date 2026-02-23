@@ -15,17 +15,8 @@
 
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer-core'
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
-const ROOT = join(__dirname, '..')
-const SERVER_SCRIPT = join(ROOT, 'server', 'unified-server.mjs')
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+import { startServer, createProject, pushFile, pushFiles, waitForBuild, CHROME } from './helpers.mjs'
 
 const MINIMAL_TEX = String.raw`\documentclass{article}
 \begin{document}
@@ -65,116 +56,8 @@ const FIGURE_SVG_V2 = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
 </svg>`
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Viewer helpers (Puppeteer-specific, not shared)
 // ---------------------------------------------------------------------------
-
-/** Start a server on a test port with temp dirs. Returns control object. */
-function startServer() {
-  const dataDir = mkdtempSync(join(tmpdir(), 'ctd-test-data-'))
-  const projectsDir = mkdtempSync(join(tmpdir(), 'ctd-test-projects-'))
-  const port = 15176 // test port, avoid colliding with dev server on 5176
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn('node', [SERVER_SCRIPT], {
-      env: {
-        ...process.env,
-        PORT: String(port),
-        DATA_DIR: dataDir,
-        PROJECTS_DIR: projectsDir,
-        PUBLIC_DIR: join(ROOT, 'server', 'public'),
-        CTD_NO_AUTH: '1',  // disable auth for tests
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    const logs = []
-
-    const timeout = setTimeout(() => {
-      proc.kill()
-      reject(new Error('Server did not start within 10s'))
-    }, 10000)
-
-    let started = false
-    proc.stdout.on('data', (chunk) => {
-      const line = chunk.toString()
-      logs.push(line.trimEnd())
-      if (!started && line.includes('running on')) {
-        started = true
-        clearTimeout(timeout)
-        resolve({
-          port,
-          proc,
-          dataDir,
-          projectsDir,
-          logs,
-          base: `http://localhost:${port}`,
-          /** Dump recent server logs — call in test failures for diagnostics. */
-          dumpLogs(label = 'server') {
-            const recent = logs.slice(-40).join('\n')
-            console.log(`\n--- ${label} logs (last 40 lines) ---\n${recent}\n---\n`)
-          },
-          async cleanup() {
-            proc.kill('SIGTERM')
-            await new Promise(r => proc.on('exit', r))
-            rmSync(dataDir, { recursive: true, force: true })
-            rmSync(projectsDir, { recursive: true, force: true })
-          },
-        })
-      }
-    })
-
-    proc.stderr.on('data', (chunk) => {
-      const msg = chunk.toString().trim()
-      logs.push(`[stderr] ${msg}`)
-      if (msg) console.log(`  [server stderr] ${msg}`)
-    })
-
-    proc.on('exit', (code) => {
-      if (!started) {
-        clearTimeout(timeout)
-        reject(new Error(`Server exited with code ${code} before binding`))
-      }
-    })
-  })
-}
-
-/** Create a project on the test server. */
-async function createProject(base, name, mainFile = 'test.tex') {
-  const res = await fetch(`${base}/api/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, title: name, mainFile }),
-  })
-  const data = await res.json()
-  assert.equal(res.status, 201, `Create project failed: ${JSON.stringify(data)}`)
-  return data
-}
-
-/** Push a tex file and trigger build. */
-async function pushFile(base, name, filename, content) {
-  const res = await fetch(`${base}/api/projects/${name}/push`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      files: [{ path: filename, content }],
-    }),
-  })
-  const data = await res.json()
-  assert.ok(res.ok, `Push failed: ${JSON.stringify(data)}`)
-  return data
-}
-
-/** Poll build status until done. Returns final status. */
-async function waitForBuild(base, name, timeoutMs = 180000) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${base}/api/projects/${name}/build/status`)
-    const data = await res.json()
-    if (data.status !== 'building') return data
-    await new Promise(r => setTimeout(r, 500))
-  }
-  throw new Error(`Build did not complete within ${timeoutMs / 1000}s`)
-}
 
 /** Open viewer page and wait for SVG shapes to render. Returns page. */
 async function openViewer(browser, base, docName, timeoutMs = 30000) {
@@ -241,7 +124,7 @@ describe('pipeline', { timeout: 300000 }, () => {
   let browser
 
   before(async () => {
-    server = await startServer()
+    server = await startServer(15176)
     browser = await puppeteer.launch({
       headless: 'shell',
       executablePath: CHROME,
@@ -296,7 +179,6 @@ describe('pipeline', { timeout: 300000 }, () => {
       assert.equal(build2.status, 'success')
 
       // Wait for reload signal to propagate and viewer to re-render
-      // The viewer should pick up the reload signal via Yjs and re-fetch SVGs
       await page.waitForFunction(() => {
         const els = document.querySelectorAll('[data-shape-type="svg-page"] svg')
         for (const svg of els) {
@@ -433,17 +315,10 @@ describe('pipeline', { timeout: 300000 }, () => {
     await createProject(server.base, name)
 
     // Push tex + figure v1
-    const pushRes = await fetch(`${server.base}/api/projects/${name}/push`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        files: [
-          { path: 'test.tex', content: FIGURE_TEX },
-          { path: 'figures/plot.svg', content: Buffer.from(FIGURE_SVG_V1).toString('base64'), encoding: 'base64' },
-        ],
-      }),
-    })
-    assert.ok(pushRes.ok, `Initial push failed: ${await pushRes.text()}`)
+    await pushFiles(server.base, name, [
+      { path: 'test.tex', content: FIGURE_TEX },
+      { path: 'figures/plot.svg', content: Buffer.from(FIGURE_SVG_V1).toString('base64'), encoding: 'base64' },
+    ])
 
     const build1 = await waitForBuild(server.base, name)
     if (build1.status !== 'success') server.dumpLogs('figure-test build1')
@@ -455,7 +330,6 @@ describe('pipeline', { timeout: 300000 }, () => {
       const hasV1 = await page.evaluate(() => {
         const svgs = document.querySelectorAll('[data-shape-type="svg-page"] svg')
         for (const svg of svgs) {
-          // v1 has a rect with class v1-marker; after inlining it becomes part of page SVG
           if (svg.querySelector('.v1-marker') || svg.innerHTML.includes('v1-marker')) return true
         }
         return false
@@ -464,19 +338,9 @@ describe('pipeline', { timeout: 300000 }, () => {
       assert.ok(hasV1, 'Figure v1 should be inlined in page SVG')
 
       // Push ONLY the figure v2 — no tex change
-      const pushRes2 = await fetch(`${server.base}/api/projects/${name}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [
-            { path: 'figures/plot.svg', content: Buffer.from(FIGURE_SVG_V2).toString('base64'), encoding: 'base64' },
-          ],
-        }),
-      })
-      const pushData2 = await pushRes2.json()
-      assert.ok(pushRes2.ok, `Figure-only push failed: ${JSON.stringify(pushData2)}`)
-      assert.equal(pushData2.building, true, 'Figure change should trigger a build')
-
+      await pushFiles(server.base, name, [
+        { path: 'figures/plot.svg', content: Buffer.from(FIGURE_SVG_V2).toString('base64'), encoding: 'base64' },
+      ])
       const build2 = await waitForBuild(server.base, name)
       if (build2.status !== 'success') server.dumpLogs('figure-test build2')
       assert.equal(build2.status, 'success', 'Figure-only rebuild should succeed')

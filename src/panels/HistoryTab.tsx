@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import { DocContext, PanelContext } from '../PanelContext'
 import { pdfToCanvas } from '../synctexAnchor'
-import { getYRecords, readSignal, writeSignal } from '../useYjsSync'
+import { readSignal, writeSignal, onDiffReview, onDiffSummaries } from '../useYjsSync'
 import { formatRelativeTime, navigateToPage, type ReviewMap, type SummaryMap, STATUS_LABELS, STATUS_FILLED } from './helpers'
 import { ChangesTab } from './ChangesTab'
 
@@ -112,18 +112,17 @@ export function HistoryChanges() {
   const [reviews, setReviews] = useState<ReviewMap>({})
   const [summaries, setSummaries] = useState<SummaryMap>({})
 
-  // Load review state + summaries from Yjs and observe changes
+  // Load review state + summaries from cache and subscribe to signal bus
   useEffect(() => {
     setReviews(readReviewState())
     setSummaries(readSummaries())
-    const yRecords = getYRecords()
-    if (!yRecords) return
-    const handler = () => {
-      setReviews(readReviewState())
-      setSummaries(readSummaries())
-    }
-    yRecords.observe(handler)
-    return () => yRecords.unobserve(handler)
+    const unsub1 = onDiffReview((signal) => {
+      setReviews(signal.reviews || {})
+    })
+    const unsub2 = onDiffSummaries((signal) => {
+      setSummaries(signal.summaries || {})
+    })
+    return () => { unsub1(); unsub2() }
   }, [])
 
   const handleNav = useCallback((c: { page: number; y?: number }) => {

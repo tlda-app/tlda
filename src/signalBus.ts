@@ -56,7 +56,7 @@ export class SignalBus {
   }
 
   /**
-   * Called from yRecords.observe() for each changed key.
+   * Dispatch from an observe-style source with init/timestamp guards.
    * Handles timestamp guards, init behavior, accept filters, and callback dispatch.
    */
   dispatch(key: string, action: string, getValue: () => unknown, isInit: boolean): void {

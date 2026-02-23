@@ -192,4 +192,143 @@ router.get('/:name/build/errors', requireRead, (req, res) => {
   })
 })
 
+// ---------- Shape CRUD (backed by @tldraw/sync TLSocketRoom) ----------
+
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal } from '../lib/sync-rooms.mjs'
+
+// Map project name → sync room name (viewer connects as "doc-{name}")
+function syncRoomName(projectName) {
+  return `doc-${projectName}`
+}
+
+// GET /:name/shapes — list shapes, optionally filter by type
+router.get('/:name/shapes', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const records = getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
+  res.json(records)
+})
+
+// POST /:name/shapes — create a shape
+router.post('/:name/shapes', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const shape = req.body
+  if (!shape?.id || !shape?.type) return res.status(400).json({ error: 'Shape must have id and type' })
+  try {
+    await putShape(syncRoomName(req.params.name), shape)
+    res.json({ ok: true, id: shape.id })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// PUT /:name/shapes/:id — atomic update (send partial props to merge)
+router.put('/:name/shapes/:id', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
+  const updates = req.body
+  try {
+    await updateShape(syncRoomName(req.params.name), shapeId, (current) => {
+      // Deep merge props
+      const merged = { ...current, ...updates }
+      if (updates.props) {
+        merged.props = { ...current.props, ...updates.props }
+      }
+      if (updates.meta) {
+        merged.meta = { ...current.meta, ...updates.meta }
+      }
+      // Preserve identity fields
+      merged.id = current.id
+      merged.type = current.type
+      merged.typeName = current.typeName
+      return merged
+    })
+    res.json({ ok: true, id: shapeId })
+  } catch (e) {
+    if (e.message.includes('not found')) return res.status(404).json({ error: e.message })
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// DELETE /:name/shapes/:id — delete a shape
+router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
+  try {
+    await deleteShape(syncRoomName(req.params.name), shapeId)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /:name/signal — broadcast a signal to all connected viewers
+router.post('/:name/signal', requireRw, (req, res) => {
+  const { key, ...data } = req.body
+  if (!key) return res.status(400).json({ error: 'key is required' })
+  broadcastSignal(syncRoomName(req.params.name), key, data)
+  res.json({ ok: true })
+})
+
+// GET /:name/signal/stream — SSE stream of signal broadcasts (must be before :key route)
+router.get('/:name/signal/stream', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  })
+  res.write('data: {"type":"connected"}\n\n')
+
+  const unsub = onSignal(syncRoomName(req.params.name), (signal) => {
+    res.write(`data: ${JSON.stringify(signal)}\n\n`)
+  })
+
+  req.on('close', () => unsub())
+})
+
+// GET /:name/signal/:key — read last cached value of a signal
+router.get('/:name/signal/:key', requireRead, (req, res) => {
+  const signal = getLastSignal(syncRoomName(req.params.name), req.params.key)
+  if (!signal) return res.status(404).json({ error: 'No cached signal' })
+  res.json(signal)
+})
+
+// GET /:name/shapes/stream — SSE stream of shape changes (must be before :id route)
+router.get('/:name/shapes/stream', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  })
+  res.write('data: {"type":"connected"}\n\n')
+
+  // Ensure room exists so we get change notifications
+  getOrCreateRoom(syncRoomName(req.params.name))
+
+  const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  })
+
+  req.on('close', () => unsub())
+})
+
+// GET /:name/shapes/:id — get a single shape
+router.get('/:name/shapes/:id', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
+  const record = getRecord(syncRoomName(req.params.name), shapeId)
+  if (!record) return res.status(404).json({ error: 'Shape not found' })
+  res.json(record)
+})
+
 export default router

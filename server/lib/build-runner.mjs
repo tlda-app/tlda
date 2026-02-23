@@ -9,7 +9,7 @@
  *   5. compute-proof-pairing.mjs → proof-info.json
  *
  * Each step writes output to server/projects/{name}/output/.
- * Signals reload via Yjs after SVG conversion.
+ * Signals reload via @tldraw/sync custom messages after SVG conversion.
  */
 
 import { exec as execCb } from 'child_process'
@@ -27,7 +27,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { getDoc } from './yjs-sync.mjs'
+import { broadcastSignal } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -630,14 +630,12 @@ function saveBuildCache(ctx) {
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
-  // If no priority pages specified, read viewport from Yjs (what the viewer is looking at)
+  // If no priority pages specified, try the signal cache (what the viewer last reported)
   let priorityPages = explicitPriority
   if (!priorityPages) {
     try {
-      const roomId = `doc-${name}`
-      const doc = getDoc(roomId)
-      const yRecords = doc.getMap('tldraw')
-      const viewport = yRecords.get('signal:viewport')
+      const { getLastSignal } = await import('./sync-rooms.mjs')
+      const viewport = getLastSignal(`doc-${name}`, 'signal:viewport')
       if (viewport?.pages?.length > 0) {
         priorityPages = viewport.pages
       }
@@ -777,15 +775,10 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 // missing", "compiled in 2.1s"). Keep phase to a single word — the pill has min-width 56px.
 function signalBuildProgress(name, phase, detail) {
   try {
-    const roomId = `doc-${name}`
-    const doc = getDoc(roomId)
-    const yRecords = doc.getMap('tldraw')
-    doc.transact(() => {
-      yRecords.set('signal:build-progress', {
-        phase,       // 'compiling' | 'converting' | 'extracting' | 'hot' | 'done' | 'failed'
-        detail,      // quiet text beside pill: 'biber' | '3 pages missing' | 'compiled in 2.1s'
-        timestamp: Date.now(),
-      })
+    broadcastSignal(`doc-${name}`, 'signal:build-progress', {
+      phase,       // 'compiling' | 'converting' | 'extracting' | 'hot' | 'done' | 'failed'
+      detail,      // quiet text beside pill: 'biber' | '3 pages missing' | 'compiled in 2.1s'
+      timestamp: Date.now(),
     })
   } catch (e) {
     console.error(`[build:${name}] Failed to send build progress signal: ${e.message}`)
@@ -794,19 +787,12 @@ function signalBuildProgress(name, phase, detail) {
 
 function signalBuildStatus(name, errorMessage) {
   try {
-    const roomId = `doc-${name}`
-    const doc = getDoc(roomId)
-    const yRecords = doc.getMap('tldraw')
-
     const { errors, warnings } = extractBuildErrors(name)
-
-    doc.transact(() => {
-      yRecords.set('signal:build-status', {
-        error: errorMessage,
-        errors,
-        warnings,
-        timestamp: Date.now(),
-      })
+    broadcastSignal(`doc-${name}`, 'signal:build-status', {
+      error: errorMessage,
+      errors,
+      warnings,
+      timestamp: Date.now(),
     })
     console.log(`[build:${name}] Build status signal sent (${errors.length} errors, ${warnings.length} warnings)`)
   } catch (e) {
@@ -816,18 +802,10 @@ function signalBuildStatus(name, errorMessage) {
 
 function signalReload(name, pages) {
   try {
-    const roomId = `doc-${name}`
-    const doc = getDoc(roomId)
-    const yRecords = doc.getMap('tldraw')
-
     const signal = pages
       ? { type: 'partial', pages, timestamp: Date.now() }
       : { type: 'full', timestamp: Date.now() }
-
-    doc.transact(() => {
-      yRecords.set('signal:reload', signal)
-    })
-
+    broadcastSignal(`doc-${name}`, 'signal:reload', signal)
     const desc = pages ? `pages [${pages.join(',')}]` : 'full'
     console.log(`[build:${name}] Reload signal (${desc}) sent`)
   } catch (e) {

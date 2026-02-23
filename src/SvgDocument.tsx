@@ -6,6 +6,8 @@ import {
   DefaultToolbar,
   DefaultColorStyle,
   DefaultSizeStyle,
+  defaultShapeUtils,
+  defaultBindingUtils,
 } from 'tldraw'
 import {
   SelectToolbarItem,
@@ -29,7 +31,9 @@ import { SvgPageShapeUtil } from './SvgPageShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages, type ChangeRegion } from './stores'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { useYjsSync, getYRecords, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { useSync, type RemoteTLStoreWithStatus } from '@tldraw/sync'
+import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './AgentAttentionOverlay'
 import { MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -82,22 +86,31 @@ function AgentPillSlot() {
   return <>{content}</>
 }
 
-// Inner component to set up Yjs sync (needs useEditor context)
-function YjsSyncProvider({ roomId, onInitialSync }: { roomId: string; onInitialSync?: () => void }) {
-  const editor = useEditor()
-  useYjsSync({
-    editor,
-    roomId,
-    serverUrl: SYNC_SERVER,
-    onInitialSync: () => {
-      // Don't remap annotations here — positions from Yjs are authoritative.
-      // remapAnnotations only runs after a document rebuild (in reloadPages),
-      // not on every connect/reconnect (which would snap user-dragged notes
-      // back to their source anchor positions).
-      onInitialSync?.()
-    }
-  })
-  return null
+// Sync server URL for @tldraw/sync shape CRDT (WebSocket)
+const SHAPE_SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
+  (import.meta.env.DEV
+    ? `ws://${window.location.hostname}:5176`
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
+
+// Initialize signal connection when the document mounts (signals go via HTTP POST + @tldraw/sync custom messages)
+function useSignalInit(docName: string) {
+  useEffect(() => {
+    initSignalConnection(docName, SYNC_SERVER)
+    return () => teardownSignalConnection()
+  }, [docName])
+}
+
+// Inline base64 asset store (for image uploads via AssetToolbarItem)
+const INLINE_ASSETS = {
+  upload: async (_asset: any, file: File) => {
+    const reader = new FileReader()
+    const src = await new Promise<string>((resolve) => {
+      reader.onload = () => resolve(reader.result as string)
+      reader.readAsDataURL(file)
+    })
+    return { src }
+  },
+  resolve: (asset: any) => asset.props.src,
 }
 
 interface SvgDocumentEditorProps {
@@ -108,6 +121,9 @@ interface SvgDocumentEditorProps {
 
 
 export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
+  // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
+  useSignalInit(document.name)
+
   const editorRef = useRef<Editor | null>(null)
   const sessionRestoredRef = useRef(false)
 
@@ -443,8 +459,26 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     buildWarnings,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
 
-  const shapeUtils = useMemo(() => [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
+  const shapeUtils = useMemo(() => [...defaultShapeUtils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
+  const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
+
+  // --- @tldraw/sync: shape CRDT sync ---
+  const syncUri = useMemo(
+    () => () => appendToken(`${SHAPE_SYNC_SERVER}/sync/${roomId}`),
+    [roomId]
+  )
+  const onCustomMessage = useCallback((data: any) => {
+    // Signals from server's broadcastSignal (e.g., POST /signal endpoint)
+    if (data?.key) dispatchSignalDirect(data.key, data)
+  }, [])
+  const storeWithStatus = useSync({
+    uri: syncUri,
+    shapeUtils,
+    bindingUtils,
+    assets: INLINE_ASSETS,
+    onCustomMessageReceived: onCustomMessage,
+  })
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -547,6 +581,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
     <Tldraw
+        store={storeWithStatus}
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
         tools={tools}
@@ -590,7 +625,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           updateCameraBoundsRef.current = editorSetup.updateBounds
           ensurePagesAtBottomRef.current = editorSetup.ensurePagesAtBottom
 
-          // Signal that pages are ready — disables Yjs init deletion protection
+          // With @tldraw/sync, the store already has synced shapes when onMount fires.
+          // Ensure page backgrounds are at the bottom of the z-order.
+          editorSetup.ensurePagesAtBottom()
+
+          // Clean up stale build-error shapes that may have persisted in the sync store
+          {
+            const toDelete = editor.getCurrentPageShapes()
+              .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
+              .map(s => s.id)
+            if (toDelete.length > 0) editor.store.remove(toDelete)
+          }
+
+          // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
           // For SVG documents: fetch page content in background (layout is already displayed)
@@ -710,9 +757,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 if (cameraTimer) clearTimeout(cameraTimer)
                 cameraTimer = setTimeout(() => {
                   saveSession()
-                  // Report visible pages to Yjs (for watcher priority rebuild)
-                  const yRecords = getYRecords()
-                  if (yRecords && document.pages.length > 0) {
+                  // Report visible pages for watcher priority rebuild
+                  if (isSignalConnected() && document.pages.length > 0) {
                     const vb = editor.getViewportScreenBounds()
                     const cam = editor.getCamera()
                     // Convert screen bounds to canvas coords
@@ -786,17 +832,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         components={components}
         forceMobile
     >
-      <YjsSyncProvider roomId={roomId} onInitialSync={() => {
-        ensurePagesAtBottomRef.current?.()
-        // Clean up stale build-error shapes that may have persisted in Yjs
-        const editor = editorRef.current
-        if (editor && buildErrors.length === 0) {
-          const toDelete = editor.getCurrentPageShapes()
-            .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
-            .map(s => s.id)
-          if (toDelete.length > 0) editor.store.remove(toDelete)
-        }
-      }} />
       <DarkModeSync />
     </Tldraw>
     </AgentPillContext.Provider>

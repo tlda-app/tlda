@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onForwardSync, onScreenshotRequest, onRefViewerSignal, getYRecords, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onForwardSync, onScreenshotRequest, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
@@ -100,8 +100,7 @@ export function useYjsSignals({
 
     const unsub = onScreenshotRequest(async () => {
       const editor = editorRef.current
-      const yRecords = getYRecords()
-      if (!editor || !yRecords) return
+      if (!editor || !isSignalConnected()) return
       // Delay based on staleness: recently active viewers respond first (0-2s)
       // This lets the most interactive viewer win the race
       const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1) // 0..1 over 30s

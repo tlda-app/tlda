@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useEditor, stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { PanelContext } from './PanelContext'
-import { getYRecords, writeSignal, onAgentHeartbeat } from './useYjsSync'
+import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
 import { HistoryTab } from './panels/HistoryTab'
@@ -22,7 +22,7 @@ export function PingButton() {
     if (state === 'sending') return
     setState('sending')
     try {
-      if (!getYRecords()) throw new Error('Yjs not connected')
+      if (!isSignalConnected()) throw new Error('Signal not connected')
       const center = editor.getViewportScreenCenter()
       const pt = editor.screenToPage(center)
       writeSignal('signal:ping', {
@@ -194,7 +194,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
     if (pinging) return
     setPinging(true)
     try {
-      if (!getYRecords()) throw new Error('Yjs not connected')
+      if (!isSignalConnected()) throw new Error('Signal not connected')
       const center = editor.getViewportScreenCenter()
       const pt = editor.screenToPage(center)
       writeSignal('signal:ping', {

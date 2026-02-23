@@ -4,7 +4,7 @@
  * Watches source files and pushes changes to the server.
  * The server handles building — the watcher only detects and uploads.
  *
- * Also maintains a Yjs connection for:
+ * Also connects to the signal SSE stream for:
  *   - Viewport tracking (priority pages for partial rebuilds)
  *   - Reverse sync (open Zed at the line the user clicked)
  */
@@ -64,13 +64,12 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   let pushQueued = false
   let retryDelay = 1000
 
-  // Yjs connection for viewport + reverse sync
+  // Signal SSE stream for viewport + reverse sync
   let cachedViewportPages = null
   try {
-    const yjsUrl = server.replace(/^http/, 'ws') + `/doc-${name}` + (token ? `?token=${token}` : '')
-    await setupYjsConnection(yjsUrl, dir, (pages) => { cachedViewportPages = pages })
+    setupSignalStream(server, name, authHeaders, dir, (pages) => { cachedViewportPages = pages })
   } catch (e) {
-    console.log(`[watch] Yjs connection failed (non-fatal): ${e.message}`)
+    console.log(`[watch] Signal stream failed (non-fatal): ${e.message}`)
   }
 
   // Initial push — rebuild if source is newer than last build
@@ -195,87 +194,74 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   setInterval(() => {}, 30000)
 }
 
-async function setupYjsConnection(url, texDir, onViewportUpdate) {
-  // Dynamic import — these may not be installed in the CLI context
-  let Y, WebSocket
-  try {
-    Y = await import('yjs')
-    WebSocket = (await import('ws')).default
-  } catch {
-    return // ws/yjs not available — skip Yjs features
-  }
+/**
+ * Connect to the signal SSE stream for viewport updates + reverse sync.
+ * Replaces the old Yjs WebSocket connection — signals now go through HTTP.
+ */
+function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) {
+  let lastReverseTs = 0
 
-  const doc = new Y.Doc()
-  const yRecords = doc.getMap('tldraw')
-
-  yRecords.observe((event) => {
-    event.changes.keys.forEach((change, key) => {
-      if (key === 'signal:viewport' && (change.action === 'add' || change.action === 'update')) {
-        const viewport = yRecords.get(key)
-        if (viewport?.pages) onViewportUpdate(viewport.pages)
-      }
-      if (key === 'signal:reverse-sync' && (change.action === 'add' || change.action === 'update')) {
-        const sig = yRecords.get(key)
-        if (sig?.line && sig?.file) {
-          const target = `${resolve(texDir, sig.file)}:${sig.line}`
-          console.log(`[reverse-sync] Opening ${target}`)
-          spawn('zed', [target], { stdio: 'ignore', detached: true }).unref()
-        }
-      }
-    })
-  })
-
-  doc.on('update', (update, origin) => {
-    if (origin === 'remote') return
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'update', data: Array.from(update) }))
-    }
-  })
-
-  let ws
-  let everConnected = false
-  let currentlyConnected = false
-  let fastFailCount = 0
   function connect() {
-    try {
-      ws = new WebSocket(url)
-    } catch (e) {
-      if (everConnected) console.log(`[watch] Yjs reconnect failed: ${e.message}`)
-      setTimeout(connect, 3000)
-      return
-    }
-    let gotData = false
-    ws.on('open', () => {
-      if (everConnected) console.log('[watch] Yjs reconnected.')
-      everConnected = true
-      currentlyConnected = true
-    })
-    ws.on('message', (data) => {
-      gotData = true
-      fastFailCount = 0
-      try {
-        const msg = JSON.parse(data.toString())
-        if (msg.type === 'sync' || msg.type === 'update') {
-          Y.applyUpdate(doc, new Uint8Array(msg.data), 'remote')
-        }
-      } catch {}
-    })
-    ws.on('close', () => {
-      if (currentlyConnected) {
-        console.log('[watch] Yjs disconnected, will reconnect...')
-        currentlyConnected = false
+    const url = `${server}/api/projects/${name}/signal/stream`
+    fetch(url, { headers: authHeaders, signal: AbortSignal.timeout(0) }).catch(() => {})
+    // Use native http for SSE (fetch doesn't stream in Node < 22 without extra work)
+    import('http').then(({ default: http }) => {
+      const parsed = new URL(url)
+      const opts = {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname + parsed.search,
+        headers: { ...authHeaders, 'Accept': 'text/event-stream' },
       }
-      if (!gotData && !everConnected) {
-        fastFailCount++
-        if (fastFailCount >= 3) {
-          console.error('[watch] Yjs connection rejected 3 times — likely auth failure. Check your token with "ctd config".')
-          return // stop reconnecting
+      const req = http.get(opts, (res) => {
+        if (res.statusCode !== 200) {
+          console.log(`[watch] Signal stream returned ${res.statusCode}`)
+          res.resume()
+          setTimeout(connect, 5000)
+          return
         }
-      }
-      setTimeout(connect, 3000)
+        let buffer = ''
+        res.on('data', (chunk) => {
+          buffer += chunk.toString()
+          let idx
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const block = buffer.slice(0, idx).trim()
+            buffer = buffer.slice(idx + 2)
+            if (!block.startsWith('data: ')) continue
+            try {
+              const signal = JSON.parse(block.slice(6))
+              if (signal.key === 'signal:viewport' && signal.pages) {
+                onViewportUpdate(signal.pages)
+              }
+              if (signal.key === 'signal:reverse-sync' && signal.line && signal.file) {
+                if (signal.timestamp && signal.timestamp <= lastReverseTs) continue
+                lastReverseTs = signal.timestamp || Date.now()
+                const target = `${resolve(texDir, signal.file)}:${signal.line}`
+                console.log(`[reverse-sync] Opening ${target}`)
+                spawn('zed', [target], { stdio: 'ignore', detached: true }).unref()
+              }
+            } catch {}
+          }
+        })
+        res.on('end', () => {
+          console.log('[watch] Signal stream ended, reconnecting...')
+          setTimeout(connect, 3000)
+        })
+        res.on('error', () => {
+          setTimeout(connect, 3000)
+        })
+      })
+      req.on('error', () => {
+        setTimeout(connect, 5000)
+      })
     })
-    ws.on('error', () => {}) // errors followed by 'close', which reconnects
   }
+
+  // Seed viewport from cached signal
+  fetch(`${server}/api/projects/${name}/signal/${encodeURIComponent('signal:viewport')}`, { headers: authHeaders })
+    .then(r => r.ok ? r.json() : null)
+    .then(sig => { if (sig?.pages) onViewportUpdate(sig.pages) })
+    .catch(() => {})
 
   connect()
 }

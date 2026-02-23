@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import { DocContext, PanelContext } from '../PanelContext'
-import { getYRecords, onReloadSignal, writeSignal, readSignal } from '../useYjsSync'
+import { onReloadSignal, onDiffReview, onDiffSummaries, writeSignal, readSignal } from '../useYjsSync'
 import { navigateToPage, type ReviewStatus, type ReviewMap, type SummaryMap, STATUS_LABELS, STATUS_FILLED } from './helpers'
 
 function readReviewState(): ReviewMap {
@@ -24,18 +24,17 @@ export function ChangesTab() {
   const [reviews, setReviews] = useState<ReviewMap>({})
   const [summaries, setSummaries] = useState<SummaryMap>({})
 
-  // Load review state + summaries from Yjs and observe changes
+  // Load review state + summaries from cache and subscribe to signal bus for changes
   useEffect(() => {
     setReviews(readReviewState())
     setSummaries(readSummaries())
-    const yRecords = getYRecords()
-    if (!yRecords) return
-    const handler = () => {
-      setReviews(readReviewState())
-      setSummaries(readSummaries())
-    }
-    yRecords.observe(handler)
-    return () => yRecords.unobserve(handler)
+    const unsub1 = onDiffReview((signal) => {
+      setReviews(signal.reviews || {})
+    })
+    const unsub2 = onDiffSummaries((signal) => {
+      setSummaries(signal.summaries || {})
+    })
+    return () => { unsub1(); unsub2() }
   }, [])
 
   // Clear reviews + summaries on reload (diff changed, need fresh triage)
