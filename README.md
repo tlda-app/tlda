@@ -159,7 +159,9 @@ The server auto-starts on first use. Configure with `ctd config set server <url>
 
 ## Third-party licenses
 
-This project uses the [tldraw SDK](https://tldraw.dev), which is provided under the [tldraw license](https://tldraw.dev/legal/tldraw-license). The tldraw SDK is source-available but not permissively licensed. If you deploy this project in a production environment, you will need a [tldraw license](https://tldraw.dev/get-a-license/plans) (hobby, trial, or commercial). See the tldraw documentation for details.
+This project uses the [tldraw SDK](https://tldraw.dev), which is provided under the [tldraw license](https://tldraw.dev/legal/tldraw-license). The tldraw SDK is source-available but not permissively licensed.
+
+**This matters in practice.** The viewer works fine on `localhost`, so local use and collaboration over Tailscale/LAN are unaffected. But if you deploy to a public URL (your own domain, Tailscale Funnel, etc.), the tldraw canvas will go white after a second. The only clue is red bars of varying heights in the browser console. You need a [tldraw license key](https://tldraw.dev/get-a-license/plans) for non-localhost deployments. They have a free hobby tier.
 
 All other dependencies are under their respective open-source licenses.
 

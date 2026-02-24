@@ -129,7 +129,7 @@ try {
 
   // Step 4: Build the static site
   console.log('[publish] Building static site...')
-  execSync('npx vite build', { cwd: PROJECT_ROOT, stdio: 'inherit' })
+  execSync('npx vite build', { cwd: PROJECT_ROOT, stdio: 'inherit', env: { ...process.env, VITE_BASE_PATH: '/claude-tldraw/' } })
 
   // Step 5: Deploy to GitHub Pages
   console.log('[publish] Deploying to GitHub Pages...')
