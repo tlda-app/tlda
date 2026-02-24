@@ -3,11 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node sync-server.js"
+    "start": "node unified-server.mjs"
   },
   "dependencies": {
+    "@tldraw/store": "^4.3.1",
+    "@tldraw/sync-core": "^4.3.1",
+    "@tldraw/tlschema": "^4.3.1",
+    "@tldraw/validate": "^4.3.1",
     "express": "^5.2.1",
-    "ws": "^8.18.0",
-    "yjs": "^13.6.29"
+    "ws": "^8.18.0"
   }
 }
