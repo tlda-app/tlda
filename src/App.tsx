@@ -194,9 +194,12 @@ function App() {
     clearDocumentStores()
 
     try {
-      const base = import.meta.env.BASE_URL || '/'
-      const basePath = config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath
-      const fullBasePath = `${base}${basePath}`
+      // When basePath is already absolute (cross-origin asset server), use it directly.
+      // Otherwise prepend BASE_URL for same-origin relative paths.
+      const isAbsolute = config.basePath.startsWith('http://') || config.basePath.startsWith('https://')
+      const fullBasePath = isAbsolute
+        ? config.basePath
+        : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
 
       let document
       if (config.format === 'diff') {
