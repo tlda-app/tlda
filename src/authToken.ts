@@ -15,14 +15,20 @@ export function initToken() {
   _token = params.get('token')
 
   if (_token) {
+    // When SPA is on a different origin than the sync server (e.g. GitHub Pages → Fly.io),
+    // also inject auth for requests to the sync/asset server.
+    const syncServer = (import.meta.env.VITE_SYNC_SERVER as string | undefined)
+      ?.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+
     const originalFetch = window.fetch
     window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
-      // Only inject auth for same-origin requests (relative URLs or matching host)
+      // Inject auth for same-origin AND sync server requests
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
       const isRelative = url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
       const isSameOrigin = isRelative || url.startsWith(window.location.origin)
+      const isSyncServer = syncServer ? url.startsWith(syncServer) : false
 
-      if (isSameOrigin) {
+      if (isSameOrigin || isSyncServer) {
         const headers = new Headers(init?.headers)
         if (!headers.has('Authorization')) {
           headers.set('Authorization', `Bearer ${_token}`)

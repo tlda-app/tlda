@@ -61,11 +61,19 @@ type State =
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
 
+// When the SPA is hosted on a different origin than the sync/asset server
+// (e.g. GitHub Pages SPA → Fly.io server), derive the HTTP base from VITE_SYNC_SERVER.
+// This converts wss://host → https://host so doc asset fetches go to the right place.
+const ASSET_BASE = (() => {
+  const ws = import.meta.env.VITE_SYNC_SERVER as string | undefined
+  if (!ws) return ''  // same-origin: relative URLs work
+  return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+})()
+
 // Fetch document manifest at runtime — derives basePath from key
 async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
   try {
-    const base = import.meta.env.BASE_URL || '/'
-    const url = `${base}docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
+    const url = `${ASSET_BASE}/docs/manifest.json` + (bustCache ? `?t=${Date.now()}` : '')
     const resp = await fetch(url)
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
@@ -75,7 +83,7 @@ async function fetchManifest(bustCache = false): Promise<Record<string, DocConfi
     const docs = data.documents || {}
     // Derive basePath from key — never trust a stored value
     for (const [key, config] of Object.entries(docs) as [string, DocConfig][]) {
-      config.basePath = `/docs/${key}/`
+      config.basePath = `${ASSET_BASE}/docs/${key}/`
     }
     return docs
   } catch (e) {
