@@ -1,0 +1,12 @@
+{
+  "_source": "/Users/skip/work/claude-tldraw/server/projects/spinoff3/source/spinoff3.tex",
+  "_extracted": "2026-02-24T05:20:00.298Z",
+  "macros": {
+    "\\F": "\\mathcal{F}",
+    "\\G": "\\mathcal{G}",
+    "\\hPn": "\\frac{1}{n}\\sum_{i=1}^n",
+    "\\EU": "\\E_U",
+    "\\mainpaper": "hirshberg2025regularized",
+    "\\diag": "\\operatorname{diag}"
+  }
+}

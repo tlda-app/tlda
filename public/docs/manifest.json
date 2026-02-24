@@ -1,3 +1,9 @@
 {
-  "documents": {}
+  "documents": {
+    "spinoff3": {
+      "title": "spinoff3",
+      "pages": 25,
+      "format": "svg"
+    }
+  }
 }

@@ -44,3 +44,4 @@ scratch/
 # Generated document output (rebuilt via build-svg.sh / build-html-doc.mjs)
 # manifest.json is kept; everything inside doc directories is generated
 public/docs/*/
+!public/docs/spinoff3/
