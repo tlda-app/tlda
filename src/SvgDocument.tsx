@@ -32,6 +32,7 @@ import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { SvgPageShapeUtil } from './SvgPageShape'
 import { SvgFigureShapeUtil } from './SvgFigureShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages, type ChangeRegion } from './stores'
+import { BrowseTool } from './BrowseTool'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
@@ -39,7 +40,7 @@ import { useSync, type RemoteTLStoreWithStatus } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './AgentAttentionOverlay'
-import { MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
+import { BrowseToolbarItem, MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
@@ -454,7 +455,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       MainMenu: null,
       Toolbar: (props) => (
         <DefaultToolbar {...props} orientation="vertical">
-          <SelectToolbarItem />
+          {document.format === 'html' ? <BrowseToolbarItem /> : <SelectToolbarItem />}
           <HandToolbarItem />
           <DrawToolbarItem />
           <HighlightToolbarItem />
@@ -464,6 +465,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           <TextToolbarItem />
           <MathNoteToolbarItem />
           <AssetToolbarItem />
+          {document.format === 'html' && <SelectToolbarItem />}
           <RectangleToolbarItem />
           <EllipseToolbarItem />
           <LineToolbarItem />
@@ -546,7 +548,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
+  const tools = useMemo(() => [BrowseTool, MathNoteTool, TextSelectTool], [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -592,6 +594,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         label: 'Select Text',
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
+      }
+      // Register browse tool — cursor arrow + hand pointer for HTML docs
+      tools['browse'] = {
+        id: 'browse',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 3l4.5 12 2-4.5L14 8.5z" />
+          <path d="M14.5 3.5v3M14.5 3.5h-3" />
+        </svg>) as any,
+        label: 'Browse',
+        onSelect: () => _editor.setCurrentTool('browse'),
       }
       return tools
     },
@@ -820,6 +832,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               }
               if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
+              } else if (document.format === 'html') {
+                editor.setCurrentTool('browse')
               }
               // Restore diff mode if it was active
               if (session?.diffMode && hasDiffToggle) {

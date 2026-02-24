@@ -2,6 +2,7 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  Vec,
   useEditor,
   useValue,
   createShapeId,
@@ -72,8 +73,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   // 2. Click the margin ribbon — local, just this iframe becomes interactive
   const isTextSelectTool = useValue('text-select-tool', () =>
     editor.getCurrentToolId() === 'text-select', [editor])
+  const isBrowseTool = useValue('browse-tool', () =>
+    editor.getCurrentToolId() === 'browse', [editor])
   const [isInteracting, setIsInteracting] = useState(false)
-  const iframeActive = isTextSelectTool || isInteracting
+  const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
 
   // When entering local interaction mode, listen for clicks or wheel outside to exit
   useEffect(() => {
@@ -117,16 +120,20 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'ctd-wheel') {
-        // Forward wheel events from iframe bridge to TLDraw canvas
-        const container = document.querySelector('.tl-container')
-        if (container) {
-          container.dispatchEvent(new WheelEvent('wheel', {
-            deltaX: e.data.deltaX, deltaY: e.data.deltaY,
-            deltaMode: e.data.deltaMode,
-            ctrlKey: e.data.ctrlKey, metaKey: e.data.metaKey,
-            bubbles: true,
-          }))
-        }
+        // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
+        // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
+        const { deltaX, deltaY, ctrlKey, metaKey } = e.data
+        editor.dispatch({
+          type: 'wheel',
+          name: 'wheel',
+          delta: new Vec(deltaX, deltaY, 0),
+          point: new Vec(editor.inputs.currentScreenPoint.x, editor.inputs.currentScreenPoint.y),
+          shiftKey: false,
+          altKey: false,
+          ctrlKey: !!ctrlKey,
+          metaKey: !!metaKey,
+          accelKey: !!(ctrlKey || metaKey),
+        })
         return
       }
       if (e.data?.type === 'ctd-navigate') {

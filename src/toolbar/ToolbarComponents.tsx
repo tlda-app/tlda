@@ -7,6 +7,12 @@ import {
   useIsToolSelected,
 } from 'tldraw'
 
+export function BrowseToolbarItem() {
+  const tools = useTools()
+  const isSelected = useIsToolSelected(tools['browse'])
+  return <TldrawUiMenuToolItem toolId="browse" isSelected={isSelected} />
+}
+
 export function MathNoteToolbarItem() {
   const tools = useTools()
   const isSelected = useIsToolSelected(tools['math-note'])

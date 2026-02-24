@@ -3,6 +3,14 @@
 
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
 
+// Derive HTTP base from VITE_SYNC_SERVER for cross-origin deployments
+// (SPA on GitHub Pages, assets on Fly.io). Same-origin: returns BASE_URL.
+function assetBase(): string {
+  const ws = import.meta.env.VITE_SYNC_SERVER as string | undefined
+  if (ws) return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/'
+  return import.meta.env.BASE_URL || '/'
+}
+
 export interface LookupEntry {
   page: number
   x: number
@@ -35,7 +43,7 @@ export async function loadLookup(docName: string): Promise<LookupData | null> {
   }
 
   try {
-    const base = import.meta.env.BASE_URL || '/'
+    const base = assetBase()
     const resp = await fetch(`${base}docs/${docName}/lookup.json?t=${Date.now()}`)
     if (!resp.ok) {
       lookupCache.set(docName, null)
@@ -280,7 +288,7 @@ const htmlSearchCache = new Map<string, HtmlSearchEntry[] | null>()
 export async function loadHtmlToc(docName: string): Promise<HtmlTocEntry[] | null> {
   if (htmlTocCache.has(docName)) return htmlTocCache.get(docName)!
   try {
-    const base = import.meta.env.BASE_URL || '/'
+    const base = assetBase()
     const resp = await fetch(`${base}docs/${docName}/toc.json`)
     if (!resp.ok) { htmlTocCache.set(docName, null); return null }
     const data = await resp.json()
@@ -295,7 +303,7 @@ export async function loadHtmlToc(docName: string): Promise<HtmlTocEntry[] | nul
 export async function loadHtmlSearch(docName: string): Promise<HtmlSearchEntry[] | null> {
   if (htmlSearchCache.has(docName)) return htmlSearchCache.get(docName)!
   try {
-    const base = import.meta.env.BASE_URL || '/'
+    const base = assetBase()
     const resp = await fetch(`${base}docs/${docName}/search-index.json`)
     if (!resp.ok) { htmlSearchCache.set(docName, null); return null }
     const data = await resp.json()
