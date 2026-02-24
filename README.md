@@ -6,7 +6,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source. Caveat emptor.
 
-**[Live demo](https://qtm285.github.io/claude-tldraw/?doc=spinoff3)**
+**[Live demo](https://qtm285.github.io/claude-tldraw/?doc=spinoff3)** — this is a live collaborative canvas. You can draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
 ## Why this exists
 
