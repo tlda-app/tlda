@@ -118,7 +118,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   const pageBounds = editor.getShapePageBounds(pageShape.id)
   if (!pageBounds) return
 
-  const pageEl = document.querySelector(`[data-shape-id="${pageShape.id}"]`)
+  const pageEl = document.querySelector(`[data-shape-id="${pageShape.id}"]:not(.tl-shape-background)`)
   if (!pageEl) return
 
   const svgEl = pageEl.querySelector('svg')
@@ -130,8 +130,19 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   const scaleX = viewBox.width / pageBounds.width
   const scaleY = viewBox.height / pageBounds.height
 
-  const hlMinX = (bounds.minX - pageBounds.minX) * scaleX + viewBox.x
-  const hlMaxX = (bounds.maxX - pageBounds.minX) * scaleX + viewBox.x
+  // getShapePageBounds includes stroke width, inflating the bbox beyond the path center.
+  // Shrink x-range slightly to avoid picking up text just outside the intended highlight.
+  // Use a conservative fraction of stroke half-width — enough to cut edge overshoot
+  // without collapsing the range for short highlights.
+  const hlSize = (shape.props as any).size || 'm'
+  const strokeHalfW: Record<string, number> = { s: 4, m: 6, l: 9, xl: 11 }
+  const rawMinX = (bounds.minX - pageBounds.minX) * scaleX + viewBox.x
+  const rawMaxX = (bounds.maxX - pageBounds.minX) * scaleX + viewBox.x
+  const xShrink = (strokeHalfW[hlSize] ?? 6) * scaleX
+  // Only shrink if range stays positive (don't collapse short highlights)
+  const canShrink = (rawMaxX - rawMinX) > xShrink * 3
+  const hlMinX = canShrink ? rawMinX + xShrink : rawMinX
+  const hlMaxX = canShrink ? rawMaxX - xShrink : rawMaxX
   const hlMinY = (bounds.minY - pageBounds.minY) * scaleY + viewBox.y
   const hlMaxY = (bounds.maxY - pageBounds.minY) * scaleY + viewBox.y
   const hlCenterY = (hlMinY + hlMaxY) / 2
@@ -142,6 +153,9 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   const textEls = svgEl.querySelectorAll('text')
 
   for (const textEl of textEls) {
+    // Skip text inside <defs> — these are glyph templates, not rendered text
+    if (textEl.closest('defs')) continue
+
     let fontSize = 10
     const cls = textEl.getAttribute('class') || ''
     const styleMatch = svgEl.querySelector(`style`)?.textContent?.match(
@@ -159,25 +173,31 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
         fragments.push({ text, x, y, width, fontSize, el: textEl })
       }
     } else {
+      // Track running y through siblings — SVG tspans inherit y from previous sibling,
+      // not from parent <text>. dvisvgm wraps multi-line runs in one <text> element
+      // where only the first tspan on each line sets y explicitly.
+      let runningY = parseFloat(textEl.getAttribute('y') || '0')
       for (const tspan of tspans) {
         const x = parseFloat(tspan.getAttribute('x') || '') || parseFloat(textEl.getAttribute('x') || '') || 0
-        const y = parseFloat(tspan.getAttribute('y') || '') || parseFloat(textEl.getAttribute('y') || '') || 0
+        const explicitY = tspan.getAttribute('y')
+        if (explicitY) runningY = parseFloat(explicitY)
         const text = tspan.textContent || ''
         if (text) {
           const width = (tspan as SVGTSpanElement).getComputedTextLength?.() || text.length * fontSize * 0.48
-          fragments.push({ text, x, y, width, fontSize, el: tspan })
+          fragments.push({ text, x, y: runningY, width, fontSize, el: tspan })
         }
       }
     }
   }
 
-  // For thin strokes (single-line), match by center-y with tight tolerance.
-  // For tall strokes (multiline), use the full y-range but shrink by half a line to avoid bleeding.
+  // Match text baselines within the highlight's y-range.
+  // Single-line: match by center-y with generous tolerance (Apple Pencil strokes tilt).
+  // Multi-line: use the full y-range, shrunk by half a line to avoid bleeding.
   const matchedFragments = fragments.filter(f => {
-    const lineH = f.fontSize * 1.2  // typical line height
-    if (hlHeight < lineH) {
+    const lineH = f.fontSize * 1.2
+    if (hlHeight < lineH * 1.5) {
       // Single-line: match baselines near the stroke center
-      return Math.abs(f.y - hlCenterY) < f.fontSize * 0.7
+      return Math.abs(f.y - hlCenterY) < f.fontSize * 1.0
         && f.x + f.width > hlMinX && f.x < hlMaxX
     } else {
       // Multiline: use full range, shrunk by half a line on each side
@@ -191,7 +211,11 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   if (matchedFragments.length === 0) {
     const sorted = [...fragments].sort((a, b) => Math.abs(a.y - hlCenterY) - Math.abs(b.y - hlCenterY))
     const near = sorted.slice(0, 3)
-    console.warn(`[highlighter-snap] 0/${fragments.length} matched. centerY=${hlCenterY.toFixed(1)} hlH=${hlHeight.toFixed(1)} x=[${hlMinX.toFixed(0)},${hlMaxX.toFixed(0)}]. Nearest: ${near.map(f => `y=${f.y.toFixed(1)}(fs=${f.fontSize.toFixed(1)},dist=${Math.abs(f.y-hlCenterY).toFixed(1)},tol=${(f.fontSize*0.7).toFixed(1)}) "${f.text}"`).join(', ')}`)
+    const nearDesc = near.map(f => `y=${f.y.toFixed(1)} dist=${Math.abs(f.y-hlCenterY).toFixed(1)} "${f.text}"`).join(', ')
+    console.warn(`[highlighter-snap] 0/${fragments.length} matched. centerY=${hlCenterY.toFixed(1)} hlH=${hlHeight.toFixed(1)} x=[${hlMinX.toFixed(0)},${hlMaxX.toFixed(0)}]. Nearest: ${nearDesc}`)
+    if ((window as any).__hlDebug !== false) {
+      showCaptureToast(`(no match — nearest: ${near[0] ? `"${near[0].text}" dist=${Math.abs(near[0].y - hlCenterY).toFixed(1)}` : 'none'})`, bounds, editor)
+    }
     return
   }
 
@@ -247,6 +271,11 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
 
   // Flash-tint the matched text elements (before updateShape, which can trigger re-renders)
   flashTint(matchedFragments, hlColor)
+
+  // Debug toast: show captured text briefly (toggle with window.__hlDebug = false to disable)
+  if ((window as any).__hlDebug !== false) {
+    showCaptureToast(matchedText, bounds, editor)
+  }
 
   // Attach metadata to the highlight shape (deferred so flash isn't wiped by re-render)
   setTimeout(() => {
@@ -306,7 +335,7 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
   const meta = shape.meta as any
   if (!meta?.glowRects || !meta?.pageShapeId) return null
 
-  const pageEl = document.querySelector(`[data-shape-id="${meta.pageShapeId}"]`)
+  const pageEl = document.querySelector(`[data-shape-id="${meta.pageShapeId}"]:not(.tl-shape-background)`)
   if (!pageEl) return null
 
   const svgEl = pageEl.querySelector('svg')
@@ -323,17 +352,31 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
     const yMax = rect.y + rect.h
 
     for (const textEl of textEls) {
+      if (textEl.closest('defs')) continue
       const tspans = textEl.querySelectorAll('tspan')
-      const targets = tspans.length > 0 ? tspans : [textEl]
 
-      for (const target of targets) {
-        const ty = parseFloat(target.getAttribute('y') || '') || parseFloat(textEl.getAttribute('y') || '') || 0
-        const tx = parseFloat(target.getAttribute('x') || '') || parseFloat(textEl.getAttribute('x') || '') || 0
-        if (ty >= yMin && ty <= yMax && tx + 100 > rect.x && tx < rect.x + rect.w) {
-          const el = target as SVGElement
-          tinted.push({ el, original: el.style.fill || '' })
-          el.style.fill = tintColor
-          el.setAttribute('data-hl-tint', '1')
+      if (tspans.length === 0) {
+        const ty = parseFloat(textEl.getAttribute('y') || '0')
+        const tx = parseFloat(textEl.getAttribute('x') || '0')
+        const tw = (textEl as SVGTextContentElement).getComputedTextLength?.() || 100
+        if (ty >= yMin && ty <= yMax && tx + tw > rect.x && tx < rect.x + rect.w) {
+          tinted.push({ el: textEl, original: textEl.style.fill || '' })
+          textEl.style.fill = tintColor
+          textEl.setAttribute('data-hl-tint', '1')
+        }
+      } else {
+        let runY = parseFloat(textEl.getAttribute('y') || '0')
+        for (const tspan of tspans) {
+          const ey = tspan.getAttribute('y')
+          if (ey) runY = parseFloat(ey)
+          const tx = parseFloat(tspan.getAttribute('x') || '') || parseFloat(textEl.getAttribute('x') || '') || 0
+          const tw = (tspan as SVGTextContentElement).getComputedTextLength?.() || 100
+          if (runY >= yMin && runY <= yMax && tx + tw > rect.x && tx < rect.x + rect.w) {
+            const el = tspan as SVGElement
+            tinted.push({ el, original: el.style.fill || '' })
+            el.style.fill = tintColor
+            el.setAttribute('data-hl-tint', '1')
+          }
         }
       }
     }
@@ -369,3 +412,40 @@ function getSourceLine(x: number, y: number, editor: Editor): number | null {
 }
 
 export function restoreHighlightsFromShapes(_editor: Editor) {}
+
+/** Toggle highlight debug mode. When on, shows captured text as a toast after each highlight. */
+export function toggleHighlightDebug(): boolean {
+  const on = !(window as any).__hlDebug
+  ;(window as any).__hlDebug = on
+  return on
+}
+
+/** Show a transient toast with captured text near the highlight. */
+function showCaptureToast(text: string, bounds: { minX: number; minY: number; maxX: number; maxY: number }, editor: Editor) {
+  const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
+
+  const toast = document.createElement('div')
+  toast.textContent = text.length > 80 ? text.slice(0, 77) + '…' : text
+  Object.assign(toast.style, {
+    position: 'fixed',
+    left: `${Math.min(screenPos.x + 8, window.innerWidth - 320)}px`,
+    top: `${Math.max(screenPos.y - 30, 8)}px`,
+    maxWidth: '300px',
+    padding: '4px 8px',
+    background: 'rgba(0,0,0,0.8)',
+    color: '#fff',
+    fontSize: '11px',
+    lineHeight: '1.3',
+    borderRadius: '4px',
+    zIndex: '99999',
+    pointerEvents: 'none',
+    opacity: '1',
+    transition: 'opacity 1s ease-out',
+    fontFamily: 'system-ui, sans-serif',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  })
+  document.body.appendChild(toast)
+  setTimeout(() => { toast.style.opacity = '0' }, 3000)
+  setTimeout(() => { toast.remove() }, 4000)
+}

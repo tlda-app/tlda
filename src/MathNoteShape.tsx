@@ -713,14 +713,15 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // Tab bar — single-shape model: tabs stored in props.tabs
     const tabs = shape.props.tabs as string[] | undefined
     const activeTabIdx = (shape.props.activeTab as number) || 0
-    const showTabBar = tabs && tabs.length > 1 && !isEditing
+    const showTabBar = !isEditing
+    const multiTab = tabs && tabs.length > 1
 
     // Auto-widen shape when tabs overflow (up to 400px)
     const tabCount = tabs?.length ?? 0
     useEffect(() => {
       if (tabCount < 2) return
       const TAB_WIDTH = 70 // ~padding + preview text
-      const PADDING = 40 // + button + margin
+      const PADDING = 60 // done + add + margin
       const needed = tabCount * TAB_WIDTH + PADDING
       const currentW = shape.props.w as number
       if (needed > currentW && currentW < 400) {
@@ -729,7 +730,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [tabCount]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Context menu state for tab detach
+    // Context menu state for tab detach (fallback)
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null)
 
     useEffect(() => {
@@ -739,12 +740,59 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => document.removeEventListener('pointerdown', dismiss, true)
     }, [contextMenu])
 
+    // Drag-off state for tab detach
+    const dragTabRef = useRef<{ index: number; startX: number; startY: number; active: boolean } | null>(null)
+
     let tabBar: React.ReactNode = null
     if (showTabBar) {
       const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
       const activeColor = isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)'
       const activeBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'
       const borderColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'
+      const doneColor = isDone
+        ? (isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)')
+        : (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)')
+
+      // Get tab label for a given index, using live text for active tab
+      const getTabLabel = (i: number): string => {
+        const raw = i === activeTabIdx ? (shape.props.text || '') : (tabs?.[i] || '')
+        const preview = raw.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim()
+        return preview ? preview.slice(0, 12).trim() + (preview.length > 12 ? '..' : '') : '\u00B7'
+      }
+
+      // Drag-off handler: on pointerdown, track start; on pointermove, if >30px vertical, detach
+      const handleTabPointerDown = (e: React.PointerEvent, i: number) => {
+        stopEventPropagation(e)
+        if (e.button === 2) return
+        dragTabRef.current = { index: i, startX: e.clientX, startY: e.clientY, active: false }
+        const el = e.currentTarget as HTMLElement
+        el.setPointerCapture(e.pointerId)
+      }
+
+      const handleTabPointerMove = (e: React.PointerEvent) => {
+        const drag = dragTabRef.current
+        if (!drag) return
+        if (!multiTab) return
+        const dy = Math.abs(e.clientY - drag.startY)
+        if (dy > 30 && !drag.active) {
+          drag.active = true
+          // Detach at pointer position (convert screen to page coords)
+          const pagePoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
+          detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
+          dragTabRef.current = null
+          ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+        }
+      }
+
+      const handleTabPointerUp = (e: React.PointerEvent, i: number) => {
+        const drag = dragTabRef.current
+        dragTabRef.current = null
+        if (drag && !drag.active) {
+          // Normal click — switch tab
+          switchTab(editor, shape.id, i)
+        }
+        try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
+      }
 
       tabBar = (
         <div
@@ -752,61 +800,124 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           style={{
             display: 'flex',
             alignItems: 'stretch',
-            borderBottom: `1px solid ${borderColor}`,
+            borderBottom: multiTab ? `1px solid ${borderColor}` : undefined,
             flexShrink: 0,
             overflowX: 'auto',
             scrollbarWidth: 'none',
           }}
         >
-          {tabs.map((tabText, i) => {
-            // Show content preview: first few words, stripped of $ delimiters
-            const preview = (tabText || '').replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim()
-            const label = preview ? preview.slice(0, 12).trim() + (preview.length > 12 ? '..' : '') : `${i + 1}`
-            return (
-              <div
-                key={i}
-                onPointerDown={(e) => {
-                  stopEventPropagation(e)
-                  if (e.button === 2) return
-                  switchTab(editor, shape.id, i)
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  stopEventPropagation(e)
-                  if (tabs.length > 1) {
-                    setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
+          {/* Done toggle */}
+          <div
+            className={`note-done-toggle-inline${isDone ? ' note-done-toggle-inline--active' : ''}`}
+            onPointerDown={(e) => {
+              stopEventPropagation(e)
+              const newDone = !isDone
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { done: newDone },
+              })
+              if (newDone) {
+                const pages = editor.getCurrentPageShapes()
+                  .filter(s => s.type === 'svg-page')
+                let bestPage: typeof pages[0] | null = null
+                let bestDist = Infinity
+                for (const p of pages) {
+                  const pb = editor.getShapePageBounds(p.id)
+                  if (!pb) continue
+                  const cy = shape.y + (shape.props as any).h / 2
+                  const dist = cy < pb.minY ? pb.minY - cy : cy > pb.maxY ? cy - pb.maxY : 0
+                  if (dist < bestDist) { bestDist = dist; bestPage = p }
+                }
+                if (bestPage) {
+                  const pb = editor.getShapePageBounds(bestPage.id)
+                  if (pb) {
+                    editor.updateShape({
+                      id: shape.id,
+                      type: shape.type,
+                      x: pb.maxX + 20,
+                    } as any)
                   }
-                }}
-                style={{
-                  padding: '3px 8px',
-                  fontSize: '10px',
-                  fontFamily: '-apple-system, sans-serif',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  pointerEvents: 'all',
-                  flexShrink: 0,
-                  color: i === activeTabIdx ? activeColor : inactiveColor,
-                  fontWeight: i === activeTabIdx ? 600 : 400,
-                  borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
-                  backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
-                  marginBottom: '-1px',
-                  maxWidth: '80px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {label}
-              </div>
-            )
-          })}
-          {/* Spacer — no pointerEvents, so drags pass through to TLDraw */}
+                }
+              }
+            }}
+            style={{
+              padding: '3px 4px',
+              fontSize: '10px',
+              cursor: 'pointer',
+              userSelect: 'none',
+              pointerEvents: 'all',
+              flexShrink: 0,
+              color: doneColor,
+            }}
+          >
+            {isDone ? '\u2713' : '\u25CB'}
+          </div>
+          {/* Tab labels (only when multi-tab) */}
+          {multiTab && tabs.map((_, i) => (
+            <div
+              key={i}
+              onPointerDown={(e) => handleTabPointerDown(e, i)}
+              onPointerMove={handleTabPointerMove}
+              onPointerUp={(e) => handleTabPointerUp(e, i)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                stopEventPropagation(e)
+                setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
+              }}
+              style={{
+                padding: '3px 8px',
+                fontSize: '10px',
+                fontFamily: '-apple-system, sans-serif',
+                cursor: 'pointer',
+                userSelect: 'none',
+                pointerEvents: 'all',
+                flexShrink: 0,
+                color: i === activeTabIdx ? activeColor : inactiveColor,
+                fontWeight: i === activeTabIdx ? 600 : 400,
+                borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
+                backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
+                marginBottom: '-1px',
+                maxWidth: '80px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {getTabLabel(i)}
+            </div>
+          ))}
+          {/* + button inline with tabs */}
+          <div
+            className="note-tab-add"
+            onPointerDown={(e) => {
+              stopEventPropagation(e)
+              addTab(editor, shape.id, '')
+              requestAnimationFrame(() => {
+                editor.setEditingShape(shape.id)
+              })
+            }}
+            style={{
+              padding: '3px 6px',
+              fontSize: '12px',
+              fontWeight: 300,
+              fontFamily: '-apple-system, sans-serif',
+              color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)',
+              cursor: 'pointer',
+              userSelect: 'none',
+              pointerEvents: 'all',
+              flexShrink: 0,
+            }}
+          >
+            +
+          </div>
+          {/* Spacer */}
           <div style={{ flex: 1 }} />
         </div>
       )
     }
 
-    // Context menu portal for detach
+    // Context menu portal for detach (fallback for right-click)
     let contextMenuEl: React.ReactNode = null
     if (contextMenu) {
       contextMenuEl = (
@@ -871,62 +982,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             ...(isDone && !isEditing ? { maxHeight: '28px', opacity: 0.35 } : {}),
           }}>
             {content}
-            {/* + button — always top-right, browser-style */}
-            {!isEditing && (
-              <div
-                className="note-add-reply"
-                onPointerDown={(e) => {
-                  stopEventPropagation(e)
-                  addTab(editor, shape.id, '')
-                  requestAnimationFrame(() => {
-                    editor.setEditingShape(shape.id)
-                  })
-                }}
-              >
-                +
-              </div>
-            )}
-            {/* Done toggle — top-left, visible on hover */}
-            {!isEditing && (
-              <div
-                className="note-done-toggle"
-                onPointerDown={(e) => {
-                  stopEventPropagation(e)
-                  const newDone = !isDone
-                  editor.updateShape({
-                    id: shape.id,
-                    type: shape.type,
-                    props: { done: newDone },
-                  })
-                  // Teleport to right margin gutter when marking done
-                  if (newDone) {
-                    const pages = editor.getCurrentPageShapes()
-                      .filter(s => s.type === 'svg-page')
-                    let bestPage: typeof pages[0] | null = null
-                    let bestDist = Infinity
-                    for (const p of pages) {
-                      const pb = editor.getShapePageBounds(p.id)
-                      if (!pb) continue
-                      const cy = shape.y + (shape.props as any).h / 2
-                      const dist = cy < pb.minY ? pb.minY - cy : cy > pb.maxY ? cy - pb.maxY : 0
-                      if (dist < bestDist) { bestDist = dist; bestPage = p }
-                    }
-                    if (bestPage) {
-                      const pb = editor.getShapePageBounds(bestPage.id)
-                      if (pb) {
-                        editor.updateShape({
-                          id: shape.id,
-                          type: shape.type,
-                          x: pb.maxX + 20,
-                        } as any)
-                      }
-                    }
-                  }
-                }}
-              >
-                {isDone ? '\u2713' : '\u25CB'}
-              </div>
-            )}
           </div>
           {contextMenuEl}
       </HTMLContainer>

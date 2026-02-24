@@ -215,6 +215,9 @@ router.post('/:name/shapes', requireRw, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shape = req.body
   if (!shape?.id || !shape?.type) return res.status(400).json({ error: 'Shape must have id and type' })
+  // Stamp creation time for temporal clustering
+  if (!shape.meta) shape.meta = {}
+  if (!shape.meta.createdAt) shape.meta.createdAt = Date.now()
   try {
     await putShape(syncRoomName(req.params.name), shape)
     res.json({ ok: true, id: shape.id })

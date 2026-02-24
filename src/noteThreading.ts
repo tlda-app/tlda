@@ -132,15 +132,15 @@ export function removeTab(editor: Editor, shapeId: TLShapeId, index: number) {
     id: shapeId,
     type: shape.type,
     props: {
-      activeTab: updatedTabs.length > 1 ? newActive : undefined,
-      tabs: updatedTabs.length > 1 ? updatedTabs : undefined,
+      activeTab: newActive,
+      tabs: updatedTabs,
       text: updatedTabs[newActive],
     },
   })
 }
 
 /** Detach a tab into a new standalone shape. Returns new shape ID, or null. */
-export function detachTab(editor: Editor, shapeId: TLShapeId, index: number): TLShapeId | null {
+export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?: number, y?: number): TLShapeId | null {
   const shape = editor.getShape(shapeId)
   if (!shape) return null
 
@@ -168,19 +168,19 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number): TL
     id: shapeId,
     type: shape.type,
     props: {
-      tabs: updatedTabs.length > 1 ? updatedTabs : undefined,
-      activeTab: updatedTabs.length > 1 ? newActive : undefined,
+      tabs: updatedTabs,
+      activeTab: newActive,
       text: updatedTabs[newActive],
     },
   })
 
-  // Create detached shape offset from original
+  // Create detached shape at given position or offset from original
   const newId = `shape:detached-${Date.now()}` as TLShapeId
   editor.createShape({
     id: newId,
     type: 'math-note',
-    x: shape.x + 30,
-    y: shape.y + 30,
+    x: x ?? shape.x + 30,
+    y: y ?? shape.y + 30,
     props: {
       w: (shape.props as any).w || 200,
       h: (shape.props as any).h || 50,

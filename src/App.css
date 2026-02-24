@@ -68,13 +68,12 @@
   zoom: 0.6;
 }
 
-/* Hide license watermark for dev */
-.tl-watermark,
-[class*="watermark"],
-[class*="license"] {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
+/* Tone down tldraw watermark to match our subtle UI style */
+[class*="watermark"] {
+  opacity: 0.35 !important;
+  bottom: max(6px, env(safe-area-inset-bottom)) !important;
+  left: max(52px, env(safe-area-inset-left)) !important;
+  right: auto !important;
 }
 
 

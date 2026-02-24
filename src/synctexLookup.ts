@@ -262,14 +262,16 @@ export function clearLookupCache(docName?: string) {
 
 export interface HtmlTocEntry {
   title: string
-  level: 'section' | 'subsection' | 'subsubsection'
+  level: 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection'
   page: number
+  anchor?: string
 }
 
 export interface HtmlSearchEntry {
   page: number
   text: string
   label?: string
+  anchor?: string
 }
 
 const htmlTocCache = new Map<string, HtmlTocEntry[] | null>()

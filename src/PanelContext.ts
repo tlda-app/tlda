@@ -7,6 +7,7 @@ import type { BuildError, BuildWarning } from './useYjsSync'
 /** Stable document info — set once per document load, never changes during session. */
 export interface DocContextValue {
   docName: string
+  format?: 'svg' | 'png' | 'html' | 'diff'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string }>
 }
 

@@ -3,6 +3,7 @@ import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
 import type { DocContextValue } from '../PanelContext'
+import { htmlHeadingPositions } from '../HtmlPageShape'
 
 // --- Helpers ---
 
@@ -27,9 +28,27 @@ export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages
   navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
 }
 
+export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pages'>, pageNum: number, anchor: string) {
+  const pageIndex = pageNum - 1
+  // Find the html-page shape for this page index
+  const shapes = editor.getCurrentPageShapes()
+    .filter((s: any) => s.type === 'html-page')
+    .sort((a: any, b: any) => a.y - b.y)
+  const shape = shapes[pageIndex] as any
+  if (!shape) return navigateToPage(editor, doc, pageNum)
+  const positions = htmlHeadingPositions.get(shape.id)
+  const yOffset = positions?.[anchor]
+  if (yOffset != null) {
+    const centerX = shape.x + shape.props.w / 2
+    navigateTo(editor, centerX, shape.y + yOffset, centerX)
+  } else {
+    navigateToPage(editor, doc, pageNum)
+  }
+}
+
 // --- Heading parsing ---
 
-export type TocLevel = 'section' | 'subsection' | 'subsubsection'
+export type TocLevel = 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection'
 
 export interface TocEntry {
   level: TocLevel
@@ -39,6 +58,8 @@ export interface TocEntry {
 }
 
 const DEMOTE: Record<TocLevel, TocLevel> = {
+  part: 'chapter',
+  chapter: 'section',
   section: 'subsection',
   subsection: 'subsubsection',
   subsubsection: 'subsubsection',

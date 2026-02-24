@@ -55,6 +55,20 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'svg-figure': {
+    props: {
+      w: T.number,
+      h: T.number,
+      svgUrl: T.string,
+      parentShapeId: T.string,
+      offsetY: T.number,
+      caption: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.svg-figure',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({

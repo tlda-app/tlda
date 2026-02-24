@@ -35,6 +35,10 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return <SvgPageComponent shape={shape} />
   }
 
+  backgroundComponent(shape: any) {
+    return <SvgPageBackground shape={shape} />
+  }
+
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} />
   }
@@ -194,7 +198,6 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            background: isDark ? '#0f0f1a' : 'white',
             overflow: 'hidden',
             pointerEvents: 'all',
           }}
@@ -211,6 +214,13 @@ function SvgPageComponent({ shape }: { shape: any }) {
       </div>
     </HTMLContainer>
   )
+}
+
+function SvgPageBackground({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
+  const fill = isDark ? '#0f0f1a' : 'white'
+  return <rect width={shape.props.w} height={shape.props.h} fill={fill} />
 }
 
 /** Apply text tinting to SVG text elements within change regions.

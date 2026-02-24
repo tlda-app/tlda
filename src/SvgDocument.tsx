@@ -8,6 +8,7 @@ import {
   DefaultSizeStyle,
   defaultShapeUtils,
   defaultBindingUtils,
+  HighlightShapeUtil,
 } from 'tldraw'
 import {
   SelectToolbarItem,
@@ -29,6 +30,7 @@ import { MathNoteShapeUtil, setMathNoteEntryMode, setReplyContext } from './Math
 import { switchTab, addTab } from './noteThreading'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { SvgPageShapeUtil } from './SvgPageShape'
+import { SvgFigureShapeUtil } from './SvgFigureShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages, type ChangeRegion } from './stores'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
@@ -486,6 +488,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // Stable doc info — only changes when a different document loads
   const docContextValue = useMemo(() => ({
     docName: docKey,
+    format: document.format,
     pages: document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
       width: p.width,
@@ -533,7 +536,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     buildWarnings,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
 
-  const shapeUtils = useMemo(() => [...defaultShapeUtils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil], [])
+  const shapeUtils = useMemo(() => {
+    // Suppress the default hover/selection indicator on highlight shapes —
+    // it draws a blue path outline that competes with our text glow effect
+    class QuietHighlightShapeUtil extends HighlightShapeUtil {
+      override indicator() { return null }
+    }
+    const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil]
+  }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const tools = useMemo(() => [MathNoteTool, TextSelectTool], [])
 

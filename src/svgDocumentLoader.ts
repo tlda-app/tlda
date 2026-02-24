@@ -385,7 +385,7 @@ export async function loadHtmlDocument(
         width: info.width,
         height: info.height,
       })
-      top += info.height + pageSpacing
+      top += info.height  // no gap — HTML chapters stack continuously
       widest = Math.max(widest, info.width)
       i++
     } else {

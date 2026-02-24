@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext } from 'react'
 import { createPortal } from 'react-dom'
 import { useEditor, stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { PanelContext } from './PanelContext'
+import { DocContext, PanelContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
@@ -99,6 +99,8 @@ type Tab = 'history' | 'toc' | 'notes'
 
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
+  const doc = useContext(DocContext)
+  const isHtml = doc?.format === 'html'
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -119,7 +121,7 @@ export function DocumentPanel() {
   return (
     <div
       ref={panelRef}
-      className={`doc-panel${open ? ' doc-panel-open' : ''}`}
+      className={`doc-panel${open ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
       onPointerDown={(e) => {
         stopEventPropagation(e)
         // Touch tap on collapsed strip → open
@@ -136,15 +138,17 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
           TOC
         </button>
-        <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-          History
-        </button>
+        {!isHtml && (
+          <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+            History
+          </button>
+        )}
         <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           Notes
         </button>
       </div>
       {tab === 'toc' && <TocTab />}
-      {tab === 'history' && <HistoryTab />}
+      {tab === 'history' && !isHtml && <HistoryTab />}
       {tab === 'notes' && <NotesTab />}
     </div>
   )

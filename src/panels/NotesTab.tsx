@@ -88,7 +88,7 @@ export function NotesTab() {
     const shapeDone = isDone(shape)
     return (
       <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
-        style={shapeDone ? { opacity: 0.4 } : undefined}
+        style={shapeDone ? { opacity: 0.55 } : undefined}
       >
         <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
           <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />
@@ -106,6 +106,18 @@ export function NotesTab() {
         <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
           {anchor?.line && <span>L{anchor.line}</span>}
           {tabCount > 1 && <span>{tabCount} tabs</span>}
+          {shapeDone && (
+            <button
+              className="note-undone-btn"
+              title="Reopen note"
+              onClick={(e) => {
+                e.stopPropagation()
+                editor.updateShape({ id: shape.id, type: shape.type, props: { done: false } } as any)
+              }}
+            >
+              ↩ reopen
+            </button>
+          )}
         </div>
       </div>
     )

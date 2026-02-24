@@ -32,6 +32,7 @@ import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, requireRead } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
+import { injectBridge } from './lib/html-injector.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -52,6 +53,15 @@ initAuth()
 const app = express()
 app.use(express.json({ limit: '50mb' }))
 
+// CORS — allow cross-origin requests (needed when SPA is on a different domain, e.g. GitHub Pages)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*')
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  if (req.method === 'OPTIONS') return res.sendStatus(204)
+  next()
+})
+
 // Health
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
@@ -64,6 +74,33 @@ app.get('/health', (req, res) => {
 app.get('/docs/manifest.json', requireRead, (req, res) => {
   const manifest = generateManifest()
   res.json(manifest)
+})
+
+// Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
+// These are Quarto framework files loaded by iframes that can't pass auth headers
+app.use('/docs', (req, res, next) => {
+  const parts = req.path.slice(1).split('/')
+  if (parts.length < 3) return next() // need at least /name/site_libs/...
+  const name = parts[0]
+  const filePath = parts.slice(1).join('/')
+  // Skip auth for non-HTML sub-resources in html-format projects
+  // (CSS, JS, fonts, figures — loaded by iframes that can't pass auth headers)
+  if (!filePath.endsWith('.html')) {
+    try {
+      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
+      if (existsSync(projectJsonPath)) {
+        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+        if (project.format === 'html') {
+          const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
+          if (existsSync(assetPath)) {
+            res.set('Cache-Control', 'public, max-age=3600')
+            return res.sendFile(resolve(assetPath))
+          }
+        }
+      }
+    } catch (e) { /* fall through to auth'd route */ }
+  }
+  next()
 })
 
 // Serve doc assets: try projects output first, then legacy public/docs
@@ -87,10 +124,109 @@ app.use('/docs', requireRead, (req, res, next) => {
     return res.status(404).json({ error: 'Not found' })
   }
 
+  // Combined HTML: concatenate all chapter bodies into one page
+  if (filePath === '_combined.html') {
+    try {
+      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
+      const outputDir = join(PROJECTS_DIR, name, 'output')
+      const pageInfoPath = join(outputDir, 'page-info.json')
+      if (existsSync(projectJsonPath) && existsSync(pageInfoPath)) {
+        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+        if (project.format === 'html') {
+          const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+          // Find chapter list: either from first entry's chapters field, or all entries
+          const chapters = pageInfo[0]?.chapters || pageInfo.map(e => ({ file: e.file, title: e.title }))
+          // Use head from first chapter
+          const firstHtml = readFileSync(join(outputDir, chapters[0].file), 'utf8')
+          const headMatch = firstHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)
+          const headContent = headMatch ? headMatch[1] : ''
+          // Extract body from each chapter
+          const bodies = []
+          for (const ch of chapters) {
+            const chapterPath = join(outputDir, ch.file)
+            if (!existsSync(chapterPath)) continue
+            const chapterHtml = readFileSync(chapterPath, 'utf8')
+            const bodyMatch = chapterHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+            if (bodyMatch) {
+              bodies.push(`<div class="ctd-chapter" id="chapter-${bodies.length + 1}">\n${bodyMatch[1]}\n</div>`)
+            }
+          }
+          const combined = `<!DOCTYPE html>
+<html><head>${headContent}
+<style>
+.ctd-chapter { border-bottom: 2px solid #e5e7eb; margin-bottom: 24px; padding-bottom: 24px; }
+.ctd-chapter:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+</style>
+</head><body>${bodies.join('\n')}</body></html>`
+          const injected = injectBridge(combined, `/docs/${name}/`)
+          res.set('Cache-Control', 'no-cache')
+          res.type('html').send(injected)
+          return
+        }
+      }
+    } catch (e) {
+      console.error(`[docs] Error generating combined HTML for ${name}:`, e.message)
+    }
+    return res.status(404).json({ error: 'Not found' })
+  }
+
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {
     res.set('Cache-Control', 'no-cache')
+    // For HTML files in html-format projects, inject the ctd bridge script
+    if (filePath.endsWith('.html')) {
+      try {
+        const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
+        if (existsSync(projectJsonPath)) {
+          const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+          if (project.format === 'html') {
+            const html = readFileSync(projectPath, 'utf8')
+            // Look up chapter title and compute "Chapter N" numbering within parts
+            let chapterTitle = ''
+            let isFirstPage = false
+            try {
+              const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
+              const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+              const idx = pageInfo.findIndex(p => p.file === filePath)
+              isFirstPage = idx === 0
+              if (idx >= 0 && pageInfo[idx].title) {
+                const entry = pageInfo[idx]
+                if (entry.tocLevel === 'part') {
+                  // Parts keep their title as-is
+                  chapterTitle = entry.title
+                } else {
+                  // Count chapter number within the current part
+                  // Pages before the first part don't get chapter numbers
+                  let chapterNum = 0
+                  let inPart = false
+                  for (let i = 0; i <= idx; i++) {
+                    if (pageInfo[i].tocLevel === 'part') {
+                      chapterNum = 0
+                      inPart = true
+                    } else if (!pageInfo[i].tocLevel && inPart) {
+                      chapterNum++
+                    }
+                  }
+                  // Strip "Lab N:", "Lecture N:", etc. prefixes
+                  const stripped = entry.title.replace(/^(Lab|Lecture)\s+\d+[:.]\s*/i, '').replace(/^Lecture\s+\d+$/i, '')
+                  chapterTitle = chapterNum > 0 && stripped
+                    ? `Chapter ${chapterNum}: ${stripped}`
+                    : chapterNum > 0
+                      ? `Chapter ${chapterNum}`
+                      : entry.title
+                }
+              }
+            } catch (e) {}
+            const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage)
+            res.type('html').send(injected)
+            return
+          }
+        }
+      } catch (e) {
+        // Fall through to sendFile on error
+      }
+    }
     return res.sendFile(resolve(projectPath))
   }
 

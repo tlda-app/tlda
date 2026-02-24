@@ -5,7 +5,27 @@ import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupE
 import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
-import { navigateTo, navigateToPage, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+
+const CHILDREN: Record<string, string[]> = {
+  part: ['chapter', 'section', 'subsection', 'subsubsection'],
+  chapter: ['section', 'subsection', 'subsubsection'],
+  section: ['subsection', 'subsubsection'],
+  subsection: ['subsubsection'],
+}
+
+function computeDefaultFolded(items: Array<{ level: string }>): Set<number> {
+  const set = new Set<number>()
+  for (let i = 0; i < items.length; i++) {
+    const next = items[i + 1]
+    if (!next) continue
+    const children = CHILDREN[items[i].level]
+    if (children && children.includes(next.level)) {
+      set.add(i)
+    }
+  }
+  return set
+}
 
 export function TocTab() {
   const editor = useEditor()
@@ -33,33 +53,13 @@ export function TocTab() {
         const h = parseHeadings(data.lines, data.meta)
         setHeadings(h)
         // Fold all headings that have children by default
-        const foldedSet = new Set<number>()
-        for (let i = 0; i < h.length; i++) {
-          const next = h[i + 1]
-          if (!next) continue
-          if (h[i].level === 'section' && (next.level === 'subsection' || next.level === 'subsubsection')) {
-            foldedSet.add(i)
-          } else if (h[i].level === 'subsection' && next.level === 'subsubsection') {
-            foldedSet.add(i)
-          }
-        }
-        setCollapsed(foldedSet)
+        setCollapsed(computeDefaultFolded(h))
       } else {
         // Fallback: try HTML TOC
         loadHtmlToc(doc!.docName).then(toc => {
           if (toc) {
             setHtmlToc(toc)
-            const foldedSet = new Set<number>()
-            for (let i = 0; i < toc.length; i++) {
-              const next = toc[i + 1]
-              if (!next) continue
-              if (toc[i].level === 'section' && (next.level === 'subsection' || next.level === 'subsubsection')) {
-                foldedSet.add(i)
-              } else if (toc[i].level === 'subsection' && next.level === 'subsubsection') {
-                foldedSet.add(i)
-              }
-            }
-            setCollapsed(foldedSet)
+            setCollapsed(computeDefaultFolded(toc))
           }
         })
       }
@@ -76,9 +76,13 @@ export function TocTab() {
     navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, doc])
 
-  const handleHtmlNav = useCallback((pageNum: number) => {
+  const handleHtmlNav = useCallback((pageNum: number, anchor?: string) => {
     if (!doc) return
-    navigateToPage(editor, doc, pageNum)
+    if (anchor) {
+      navigateToAnchor(editor, doc, pageNum, anchor)
+    } else {
+      navigateToPage(editor, doc, pageNum)
+    }
   }, [editor, doc])
 
   const toggleSection = useCallback((idx: number) => {
@@ -130,14 +134,14 @@ export function TocTab() {
       return results
     }
     if (htmlSearchIndex) {
-      const results: Array<{ page: number; snippet: string; label?: string }> = []
+      const results: Array<{ page: number; snippet: string; label?: string; anchor?: string }> = []
       for (const entry of htmlSearchIndex) {
         const idx = entry.text.toLowerCase().indexOf(q)
         if (idx >= 0) {
           const start = Math.max(0, idx - 30)
           const end = Math.min(entry.text.length, idx + q.length + 50)
           const snippet = (start > 0 ? '...' : '') + entry.text.slice(start, end) + (end < entry.text.length ? '...' : '')
-          results.push({ page: entry.page, snippet, label: entry.label })
+          results.push({ page: entry.page, snippet, label: entry.label, anchor: entry.anchor })
           if (results.length >= 50) break
         }
       }
@@ -172,9 +176,13 @@ export function TocTab() {
     navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, doc])
 
-  const handlePageSearchClick = useCallback((pageNum: number) => {
+  const handlePageSearchClick = useCallback((pageNum: number, anchor?: string) => {
     if (!doc) return
-    navigateToPage(editor, doc, pageNum)
+    if (anchor) {
+      navigateToAnchor(editor, doc, pageNum, anchor)
+    } else {
+      navigateToPage(editor, doc, pageNum)
+    }
   }, [editor, doc])
 
   const handleNoteSearchClick = useCallback((shape: TLShape) => {
@@ -197,12 +205,35 @@ export function TocTab() {
 
   // Unified render for both TeX and HTML TOC entries
   const items: Array<{ level: TocLevel; title: string; nav: () => void }> = useHtml
-    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page) }))
+    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page, h.anchor) }))
     : headings.map(h => ({ level: h.level, title: renderTocTitle(h.title), nav: () => handleNav(h.entry) }))
 
   // Build visibility: children hidden if their parent is collapsed
+  let currentPartIdx = -1
+  let currentChapterIdx = -1
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
+
+  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void }, nextLevel: TocLevel | TocLevel[]) {
+    const isCollapsed = collapsed?.has(i) ?? false
+    const next = items[i + 1]
+    const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
+    const hasChildren = next && childLevels.includes(next.level)
+    return (
+      <div key={i} className={`toc-item ${h.level}`}>
+        {hasChildren ? (
+          <span
+            className={`toc-fold ${isCollapsed ? 'collapsed' : ''}`}
+            onClick={(e) => { e.stopPropagation(); toggleSection(i) }}
+          />
+        ) : (
+          <span className="toc-fold-spacer" />
+        )}
+        <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+      </div>
+    )
+  }
+
   return (
     <>
     <div className="search-input-wrap">
@@ -222,9 +253,9 @@ export function TocTab() {
             <>
               <div className="search-group-label">Document</div>
               {isHtmlSearch
-                ? (docResults as Array<{ page: number; snippet: string; label?: string }>).map((r, i) => (
-                    <div key={`d-${i}`} className="search-result" onClick={() => handlePageSearchClick(r.page)}>
-                      <span className="line-num">p{r.page}</span>
+                ? (docResults as Array<{ page: number; snippet: string; label?: string; anchor?: string }>).map((r, i) => (
+                    <div key={`d-${i}`} className="search-result" onClick={() => handlePageSearchClick(r.page, r.anchor)}>
+                      <span className="line-num">{r.label || `p${r.page}`}</span>
                       {r.snippet}
                     </div>
                   ))
@@ -265,50 +296,35 @@ export function TocTab() {
         </a>
       )}
       {items.map((h, i) => {
+        if (h.level === 'part') {
+          currentPartIdx = i
+          currentChapterIdx = -1
+          currentSectionIdx = -1
+          currentSubsectionIdx = -1
+          return renderFoldableItem(i, h, ['chapter', 'section', 'subsection', 'subsubsection'])
+        }
+        if (currentPartIdx >= 0 && collapsed?.has(currentPartIdx)) return null
+        if (h.level === 'chapter') {
+          currentChapterIdx = i
+          currentSectionIdx = -1
+          currentSubsectionIdx = -1
+          return renderFoldableItem(i, h, ['section', 'subsection', 'subsubsection'])
+        }
+        if (currentChapterIdx >= 0 && collapsed?.has(currentChapterIdx)) return null
         if (h.level === 'section') {
           currentSectionIdx = i
           currentSubsectionIdx = -1
-          const isCollapsed = collapsed?.has(i) ?? false
-          const next = items[i + 1]
-          const hasChildren = next && (next.level === 'subsection' || next.level === 'subsubsection')
-          return (
-            <div key={i} className="toc-item section">
-              {hasChildren ? (
-                <span
-                  className={`toc-fold ${isCollapsed ? 'collapsed' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); toggleSection(i) }}
-                />
-              ) : (
-                <span className="toc-fold-spacer" />
-              )}
-              <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
-            </div>
-          )
+          return renderFoldableItem(i, h, ['subsection', 'subsubsection'])
         }
-        if (collapsed?.has(currentSectionIdx)) return null
+        if (currentSectionIdx >= 0 && collapsed?.has(currentSectionIdx)) return null
         if (h.level === 'subsection') {
           currentSubsectionIdx = i
-          const isCollapsed = collapsed?.has(i) ?? false
-          const next = items[i + 1]
-          const hasChildren = next && next.level === 'subsubsection'
-          return (
-            <div key={i} className="toc-item subsection">
-              {hasChildren ? (
-                <span
-                  className={`toc-fold ${isCollapsed ? 'collapsed' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); toggleSection(i) }}
-                />
-              ) : (
-                <span className="toc-fold-spacer" />
-              )}
-              <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
-            </div>
-          )
+          return renderFoldableItem(i, h, 'subsubsection')
         }
-        if (collapsed?.has(currentSubsectionIdx)) return null
+        if (currentSubsectionIdx >= 0 && collapsed?.has(currentSubsectionIdx)) return null
         return (
           <div key={i} className="toc-item subsubsection" onClick={h.nav}
-            dangerouslySetInnerHTML={{ __html: useHtml ? h.title : h.title }} />
+            dangerouslySetInnerHTML={{ __html: h.title }} />
         )
       })}
       {ctx?.onToggleCameraLink && (

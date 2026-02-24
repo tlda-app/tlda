@@ -32,7 +32,7 @@ None of this requires an AI agent, though. CTD works fine for human collaborator
 - Build error overlay: when LaTeX fails, errors appear as text shapes anchored to the source line where they occur, with a navigation panel to cycle through them. Clickable to open in your editor.
 - Build warning pill: small warning count badge; click to expand the list, click a warning to jump to it in the editor
 - Editor integration (`texsync://`): Cmd-click rendered text to open the source file at that line in your editor. Errors and warnings are clickable too. Run `./scripts/install-texsync.sh` to set up the URL handler (macOS; defaults to Zed, `--editor code` for VS Code)
-- Magic highlighter: freehand highlight strokes that extract and glow the underlying text on hover
+- Magic highlighter: freehand highlight strokes that extract the underlying text and attach it as metadata, so agents can read what you highlighted without a screenshot. Glows on hover.
 - File watcher for live rebuild on save
 
 ## Architecture
@@ -144,6 +144,7 @@ Everything goes through the `ctd` command:
 | Command | What it does |
 |---------|-------------|
 | `ctd server start` | Start the server (port 5176) |
+| `ctd server start --agent` | Start with Todd, the always-on triage agent |
 | `ctd server stop` | Stop the server |
 | `ctd create <name> --dir /path --main file.tex` | Create a project, push files, build |
 | `ctd push [name]` | Push source files, trigger rebuild |

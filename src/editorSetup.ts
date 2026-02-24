@@ -624,6 +624,13 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   editor.sideEffects.registerAfterCreateHandler('shape', (shape) => {
     if (!shapeIdSet.has(shape.id)) {
       makeSureShapesAreAtBottom()
+      // Stamp creation time for temporal clustering (if not already set by server/MCP)
+      if (!shape.meta?.createdAt) {
+        editor.store.update(shape.id, (s: any) => ({
+          ...s,
+          meta: { ...s.meta, createdAt: Date.now() },
+        }))
+      }
       // Anchor user-created shapes to source lines (fire-and-forget)
       anchorShape(editor, shape)
       // Magic highlighter: snap highlight strokes to text

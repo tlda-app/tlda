@@ -37,7 +37,7 @@ import YAML from 'yaml'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 
-const PAGE_WIDTH = 800  // CSS pixels — matches SVG target width
+const PAGE_WIDTH = 750  // CSS pixels — matches Quarto book body column width
 const MIN_PAGE_HEIGHT = 400  // Minimum height to avoid tiny pages
 
 // Find Chrome
