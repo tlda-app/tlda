@@ -5,8 +5,8 @@ How to set up and run a collaborative annotation session for your coauthors.
 ## Prerequisites
 
 **On your machine:**
-- **Node.js** 20+ (`node --version`)
-- **TeX Live** with `latexmk`, `pdflatex`, `dvisvgm` (`brew install --cask mactex` on macOS, or `sudo apt install texlive-full` on Linux)
+- **Node.js** 18+ (`node --version`)
+- **TeX Live** with `latexmk`, `pdflatex`, `biber`, `dvisvgm` (`brew install --cask mactex` on macOS, or `sudo apt install texlive-full` on Linux)
 - **Tailscale** for remote access (`brew install --cask tailscale` on macOS, or [tailscale.com/download](https://tailscale.com/download))
 
 ## Setup
@@ -15,21 +15,23 @@ How to set up and run a collaborative annotation session for your coauthors.
 git clone https://github.com/qtm285/claude-tldraw.git
 cd claude-tldraw
 npm install
+npm link   # installs the `ctd` CLI globally
 ```
 
 ## Add your paper
 
 ```bash
-./build-svg.sh /path/to/your-paper.tex my-paper "My Paper Title"
+ctd create my-paper --title "My Paper Title" --source /path/to/paper/directory --main my-paper.tex
 ```
 
-This compiles your LaTeX to SVG pages, extracts math macros for KaTeX rendering, and registers the document. Takes a minute or two on first run.
+This registers the project. The watcher handles compilation automatically.
 
 Verify it works locally:
 
 ```bash
-npm run start
-# Open http://localhost:5173/?doc=my-paper
+ctd server start
+ctd watch-all start
+ctd open my-paper
 ```
 
 ## Set up Tailscale
@@ -41,50 +43,57 @@ npm run start
 ## Start a session
 
 ```bash
-# Start everything: viewer, sync server, MCP, and file watcher
-npm run collab -- --watch /path/to/your-paper.tex my-paper
+ctd server start        # unified server on port 5176
+ctd watch-all start     # watches all projects for file changes
 ```
 
-This prints your Tailscale and LAN URLs. Collaborators open:
+Collaborators open:
 
 ```
-http://YOUR_TAILSCALE_IP:5173/?doc=my-paper
+http://YOUR_TAILSCALE_IP:5176/?doc=my-paper
 ```
 
-### What's running
+Everything runs on a single port (5176): the viewer, real-time sync, and API.
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| Vite dev server | 5173 | Serves the viewer app |
-| Yjs sync server | 5176 | Real-time annotation sync |
-| MCP HTTP | 5174 | Agent integration (highlights, notes) |
-| MCP WebSocket | 5175 | Forward sync (agent → viewer) |
-| File watcher | — | Auto-rebuilds on .tex changes |
+## Authentication (optional)
 
-### Without the file watcher
+By default, auth is disabled — anyone who can reach port 5176 can view and annotate. For remote hosting over Tailscale or a VPS, you probably want tokens.
 
-If you don't need auto-rebuild (e.g. the paper isn't changing):
+Two token levels:
+- **Read token** — view the paper, connect to sync
+- **RW token** — everything: create/edit/delete annotations, trigger builds
+
+Configure via environment variables or `~/.config/ctd/config.json`:
 
 ```bash
-npm run collab
+# Environment variables
+export CTD_TOKEN_READ="some-read-token"
+export CTD_TOKEN_RW="some-rw-token"
+ctd server start
 ```
 
-Or start services individually:
-
-```bash
-npm run sync    # Just the annotation sync server
-npm run dev     # Just the viewer
+```json
+// ~/.config/ctd/config.json
+{
+  "server": "http://localhost:5176",
+  "tokenRead": "some-read-token",
+  "tokenRw": "some-rw-token"
+}
 ```
+
+When auth is enabled, collaborators pass the token in the URL: `http://HOST:5176/?doc=my-paper&token=TOKEN`. The viewer automatically injects it into all subsequent requests.
+
+To disable auth explicitly (e.g. for local-only use): `CTD_NO_AUTH=1`.
 
 ## Collaborative editing
 
-For real-time LaTeX editing, use [Zed](https://zed.dev/)'s built-in collaboration. One person hosts the project, others join. Edits hit the host's filesystem, the watcher picks them up, and viewers update automatically.
+For real-time LaTeX editing, use any editor with live collaboration (e.g. VS Code Live Share, Zed's built-in collab). One person hosts the project, others join. Edits hit the host's filesystem, the watcher picks them up, and viewers update automatically.
 
-The rebuild loop: edit saved → latexmk (~5s) → priority pages converted → partial reload → remaining pages → full reload. Synctex lookup updates after 30s of quiet.
+The rebuild loop: edit saved → watcher pushes files → server builds (latexmk → dvisvgm → synctex → proof pairing) → signal:reload → viewers hot-swap updated pages.
 
 ## Agent integration (optional)
 
-Each collaborator can run their own Claude (or other agent) with the MCP server. Point the MCP at the host's Tailscale IP:
+Each collaborator can run their own Claude Code with the MCP server. Point the MCP at the host's Tailscale IP:
 
 ```json
 {
@@ -93,47 +102,74 @@ Each collaborator can run their own Claude (or other agent) with the MCP server.
       "command": "node",
       "args": ["/path/to/claude-tldraw/mcp-server/index.mjs"],
       "env": {
-        "SYNC_SERVER": "ws://HOST_TAILSCALE_IP:5176"
+        "CTD_SERVER": "http://HOST_TAILSCALE_IP:5176"
       }
     }
   }
 }
 ```
 
-This gives the agent access to annotations, highlighting, math notes, and pen stroke interpretation.
+This gives the agent access to annotations, highlighting, math notes, pen stroke interpretation, and the review loop. See [docs/ipad-review.md](ipad-review.md) for the full review workflow.
+
+## Share with collaborators
+
+Send this to anyone joining your session:
+
+---
+
+### Joining a review session
+
+1. **Install Tailscale** — [tailscale.com/download](https://tailscale.com/download). Sign in and ask the host to approve you on the tailnet.
+2. **Open the viewer** — the host will give you a URL like `http://100.x.y.z:5176/?doc=paper-name`. Open it in any browser.
+
+That's it. You can now:
+
+| Action | How |
+|--------|-----|
+| Pan | Scroll or drag with hand tool |
+| Zoom | Pinch or Cmd+scroll |
+| Draw | Select pen tool (or press `d`) |
+| Highlight | Select highlighter tool |
+| Math note | Press `m`, then click to place |
+| Erase | Select eraser tool (or press `e`) |
+| Ping | Click the ping button (bottom-right) |
+| Proof reader | Press `r` to toggle |
+
+All annotations sync in real time across everyone connected.
+
+**Troubleshooting:**
+- Can't connect? Make sure Tailscale is running and you're on the same tailnet.
+- Annotations not appearing? Check the browser console for WebSocket errors.
+- Page looks stale? The viewer auto-reloads when the paper rebuilds. Try a browser refresh if something seems stuck.
+
+---
 
 ## Publish a snapshot
 
-After a review session, bake the current annotations into a static site and deploy to GitHub Pages:
+After a review session, bake the current annotations into a static snapshot:
 
 ```bash
 npm run publish-snapshot -- my-paper
 ```
 
-This exports annotations from the sync server, builds the viewer, and deploys. Anyone with the GitHub Pages URL can see the annotated paper (read-only, no sync server needed).
+This exports annotations and builds a read-only viewer. Anyone with the URL can see the annotated paper without a sync server.
 
 ## Data and persistence
 
-- **Annotations** persist in `server/data/*.yjs` on the host machine. They survive server restarts and browser reloads.
-- **Rooms** are isolated annotation spaces. Default is `doc-{paper-name}`. Use `?room=custom-name` for separate sessions.
-- **SVG pages** are in `public/docs/{paper-name}/`. Rebuilt by the watcher or `build-svg.sh`.
+- **Annotations** persist in `server/projects/{name}/sync-snapshot.json` on the host. They survive server restarts and browser reloads.
+- **Project files** live in `server/projects/{name}/` — source, build output, and metadata.
+- **Build output** (SVGs, lookup tables, proof info) is in `server/projects/{name}/output/`.
 
 ## Troubleshooting
 
 ### Collaborator can't connect
 - Both of you need Tailscale running and on the same tailnet
-- Check firewall isn't blocking ports 5173/5176
-- Verify with: `curl http://YOUR_TAILSCALE_IP:5173/`
+- Check firewall isn't blocking port 5176
+- Verify with: `curl http://YOUR_TAILSCALE_IP:5176/health`
 
 ### Watcher triggers but nothing updates
-- Check the watcher output for build errors
-- LaTeX errors won't stop the watcher, but the SVGs won't update
-- Run `./build-svg.sh` manually to see full error output
-
-### Slow rebuilds
-- First build is slow (full latexmk + all auxiliary files)
-- Subsequent builds reuse aux files — typically one latex pass (~5s)
-- Synctex extraction is debounced (30s default, set `SYNCTEX_DEBOUNCE_MS`)
+- Check `ctd errors my-paper` for build errors
+- LaTeX errors won't stop the watcher, but SVGs won't update for pages with errors
 
 ### Moving to a server
-The whole setup runs fine on a VPS. Install Node + TeX Live, clone the repo, set up Tailscale on the server, and run `npm run collab`. Your laptop can sleep while coauthors keep annotating.
+The whole setup should run fine on a VPS. Install Node + TeX Live, clone the repo, set up Tailscale on the server, and run `ctd server start` + `ctd watch-all start`. Your laptop can sleep while coauthors keep annotating.

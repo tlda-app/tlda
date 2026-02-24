@@ -1,12 +1,13 @@
 {
   "name": "claude-tldraw",
-  "private": true,
+  "license": "MIT",
   "version": "0.0.0",
   "type": "module",
   "bin": {
     "ctd": "./cli/ctd.mjs"
   },
   "scripts": {
+    "prepare": "vite build && mkdir -p server/public && cp -r dist/* server/public/",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

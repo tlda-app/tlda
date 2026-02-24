@@ -51,6 +51,20 @@ async function fetchShape(docName, shapeId) {
   return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`);
 }
 
+/** Get the next available shape index (above all existing shapes). */
+async function getNextShapeIndex(docName) {
+  let maxIndex = 'a1';
+  try {
+    const allShapes = await fetchShapes(docName);
+    for (const s of allShapes) {
+      if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
+        maxIndex = s.index;
+      }
+    }
+  } catch {}
+  return getIndexAbove(maxIndex);
+}
+
 async function createShapeRest(docName, shape) {
   return serverFetch(`/api/projects/${docName}/shapes`, {
     method: 'POST',
@@ -576,6 +590,44 @@ function getRenderedText(docName, bbox) {
   return joined;
 }
 
+// ---- Page-relative position description ----
+// Converts a canvas bbox center into "page N, upper-right" style description.
+function describePagePosition(docName, canvasBBox) {
+  const cx = (canvasBBox.minX + canvasBBox.maxX) / 2;
+  const cy = (canvasBBox.minY + canvasBBox.maxY) / 2;
+  const doc = canvasToDoc(docName, cx, cy);
+  const pw = isHtmlDoc(docName) ? getPageWidth(docName) : PDF_WIDTH;
+  const ph = isHtmlDoc(docName) ? 600 : PDF_HEIGHT;
+
+  // Horizontal zone
+  const xFrac = doc.pdfX / pw;
+  let hz;
+  if (xFrac < 0.08) hz = 'left margin';
+  else if (xFrac > 0.92) hz = 'right margin';
+  else if (xFrac < 0.35) hz = 'left';
+  else if (xFrac > 0.65) hz = 'right';
+  else hz = 'center';
+
+  // Vertical zone
+  const yFrac = doc.pdfY / ph;
+  let vz;
+  if (yFrac < 0.15) vz = 'top';
+  else if (yFrac > 0.85) vz = 'bottom';
+  else if (yFrac < 0.4) vz = 'upper';
+  else if (yFrac > 0.6) vz = 'lower';
+  else vz = 'mid';
+
+  // Combine — simplify when one dimension is "center"/"mid"
+  let position;
+  if (hz === 'center' && vz === 'mid') position = 'center';
+  else if (hz === 'center') position = vz;
+  else if (vz === 'mid') position = hz;
+  else if (hz === 'left margin' || hz === 'right margin') position = `${vz}, ${hz}`;
+  else position = `${vz}-${hz}`;
+
+  return { page: doc.page, position, description: `page ${doc.page}, ${position}` };
+}
+
 function classifyGesture(bbox) {
   const w = bbox.maxX - bbox.minX;
   const h = bbox.maxY - bbox.minY;
@@ -701,6 +753,356 @@ function getTextBBox(shape) {
   };
 }
 
+// ---- Collect & describe all drawn shapes ----
+
+/**
+ * Fetch all drawn shapes (pen, highlight, arrow, geo, text, line) and process
+ * them into a uniform array with page position, source lines, rendered text, etc.
+ * Also includes math-note shapes for context building.
+ */
+async function collectDrawnShapes(docName) {
+  const allRecords = await fetchShapes(docName);
+  const shapes = [];
+
+  for (const record of allRecords) {
+    if (!record || record.typeName !== 'shape') continue;
+    const id = record.id;
+    const shapeType = record.type;
+    const color = record.props?.color || 'black';
+    const createdAt = record.meta?.createdAt || null;
+
+    if (shapeType === 'draw' || shapeType === 'highlight') {
+      const bbox = getDrawShapeBBox(record);
+      if (!bbox) continue;
+      const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
+      const gesture = classifyGesture(bbox);
+      const nearbyLines = findNearbyLines(docName, bbox);
+      const pos = describePagePosition(docName, bbox);
+      const rendered = getRenderedText(docName, bbox);
+      // Magic highlighter metadata
+      const highlightText = record.meta?.highlightText || null;
+      const highlightLines = record.meta?.highlightLines || null;
+      const sourceLine = record.meta?.sourceLine || null;
+      shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine });
+      continue;
+    }
+
+    if (shapeType === 'arrow') {
+      const ep = getArrowEndpoints(record);
+      const bbox = getArrowBBox(record);
+      if (!ep || !bbox) continue;
+      const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
+      const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
+      const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+      const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+      const label = record.props?.text || '';
+      const startBound = record.props?.start?.boundShapeId || null;
+      const endBound = record.props?.end?.boundShapeId || null;
+      const rendered = getRenderedText(docName, bbox);
+      const pos = describePagePosition(docName, bbox);
+      shapes.push({
+        id, shapeType: 'arrow', color, label, page: pos.page, position: pos.description, bbox,
+        startPage: pdfStart.page, endPage: pdfEnd.page,
+        startLines, endLines, startBound, endBound, rendered, createdAt,
+      });
+      continue;
+    }
+
+    if (shapeType === 'geo') {
+      const bbox = getGeoBBox(record);
+      if (!bbox) continue;
+      const geo = record.props?.geo || 'rectangle';
+      const nearbyLines = findNearbyLines(docName, bbox);
+      const pos = describePagePosition(docName, bbox);
+      const label = record.props?.text || '';
+      const rendered = getRenderedText(docName, bbox);
+      shapes.push({ id, shapeType: 'geo', geo, color, label, page: pos.page, position: pos.description,
+        bbox, lines: nearbyLines, rendered, createdAt });
+      continue;
+    }
+
+    if (shapeType === 'text') {
+      const bbox = getTextBBox(record);
+      const text = record.props?.text || '';
+      if (!text.trim()) continue;
+      const pos = describePagePosition(docName, bbox);
+      const nearbyLines = findNearbyLines(docName, bbox);
+      const rendered = getRenderedText(docName, bbox);
+      shapes.push({ id, shapeType: 'text', color, text, page: pos.page, position: pos.description,
+        bbox, lines: nearbyLines, rendered, createdAt });
+      continue;
+    }
+
+    if (shapeType === 'line') {
+      const handles = record.props?.handles;
+      if (!handles) continue;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const h of Object.values(handles)) {
+        const ax = record.x + (h.x || 0);
+        const ay = record.y + (h.y || 0);
+        if (ax < minX) minX = ax;
+        if (ay < minY) minY = ay;
+        if (ax > maxX) maxX = ax;
+        if (ay > maxY) maxY = ay;
+      }
+      if (!isFinite(minX)) continue;
+      const bbox = { minX, minY, maxX, maxY };
+      const nearbyLines = findNearbyLines(docName, bbox);
+      const pos = describePagePosition(docName, bbox);
+      const rendered = getRenderedText(docName, bbox);
+      shapes.push({ id, shapeType: 'line', color, page: pos.page, position: pos.description,
+        bbox, lines: nearbyLines, rendered, createdAt });
+      continue;
+    }
+
+    if (shapeType === 'math-note') {
+      const anchor = record.meta?.sourceAnchor;
+      const text = record.props?.text || '';
+      const page = anchor ? null : null; // will compute below
+      let pos;
+      if (record.x != null && record.y != null) {
+        const fakeBBox = { minX: record.x, minY: record.y, maxX: record.x + 10, maxY: record.y + 10 };
+        pos = describePagePosition(docName, fakeBBox);
+      }
+      shapes.push({
+        id, shapeType: 'note', color, text,
+        page: pos?.page || null, position: pos?.description || null,
+        anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
+        anchorLine: anchor?.line || null,
+        createdAt,
+      });
+      continue;
+    }
+  }
+
+  return shapes;
+}
+
+/**
+ * Build a per-page summary of shapes for context.
+ * Returns a string like:
+ *   Page 3: 4 marks (2 pen, 1 highlighter, 1 note)
+ *   Page 7: 1 mark (1 arrow)
+ */
+function buildPageSummary(shapes) {
+  const byPage = new Map();
+  for (const s of shapes) {
+    if (!s.page) continue;
+    if (!byPage.has(s.page)) byPage.set(s.page, []);
+    byPage.get(s.page).push(s);
+  }
+  const pages = [...byPage.keys()].sort((a, b) => a - b);
+  const lines = [];
+  for (const p of pages) {
+    const group = byPage.get(p);
+    const counts = {};
+    for (const s of group) {
+      const t = s.shapeType;
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    const parts = Object.entries(counts).map(([t, n]) => `${n} ${t}`);
+    lines.push(`Page ${p}: ${group.length} mark${group.length === 1 ? '' : 's'} (${parts.join(', ')})`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Cluster shapes by temporal + spatial proximity.
+ *
+ * Two shapes are in the same cluster if:
+ *   - created within TIME_GAP_MS of each other, AND
+ *   - on the same page (or within PAGE_DISTANCE pages)
+ *
+ * A new cluster starts when either the time gap or the page distance exceeds
+ * the threshold. Shapes without createdAt go into a separate "undated" cluster.
+ *
+ * Returns clusters sorted newest-first, each with { shapes, minTime, maxTime, pages }.
+ */
+const CLUSTER_TIME_GAP_MS = 3 * 60 * 1000; // 3 minutes
+const CLUSTER_PAGE_DISTANCE = 2;
+
+function clusterShapes(shapes) {
+  // Separate dated from undated
+  const dated = shapes.filter(s => s.createdAt != null);
+  const undated = shapes.filter(s => s.createdAt == null);
+
+  // Sort by creation time
+  dated.sort((a, b) => a.createdAt - b.createdAt);
+
+  const clusters = [];
+  let current = null;
+
+  for (const s of dated) {
+    if (!current) {
+      current = { shapes: [s], minTime: s.createdAt, maxTime: s.createdAt, pages: new Set([s.page]) };
+      continue;
+    }
+
+    const timeGap = s.createdAt - current.maxTime;
+    const pageDistance = s.page != null ? Math.min(...[...current.pages].filter(p => p != null).map(p => Math.abs(p - s.page))) : 0;
+
+    if (timeGap > CLUSTER_TIME_GAP_MS || (pageDistance > CLUSTER_PAGE_DISTANCE && timeGap > 30000)) {
+      // Start new cluster — either big time gap, or moderate time gap + big spatial jump
+      clusters.push(current);
+      current = { shapes: [s], minTime: s.createdAt, maxTime: s.createdAt, pages: new Set([s.page]) };
+    } else {
+      current.shapes.push(s);
+      current.maxTime = s.createdAt;
+      if (s.page != null) current.pages.add(s.page);
+    }
+  }
+  if (current) clusters.push(current);
+
+  // Undated shapes as one cluster (legacy shapes without timestamps)
+  if (undated.length > 0) {
+    clusters.push({ shapes: undated, minTime: null, maxTime: null, pages: new Set(undated.map(s => s.page).filter(Boolean)) });
+  }
+
+  // Newest first
+  clusters.sort((a, b) => (b.maxTime || 0) - (a.maxTime || 0));
+  return clusters;
+}
+
+/** Format a cluster's age as a human-readable label. */
+function describeClusterAge(cluster) {
+  if (!cluster.maxTime) return 'undated';
+  const age = Date.now() - cluster.maxTime;
+  if (age < 60000) return 'just now';
+  if (age < 3600000) return `${Math.round(age / 60000)}m ago`;
+  if (age < 86400000) return `${Math.round(age / 3600000)}h ago`;
+  return `${Math.round(age / 86400000)}d ago`;
+}
+
+/**
+ * Build a compact context string describing nearby shapes relative to a trigger shape.
+ * Uses temporal clustering to group shapes into review passes.
+ * Shows shapes on the same page and ±1 adjacent pages, excluding the trigger itself.
+ */
+function buildNearbyContext(allShapes, triggerShapeId, triggerPage) {
+  const nearby = allShapes.filter(s =>
+    s.id !== triggerShapeId && s.page != null && Math.abs(s.page - triggerPage) <= 1
+  );
+  if (nearby.length === 0) return '';
+
+  const clusters = clusterShapes(nearby);
+  const lines = [];
+
+  for (const cluster of clusters.slice(0, 3)) {
+    const age = describeClusterAge(cluster);
+    const descriptions = [];
+    for (const s of cluster.shapes.slice(0, 4)) {
+      let desc = s.shapeType;
+      if (s.lines?.length > 0) {
+        desc += ` line ${s.lines[0].line}`;
+      } else if (s.anchorLine) {
+        desc += ` line ${s.anchorLine}`;
+      }
+      if (s.page !== triggerPage) desc += ` (p${s.page})`;
+      descriptions.push(desc);
+    }
+    const extra = cluster.shapes.length > 4 ? ` +${cluster.shapes.length - 4} more` : '';
+    lines.push(`  [${age}] ${descriptions.join(', ')}${extra}`);
+  }
+  const moreCount = clusters.length > 3 ? clusters.length - 3 : 0;
+  let result = 'nearby:\n' + lines.join('\n');
+  if (moreCount > 0) result += `\n  (+${moreCount} older groups)`;
+  return result;
+}
+
+/** Format a single processed shape (from collectDrawnShapes) into detail lines. */
+function formatShapeDetail(s) {
+  let out = `${s.id}\n`;
+
+  if (s.shapeType === 'pen' || s.shapeType === 'highlighter') {
+    const sentiment = s.shapeType === 'highlighter' ? 'attention' : 'correction';
+    out += `  ${s.shapeType} (${s.color}) → ${s.gesture} [${sentiment}]\n`;
+    out += `  ${s.position}\n`;
+    if (s.lines?.length > 0) {
+      const lineRange = s.lines.length === 1
+        ? `line ${s.lines[0].line}`
+        : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+      out += `  covers ${lineRange}\n`;
+      out += `  first: "${s.lines[0].content}"\n`;
+      if (s.lines.length > 1) out += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+    } else {
+      out += `  (no matching document lines)\n`;
+    }
+    if (s.rendered) out += `  rendered: "${s.rendered}"\n`;
+  }
+
+  else if (s.shapeType === 'arrow') {
+    out += `  arrow (${s.color})`;
+    if (s.label) out += ` label: "${s.label}"`;
+    out += '\n';
+    if (s.startLines?.length > 0) {
+      out += `  from: page ${s.startPage}, line ${s.startLines[0].line} "${s.startLines[0].content}"\n`;
+    } else if (s.startBound) {
+      out += `  from: ${s.startBound}\n`;
+    } else {
+      out += `  from: page ${s.startPage} (no matching line)\n`;
+    }
+    if (s.endLines?.length > 0) {
+      out += `  to:   page ${s.endPage}, line ${s.endLines[0].line} "${s.endLines[0].content}"\n`;
+    } else if (s.endBound) {
+      out += `  to:   ${s.endBound}\n`;
+    } else {
+      out += `  to:   page ${s.endPage} (no matching line)\n`;
+    }
+    if (s.rendered) out += `  rendered: "${s.rendered}"\n`;
+  }
+
+  else if (s.shapeType === 'geo') {
+    out += `  ${s.geo} (${s.color})`;
+    if (s.label) out += ` label: "${s.label}"`;
+    out += '\n';
+    out += `  ${s.position}\n`;
+    if (s.lines?.length > 0) {
+      const lineRange = s.lines.length === 1
+        ? `line ${s.lines[0].line}`
+        : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+      out += `  encloses ${lineRange}\n`;
+      out += `  first: "${s.lines[0].content}"\n`;
+      if (s.lines.length > 1) out += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+    } else {
+      out += `  (no matching document lines)\n`;
+    }
+    if (s.rendered) out += `  rendered: "${s.rendered}"\n`;
+  }
+
+  else if (s.shapeType === 'text') {
+    out += `  text (${s.color}): "${s.text}"\n`;
+    out += `  ${s.position}\n`;
+    if (s.lines?.length > 0) {
+      out += `  near line ${s.lines[0].line}: "${s.lines[0].content}"\n`;
+    }
+    if (s.rendered) out += `  rendered: "${s.rendered}"\n`;
+  }
+
+  else if (s.shapeType === 'line') {
+    out += `  line (${s.color})\n`;
+    out += `  ${s.position}\n`;
+    if (s.lines?.length > 0) {
+      const lineRange = s.lines.length === 1
+        ? `line ${s.lines[0].line}`
+        : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
+      out += `  covers ${lineRange}\n`;
+      out += `  first: "${s.lines[0].content}"\n`;
+      if (s.lines.length > 1) out += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
+    }
+    if (s.rendered) out += `  rendered: "${s.rendered}"\n`;
+  }
+
+  else if (s.shapeType === 'note') {
+    out += `  note (${s.color})`;
+    if (s.anchor) out += ` at ${s.anchor}`;
+    out += '\n';
+    if (s.text) out += `  "${s.text.slice(0, 80)}${s.text.length > 80 ? '...' : ''}"\n`;
+  }
+
+  return out;
+}
+
 // ---- Signal writers ----
 
 function writeAgentAttention(docName, x, y, agent) {
@@ -715,6 +1117,61 @@ function writeAgentHeartbeat(docName, state, agent) {
 
 function generateShapeId() {
   return 'shape:' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+}
+
+/**
+ * Encode an array of {x, y, z} points into TLDraw v4's base64 delta-encoded path format.
+ * First point: 3x Float32 LE (12 bytes). Subsequent: 3x Float16 LE deltas (6 bytes each).
+ */
+function encodeB64Path(points) {
+  if (points.length === 0) return '';
+  const firstBytes = 12;
+  const deltaBytes = (points.length - 1) * 6;
+  const buf = Buffer.alloc(firstBytes + deltaBytes);
+
+  // First point: Float32 LE
+  buf.writeFloatLE(points[0].x, 0);
+  buf.writeFloatLE(points[0].y, 4);
+  buf.writeFloatLE(points[0].z ?? 0.5, 8);
+
+  // Subsequent points: Float16 LE deltas
+  let prevX = points[0].x, prevY = points[0].y, prevZ = points[0].z ?? 0.5;
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - prevX;
+    const dy = points[i].y - prevY;
+    const dz = (points[i].z ?? 0.5) - prevZ;
+    const off = 12 + (i - 1) * 6;
+    buf.writeUInt16LE(toFloat16(dx), off);
+    buf.writeUInt16LE(toFloat16(dy), off + 2);
+    buf.writeUInt16LE(toFloat16(dz), off + 4);
+    // Advance prev using decoded values (to match decoder's accumulated rounding)
+    prevX += float16(toFloat16(dx));
+    prevY += float16(toFloat16(dy));
+    prevZ += float16(toFloat16(dz));
+  }
+  return buf.toString('base64');
+}
+
+/** Encode a JavaScript number to IEEE 754 half-precision (16 bits). */
+function toFloat16(value) {
+  if (value === 0) return 0;
+  if (!isFinite(value)) return value > 0 ? 0x7c00 : 0xfc00;
+  const sign = value < 0 ? 1 : 0;
+  value = Math.abs(value);
+  // Clamp to float16 range
+  if (value > 65504) return sign ? 0xfc00 : 0x7c00;
+  if (value < 5.96e-8) return sign << 15; // underflow to zero
+  const log2 = Math.log2(value);
+  let exp = Math.floor(log2);
+  let frac = value / Math.pow(2, exp) - 1;
+  if (exp < -14) {
+    // Subnormal
+    frac = value / Math.pow(2, -14);
+    return (sign << 15) | Math.round(frac * 1024);
+  }
+  exp += 15;
+  if (exp >= 31) return sign ? 0xfc00 : 0x7c00;
+  return (sign << 15) | (exp << 10) | Math.round(frac * 1024);
 }
 
 // ---- Shared action functions (used by both HTTP and MCP) ----
@@ -785,7 +1242,7 @@ async function highlightLine(doc, file, line) {
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
 
-async function addAnnotation(doc, line, text, { color = 'violet', width = 200, height = 150, side = 'right', file, choices, page: pageNum } = {}) {
+async function addAnnotation(doc, line, text, { color = 'orange', width = 200, height = 150, side = 'right', file, choices, page: pageNum } = {}) {
   let linePos;
   if (line) {
     linePos = lookupLine(doc, line, file);
@@ -851,7 +1308,7 @@ async function addAnnotation(doc, line, text, { color = 'violet', width = 200, h
   return { ok: true, shapeId, page: linePos.page, x, y };
 }
 
-async function sendNote(doc, line, text, color = 'violet', file, choices) {
+async function sendNote(doc, line, text, color = 'orange', file, choices) {
   // Create persistent math-note via Yjs — syncs to all viewers automatically
   const result = await addAnnotation(doc, line, text, { color, file, choices });
   if (!result.ok) return result;
@@ -1497,7 +1954,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
-          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
+          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: orange). Convention: orange=claude, green=todd, violet=user.' },
           width: { type: 'number', description: 'Note width in pixels (default: 200)' },
           height: { type: 'number', description: 'Note height in pixels (default: 150)' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
@@ -1529,6 +1986,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Reply text (supports $math$)' },
         },
         required: ['doc', 'id', 'text'],
+      },
+    },
+    {
+      name: 'mark_done',
+      description: 'Mark an annotation as done. Collapses and dims the note. By default, also moves it to the page margin (like the viewer\'s done button). Set margin=false to keep it in place.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          id: { type: 'string', description: 'Shape ID (e.g. "shape:abc123")' },
+          margin: { type: 'boolean', description: 'Move note to the page margin (default: true)', default: true },
+        },
+        required: ['doc', 'id'],
       },
     },
     {
@@ -1571,6 +2041,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'draw_highlight',
+      description: 'Draw a highlighter stroke over source lines on the canvas. Creates a visible highlight mark (like a physical highlighter) spanning the given line range.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          startLine: { type: 'number', description: 'First source line to highlight' },
+          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line)' },
+          color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
+          file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
+        },
+        required: ['doc', 'startLine', 'endLine'],
+      },
+    },
+    {
+      name: 'draw_arrow',
+      description: 'Draw a curved arrow on the canvas connecting two source locations. The arrow bends through the margin so it does not obscure the text. Use for cross-references, connecting related passages, or pointing from a note to a specific location.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          fromLine: { type: 'number', description: 'Source line where the arrow starts' },
+          toLine: { type: 'number', description: 'Source line where the arrow ends' },
+          label: { type: 'string', description: 'Optional text label on the arrow' },
+          color: { type: 'string', description: 'Arrow color: red, blue, green, violet, orange, yellow, black (default: orange)' },
+          file: { type: 'string', description: 'Source file for fromLine (for multi-file projects). Omit for main file.' },
+          toFile: { type: 'string', description: 'Source file for toLine (if different from file). Omit if same file.' },
+          side: { type: 'string', enum: ['left', 'right'], description: 'Which margin to place the arrow in (default: left)' },
+        },
+        required: ['doc', 'fromLine', 'toLine'],
+      },
+    },
+    {
       name: 'scroll_to_line',
       description: 'Scroll the viewer to a source line. Looks up the line position and broadcasts a scroll command to all connected viewers.',
       inputSchema: {
@@ -1593,7 +2096,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           line: { type: 'number', description: 'Source line number to place the note at. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
-          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: violet)' },
+          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: orange). Convention: orange=claude, green=todd, violet=user.' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
@@ -1630,7 +2133,8 @@ async function formatPing(ping, docName) {
   return `Ping received! ${vp}\n\n${summary}`;
 }
 
-/** Format a stroke result (draw/highlight/arrow/geo/text/line) for MCP response. */
+/** Format a stroke result (draw/highlight/arrow/geo/text/line) for MCP response.
+ *  Returns { content, page } where page is used for nearby-context lookup. */
 function formatStrokeResult(r, docName, prefix, entry, agent) {
   const color = r.props?.color || 'black';
 
@@ -1654,7 +2158,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
         if (rendered) text += `\n  rendered: "${rendered}"`;
       }
       writeAgentAttention(docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, agent);
-      return { content: [{ type: 'text', text }] };
+      return { content: [{ type: 'text', text }], page: pdfStart.page };
     }
   }
 
@@ -1664,10 +2168,12 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     const label = r.props?.text || '';
     let text = `${prefix}${geo} (${color})`;
     if (label) text += ` "${label}"`;
+    let page = null;
     if (bbox) {
-      const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
+      const pos = describePagePosition(docName, bbox);
+      page = pos.page;
       const nearbyLines = findNearbyLines(docName, bbox);
-      text += `\n  page ${pdfPos.page}`;
+      text += `\n  ${pos.description}`;
       if (nearbyLines.length > 0) {
         const lineRange = nearbyLines.length === 1
           ? `line ${nearbyLines[0].line}`
@@ -1680,20 +2186,20 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
       if (rendered) text += `\n  rendered: "${rendered}"`;
     }
     if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
-    return { content: [{ type: 'text', text }] };
+    return { content: [{ type: 'text', text }], page };
   }
 
   if (r.type === 'text') {
     const textContent = r.props?.text || '';
     const bbox = getTextBBox(r);
-    const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
+    const pos = describePagePosition(docName, bbox);
     const nearbyLines = findNearbyLines(docName, bbox);
     let text = `${prefix}Text (${color}): "${textContent}"`;
-    text += `\n  page ${pdfPos.page}`;
+    text += `\n  ${pos.description}`;
     if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
     const rendered = getRenderedText(docName, bbox);
     if (rendered) text += `\n  rendered: "${rendered}"`;
-    return { content: [{ type: 'text', text }] };
+    return { content: [{ type: 'text', text }], page: pos.page };
   }
 
   // Draw / highlight
@@ -1702,10 +2208,10 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
   // Magic highlighter: has extracted text metadata from SVG
   if (r.type === 'highlight' && r.meta?.highlightText) {
-    const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+    const pos = bbox ? describePagePosition(docName, bbox) : null;
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
-    if (pdfPos) text += ` page ${pdfPos.page}`;
+    if (pos) text += ` ${pos.description}`;
     if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
     if (lines.length === 1) {
       text += `\n  text: "${lines[0]}"`;
@@ -1715,16 +2221,16 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     }
     text += `\n  NOTE: edge lines and first/last words may bleed from adjacent text`;
     if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
-    return { content: [{ type: 'text', text }] };
+    return { content: [{ type: 'text', text }], page: pos?.page || null };
   }
 
   const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
   const gesture = bbox ? classifyGesture(bbox) : 'unknown';
   const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
-  const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
+  const pos = bbox ? describePagePosition(docName, bbox) : null;
 
   let text = `${prefix}Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
-  if (pdfPos) text += `\n  page ${pdfPos.page}`;
+  if (pos) text += `\n  ${pos.description}`;
   if (nearbyLines.length > 0) {
     const lineRange = nearbyLines.length === 1
       ? `line ${nearbyLines[0].line}`
@@ -1736,7 +2242,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
   const rendered = bbox ? getRenderedText(docName, bbox) : '';
   if (rendered) text += `\n  rendered: "${rendered}"`;
   if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
-  return { content: [{ type: 'text', text }] };
+  return { content: [{ type: 'text', text }], page: pos?.page || null };
 }
 
 // Tools that need built document pages to work
@@ -1744,6 +2250,7 @@ const TOOLS_NEEDING_BUILD = new Set([
   'wait_for_feedback', 'screenshot', 'get_latest_feedback',
   'highlight_location', 'add_annotation', 'send_note',
   'scroll_to_line', 'read_pen_annotations',
+  'draw_highlight', 'draw_arrow',
 ]);
 
 // Handle tool calls
@@ -1942,92 +2449,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Shape drawn (draw/highlight/arrow/geo/text/line)
       if (result?.type === 'stroke') {
-        const r = result.record;
-        const color = r.props?.color || 'black';
-
-        if (r.type === 'arrow') {
-          const ep = getArrowEndpoints(r);
-          if (ep) {
-            const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
-            const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
-            const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
-            const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
-            const label = r.props?.text || '';
-            let text = `Arrow (${color})`;
-            if (label) text += ` "${label}"`;
-            if (startLines.length > 0) text += `\n  from: page ${pdfStart.page}, line ${startLines[0].line} "${startLines[0].content}"`;
-            else text += `\n  from: page ${pdfStart.page}`;
-            if (endLines.length > 0) text += `\n  to:   page ${pdfEnd.page}, line ${endLines[0].line} "${endLines[0].content}"`;
-            else text += `\n  to:   page ${pdfEnd.page}`;
-            const arrowBBox = getArrowBBox(r);
-            if (arrowBBox) {
-              const rendered = getRenderedText(docName, arrowBBox);
-              if (rendered) text += `\n  rendered: "${rendered}"`;
-            }
-            writeAgentAttention(docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, 'claude');
-            return { content: [{ type: 'text', text }] };
-          }
+        const formatted = formatStrokeResult(result.record, docName, '', null, 'claude');
+        // Append nearby-shapes context
+        let text = formatted.content[0].text;
+        if (formatted.page != null) {
+          try {
+            const allShapes = await collectDrawnShapes(docName);
+            const ctx = buildNearbyContext(allShapes, result.key, formatted.page);
+            if (ctx) text += '\n' + ctx;
+          } catch {}
         }
-
-        if (r.type === 'geo') {
-          const bbox = getGeoBBox(r);
-          const geo = r.props?.geo || 'rectangle';
-          const label = r.props?.text || '';
-          let text = `${geo} (${color})`;
-          if (label) text += ` "${label}"`;
-          if (bbox) {
-            const pdfPos = canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
-            const nearbyLines = findNearbyLines(docName, bbox);
-            text += `\n  page ${pdfPos.page}`;
-            if (nearbyLines.length > 0) {
-              const lineRange = nearbyLines.length === 1
-                ? `line ${nearbyLines[0].line}`
-                : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
-              text += `\n  encloses ${lineRange}`;
-              text += `\n  first: "${nearbyLines[0].content}"`;
-              if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
-            }
-            const rendered = getRenderedText(docName, bbox);
-            if (rendered) text += `\n  rendered: "${rendered}"`;
-          }
-          if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
-          return { content: [{ type: 'text', text }] };
-        }
-
-        if (r.type === 'text') {
-          const textContent = r.props?.text || '';
-          const bbox = getTextBBox(r);
-          const pdfPos = canvasToDoc(docName, bbox.minX, bbox.minY);
-          const nearbyLines = findNearbyLines(docName, bbox);
-          let text = `Text (${color}): "${textContent}"`;
-          text += `\n  page ${pdfPos.page}`;
-          if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
-          const rendered = getRenderedText(docName, bbox);
-          if (rendered) text += `\n  rendered: "${rendered}"`;
-          return { content: [{ type: 'text', text }] };
-        }
-
-        // Draw / highlight
-        const bbox = getDrawShapeBBox(r);
-        const tool = r.type === 'highlight' ? 'highlighter' : 'pen';
-        const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
-        const gesture = bbox ? classifyGesture(bbox) : 'unknown';
-        const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
-        const pdfPos = bbox ? canvasToDoc(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2) : null;
-
-        let text = `Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
-        if (pdfPos) text += `\n  page ${pdfPos.page}`;
-        if (nearbyLines.length > 0) {
-          const lineRange = nearbyLines.length === 1
-            ? `line ${nearbyLines[0].line}`
-            : `lines ${nearbyLines[0].line}–${nearbyLines[nearbyLines.length - 1].line}`;
-          text += `\n  covers ${lineRange}`;
-          text += `\n  first: "${nearbyLines[0].content}"`;
-          if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
-        }
-        const rendered = bbox ? getRenderedText(docName, bbox) : '';
-        if (rendered) text += `\n  rendered: "${rendered}"`;
-        if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, 'claude');
         return { content: [{ type: 'text', text }] };
       }
 
@@ -2036,8 +2467,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
       if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'claude');
+      // Include nearby context for annotation changes too
+      let noteText = `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"`;
+      try {
+        const allShapes = await collectDrawnShapes(docName);
+        const noteBBox = { minX: r.x, minY: r.y, maxX: r.x + 10, maxY: r.y + 10 };
+        const notePos = describePagePosition(docName, noteBBox);
+        const ctx = buildNearbyContext(allShapes, result.key, notePos.page);
+        if (ctx) noteText += '\n' + ctx;
+      } catch {}
       const summary = await summarizeAnnotations(docName);
-      return { content: [{ type: 'text', text: `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summary}` }] };
+      return { content: [{ type: 'text', text: noteText + '\n\n' + summary }] };
     } catch (e) {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       if (shapeStream) { shapeStream.close(); shapeStream = null; }
@@ -2238,7 +2678,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (result.type === 'stroke') {
-        return formatStrokeResult(result.record, docName, prefix, null, 'todd');
+        const formatted = formatStrokeResult(result.record, docName, prefix, null, 'todd');
+        let text = formatted.content[0].text;
+        if (formatted.page != null) {
+          try {
+            const allShapes = await collectDrawnShapes(docName);
+            const ctx = buildNearbyContext(allShapes, result.key, formatted.page);
+            if (ctx) text += '\n' + ctx;
+          } catch {}
+        }
+        return { content: [{ type: 'text', text }] };
       }
 
       // Annotation
@@ -2246,8 +2695,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const anchor = r.meta?.sourceAnchor;
       const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
       if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'todd');
+      let noteText = `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"`;
+      try {
+        const allShapes = await collectDrawnShapes(docName);
+        const noteBBox = { minX: r.x, minY: r.y, maxX: r.x + 10, maxY: r.y + 10 };
+        const notePos = describePagePosition(docName, noteBBox);
+        const ctx = buildNearbyContext(allShapes, result.key, notePos.page);
+        if (ctx) noteText += '\n' + ctx;
+      } catch {}
       const summary = await summarizeAnnotations(docName);
-      return { content: [{ type: 'text', text: `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"\n\n${summary}` }] };
+      return { content: [{ type: 'text', text: noteText + '\n\n' + summary }] };
 
     } catch (e) {
       heartbeatIntervals.forEach(i => clearInterval(i));
@@ -2427,6 +2884,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'mark_done') {
+    const { doc, id, margin } = args;
+    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
+    const moveToMargin = margin !== false; // default true
+    try {
+      // Fetch the note shape to get its position
+      const shape = await fetchShape(doc, id);
+      if (!shape || shape.type !== 'math-note') {
+        return { content: [{ type: 'text', text: `Shape ${id} not found or not a math-note` }], isError: true };
+      }
+
+      const updates = { props: { done: true } };
+
+      if (moveToMargin) {
+        // Find the nearest svg-page to compute margin position
+        const pages = await fetchShapes(doc, 'svg-page');
+        let bestPage = null;
+        let bestDist = Infinity;
+        const noteH = shape.props?.h || 150;
+        const noteCy = shape.y + noteH / 2;
+        for (const p of pages) {
+          if (p.typeName !== 'shape') continue;
+          const ph = p.props?.h || 0;
+          const pMinY = p.y;
+          const pMaxY = p.y + ph;
+          const dist = noteCy < pMinY ? pMinY - noteCy : noteCy > pMaxY ? noteCy - pMaxY : 0;
+          if (dist < bestDist) { bestDist = dist; bestPage = p; }
+        }
+        if (bestPage) {
+          const pageRight = bestPage.x + (bestPage.props?.w || 0);
+          updates.x = pageRight + 20;
+        }
+      }
+
+      await updateShapeRest(doc, id, updates);
+      return { content: [{ type: 'text', text: `Marked done: ${id}${moveToMargin ? ' (moved to margin)' : ''}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'delete_annotation') {
     const { doc, id } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
@@ -2446,100 +2944,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     try {
-      // Fetch all shapes from @tldraw/sync via REST, then filter client-side
-      const allRecords = await fetchShapes(doc);
-      const shapes = [];
-
-      for (const record of allRecords) {
-        if (!record || record.typeName !== 'shape') continue;
-        const id = record.id;
-
-        const shapeType = record.type;
-        const color = record.props?.color || 'black';
-
-        // --- Draw / Highlight strokes ---
-        if (shapeType === 'draw' || shapeType === 'highlight') {
-          const bbox = getDrawShapeBBox(record);
-          if (!bbox) continue;
-          const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
-          const gesture = classifyGesture(bbox);
-          const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
-          const rendered = getRenderedText(doc, bbox);
-          shapes.push({ id, shapeType: tool, color, gesture, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          continue;
-        }
-
-        // --- Arrow ---
-        if (shapeType === 'arrow') {
-          const ep = getArrowEndpoints(record);
-          const bbox = getArrowBBox(record);
-          if (!ep || !bbox) continue;
-          const pdfStart = canvasToDoc(doc, ep.start.x, ep.start.y);
-          const pdfEnd = canvasToDoc(doc, ep.end.x, ep.end.y);
-          const startLines = findNearbyLines(doc, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
-          const endLines = findNearbyLines(doc, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
-          const label = record.props?.text || '';
-          const startBound = record.props?.start?.boundShapeId || null;
-          const endBound = record.props?.end?.boundShapeId || null;
-          const rendered = getRenderedText(doc, bbox);
-          shapes.push({
-            id, shapeType: 'arrow', color, label,
-            page: pdfStart.page, bbox,
-            startPage: pdfStart.page, endPage: pdfEnd.page,
-            startLines, endLines, startBound, endBound, rendered,
-          });
-          continue;
-        }
-
-        // --- Geo (rectangle, ellipse, diamond, etc.) ---
-        if (shapeType === 'geo') {
-          const bbox = getGeoBBox(record);
-          if (!bbox) continue;
-          const geo = record.props?.geo || 'rectangle';
-          const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToDoc(doc, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2);
-          const label = record.props?.text || '';
-          const rendered = getRenderedText(doc, bbox);
-          shapes.push({ id, shapeType: 'geo', geo, color, label, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          continue;
-        }
-
-        // --- Text ---
-        if (shapeType === 'text') {
-          const bbox = getTextBBox(record);
-          const text = record.props?.text || '';
-          if (!text.trim()) continue;
-          const pdfPos = canvasToDoc(doc, bbox.minX, bbox.minY);
-          const nearbyLines = findNearbyLines(doc, bbox);
-          const rendered = getRenderedText(doc, bbox);
-          shapes.push({ id, shapeType: 'text', color, text, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          continue;
-        }
-
-        // --- Line ---
-        if (shapeType === 'line') {
-          // Line shapes use handles for vertices
-          const handles = record.props?.handles;
-          if (!handles) continue;
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-          for (const h of Object.values(handles)) {
-            const ax = record.x + (h.x || 0);
-            const ay = record.y + (h.y || 0);
-            if (ax < minX) minX = ax;
-            if (ay < minY) minY = ay;
-            if (ax > maxX) maxX = ax;
-            if (ay > maxY) maxY = ay;
-          }
-          if (!isFinite(minX)) continue;
-          const bbox = { minX, minY, maxX, maxY };
-          const nearbyLines = findNearbyLines(doc, bbox);
-          const pdfPos = canvasToDoc(doc, (minX + maxX) / 2, (minY + maxY) / 2);
-          const rendered = getRenderedText(doc, bbox);
-          shapes.push({ id, shapeType: 'line', color, page: pdfPos.page, bbox, lines: nearbyLines, rendered });
-          continue;
-        }
-      }
+      const allShapes = await collectDrawnShapes(doc);
+      // Filter to drawn shapes only (not notes) for this tool's output
+      const shapes = allShapes.filter(s => s.shapeType !== 'note');
 
       // Check for text selection signal
       let textSel = null;
@@ -2553,95 +2960,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       let summary = '';
+
+      // Page summary header
+      const pageSummary = buildPageSummary(allShapes);
+      if (pageSummary) summary += pageSummary + '\n\n';
+
       if (hasTextSel) {
         summary += `Text selection (page ${textSel.page}):\n  "${textSel.text}"\n\n`;
       }
-      summary += `${shapes.length} annotation(s):\n\n`;
-      for (const s of shapes) {
-        summary += `${s.id}\n`;
-
-        if (s.shapeType === 'pen' || s.shapeType === 'highlighter') {
-          const sentiment = s.shapeType === 'highlighter' ? 'attention' : 'correction';
-          summary += `  ${s.shapeType} (${s.color}) → ${s.gesture} [${sentiment}]\n`;
-          summary += `  page ${s.page}\n`;
-          if (s.lines.length > 0) {
-            const lineRange = s.lines.length === 1
-              ? `line ${s.lines[0].line}`
-              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
-            summary += `  covers ${lineRange}\n`;
-            summary += `  first: "${s.lines[0].content}"\n`;
-            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
-          } else {
-            summary += `  (no matching document lines)\n`;
-          }
-          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
-        }
-
-        else if (s.shapeType === 'arrow') {
-          summary += `  arrow (${s.color})`;
-          if (s.label) summary += ` label: "${s.label}"`;
+      // Cluster shapes temporally + spatially and output grouped
+      const clusters = clusterShapes(shapes);
+      summary += `${shapes.length} drawn annotation(s) in ${clusters.length} group(s):\n\n`;
+      for (const cluster of clusters) {
+        const age = describeClusterAge(cluster);
+        const pages = [...cluster.pages].filter(Boolean).sort((a, b) => a - b);
+        const pageStr = pages.length === 0 ? '' : pages.length === 1 ? `page ${pages[0]}` : `pages ${pages[0]}–${pages[pages.length - 1]}`;
+        summary += `--- ${age}${pageStr ? ', ' + pageStr : ''} (${cluster.shapes.length} mark${cluster.shapes.length === 1 ? '' : 's'}) ---\n`;
+        for (const s of cluster.shapes) {
+          summary += formatShapeDetail(s);
           summary += '\n';
-          // Start
-          if (s.startLines.length > 0) {
-            summary += `  from: page ${s.startPage}, line ${s.startLines[0].line} "${s.startLines[0].content}"\n`;
-          } else if (s.startBound) {
-            summary += `  from: ${s.startBound}\n`;
-          } else {
-            summary += `  from: page ${s.startPage} (no matching line)\n`;
-          }
-          // End
-          if (s.endLines.length > 0) {
-            summary += `  to:   page ${s.endPage}, line ${s.endLines[0].line} "${s.endLines[0].content}"\n`;
-          } else if (s.endBound) {
-            summary += `  to:   ${s.endBound}\n`;
-          } else {
-            summary += `  to:   page ${s.endPage} (no matching line)\n`;
-          }
-          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
         }
-
-        else if (s.shapeType === 'geo') {
-          summary += `  ${s.geo} (${s.color})`;
-          if (s.label) summary += ` label: "${s.label}"`;
-          summary += '\n';
-          summary += `  page ${s.page}\n`;
-          if (s.lines.length > 0) {
-            const lineRange = s.lines.length === 1
-              ? `line ${s.lines[0].line}`
-              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
-            summary += `  encloses ${lineRange}\n`;
-            summary += `  first: "${s.lines[0].content}"\n`;
-            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
-          } else {
-            summary += `  (no matching document lines)\n`;
-          }
-          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
-        }
-
-        else if (s.shapeType === 'text') {
-          summary += `  text (${s.color}): "${s.text}"\n`;
-          summary += `  page ${s.page}\n`;
-          if (s.lines.length > 0) {
-            summary += `  near line ${s.lines[0].line}: "${s.lines[0].content}"\n`;
-          }
-          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
-        }
-
-        else if (s.shapeType === 'line') {
-          summary += `  line (${s.color})\n`;
-          summary += `  page ${s.page}\n`;
-          if (s.lines.length > 0) {
-            const lineRange = s.lines.length === 1
-              ? `line ${s.lines[0].line}`
-              : `lines ${s.lines[0].line}–${s.lines[s.lines.length - 1].line}`;
-            summary += `  covers ${lineRange}\n`;
-            summary += `  first: "${s.lines[0].content}"\n`;
-            if (s.lines.length > 1) summary += `  last:  "${s.lines[s.lines.length - 1].content}"\n`;
-          }
-          if (s.rendered) summary += `  rendered: "${s.rendered}"\n`;
-        }
-
-        summary += '\n';
       }
 
       return { content: [{ type: 'text', text: summary }] };
@@ -2698,6 +3036,179 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `${desc} (doc: ${doc}, t=${timestamp})` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Signal error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'draw_highlight') {
+    const { doc, startLine, endLine, color = 'orange', file } = args;
+    if (!doc || startLine == null || endLine == null) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine' }], isError: true };
+    }
+
+    try {
+      // Look up canvas positions for start and end lines
+      const startPos = lookupLine(doc, startLine, file);
+      const endPos = lookupLine(doc, endLine, file);
+      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
+      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
+
+      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
+      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
+
+      const pageW = getPageWidth(doc);
+      // Highlight spans from text start to near-right edge
+      const hlLeft = Math.min(startCanvas.x, endCanvas.x);
+      const hlRight = pageW * 0.9; // stop before right margin
+      const hlTop = Math.min(startCanvas.y, endCanvas.y) - 3;
+      const hlBottom = Math.max(startCanvas.y, endCanvas.y) + 3;
+
+      // Create one horizontal segment per text line
+      const width = hlRight - hlLeft;
+      const height = hlBottom - hlTop;
+      const numLines = endLine - startLine + 1;
+      const lineH = numLines > 1 ? height / numLines : 0;
+
+      const segments = [];
+      if (numLines <= 1) {
+        // Single line: one horizontal sweep
+        segments.push({ type: 'free', path: encodeB64Path([
+          { x: 0, y: 0, z: 0.5 },
+          { x: width, y: 0, z: 0.5 },
+        ])});
+      } else {
+        // One horizontal sweep per line
+        for (let i = 0; i < numLines; i++) {
+          const y = i * lineH;
+          segments.push({ type: 'free', path: encodeB64Path([
+            { x: 0, y, z: 0.5 },
+            { x: width, y, z: 0.5 },
+          ])});
+        }
+      }
+
+      const shapeId = generateShapeId();
+      const shapeIndex = await getNextShapeIndex(doc);
+      const shape = {
+        id: shapeId,
+        type: 'highlight',
+        x: hlLeft,
+        y: hlTop,
+        index: shapeIndex,
+        rotation: 0,
+        isLocked: false,
+        opacity: 0.7,
+        props: {
+          segments,
+          color,
+          size: 's',
+          isComplete: true,
+          isPen: false,
+          scale: 1,
+          scaleX: 1,
+          scaleY: 1,
+        },
+        meta: {
+          createdAt: Date.now(),
+          createdBy: 'claude',
+          sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
+        },
+        parentId: 'page:page',
+        typeName: 'shape',
+      };
+
+      await createShapeRest(doc, shape);
+      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${startPos.page}, ${color} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'draw_arrow') {
+    const { doc, fromLine, toLine, label, color = 'orange', file, toFile, side = 'left' } = args;
+    if (!doc || fromLine == null || toLine == null) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, fromLine, toLine' }], isError: true };
+    }
+
+    try {
+      const fromPos = lookupLine(doc, fromLine, file);
+      const toPos = lookupLine(doc, toLine, toFile || file);
+      if (!fromPos) return { content: [{ type: 'text', text: `Line ${fromLine} not found in lookup` }], isError: true };
+      if (!toPos) return { content: [{ type: 'text', text: `Line ${toLine} not found in lookup` }], isError: true };
+
+      const fromCanvas = pdfToCanvas(fromPos.page, fromPos.x, fromPos.y);
+      const toCanvas = pdfToCanvas(toPos.page, toPos.x, toPos.y);
+
+      // Place in margin: tips near text, belly curves away from text
+      const pageW = getPageWidth(doc);
+      const useRightMargin = side === 'right';
+      const startX = useRightMargin ? pageW + 15 : -15;
+      const startY = fromCanvas.y;
+      const endX = useRightMargin ? pageW + 15 : -15;
+      const endY = toCanvas.y;
+
+      const shapeX = Math.min(startX, endX);
+      const shapeY = Math.min(startY, endY);
+
+      const dy = Math.abs(endY - startY);
+      const bendMagnitude = Math.min(80, Math.max(25, dy * 0.1));
+      // For downward arrows (startY < endY): negative bend → curves right (toward text)
+      // We want the opposite: belly away from text
+      // Left margin: belly goes left (negative x direction)
+      // Right margin: belly goes right (positive x direction)
+      const goingDown = startY < endY;
+      // In TLDraw: for downward arrow, negative bend = curve right, positive = curve left
+      // Left margin wants curve left (away from text) = positive bend for downward
+      // Right margin wants curve right (away from text) = negative bend for downward
+      const sign = useRightMargin
+        ? (goingDown ? -1 : 1)
+        : (goingDown ? 1 : -1);
+      const bend = sign * bendMagnitude;
+
+      const shapeId = generateShapeId();
+      const shapeIndex = await getNextShapeIndex(doc);
+      const shape = {
+        id: shapeId,
+        type: 'arrow',
+        x: shapeX,
+        y: shapeY,
+        index: shapeIndex,
+        rotation: 0,
+        isLocked: false,
+        opacity: 1,
+        props: {
+          start: { x: startX - shapeX, y: startY - shapeY },
+          end: { x: endX - shapeX, y: endY - shapeY },
+          bend,
+          color,
+          size: 's',
+          dash: 'draw',
+          fill: 'none',
+          arrowheadStart: 'none',
+          arrowheadEnd: 'arrow',
+          kind: 'arc',
+          labelColor: 'black',
+          labelPosition: 0.5,
+          font: 'draw',
+          scale: 1,
+          elbowMidPoint: 0.5,
+          richText: label ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: label }] }] } : { type: 'doc', content: [] },
+        },
+        meta: {
+          createdAt: Date.now(),
+          createdBy: 'claude',
+          sourceAnchor: { file: file || './' + (fromPos.texFile || 'main.tex'), line: fromLine },
+        },
+        parentId: 'page:page',
+        typeName: 'shape',
+      };
+
+      await createShapeRest(doc, shape);
+      const desc = fromPos.page === toPos.page
+        ? `Arrow drawn: line ${fromLine} → ${toLine}, page ${fromPos.page}`
+        : `Arrow drawn: line ${fromLine} (p${fromPos.page}) → ${toLine} (p${toPos.page})`;
+      return { content: [{ type: 'text', text: `${desc}, ${color} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 

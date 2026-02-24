@@ -7,6 +7,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+.env
 node_modules
 dist
 dist-ssr
@@ -37,6 +38,7 @@ server/projects/
 test-results/
 
 # Scratch / debug scripts
+scratch/
 *.local.mjs
 
 # Generated document output (rebuilt via build-svg.sh / build-html-doc.mjs)
