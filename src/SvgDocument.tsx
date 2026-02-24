@@ -595,14 +595,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
       }
-      // Register browse tool — cursor arrow + hand pointer for HTML docs
+      // Register browse tool — same icon as select (it behaves like select
+      // for unlocked shapes, passes through to iframes otherwise)
       tools['browse'] = {
         id: 'browse',
-        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 3l4.5 12 2-4.5L14 8.5z" />
-          <path d="M14.5 3.5v3M14.5 3.5h-3" />
-        </svg>) as any,
-        label: 'Browse',
+        icon: 'tool-pointer',
+        label: 'tool.select',
         onSelect: () => _editor.setCurrentTool('browse'),
       }
       return tools
@@ -889,6 +887,27 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 editor.getCurrentToolId() // subscribe
                 saveSession()
               })
+
+              // Browse bounce-back: when the select tool deselects everything
+              // in an HTML doc, return to browse mode. The browse tool delegates
+              // to select for note interaction; this closes the loop.
+              if (document.format === 'html') {
+                let bounceTimer: ReturnType<typeof setTimeout> | null = null
+                react('browse-bounce', () => {
+                  const tool = editor.getCurrentToolId()
+                  const sel = editor.getSelectedShapeIds()
+                  if (bounceTimer) { clearTimeout(bounceTimer); bounceTimer = null }
+                  if (tool === 'select' && sel.length === 0) {
+                    // Small delay: don't bounce during transient states (mid-click)
+                    bounceTimer = setTimeout(() => {
+                      if (editor.getCurrentToolId() === 'select' &&
+                          editor.getSelectedShapeIds().length === 0) {
+                        editor.setCurrentTool('browse')
+                      }
+                    }, 300)
+                  }
+                })
+              }
             }, 500)
           }
 
