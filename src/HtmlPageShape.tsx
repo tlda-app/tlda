@@ -123,10 +123,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
         // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
+        // Negate deltas: browser wheel deltaY>0 = scroll down, but TLDraw's
+        // internal convention (from @use-gesture) uses negative = pan down.
         editor.dispatch({
           type: 'wheel',
           name: 'wheel',
-          delta: new Vec(deltaX, deltaY, 0),
+          delta: new Vec(-deltaX, -deltaY, 0),
           point: new Vec(editor.inputs.currentScreenPoint.x, editor.inputs.currentScreenPoint.y),
           shiftKey: false,
           altKey: false,
