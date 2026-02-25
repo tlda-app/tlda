@@ -10,15 +10,9 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 ## Why this exists
 
-The [demo](https://qtm285.github.io/claude-tldraw/?doc=spinoff3) is a snapshot of the revision process of a paper written almost entirely by Claude Code. I was using [Pham et al.](https://arxiv.org/abs/2310.02278) as an example in a more abstract paper and realized that, using that paper's results, I could characterize a substantially better variant of an estimator I'd worked on but never quite cracked. This is what happened when I sketched the idea for Claude, shared my notes, and chatted on and off for a couple days. Being able to deal with this paper — and several others that happened the same way in the same week or two — is what I wrote CTD for.
+When an AI agent produces content faster than you can review it, the standard text-editor-plus-PDF setup stops working. You need to stay oriented in a document that changes faster than you can re-read it, verify cross-page dependencies without flipping back and forth, and communicate with the agent on the document rather than in a separate chat window.
 
-When an AI agent drafts proofs, fills in technical steps, and revises sections of a 40-page paper, the author's relationship to the document changes. You become something closer to a reviewer of your own paper — you set direction and check work rather than producing every line. The existing tools assume a single-author model: text editor + PDF viewer. Nothing in that setup helps you stay oriented in a document that changes faster than you can re-read it. The agent produces content in minutes that takes twenty minutes to verify. It references equations, lemmas, and definitions across 40 pages without the spatial intuition a human builds up over months of writing.
-
-CTD is built around this observation. The goal is that all communication *can* happen on the document, not in a separate chat window. Notes are anchored to source lines and survive rebuilds. The agent sees what you're pointing at and responds with structured annotations on the page. The proof reader shows cross-page dependencies so you can verify a proof without flipping back and forth. The diff viewer asks you to decide about each change — keep, revert, or discuss — framing revision as negotiation rather than a unilateral process.
-
-The system optimizes for the author's ability to verify and navigate, not to produce.
-
-None of this requires an AI agent, though. CTD works fine for human collaborators reviewing each other's work — or just for reading papers. Most papers on arXiv have TeX source available (click "Other formats" on any abstract page), so you can point CTD at essentially any paper in the literature.
+CTD puts everything on the canvas: source-anchored annotations that survive rebuilds, cross-page proof and definition viewers, structured diff review, and an MCP integration so the agent sees what you're pointing at. It works just as well for human collaborators or for reading any paper — most papers on arXiv have TeX source available.
 
 ## What it does
 
