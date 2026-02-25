@@ -3,13 +3,13 @@ import { StateNode, type TLPointerEventInfo } from 'tldraw'
 /**
  * Smart browse tool for HTML documents.
  *
- * Respects z-order: if an unlocked shape (math note, annotation) is under
- * the pointer, delegates to the select tool for full select/drag/edit.
- * Otherwise, passes through to the iframe layer for link clicks, text
- * selection, and normal web interaction.
+ * Respects z-order:
+ * - Unlocked shape (note, annotation) → delegate to select (drag/edit)
+ * - Locked html-page shape (iframe) → pass through for web interaction
+ * - Empty canvas → delegate to select (box select / lasso)
  *
- * The select tool returns to browse when the user clicks on empty
- * canvas / bare iframe (see editorSetup.ts bounce-back logic).
+ * The select tool returns to browse when selection empties
+ * (see SvgDocument.tsx bounce-back reactor).
  */
 export class BrowseTool extends StateNode {
   static override id = 'browse'
@@ -19,24 +19,22 @@ export class BrowseTool extends StateNode {
   }
 
   override onPointerDown = (info: TLPointerEventInfo) => {
-    // Hit test: is there an unlocked shape (note, annotation) under the cursor?
     const point = this.editor.inputs.currentPagePoint
-    const zoomLevel = this.editor.getZoomLevel()
     const hitShape = this.editor.getShapeAtPoint(point, {
       hitInside: true,
-      margin: 0 / zoomLevel,
+      margin: 0,
       renderingOnly: true,
     })
 
-    if (hitShape && !hitShape.isLocked) {
-      // Delegate to the select tool for full interaction (drag, resize, edit)
-      this.editor.setCurrentTool('select')
-      // Forward the pointer event so the select tool processes it
-      this.editor.root.handleEvent(info)
+    if (hitShape && hitShape.isLocked) {
+      // Locked shape (html-page iframe) — pass through for web interaction
       return
     }
 
-    // No interactive shape — let the event pass through to the iframe
+    // Unlocked shape or empty canvas — delegate to select for
+    // shape interaction or box-select/lasso
+    this.editor.setCurrentTool('select')
+    this.editor.root.handleEvent(info)
   }
 
   override onPointerMove = () => {}
