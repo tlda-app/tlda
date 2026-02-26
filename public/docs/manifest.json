@@ -4,6 +4,11 @@
       "title": "spinoff3",
       "pages": 25,
       "format": "svg"
+    },
+    "qtm285": {
+      "title": "QTM 285: Prediction, Inference, and Causality",
+      "pages": 5,
+      "format": "html"
     }
   }
 }

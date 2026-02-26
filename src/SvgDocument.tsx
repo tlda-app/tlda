@@ -448,6 +448,40 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, hasDiffBuiltin, diffMode])
 
+  // n/p keyboard shortcuts for multipage HTML: switch TLDraw pages
+  useEffect(() => {
+    if (document.format !== 'html') return
+    // Don't conflict with diff n/p handler
+    const hasDiffChanges = hasDiffBuiltin
+      ? (document.diffLayout?.changes?.length ?? 0) > 0
+      : diffMode && (diffDataRef.current?.changes?.length ?? 0) > 0
+    if (hasDiffChanges) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isInputFocused()) return
+      if (e.key !== 'n' && e.key !== 'p') return
+      const editor = editorRef.current
+      if (!editor) return
+      if (editor.getEditingShapeId()) return
+
+      e.preventDefault()
+      const pages = editor.getPages()
+      if (pages.length <= 1) return
+      const currentIdx = pages.findIndex(p => p.id === editor.getCurrentPageId())
+      if (currentIdx < 0) return
+
+      if (e.key === 'n' && currentIdx < pages.length - 1) {
+        editor.setCurrentPage(pages[currentIdx + 1].id)
+      } else if (e.key === 'p' && currentIdx > 0) {
+        editor.setCurrentPage(pages[currentIdx - 1].id)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [document, hasDiffBuiltin, diffMode])
+
   const components = useMemo<TLComponents>(
     () => ({
       PageMenu: null,
@@ -497,6 +531,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       height: p.height,
       textData: p.textData,
       shapeId: p.shapeId,
+      tldrawPageId: p.tldrawPageId,
     })),
   }), [docKey, document])
 
@@ -800,6 +835,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               const tool = editor.getCurrentToolId()
               localStorage.setItem(sessionKey, JSON.stringify({
                 camera: { x: cam.x, y: cam.y, z: cam.z },
+                pageId: editor.getCurrentPageId(),
                 tool,
                 diffMode: diffModeRef.current,
                 proofMode: proofModeRef.current,
@@ -813,7 +849,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; tool?: string; diffMode?: boolean; proofMode?: boolean; cameraLinked?: boolean; panelsLocal?: boolean }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; pageId?: string; tool?: string; diffMode?: boolean; proofMode?: boolean; cameraLinked?: boolean; panelsLocal?: boolean }
             } catch { return null }
           }
 
@@ -825,6 +861,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             sessionRestoredRef.current = true
             const session = loadSession()
             setTimeout(() => {
+              if (session?.pageId) {
+                // Restore TLDraw page (multipage HTML) before restoring camera
+                const pages = editor.getPages()
+                if (pages.some(p => p.id === session.pageId)) {
+                  editor.setCurrentPage(session.pageId as any)
+                }
+              }
               if (session?.camera) {
                 editor.setCamera(session.camera)
               }
@@ -869,6 +912,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                     writeSignal('signal:viewport', { pages })
                   }
                 }, 500)
+              })
+
+              // Save session on page switch (multipage HTML)
+              react('save-page', () => {
+                editor.getCurrentPageId() // subscribe
+                saveSession()
               })
 
               // Camera link: broadcast position to other viewers (faster debounce)

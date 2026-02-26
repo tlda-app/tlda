@@ -8,7 +8,7 @@ import type { BuildError, BuildWarning } from './useYjsSync'
 export interface DocContextValue {
   docName: string
   format?: 'svg' | 'png' | 'html' | 'diff'
-  pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string }>
+  pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
 }
 
 /** Volatile panel state — toggles, loading flags, history slider, etc. */

@@ -286,10 +286,12 @@ const BRIDGE_SCRIPT = `
       stripNav();
       setupScrollyContainers();
       // processWebRCells(); // Disabled — live-html includes WebR runtime
-      // Delay to let MathJax/webR render
+      // Early reports for fast anchor resolution, later reports for MathJax accuracy
+      setTimeout(reportHeight, 200);
       setTimeout(reportHeight, 500);
       setTimeout(reportHeight, 2000);
       setTimeout(reportHeight, 5000);
+      setTimeout(reportHeadings, 200);
       setTimeout(reportHeadings, 1000);
       setTimeout(reportHeadings, 3000);
       setTimeout(reportHeadings, 6000);

@@ -1,4 +1,4 @@
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape, TLPageId } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
@@ -25,25 +25,66 @@ export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages
   const pageIndex = pageNum - 1
   if (pageIndex < 0 || pageIndex >= doc.pages.length) return
   const page = doc.pages[pageIndex]
-  navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
+
+  if (page.tldrawPageId) {
+    // Multipage HTML: switch TLDraw page and center on the shape
+    editor.setCurrentPage(page.tldrawPageId as TLPageId)
+    const shape = editor.getCurrentPageShapes().find((s: any) => s.type === 'html-page') as any
+    if (shape) {
+      const vpH = editor.getViewportPageBounds().h
+      editor.centerOnPoint(
+        { x: shape.x + shape.props.w / 2, y: shape.y + vpH * 0.3 },
+        { animation: { duration: 300 } },
+      )
+    }
+  } else {
+    // SVG fallback: scroll to page bounds
+    navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
+  }
 }
 
 export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pages'>, pageNum: number, anchor: string) {
   const pageIndex = pageNum - 1
-  // Find the html-page shape for this page index
-  const shapes = editor.getCurrentPageShapes()
-    .filter((s: any) => s.type === 'html-page')
-    .sort((a: any, b: any) => a.y - b.y)
-  const shape = shapes[pageIndex] as any
-  if (!shape) return navigateToPage(editor, doc, pageNum)
-  const positions = htmlHeadingPositions.get(shape.id)
-  const yOffset = positions?.[anchor]
-  if (yOffset != null) {
-    const centerX = shape.x + shape.props.w / 2
-    navigateTo(editor, centerX, shape.y + yOffset, centerX)
-  } else {
-    navigateToPage(editor, doc, pageNum)
+  if (pageIndex < 0 || pageIndex >= doc.pages.length) return
+  const page = doc.pages[pageIndex]
+
+  if (!page.tldrawPageId) {
+    return navigateToPage(editor, doc, pageNum)
   }
+
+  // Switch to the target TLDraw page
+  editor.setCurrentPage(page.tldrawPageId as TLPageId)
+  const shape = editor.getCurrentPageShapes().find((s: any) => s.type === 'html-page') as any
+  if (!shape) return
+
+  const cx = shape.x + shape.props.w / 2
+
+  // Check if anchor position is already known
+  const yOff = htmlHeadingPositions.get(shape.id)?.[anchor]
+  if (yOff != null) {
+    editor.centerOnPoint({ x: cx, y: shape.y + yOff }, { animation: { duration: 300 } })
+    return
+  }
+
+  // Anchor not yet resolved — center on page top, poll for the anchor
+  const vpH = editor.getViewportPageBounds().h
+  editor.centerOnPoint({ x: cx, y: shape.y + vpH * 0.3 }, { animation: { duration: 300 } })
+
+  const targetId = shape.id
+  const poll = setInterval(() => {
+    const y = htmlHeadingPositions.get(targetId)?.[anchor]
+    if (y != null) {
+      clearInterval(poll)
+      const fresh = editor.store.get(targetId) as any
+      if (fresh) {
+        editor.centerOnPoint(
+          { x: fresh.x + fresh.props.w / 2, y: fresh.y + y },
+          { animation: { duration: 300 } },
+        )
+      }
+    }
+  }, 200)
+  setTimeout(() => clearInterval(poll), 8000)
 }
 
 // --- Heading parsing ---

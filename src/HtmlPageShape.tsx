@@ -3,29 +3,17 @@ import {
   HTMLContainer,
   T,
   Vec,
+  createShapeId,
   useEditor,
   useValue,
-  createShapeId,
   stopEventPropagation,
-  atom,
 } from 'tldraw'
+import type { TLPageId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from './authToken'
-import { PAGE_GAP } from './layoutConstants'
-
-// Number of page-heights beyond viewport to keep iframe alive
-const VIEWPORT_BUFFER_PAGES = 2
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
-
-// Shape IDs that should pre-load their iframe ahead of the camera arriving.
-// Reactive atom so useValue re-evaluates when the set changes.
-const preloadShapeIds = atom<ReadonlySet<string>>('preload-shapes', new Set())
-
-// Active navigation tracker — cancel previous before starting new one
-let activeNavTracker: ReturnType<typeof setInterval> | null = null
-let activeNavTimeout: ReturnType<typeof setTimeout> | null = null
 
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'html-page' as const
@@ -101,14 +89,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     setIsInteracting(true)
   }, [])
 
-  // Viewport gating: only render iframe when near viewport
-  // Use viewport height (not shape height) for the buffer so tall chapters don't
-  // keep distant iframes alive indefinitely.
-  // Also render if this shape is in the preload set (cross-chapter nav target).
+  // Viewport gating: only render iframe when near viewport.
+  // With multipage, each TLDraw page typically has one iframe, so this mainly
+  // avoids rendering when zoomed very far out.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
-    if (preloadShapeIds.get().has(shape.id)) return true
     const viewport = editor.getViewportPageBounds()
-    const margin = viewport.height * VIEWPORT_BUFFER_PAGES
+    const margin = viewport.height * 2
     const shapeTop = shape.y
     const shapeBottom = shape.y + shape.props.h
     return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
@@ -139,28 +125,26 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'ctd-navigate') {
-        // Route navigation from iframe links to canvas scroll
-        const allShapes = editor.getCurrentPageShapes()
-          .filter((s: any) => s.type === 'html-page')
-          .sort((a: any, b: any) => a.y - b.y)
+        // Route navigation from iframe links to page switch + anchor scroll.
+        // Search ALL pages for the target shape (cross-chapter navigation).
+        const allHtmlShapes = Object.values(editor.store.allRecords())
+          .filter((r: any) => r.typeName === 'shape' && r.type === 'html-page') as any[]
         let targetShape: any = null
         const anchor = e.data.anchor || null
         if (e.data.targetFile) {
-          targetShape = allShapes.find((s: any) => {
+          targetShape = allHtmlShapes.find((s: any) => {
             const url = s.props.url || ''
             return url.endsWith('/' + e.data.targetFile) ||
               url.includes('/' + e.data.targetFile + '?')
           })
         } else {
-          targetShape = allShapes.find((s: any) => s.id === e.data.shapeId)
+          targetShape = allHtmlShapes.find((s: any) => s.id === e.data.shapeId)
         }
-        // Quarto cross-chapter refs use same-host full URLs, so targetFile is null
-        // but the anchor may be in a different chapter. Fall back to searching all
-        // shapes' heading positions when the anchor isn't in the sending shape.
+        // Fall back to searching heading positions if anchor not in target
         if (targetShape && anchor) {
           const positions = htmlHeadingPositions.get(targetShape.id)
           if (!positions?.[anchor]) {
-            const altShape = allShapes.find((s: any) => {
+            const altShape = allHtmlShapes.find((s: any) => {
               const pos = htmlHeadingPositions.get(s.id)
               return pos?.[anchor] != null
             })
@@ -168,76 +152,38 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }
         }
         if (!targetShape) return
-        const targetId = targetShape.id
 
-        // Cancel any previous navigation tracker before starting a new one.
-        // Multiple component instances receive the same message — only one
-        // should own the tracker. Use the module-level variables as a lock.
-        if (activeNavTracker) { clearInterval(activeNavTracker); activeNavTracker = null }
-        if (activeNavTimeout) { clearTimeout(activeNavTimeout); activeNavTimeout = null }
-        // Clear any stale preload flags from previous navigation
-        if (preloadShapeIds.get().size > 0) {
-          preloadShapeIds.set(new Set())
+        // Switch to the target shape's TLDraw page
+        const targetPageId = targetShape.parentId as TLPageId
+        if (targetPageId !== editor.getCurrentPageId()) {
+          editor.setCurrentPage(targetPageId)
         }
 
-        // Pre-load: start the target iframe loading before the camera arrives.
-        preloadShapeIds.set(new Set([targetId]))
-
-        // Helper: compute the target Y, re-reading shape from store for fresh position.
-        // centerOnPoint puts the target at viewport center, so offset when scrolling
-        // to a page top — place the top of the chapter near the top of the viewport.
+        // Center on anchor or page top
         const vpHeight = editor.getViewportPageBounds().h
-        const getTargetY = () => {
-          const fresh = editor.store.get(targetId) as any
-          if (!fresh) return null
-          const cx = fresh.x + fresh.props.w / 2
-          if (anchor) {
-            const positions = htmlHeadingPositions.get(targetId)
-            const yOff = positions?.[anchor]
-            return { x: cx, y: yOff != null ? fresh.y + yOff : fresh.y + vpHeight * 0.3 }
-          }
-          return { x: cx, y: fresh.y + vpHeight * 0.3 }
-        }
-
-        const pt = getTargetY()
-        if (pt) editor.centerOnPoint(pt, { animation: { duration: 300 } })
-
-        // Track the target shape as reflow shifts its position.
-        // Intermediate iframes loading and reporting heights push shapes down
-        // continuously over the first few seconds. Poll every 500ms and re-center
-        // when the target drifts, then clean up the preload flag when stable.
-        let lastY = pt?.y ?? 0
-        let stableCount = 0
-        activeNavTracker = setInterval(() => {
-          const pt2 = getTargetY()
-          if (!pt2) { clearInterval(activeNavTracker!); activeNavTracker = null; return }
-          if (Math.abs(pt2.y - lastY) > 20) {
-            lastY = pt2.y
-            stableCount = 0
-            editor.centerOnPoint(pt2, { animation: { duration: 200 } })
+        const cx = targetShape.x + targetShape.props.w / 2
+        if (anchor) {
+          const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
+          if (yOff != null) {
+            editor.centerOnPoint({ x: cx, y: targetShape.y + yOff }, { animation: { duration: 300 } })
           } else {
-            stableCount++
+            // Anchor not resolved yet — center on page top, poll for anchor
+            editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+            const poll = setInterval(() => {
+              const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
+              if (yOff2 != null) {
+                clearInterval(poll)
+                const fresh = editor.store.get(targetShape.id) as any
+                if (fresh) {
+                  editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 }, { animation: { duration: 300 } })
+                }
+              }
+            }, 200)
+            setTimeout(() => clearInterval(poll), 8000)
           }
-          // After 3 stable checks (1.5s of no movement), we're settled
-          if (stableCount >= 3) {
-            clearInterval(activeNavTracker!); activeNavTracker = null
-            // Clear preload flag — viewport gating handles it from here
-            if (preloadShapeIds.get().has(targetId)) {
-              const next = new Set(preloadShapeIds.get())
-              next.delete(targetId)
-              preloadShapeIds.set(next)
-            }
-          }
-        }, 500)
-        // Safety: clear after 10s no matter what
-        activeNavTimeout = setTimeout(() => {
-          if (activeNavTracker) { clearInterval(activeNavTracker); activeNavTracker = null }
-          if (preloadShapeIds.get().has(targetId)) {
-            const next = new Set(preloadShapeIds.get())
-            next.delete(targetId)
-            preloadShapeIds.set(next)
-          }
-        }, 10000)
+        } else {
+          editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+        }
         return
       }
       if (e.data?.type === 'ctd-headings' && e.data.shapeId === shape.id) {
@@ -289,34 +235,11 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const newH = Math.max(200, Math.round(e.data.height))
         const current = editor.store.get(shape.id) as any
         if (!current) return
-        const oldH = current.props.h
-        if (Math.abs(newH - oldH) > 5) {
-          const delta = newH - oldH
-          // Update this shape's height
+        if (Math.abs(newH - current.props.h) > 5) {
           editor.store.update(shape.id, (s: any) => ({
             ...s,
             props: { ...s.props, h: newH },
           }))
-          // Reflow: push all html-page shapes below this one down by the delta
-          const allShapes = editor.getCurrentPageShapes()
-          const allPages = allShapes
-            .filter((s: any) => s.type === 'html-page' && s.y > current.y)
-          for (const below of allPages) {
-            editor.store.update(below.id, (s: any) => ({
-              ...s,
-              y: s.y + delta,
-            }))
-          }
-          // Also move svg-figure shapes belonging to any page that moved
-          const movedPageIds = new Set([...allPages.map((s: any) => s.id)])
-          const childFigures = allShapes
-            .filter((s: any) => s.type === 'svg-figure' && movedPageIds.has(s.props.parentShapeId))
-          for (const fig of childFigures) {
-            editor.store.update(fig.id, (s: any) => ({
-              ...s,
-              y: s.y + delta,
-            }))
-          }
         }
       }
     }

@@ -27,6 +27,8 @@ export interface SvgPage {
   width: number
   height: number
   textData?: PageTextData | null
+  tldrawPageId?: string  // TLDraw page ID for multipage HTML docs
+  tldrawPageName?: string  // Display name for the TLDraw page
 }
 
 export interface DiffHighlight {
@@ -366,94 +368,62 @@ export async function loadHtmlDocument(
 
   console.log(`Found ${pageInfos.length} HTML pages`)
 
+  // Multipage: each chapter (or tab group) gets its own TLDraw page.
+  // Shapes are placed at origin on their page — no vertical stacking.
   const pages: SvgPage[] = []
-  let top = 0
-  let widest = 0
+  let tldrawPageIdx = 0
 
   let i = 0
   while (i < pageInfos.length) {
     const info = pageInfos[i]
 
     if (!info.group) {
-      // Normal page: stack vertically
+      // Normal page: own TLDraw page, shape at origin
       const pageId = `${name}-page-${i}`
+      const tlPageId = `page:${name}-ch-${tldrawPageIdx}`
+      const pageName = info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
         src: basePath + info.file,
-        bounds: new Box(0, top, info.width, info.height),
+        bounds: new Box(0, 0, info.width, info.height),
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
         width: info.width,
         height: info.height,
+        tldrawPageId: tlPageId,
+        tldrawPageName: pageName,
       })
-      top += info.height  // no gap — HTML chapters stack continuously
-      widest = Math.max(widest, info.width)
+      tldrawPageIdx++
       i++
     } else {
-      // Tab group: collect consecutive pages with same group
+      // Tab group: all tabs share one TLDraw page, laid out horizontally
       const groupId = info.group
       const groupStart = i
+      const tlPageId = `page:${name}-ch-${tldrawPageIdx}`
       let left = 0
-      let tallest = 0
 
       while (i < pageInfos.length && pageInfos[i].group === groupId) {
         const gp = pageInfos[i]
         const pageId = `${name}-page-${i}`
         pages.push({
           src: basePath + gp.file,
-          bounds: new Box(left, top, gp.width, gp.height),
+          bounds: new Box(left, 0, gp.width, gp.height),
           assetId: AssetRecordType.createId(pageId),
           shapeId: createShapeId(pageId),
           width: gp.width,
           height: gp.height,
+          tldrawPageId: tlPageId,
+          tldrawPageName: groupId,
         })
         left += gp.width + tabSpacing
-        tallest = Math.max(tallest, gp.height)
         i++
       }
 
-      const groupWidth = left - tabSpacing
-      widest = Math.max(widest, groupWidth)
-      top += tallest + pageSpacing
-
-      console.log(`  Tab group "${groupId}": ${i - groupStart} tabs, width=${groupWidth}px`)
+      tldrawPageIdx++
+      console.log(`  Tab group "${groupId}": ${i - groupStart} tabs`)
     }
   }
 
-  // Center: single pages center within widest; tab groups center as a unit
-  for (let j = 0; j < pages.length; j++) {
-    const info = pageInfos[j]
-    if (!info.group) {
-      // Single page — center individually
-      pages[j].bounds.x = (widest - pages[j].bounds.width) / 2
-    }
-  }
-  // Center tab groups as units
-  const groupOffsets = new Map<string, { startIdx: number, totalWidth: number }>()
-  for (let j = 0; j < pageInfos.length; j++) {
-    const g = pageInfos[j].group
-    if (!g) continue
-    if (!groupOffsets.has(g)) {
-      // Find total width of this group
-      let gw = 0
-      let k = j
-      while (k < pageInfos.length && pageInfos[k].group === g) {
-        gw += pageInfos[k].width + tabSpacing
-        k++
-      }
-      gw -= tabSpacing
-      groupOffsets.set(g, { startIdx: j, totalWidth: gw })
-    }
-  }
-  for (const [groupId, { startIdx, totalWidth }] of groupOffsets) {
-    const offset = (widest - totalWidth) / 2
-    let k = startIdx
-    while (k < pageInfos.length && pageInfos[k].group === groupId) {
-      pages[k].bounds.x += offset
-      k++
-    }
-  }
-
-  console.log(`HTML document ready (${pageInfos.length} pages, widest=${widest}px)`)
+  console.log(`HTML document ready (${pageInfos.length} pages, ${tldrawPageIdx} TLDraw pages)`)
   return { name, pages, basePath, format: 'html' }
 }
 

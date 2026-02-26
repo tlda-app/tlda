@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditor } from 'tldraw'
-import type { TLShape, TLShapeId } from 'tldraw'
+import type { TLShape, TLShapeId, TLPageId } from 'tldraw'
 import { navigateTo, getShapeText, COLOR_HEX } from './helpers'
 import { getTabCount, switchTab } from '../noteThreading'
 
@@ -18,6 +18,14 @@ function isPendingMC(shape: TLShape): boolean {
   return sel == null || sel < 0
 }
 
+/** Get all note shapes across all TLDraw pages */
+function getAllNotes(editor: ReturnType<typeof useEditor>): TLShape[] {
+  const allRecords = Object.values(editor.store.allRecords())
+  return allRecords.filter(
+    (r: any) => r.typeName === 'shape' && ((r.type as string) === 'math-note' || r.type === 'note')
+  ) as TLShape[]
+}
+
 export function NotesTab() {
   const editor = useEditor()
   const [notes, setNotes] = useState<TLShape[]>([])
@@ -26,11 +34,7 @@ export function NotesTab() {
 
   useEffect(() => {
     function updateNotes() {
-      const shapes = editor.getCurrentPageShapes()
-      const noteShapes = shapes.filter(
-        s => (s.type as string) === 'math-note' || s.type === 'note'
-      )
-      setNotes(noteShapes)
+      setNotes(getAllNotes(editor))
     }
 
     updateNotes()
@@ -64,6 +68,14 @@ export function NotesTab() {
   }, [notes, sort, hideDone])
 
   const handleClick = useCallback((shape: TLShape) => {
+    // Switch to the note's TLDraw page if it's on a different one
+    const shapePageId = shape.parentId as TLPageId
+    if (shapePageId && shapePageId !== editor.getCurrentPageId()) {
+      const pages = editor.getPages()
+      if (pages.some(p => p.id === shapePageId)) {
+        editor.setCurrentPage(shapePageId)
+      }
+    }
     navigateTo(editor, shape.x, shape.y)
   }, [editor])
 
@@ -75,12 +87,24 @@ export function NotesTab() {
     )
   }
 
+  // Build page name lookup for chapter labels
+  const pageNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const p of editor.getPages()) {
+      map.set(p.id, p.name)
+    }
+    return map
+  }, [editor, notes]) // re-derive when notes change (pages may have been created)
+
+  const multiPage = editor.getPages().length > 1
+
   function renderNote(shape: TLShape) {
     const text = getShapeText(shape)
     const color = (shape.props as Record<string, unknown>).color as string || 'yellow'
     const meta = shape.meta as Record<string, unknown>
     const anchor = meta?.sourceAnchor as { line?: number } | undefined
     const tabCount = getTabCount(shape)
+    const pageName = multiPage ? pageNames.get(shape.parentId) : undefined
 
     // Strip math delimiters for cleaner preview
     const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
@@ -104,6 +128,7 @@ export function NotesTab() {
           </span>
         </div>
         <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
+          {pageName && <span style={{ opacity: 0.6 }}>{pageName}</span>}
           {anchor?.line && <span>L{anchor.line}</span>}
           {tabCount > 1 && <span>{tabCount} tabs</span>}
           {shapeDone && (
