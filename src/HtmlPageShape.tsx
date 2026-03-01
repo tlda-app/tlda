@@ -15,6 +15,24 @@ import { appendToken } from './authToken'
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 
+// Scrollytelling region metadata reported by bridge scripts, keyed by shape ID
+export interface ScrollyStep {
+  y: number           // document offset (px from top of iframe content)
+  label: string       // step label from data-labels
+  imageUrl: string    // absolute URL to the step's SVG image
+  text: string        // step narrative text content
+}
+
+export interface ScrollyRegion {
+  id: string          // container ID or generated
+  startY: number      // top of the image-toggle container
+  endY: number        // bottom of the last step element
+  steps: ScrollyStep[]
+}
+
+export const htmlScrollyRegions = new Map<string, ScrollyRegion[]>()
+
+
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'html-page' as const
   static override props = {
@@ -188,6 +206,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       }
       if (e.data?.type === 'ctd-headings' && e.data.shapeId === shape.id) {
         htmlHeadingPositions.set(shape.id, e.data.positions)
+        return
+      }
+      if (e.data?.type === 'ctd-scrolly-regions' && e.data.shapeId === shape.id) {
+        htmlScrollyRegions.set(shape.id, e.data.regions)
         return
       }
       if (e.data?.type === 'ctd-figures' && e.data.shapeId === shape.id) {

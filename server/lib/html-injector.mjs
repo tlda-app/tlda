@@ -129,8 +129,10 @@ const BRIDGE_SCRIPT = `
       '.cm-editor { max-width: 100% !important; overflow-x: auto !important; }',
       '.cm-line { overflow-wrap: anywhere; }',
       '.cell-output img, .cell-output svg { max-width: 100%; height: auto; }',
-      '.ctd-scrolly-viewport { overflow-y: auto; position: relative; scroll-behavior: smooth; }',
-      '.ctd-scrolly-viewport .image-toggle-figure { position: sticky !important; top: 0; z-index: 1; }',
+      '.image-toggle .image-toggle-controls { display: none !important; }',
+      '.image-toggle-sidebar .image-toggle-steps > * { margin-bottom: 1em; padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid rgba(100, 100, 200, 0.12); font-size: 0.95em; line-height: 1.5; cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }',
+      '.image-toggle-sidebar .image-toggle-steps > *:hover { background: rgba(100, 100, 200, 0.06); }',
+      '.image-toggle-sidebar .image-toggle-steps > *.scrolly-active { border-left-color: rgba(80, 100, 200, 0.6); background: rgba(100, 100, 200, 0.06); }',
     ].join('\\n');
     document.head.appendChild(style);
   }
@@ -236,55 +238,146 @@ const BRIDGE_SCRIPT = `
     }
   }
 
-  // Wrap scrollytelling containers (image-toggle sidebar) in scrollable viewports
-  // so sticky positioning and scroll-driven animations work inside the iframe
-  function setupScrollyContainers() {
-    var containers = document.querySelectorAll('.image-toggle[data-layout="sidebar"]');
-    containers.forEach(function(container) {
-      var wrapper = document.createElement('div');
-      wrapper.className = 'ctd-scrolly-viewport';
-      container.parentNode.insertBefore(wrapper, container);
-      wrapper.appendChild(container);
-      // Set viewport height after layout
-      requestAnimationFrame(function() {
-        var fig = container.querySelector('.image-toggle-figure, .quarto-float');
-        if (fig) {
-          var h = fig.getBoundingClientRect().height;
-          wrapper.style.height = Math.min(h + 100, 600) + 'px';
-        } else {
-          wrapper.style.height = '500px';
-        }
-      });
-      // Catch wheel events inside scrolly containers — don't forward to parent
-      wrapper.addEventListener('wheel', function(e) {
-        e.stopPropagation();
-      }, { passive: true });
-      // Use IntersectionObserver to advance image-toggle steps
-      var steps = container.querySelectorAll('[class*="step"]');
+  // Report scrollytelling region metadata to parent for overlay rendering.
+  // The overlay shows the figure in a floating panel; step text stays inline.
+  // Note: image-toggle.js (Quarto extension) restructures the DOM before this
+  // runs — sidebar toggles get wrapped in .image-toggle-sidebar with step text
+  // moved into .image-toggle-steps. Cells get .image-toggle-cell class.
+  function reportScrollyRegions() {
+    var containers = document.querySelectorAll('.image-toggle');
+    if (containers.length === 0) return;
+
+    function getOffsetY(el) {
+      var y = 0;
+      while (el) { y += el.offsetTop || 0; el = el.offsetParent; }
+      return y;
+    }
+
+    var regions = [];
+    containers.forEach(function(container, idx) {
+      var containerY = getOffsetY(container);
+      var labels = (container.getAttribute('data-labels') || '').split(',').map(function(s) { return s.trim(); });
+      var stepSel = container.getAttribute('data-steps');
+
+      // Find images: image-toggle.js wraps cells in .image-toggle-stack > .image-toggle-cell
       var cells = container.querySelectorAll('.image-toggle-cell');
-      if (steps.length > 0 && cells.length > 0) {
-        var io = new IntersectionObserver(function(entries) {
-          entries.forEach(function(entry) {
-            if (entry.isIntersecting) {
-              var idx = Array.from(steps).indexOf(entry.target);
-              if (idx >= 0 && idx < cells.length) {
-                cells.forEach(function(c, i) {
-                  c.classList.toggle('active', i === idx);
-                });
-              }
+      var imgUrls = Array.from(cells).map(function(cell) {
+        var img = cell.querySelector('img');
+        return img ? img.src : '';
+      });
+
+      // Find step text elements — location depends on layout:
+      // Sidebar: moved into .image-toggle-sidebar > .image-toggle-steps
+      // Non-sidebar: still siblings of the container
+      var stepTextEls = [];
+      var sidebar = container.closest('.image-toggle-sidebar');
+      if (sidebar) {
+        var stepsCol = sidebar.querySelector('.image-toggle-steps');
+        if (stepsCol && stepSel) {
+          stepTextEls = Array.from(stepsCol.querySelectorAll(stepSel));
+        }
+      } else if (stepSel) {
+        var sibling = container.nextElementSibling;
+        while (sibling) {
+          if (sibling.matches && sibling.matches(stepSel)) {
+            stepTextEls.push(sibling);
+          } else if (stepTextEls.length > 0) {
+            break;
+          }
+          sibling = sibling.nextElementSibling;
+        }
+      }
+
+      // Build steps array
+      var numSteps = Math.max(imgUrls.length, stepTextEls.length, labels.length);
+      if (numSteps === 0) return;
+
+      var steps = [];
+      for (var s = 0; s < numSteps; s++) {
+        var stepEl = stepTextEls[s];
+        var stepY = stepEl ? getOffsetY(stepEl) : containerY;
+        // Extract bold lead-in as label, remainder as text
+        var stepLabel = labels[s] || ('Step ' + (s + 1));
+        var stepText = '';
+        if (stepEl) {
+          var strong = stepEl.querySelector('strong, b');
+          if (strong) {
+            stepLabel = strong.textContent.replace(/[.\s]+$/, '');
+            // Get text after the bold element
+            var clone = stepEl.cloneNode(true);
+            var boldClone = clone.querySelector('strong, b');
+            if (boldClone) boldClone.remove();
+            stepText = clone.textContent.trim();
+          } else {
+            stepText = stepEl.textContent.trim();
+          }
+        }
+        steps.push({
+          y: stepY,
+          label: stepLabel,
+          imageUrl: imgUrls[s] || imgUrls[0] || '',
+          text: stepText,
+        });
+      }
+
+      // Click step text → switch figure + highlight active step
+      var cellArr = Array.from(cells);
+      var stepArr = Array.from(stepTextEls);
+      // Mark first step as active initially
+      if (stepArr.length > 0) {
+        var activeIdx = cellArr.findIndex(function(c) { return c.classList.contains('active'); });
+        if (activeIdx >= 0 && activeIdx < stepArr.length) {
+          stepArr[activeIdx].classList.add('scrolly-active');
+        }
+      }
+      for (var s2 = 0; s2 < stepArr.length; s2++) {
+        (function(stepIdx) {
+          stepArr[stepIdx].addEventListener('click', function() {
+            for (var c = 0; c < cellArr.length; c++) {
+              cellArr[c].classList.toggle('active', c === stepIdx);
+            }
+            for (var t = 0; t < stepArr.length; t++) {
+              stepArr[t].classList.toggle('scrolly-active', t === stepIdx);
             }
           });
-        }, { root: wrapper, threshold: 0.5 });
-        steps.forEach(function(step) { io.observe(step); });
+        })(s2);
       }
+
+      // Region bounds: top of container to bottom of last step element
+      var startY = containerY;
+      var endY = containerY + (container.offsetHeight || 200);
+      // For sidebar, use the sidebar wrapper bounds
+      if (sidebar) {
+        startY = getOffsetY(sidebar);
+        endY = startY + sidebar.offsetHeight;
+      }
+      if (stepTextEls.length > 0) {
+        var lastEl = stepTextEls[stepTextEls.length - 1];
+        var lastY = getOffsetY(lastEl) + lastEl.offsetHeight;
+        if (lastY > endY) endY = lastY;
+      }
+
+      regions.push({
+        id: container.id || ('scrolly-' + idx),
+        startY: startY,
+        endY: endY,
+        steps: steps,
+      });
     });
+
+    if (regions.length > 0 && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'ctd-scrolly-regions',
+        shapeId: shapeId,
+        regions: regions,
+      }, '*');
+    }
   }
 
   // Strip nav on DOMContentLoaded, then measure
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       stripNav();
-      setupScrollyContainers();
       // processWebRCells(); // Disabled — live-html includes WebR runtime
       // Early reports for fast anchor resolution, later reports for MathJax accuracy
       setTimeout(reportHeight, 200);
@@ -295,15 +388,19 @@ const BRIDGE_SCRIPT = `
       setTimeout(reportHeadings, 1000);
       setTimeout(reportHeadings, 3000);
       setTimeout(reportHeadings, 6000);
+      setTimeout(reportScrollyRegions, 200);
+      setTimeout(reportScrollyRegions, 1000);
+      setTimeout(reportScrollyRegions, 3000);
     });
   } else {
     stripNav();
-    setupScrollyContainers();
     processWebRCells();
     setTimeout(reportHeight, 100);
     setTimeout(reportHeight, 2000);
     setTimeout(reportHeadings, 500);
     setTimeout(reportHeadings, 2500);
+    setTimeout(reportScrollyRegions, 500);
+    setTimeout(reportScrollyRegions, 2500);
   }
 
   // Observe DOM mutations (webR output, MathJax rendering, etc.)
@@ -317,6 +414,7 @@ const BRIDGE_SCRIPT = `
         lastHeight = h;
         reportHeight();
         reportHeadings();
+        reportScrollyRegions();
       }
     }, 300);
   });

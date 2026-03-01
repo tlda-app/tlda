@@ -1,0 +1,100 @@
+/* Full-viewport frosted overlay */
+.scrolly-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  pointer-events: none;
+  animation: scrolly-fade-in 0.3s ease;
+}
+
+@keyframes scrolly-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Figure — centered, sized to leave room for text */
+.scrolly-figure-wrap {
+  max-width: 55%;
+  max-height: calc(100vh - 200px);
+  background: #0f0f1a;
+  overflow: hidden;
+}
+
+.scrolly-figure {
+  max-width: 100%;
+  max-height: calc(100vh - 200px);
+  display: block;
+  object-fit: contain;
+  transition: opacity 0.25s ease;
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
+.scrolly-figure[data-fading] {
+  opacity: 0;
+}
+
+/* Text below figure */
+.scrolly-text {
+  max-width: 520px;
+  padding: 16px 20px 0;
+  text-align: center;
+}
+
+.scrolly-label {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.scrolly-step-counter {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.25);
+  margin-left: 8px;
+}
+
+.scrolly-text p {
+  margin: 6px 0 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+/* Close button — top-right */
+.scrolly-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.scrolly-close:hover {
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+}

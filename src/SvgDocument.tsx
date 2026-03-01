@@ -44,6 +44,7 @@ import { BrowseToolbarItem, MathNoteToolbarItem, TextSelectToolbarItem, PenHelpe
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
+import { ScrollyOverlay } from './ScrollyOverlay'
 import { RefViewer } from './RefViewer'
 import { BuildErrorOverlay } from './BuildErrorOverlay'
 import { BuildWarningPill } from './BuildWarningPill'
@@ -141,6 +142,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
   const panelsLocalRef = useRef(true)
+  const [editorMounted, setEditorMounted] = useState(false)
   useEffect(() => { panelsLocalRef.current = panelsLocal }, [panelsLocal])
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
@@ -674,6 +676,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           licenseKey={LICENSE_KEY}
         />
       )}
+      {panelsLocal && document.format === 'html' && editorMounted && editorRef.current && (
+        <ScrollyOverlay mainEditor={editorRef.current} />
+      )}
       {selectedChangeId && editorRef.current && (
         <ChangePreviewPanel
           mainEditor={editorRef.current}
@@ -720,6 +725,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
+          setEditorMounted(true)
 
           // Set up hyperref link navigation: open target in RefViewer panel
           setNavigateToAnchor((anchorId: string, title: string) => {
