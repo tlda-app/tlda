@@ -168,15 +168,14 @@ function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidt
       <defs>
         <path id={`c-${id}`} d={COMMA_PATH}/>
         <mask id={`m-${id}`}>
-          <rect x="0" y="0" width="32" height="32" fill="black"/>
-          <circle cx="16" cy="9.25" r="3.2" fill="white"/>
+          <rect x="0" y="0" width="32" height="32" fill="white"/>
           <g transform="rotate(180, 15.97, 18.5)"><use href={`#c-${id}`} fill="black"/></g>
         </mask>
       </defs>
       {stroke ? (
         <circle cx="16" cy="9.25" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
       ) : (
-        <rect x="12.3" y="5.5" width="7.4" height="7.4" fill={fill} mask={`url(#m-${id})`}/>
+        <circle cx="16" cy="9.25" r="3.2" fill={fill} mask={`url(#m-${id})`}/>
       )}
     </svg>
   )
