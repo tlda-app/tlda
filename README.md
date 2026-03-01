@@ -12,7 +12,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 When an AI agent produces content faster than you can review it, the standard text-editor-plus-PDF setup stops working. You need to stay oriented in a document that changes faster than you can re-read it, verify cross-page dependencies without flipping back and forth, and communicate with the agent on the document rather than in a separate chat window.
 
-CTD puts everything on the canvas: source-anchored annotations that survive rebuilds, cross-page proof and definition viewers, structured diff review, and an MCP integration so the agent sees what you're pointing at. It works just as well for human collaborators or for reading any paper — most papers on arXiv have TeX source available.
+tlda puts everything on the canvas: source-anchored annotations that survive rebuilds, cross-page proof and definition viewers, structured diff review, and an MCP integration so the agent sees what you're pointing at. It works just as well for human collaborators or for reading any paper — most papers on arXiv have TeX source available.
 
 ## What it does
 
