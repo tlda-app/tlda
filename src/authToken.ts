@@ -45,6 +45,37 @@ export function getToken(): string | null {
   return _token
 }
 
+// --- Auth level (fetched from server) ---
+
+let _canPresent: boolean | null = null  // null = not yet fetched
+const presentListeners = new Set<() => void>()
+
+/** Fetch auth level from server. Call after initToken(). */
+export async function fetchAuthLevel(): Promise<void> {
+  try {
+    const res = await fetch('/api/auth/me')
+    if (res.ok) {
+      const data = await res.json()
+      _canPresent = data.presenter ?? true
+    } else {
+      _canPresent = false  // unauthorized = no presenter
+    }
+  } catch {
+    _canPresent = true  // fetch failed (no server / local dev) = unlocked
+  }
+  presentListeners.forEach(fn => fn())
+}
+
+/** Whether this token has presenter privilege. True if auth disabled or RW token. */
+export function canPresent(): boolean {
+  return _canPresent ?? true  // default true until fetched (local dev)
+}
+
+export function subscribeCanPresent(fn: () => void): () => void {
+  presentListeners.add(fn)
+  return () => { presentListeners.delete(fn) }
+}
+
 /** Append ?token=xxx to a URL (for WebSocket or other URL-based auth) */
 export function appendToken(url: string): string {
   if (!_token) return url

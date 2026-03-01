@@ -51,7 +51,8 @@ const COMMAND_HELP = {
   watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'ctd watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `ctd create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
   'watch-agent': 'ctd watch-agent\n\n  Replaced by `ctd server start --agent`. The triage agent now\n  covers all documents automatically and runs alongside the server.',
-  open:    'ctd open [name]\n\n  Open the viewer in the default browser.',
+  open:    'ctd open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
+  share:   'ctd share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
   status:  'ctd status [name]\n\n  Show build status for a project.',
   errors:  'ctd errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
@@ -565,6 +566,23 @@ async function cmdOpen() {
 
   const { execFile } = await import('child_process')
   execFile('open', [url])
+}
+
+async function cmdShare() {
+  const name = getPositional(0) || await inferProjectName()
+  if (!name) { console.error('Usage: ctd share [name]'); process.exit(1) }
+
+  const server = getServer()
+  const config = loadConfig()
+  const readToken = config.tokenRead || null
+
+  if (!readToken) {
+    console.error('No read token configured. Run `ctd config init` to generate tokens.')
+    process.exit(1)
+  }
+
+  const url = `${server}/?doc=${name}&token=${readToken}`
+  console.log(url)
 }
 
 async function cmdList() {
@@ -1128,6 +1146,7 @@ async function main() {
       case 'watch-all': await ensureServer(); await cmdWatchAll(); break
       case 'watch-agent': await ensureServer(); await cmdWatchAgent(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
+      case 'share':  await cmdShare(); break
       case 'list':   await ensureServer(); await cmdList(); break
       case 'ls':     await ensureServer(); await cmdList(); break
       case 'status': await ensureServer(); await cmdStatus(); break

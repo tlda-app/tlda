@@ -2,13 +2,15 @@ import { useState, useEffect, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
-import { initToken } from './authToken'
+import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import type { BookMember } from './BookContext'
 import './App.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
+// Fetch auth level (presenter privilege) — fire and forget, UI updates reactively
+fetchAuthLevel()
 
 // Error boundary to prevent blank screen on errors
 class ErrorBoundary extends Component<

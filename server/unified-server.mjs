@@ -30,7 +30,7 @@ import { homedir } from 'os'
 import { initProjectStore } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { initAuth, isAuthEnabled, validateToken, requireRead } from './lib/auth.mjs'
+import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge } from './lib/html-injector.mjs'
 
@@ -65,6 +65,15 @@ app.use((req, res, next) => {
 // Health
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
+})
+
+// Auth level — tells the client what its token allows
+app.get('/api/auth/me', (req, res) => {
+  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
+  const token = extractToken(req)
+  const level = validateToken(token)
+  if (!level) return res.status(401).json({ error: 'Unauthorized' })
+  res.json({ level, presenter: level === 'rw' })
 })
 
 // ---------- Doc asset serving ----------

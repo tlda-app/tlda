@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore } from 'react'
 import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
+import { canPresent, subscribeCanPresent } from '../authToken'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
 const CHILDREN: Record<string, string[]> = {
@@ -31,6 +32,7 @@ export function TocTab() {
   const editor = useEditor()
   const doc = useContext(DocContext)
   const ctx = useContext(PanelContext)
+  const hasPresenterPrivilege = useSyncExternalStore(subscribeCanPresent, canPresent)
   const [headings, setHeadings] = useState<TocEntry[]>([])
   const [htmlToc, setHtmlToc] = useState<HtmlTocEntry[] | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
@@ -327,7 +329,7 @@ export function TocTab() {
             dangerouslySetInnerHTML={{ __html: h.title }} />
         )
       })}
-      {ctx?.onToggleRole && (
+      {ctx?.onToggleRole && hasPresenterPrivilege && (
         <div
           className="toc-diff-hint"
           onClick={() => ctx.onToggleRole?.()}
