@@ -6,9 +6,9 @@ Reference for using the MCP annotation tools in an iPad review session. This fil
 
 ## Setup
 
-1. Start the server: `ctd server start`
-2. Start watchers: `ctd watch-all start`
-3. Open in browser: `ctd open <name>`
+1. Start the server: `tlda server start`
+2. Start watchers: `tlda watch-all start`
+3. Open in browser: `tlda open <name>`
 4. For iPad access, generate a QR code pointing to the server:
    ```bash
    # Get your LAN or Tailscale IP

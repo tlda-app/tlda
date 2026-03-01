@@ -14,7 +14,7 @@ import { homedir } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const MCP_SERVER_PATH = resolve(__dirname, '../../mcp-server/index.mjs')
-const KNOWLEDGE_PATH = join(homedir(), '.config', 'ctd', 'todd-knowledge.md')
+const KNOWLEDGE_PATH = join(homedir(), '.config', 'tlda', 'todd-knowledge.md')
 
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`
@@ -131,18 +131,18 @@ export async function startTriageAgent({ getServer, getToken }) {
   delete process.env.CLAUDECODE
   const cleanEnv = { ...process.env }
   const mcpEnv = { ...cleanEnv, SYNC_SERVER: syncServer }
-  // Only set CTD_SERVER for doc assets if explicitly configured (not just the default).
-  // When only CTD_SYNC_SERVER is set, MCP reads doc assets from disk (published snapshot).
-  if (process.env.CTD_SERVER) mcpEnv.CTD_SERVER = server
-  if (process.env.CTD_SYNC_SERVER) {
-    mcpEnv.CTD_SYNC_SERVER = process.env.CTD_SYNC_SERVER
+  // Only set TLDA_SERVER for doc assets if explicitly configured (not just the default).
+  // When only TLDA_SYNC_SERVER is set, MCP reads doc assets from disk (published snapshot).
+  if (process.env.TLDA_SERVER) mcpEnv.TLDA_SERVER = server
+  if (process.env.TLDA_SYNC_SERVER) {
+    mcpEnv.TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER
   } else {
-    // No separate sync server — use CTD_SERVER for both doc assets and sync
-    mcpEnv.CTD_SERVER = server
+    // No separate sync server — use TLDA_SERVER for both doc assets and sync
+    mcpEnv.TLDA_SERVER = server
   }
-  if (token) mcpEnv.CTD_TOKEN = token
+  if (token) mcpEnv.TLDA_TOKEN = token
 
-  log(`[triage] Server: ${server}${process.env.CTD_SYNC_SERVER ? `, sync: ${process.env.CTD_SYNC_SERVER}` : ''}`)
+  log(`[triage] Server: ${server}${process.env.TLDA_SYNC_SERVER ? `, sync: ${process.env.TLDA_SYNC_SERVER}` : ''}`)
 
   let sessionId = null
   let cycle = 0
@@ -227,21 +227,21 @@ export async function startTriageAgent({ getServer, getToken }) {
 
 // Allow running directly: node cli/lib/triage-agent.mjs
 if (process.argv[1] && process.argv[1].endsWith('triage-agent.mjs')) {
-  const CTD_SERVER = process.env.CTD_SERVER || 'http://localhost:5176'
+  const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
 
   // Resolve token: env → config file
-  let CTD_TOKEN = process.env.CTD_TOKEN || ''
-  if (!CTD_TOKEN) {
+  let TLDA_TOKEN = process.env.TLDA_TOKEN || ''
+  if (!TLDA_TOKEN) {
     try {
-      const configPath = join(homedir(), '.config', 'ctd', 'config.json')
+      const configPath = join(homedir(), '.config', 'tlda', 'config.json')
       const config = JSON.parse(readFileSync(configPath, 'utf8'))
-      CTD_TOKEN = config.tokenRw || config.token || ''
+      TLDA_TOKEN = config.tokenRw || config.token || ''
     } catch {}
   }
 
   startTriageAgent({
-    getServer: () => CTD_SERVER,
-    getToken: () => CTD_TOKEN,
+    getServer: () => TLDA_SERVER,
+    getToken: () => TLDA_TOKEN,
   }).catch(e => {
     console.error('[triage] Fatal:', e.message)
     process.exit(1)

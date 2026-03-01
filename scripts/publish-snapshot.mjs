@@ -12,7 +12,7 @@
  *   npm run publish-snapshot -- qtm285
  *
  * Environment:
- *   CTD_SERVER - Server URL (default: http://localhost:5176)
+ *   TLDA_SERVER - Server URL (default: http://localhost:5176)
  */
 
 import { writeFileSync, mkdirSync, cpSync, existsSync, readFileSync } from 'fs'
@@ -33,7 +33,7 @@ if (!DOC_NAME) {
   process.exit(1)
 }
 
-const CTD_SERVER = process.env.CTD_SERVER || 'http://localhost:5176'
+const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
 const projectDir = join(PROJECT_ROOT, 'server', 'projects', DOC_NAME)
 const outputDir = join(projectDir, 'output')
 
@@ -107,10 +107,10 @@ try {
   cpSync(join(projectDir, 'project.json'), join(pubProjectDir, 'project.json'))
 
   // Step 3: Export annotations from shapes API
-  console.log(`[publish] Exporting annotations from ${CTD_SERVER}...`)
+  console.log(`[publish] Exporting annotations from ${TLDA_SERVER}...`)
   let annotations = {}
   try {
-    const resp = await fetch(`${CTD_SERVER}/api/projects/${DOC_NAME}/shapes`)
+    const resp = await fetch(`${TLDA_SERVER}/api/projects/${DOC_NAME}/shapes`)
     if (resp.ok) {
       const shapes = await resp.json()
       for (const s of shapes) {
@@ -186,7 +186,7 @@ try {
 
   console.log('[publish] Done! Published to GitHub Pages + Fly.')
   console.log(`[publish] https://qtm285.github.io/tlda/?doc=${DOC_NAME}`)
-  console.log(`[publish] Todd: CTD_SYNC_SERVER=https://tldraw-sync-skip.fly.dev node cli/lib/triage-agent.mjs`)
+  console.log(`[publish] Todd: TLDA_SYNC_SERVER=https://tldraw-sync-skip.fly.dev node cli/lib/triage-agent.mjs`)
   console.log(`[publish]   (run from ${PUBLISHED_ROOT})`)
 
 } catch (e) {

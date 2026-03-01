@@ -2,8 +2,8 @@
  * Bearer token authentication.
  *
  * Two tokens:
- *   - Read token (CTD_TOKEN_READ / config.tokenRead): GET routes, /docs/*, WebSocket
- *   - RW token (CTD_TOKEN_RW / config.tokenRw): everything including POST/DELETE API routes
+ *   - Read token (TLDA_TOKEN_READ / config.tokenRead): GET routes, /docs/*, WebSocket
+ *   - RW token (TLDA_TOKEN_RW / config.tokenRw): everything including POST/DELETE API routes
  *
  * When no tokens are configured, auth is disabled (backward-compatible local use).
  */
@@ -17,16 +17,16 @@ let tokenRw = null
 let authEnabled = false
 
 export function initAuth() {
-  if (process.env.CTD_NO_AUTH === '1') {
+  if (process.env.TLDA_NO_AUTH === '1') {
     authEnabled = false
     return
   }
 
-  tokenRead = process.env.CTD_TOKEN_READ || null
-  tokenRw = process.env.CTD_TOKEN_RW || null
+  tokenRead = process.env.TLDA_TOKEN_READ || null
+  tokenRw = process.env.TLDA_TOKEN_RW || null
 
   if (!tokenRead || !tokenRw) {
-    const configPath = join(homedir(), '.config', 'ctd', 'config.json')
+    const configPath = join(homedir(), '.config', 'tlda', 'config.json')
     try {
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, 'utf8'))

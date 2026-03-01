@@ -143,7 +143,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 /**
  * Create slides shapes (reveal.js decks).
  * All slides on a single TLDraw page, stacked vertically like SVG pages.
- * Each slide is an html-page shape with a URL containing _ctdSlide param.
+ * Each slide is an html-page shape with a URL containing _tldaSlide param.
  */
 export function createSlidesShapes(editor: Editor, document: SvgDocument): boolean {
   const existingShapes = editor.getCurrentPageShapes()

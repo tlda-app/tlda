@@ -141,7 +141,7 @@ export function NotesTab() {
     sourceDoc?: string
     sourceShapeId?: string
   }) => {
-    e.dataTransfer.setData('application/x-ctd-note', JSON.stringify(data))
+    e.dataTransfer.setData('application/x-tlda-note', JSON.stringify(data))
     e.dataTransfer.effectAllowed = 'copy'
   }, [])
 

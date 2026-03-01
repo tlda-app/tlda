@@ -13,9 +13,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || process.argv[2] || 5176
 const PERSISTENCE_DIR = process.env.DATA_DIR || join(__dirname, 'data')
 
-// Auth: if CTD_TOKEN_READ or CTD_TOKEN_RW is set, require a valid token to connect
-const TOKEN_READ = process.env.CTD_TOKEN_READ || null
-const TOKEN_RW = process.env.CTD_TOKEN_RW || null
+// Auth: if TLDA_TOKEN_READ or TLDA_TOKEN_RW is set, require a valid token to connect
+const TOKEN_READ = process.env.TLDA_TOKEN_READ || null
+const TOKEN_RW = process.env.TLDA_TOKEN_RW || null
 const AUTH_ENABLED = !!(TOKEN_READ || TOKEN_RW)
 
 function validateToken(token) {

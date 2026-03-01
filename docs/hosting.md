@@ -15,13 +15,13 @@ How to set up and run a collaborative annotation session for your coauthors.
 git clone https://github.com/qtm285/tlda.git
 cd tlda
 npm install
-npm link   # installs the `ctd` CLI globally
+npm link   # installs the `tlda` CLI globally
 ```
 
 ## Add your paper
 
 ```bash
-ctd create my-paper --title "My Paper Title" --source /path/to/paper/directory --main my-paper.tex
+tlda create my-paper --title "My Paper Title" --source /path/to/paper/directory --main my-paper.tex
 ```
 
 This registers the project. The watcher handles compilation automatically.
@@ -29,9 +29,9 @@ This registers the project. The watcher handles compilation automatically.
 Verify it works locally:
 
 ```bash
-ctd server start
-ctd watch-all start
-ctd open my-paper
+tlda server start
+tlda watch-all start
+tlda open my-paper
 ```
 
 ## Set up Tailscale
@@ -43,8 +43,8 @@ ctd open my-paper
 ## Start a session
 
 ```bash
-ctd server start        # unified server on port 5176
-ctd watch-all start     # watches all projects for file changes
+tlda server start        # unified server on port 5176
+tlda watch-all start     # watches all projects for file changes
 ```
 
 Collaborators open:
@@ -63,17 +63,17 @@ Two token levels:
 - **Read token** — view the paper, connect to sync
 - **RW token** — everything: create/edit/delete annotations, trigger builds
 
-Configure via environment variables or `~/.config/ctd/config.json`:
+Configure via environment variables or `~/.config/tlda/config.json`:
 
 ```bash
 # Environment variables
-export CTD_TOKEN_READ="some-read-token"
-export CTD_TOKEN_RW="some-rw-token"
-ctd server start
+export TLDA_TOKEN_READ="some-read-token"
+export TLDA_TOKEN_RW="some-rw-token"
+tlda server start
 ```
 
 ```json
-// ~/.config/ctd/config.json
+// ~/.config/tlda/config.json
 {
   "server": "http://localhost:5176",
   "tokenRead": "some-read-token",
@@ -83,7 +83,7 @@ ctd server start
 
 When auth is enabled, collaborators pass the token in the URL: `http://HOST:5176/?doc=my-paper&token=TOKEN`. The viewer automatically injects it into all subsequent requests.
 
-To disable auth explicitly (e.g. for local-only use): `CTD_NO_AUTH=1`.
+To disable auth explicitly (e.g. for local-only use): `TLDA_NO_AUTH=1`.
 
 ## Collaborative editing
 
@@ -102,7 +102,7 @@ Each collaborator can run their own Claude Code with the MCP server. Point the M
       "command": "node",
       "args": ["/path/to/tlda/mcp-server/index.mjs"],
       "env": {
-        "CTD_SERVER": "http://HOST_TAILSCALE_IP:5176"
+        "TLDA_SERVER": "http://HOST_TAILSCALE_IP:5176"
       }
     }
   }
@@ -168,8 +168,8 @@ This exports annotations and builds a read-only viewer. Anyone with the URL can 
 - Verify with: `curl http://YOUR_TAILSCALE_IP:5176/health`
 
 ### Watcher triggers but nothing updates
-- Check `ctd errors my-paper` for build errors
+- Check `tlda errors my-paper` for build errors
 - LaTeX errors won't stop the watcher, but SVGs won't update for pages with errors
 
 ### Moving to a server
-The whole setup should run fine on a VPS. Install Node + TeX Live, clone the repo, set up Tailscale on the server, and run `ctd server start` + `ctd watch-all start`. Your laptop can sleep while coauthors keep annotating.
+The whole setup should run fine on a VPS. Install Node + TeX Live, clone the repo, set up Tailscale on the server, and run `tlda server start` + `tlda watch-all start`. Your laptop can sleep while coauthors keep annotating.

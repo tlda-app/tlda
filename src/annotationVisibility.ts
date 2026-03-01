@@ -16,7 +16,7 @@ export type VisibilityMode = 'visible' | 'faint' | 'hidden'
 
 // --- Visibility mode ---
 
-const STORAGE_KEY = 'ctd-annotation-visibility'
+const STORAGE_KEY = 'tlda-annotation-visibility'
 
 let mode: VisibilityMode =
   (localStorage.getItem(STORAGE_KEY) as VisibilityMode) || 'visible'

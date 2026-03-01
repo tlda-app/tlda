@@ -48,12 +48,12 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "Running latexmk..."
 cd "$TEX_DIR"
-echo "\$latex = 'pdflatex --output-format=dvi -synctex=1 %O %P';" > .latexmkrc.ctd
-latexmk -dvi -f -r .latexmkrc.ctd \
+echo "\$latex = 'pdflatex --output-format=dvi -synctex=1 %O %P';" > .latexmkrc.tlda
+latexmk -dvi -f -r .latexmkrc.tlda \
   -interaction=nonstopmode \
   -pretex='\PassOptionsToPackage{draft,dvipdfmx}{graphicx}\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\AddToHook{begindocument/before}{\RequirePackage{hyperref}}' \
   "$TEX_BASE.tex"
-rm -f .latexmkrc.ctd
+rm -f .latexmkrc.tlda
 
 DVI_FILE="$TEX_DIR/$TEX_BASE.dvi"
 if [ ! -f "$DVI_FILE" ]; then

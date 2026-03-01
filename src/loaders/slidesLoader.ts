@@ -35,7 +35,7 @@ export async function loadSlidesDocument(
   const pages: SvgPage[] = pageInfos.map((info, i) => {
     const pageId = `${name}-slide-${i}`
     // Build URL with slide index query param
-    const url = basePath + info.file + `?_ctdSlide=${info.slideIndex}`
+    const url = basePath + info.file + `?_tldaSlide=${info.slideIndex}`
     const page: SvgPage = {
       src: url,
       bounds: new Box(0, top, info.width, info.height),

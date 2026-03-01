@@ -8,7 +8,7 @@
  * Usage:
  *   node scripts/e2e-test.mjs [doc-name]
  *
- * Requires: unified server running (`ctd server start`).
+ * Requires: unified server running (`tlda server start`).
  */
 
 import { describe, it, before, after } from 'node:test'
@@ -136,7 +136,7 @@ describe('e2e: viewer', async () => {
       const health = await resp.json()
       assert.ok(health.ok, 'Server not healthy')
     } catch {
-      throw new Error('Server not running — start with `ctd server start`')
+      throw new Error('Server not running — start with `tlda server start`')
     }
 
     doc = await getDocInfo(requestedDoc)

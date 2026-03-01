@@ -15,14 +15,14 @@ export function NoteDropHandler() {
     if (!container) return
 
     function handleDragOver(e: DragEvent) {
-      if (e.dataTransfer?.types.includes('application/x-ctd-note')) {
+      if (e.dataTransfer?.types.includes('application/x-tlda-note')) {
         e.preventDefault()
         e.dataTransfer.dropEffect = 'copy'
       }
     }
 
     function handleDrop(e: DragEvent) {
-      const json = e.dataTransfer?.getData('application/x-ctd-note')
+      const json = e.dataTransfer?.getData('application/x-tlda-note')
       if (!json) return
       e.preventDefault()
 

@@ -28,8 +28,8 @@ const PORT = 15177
 // ---------------------------------------------------------------------------
 
 function startServer() {
-  const dataDir = mkdtempSync(join(tmpdir(), 'ctd-test-data-'))
-  const projectsDir = mkdtempSync(join(tmpdir(), 'ctd-test-projects-'))
+  const dataDir = mkdtempSync(join(tmpdir(), 'tlda-test-data-'))
+  const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-test-projects-'))
 
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [SERVER_SCRIPT], {

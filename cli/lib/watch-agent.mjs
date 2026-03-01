@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const MCP_SERVER_PATH = resolve(__dirname, '../../mcp-server/index.mjs')
 
 // Log to both console and file (SDK may capture stdio from child processes)
-const LOG_DIR = join(homedir(), '.config', 'ctd')
+const LOG_DIR = join(homedir(), '.config', 'tlda')
 const LOG_FILE = join(LOG_DIR, 'watch-agent.log')
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`
@@ -87,7 +87,7 @@ A triage agent named Todd runs on the server, covering all papers. Todd handles 
 
 Sign your notes "—Claude" so the user can tell you apart from Todd.
 
-**Maintaining Todd's knowledge base:** Todd reads \`~/.config/ctd/todd-knowledge.md\` for project context. When you learn something that would help Todd — what a paper is about, how projects relate, key references, important notation — update that file. Todd covers all papers but can't do deep reading, so keeping this up to date makes him more useful.
+**Maintaining Todd's knowledge base:** Todd reads \`~/.config/tlda/todd-knowledge.md\` for project context. When you learn something that would help Todd — what a paper is about, how projects relate, key references, important notation — update that file. Todd covers all papers but can't do deep reading, so keeping this up to date makes him more useful.
 
 ## After responding
 
@@ -105,8 +105,8 @@ export async function startWatchAgent({ name, getServer, getToken, texDir, texFi
 
   // Strip CLAUDECODE env to avoid "nested session" rejection when launched from Claude Code
   const { CLAUDECODE: _, ...cleanEnv } = process.env
-  const mcpEnv = { ...cleanEnv, CTD_SERVER: server, SYNC_SERVER: syncServer }
-  if (token) mcpEnv.CTD_TOKEN = token
+  const mcpEnv = { ...cleanEnv, TLDA_SERVER: server, SYNC_SERVER: syncServer }
+  if (token) mcpEnv.TLDA_TOKEN = token
 
   const systemPrompt = buildSystemPrompt(name, texDir, texFile)
   let sessionId = null

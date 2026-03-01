@@ -1,5 +1,5 @@
 /**
- * Shared source file definitions for ctd CLI.
+ * Shared source file definitions for tlda CLI.
  *
  * Single source of truth for which files constitute a TeX project
  * and how to encode them for upload.

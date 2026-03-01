@@ -1,7 +1,7 @@
 /**
  * Data source abstraction for MCP server.
  *
- * When CTD_SERVER is set: fetches doc assets from the server over HTTP.
+ * When TLDA_SERVER is set: fetches doc assets from the server over HTTP.
  * Otherwise: reads from PROJECT_ROOT/public/docs/ (backward compat).
  *
  * Provides both sync (from cache/disk) and async (fetch + cache) APIs.
@@ -14,8 +14,8 @@ import { resolveToken } from './resolve-token.mjs'
 
 let projectRoot = null
 let serverUrl = null
-const CTD_TOKEN = resolveToken()
-const authHeaders = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {}
+const TLDA_TOKEN = resolveToken()
+const authHeaders = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {}
 
 // In-memory cache: docName → { filename → { data, fetchedAt } }
 const cache = new Map()

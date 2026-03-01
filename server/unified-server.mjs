@@ -157,14 +157,14 @@ app.use('/docs', requireRead, (req, res, next) => {
             const chapterHtml = readFileSync(chapterPath, 'utf8')
             const bodyMatch = chapterHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
             if (bodyMatch) {
-              bodies.push(`<div class="ctd-chapter" id="chapter-${bodies.length + 1}">\n${bodyMatch[1]}\n</div>`)
+              bodies.push(`<div class="tlda-chapter" id="chapter-${bodies.length + 1}">\n${bodyMatch[1]}\n</div>`)
             }
           }
           const combined = `<!DOCTYPE html>
 <html><head>${headContent}
 <style>
-.ctd-chapter { border-bottom: 2px solid #e5e7eb; margin-bottom: 24px; padding-bottom: 24px; }
-.ctd-chapter:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.tlda-chapter { border-bottom: 2px solid #e5e7eb; margin-bottom: 24px; padding-bottom: 24px; }
+.tlda-chapter:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 </style>
 </head><body>${bodies.join('\n')}</body></html>`
           const injected = injectBridge(combined, `/docs/${name}/`)
@@ -183,7 +183,7 @@ app.use('/docs', requireRead, (req, res, next) => {
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {
     res.set('Cache-Control', 'no-cache')
-    // For HTML files in html-format projects, inject the ctd bridge script
+    // For HTML files in html-format projects, inject the tlda bridge script
     if (filePath.endsWith('.html')) {
       try {
         const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
@@ -387,13 +387,13 @@ let agentRespawnTimer = null
 
 function spawnTriageAgent() {
   const agentPath = resolve(__dirname, '../cli/lib/triage-agent.mjs')
-  const logDir = join(homedir(), '.config', 'ctd')
+  const logDir = join(homedir(), '.config', 'tlda')
   mkdirSync(logDir, { recursive: true })
   const logFd = openSync(join(logDir, 'agent.log'), 'a')
 
-  const token = process.env.CTD_TOKEN || ''
-  const env = { ...process.env, CTD_SERVER: `http://localhost:${PORT}` }
-  if (token) env.CTD_TOKEN = token
+  const token = process.env.TLDA_TOKEN || ''
+  const env = { ...process.env, TLDA_SERVER: `http://localhost:${PORT}` }
+  if (token) env.TLDA_TOKEN = token
 
   agentProc = spawn('node', [agentPath], {
     env,

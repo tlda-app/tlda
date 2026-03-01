@@ -684,7 +684,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   }
   activeBuilds.set(name, status)
 
-  const buildDir = join(tmpdir(), `ctd-build-${name}-${Date.now()}`)
+  const buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
   mkdirSync(buildDir, { recursive: true })
 
   const ctx = {

@@ -146,7 +146,7 @@ function SvgFigureComponent({ shape }: { shape: any }) {
     const iframe = htmlIframeElements.get(shape.props.parentShapeId)
     if (iframe?.contentWindow) {
       iframe.contentWindow.postMessage({
-        type: 'ctd-figure-transform',
+        type: 'tlda-figure-transform',
         figureIdx: String(shape.props.figureIdx),
         zoom, panX, panY,
       }, '*')

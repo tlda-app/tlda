@@ -29,17 +29,17 @@ import {
   PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
 } from './lib/formatCoords.mjs';
 
-const CTD_TOKEN = resolveToken();
-const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
-const CTD_SERVER = process.env.CTD_SERVER || 'http://localhost:5176';
-// Separate sync server for shapes/signals (e.g. Fly.io) — falls back to CTD_SERVER
-const CTD_SYNC_SERVER = process.env.CTD_SYNC_SERVER || CTD_SERVER;
+const TLDA_TOKEN = resolveToken();
+const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
+const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176';
+// Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
+const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
 
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
-  const url = `${CTD_SYNC_SERVER}${urlPath}`;
-  const headers = { ...CTD_AUTH_HEADERS, ...(options.headers || {}) };
+  const url = `${TLDA_SYNC_SERVER}${urlPath}`;
+  const headers = { ...TLDA_AUTH_HEADERS, ...(options.headers || {}) };
   const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -117,8 +117,8 @@ async function readSignalRest(docName, key) {
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
  */
 function connectSignalStream(docName, onSignal) {
-  const url = `${CTD_SYNC_SERVER}/api/projects/${docName}/signal/stream`;
-  const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
+  const url = `${TLDA_SYNC_SERVER}/api/projects/${docName}/signal/stream`;
+  const headers = { ...TLDA_AUTH_HEADERS, 'Accept': 'text/event-stream' };
 
   const urlObj = new URL(url);
   const req = http.request({
@@ -166,8 +166,8 @@ function connectSignalStream(docName, onSignal) {
  * Calls onChange() whenever shapes change in the sync room.
  */
 function connectShapeStream(docName, onChange) {
-  const url = `${CTD_SYNC_SERVER}/api/projects/${docName}/shapes/stream`;
-  const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
+  const url = `${TLDA_SYNC_SERVER}/api/projects/${docName}/shapes/stream`;
+  const headers = { ...TLDA_AUTH_HEADERS, 'Accept': 'text/event-stream' };
 
   // Node doesn't have native EventSource, so use raw HTTP
   const urlObj = new URL(url);
@@ -248,9 +248,9 @@ function scheduleBrowserClose() {
 
 /** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
 async function checkDocBuildStatus(docName) {
-  const sUrl = process.env.CTD_SERVER || 'http://localhost:5176';
+  const sUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
   try {
-    const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: CTD_AUTH_HEADERS });
+    const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: TLDA_AUTH_HEADERS });
     if (res.ok) {
       const info = await res.json();
       if (!info.pages || info.pages === 0) {
@@ -268,8 +268,8 @@ async function checkDocBuildStatus(docName) {
     if (diskResult.ok) return diskResult;
     if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
       // Disk also failed — if we have a separate sync server, that's fine (doc assets are on disk)
-      if (process.env.CTD_SYNC_SERVER) return diskResult;
-      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "ctd server start"' };
+      if (process.env.TLDA_SYNC_SERVER) return diskResult;
+      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "tlda server start"' };
     }
     return diskResult;
   }
@@ -288,12 +288,12 @@ function checkDocBuildStatusDisk(docName) {
     }
     return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
   } catch {
-    return { ok: false, reason: `Project "${docName}" not found on server. Run "ctd errors ${docName}" or "ctd build ${docName}" to investigate.` };
+    return { ok: false, reason: `Project "${docName}" not found on server. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` };
   }
 }
 
 async function headlessScreenshot(docName, targetPage) {
-  const serverUrl = process.env.CTD_SERVER || 'http://localhost:5176';
+  const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
   const url = `${serverUrl}/?doc=${docName}`;
   const browser = await getHeadlessBrowser();
   const page = await browser.newPage();
@@ -327,8 +327,8 @@ async function headlessScreenshot(docName, targetPage) {
   }
 }
 
-// Initialize data source: HTTP fetch when CTD_SERVER is set, disk read otherwise
-initDataSource(PROJECT_ROOT, process.env.CTD_SERVER || null);
+// Initialize data source: HTTP fetch when TLDA_SERVER is set, disk read otherwise
+initDataSource(PROJECT_ROOT, process.env.TLDA_SERVER || null);
 
 // ---- Lookup.json support ----
 
@@ -1277,7 +1277,7 @@ const httpServer = http.createServer(async (req, res) => {
       ok: true,
       http: { port: HTTP_PORT },
       websocket: { port: WS_PORT, clients: wsClients.size },
-      sync: { server: CTD_SYNC_SERVER, docAssets: CTD_SERVER },
+      sync: { server: TLDA_SYNC_SERVER, docAssets: TLDA_SERVER },
       docs: Object.fromEntries(
         Object.entries(docs).map(([name, config]) => [name, {
           name: config.name,
@@ -2098,7 +2098,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (docName) {
       const buildCheck = await checkDocBuildStatus(docName);
       if (!buildCheck.ok) {
-        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "ctd errors ${docName}" or "ctd build ${docName}" to investigate.` }], isError: true };
+        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` }], isError: true };
       }
     }
   }

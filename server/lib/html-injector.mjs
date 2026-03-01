@@ -1,10 +1,10 @@
 /**
- * Injects a bridge script into HTML pages served for html-format ctd projects.
+ * Injects a bridge script into HTML pages served for html-format tlda projects.
  * The bridge:
  *   - Strips Quarto sidebar/nav for clean embedding
  *   - Reports document height to parent via postMessage
  *   - Observes DOM mutations to re-report height (e.g. webR cell expansion)
- *   - Reads _ctdShape query param to identify itself
+ *   - Reads _tldaShape query param to identify itself
  *   - Processes WebR cells: hides echo:false/include:false, strips #| directives
  *   - Dark mode via CSS invert with semantic color preservation
  */
@@ -47,7 +47,7 @@ const BRIDGE_SCRIPT = `
 (function() {
   // Read shape ID from query string
   var params = new URLSearchParams(window.location.search);
-  var shapeId = params.get('_ctdShape') || '';
+  var shapeId = params.get('_tldaShape') || '';
 
   // Strip Quarto navigation elements for clean embedding
   function stripNav() {
@@ -90,10 +90,10 @@ const BRIDGE_SCRIPT = `
     // Dark mode: toggle via postMessage from parent, only change backgrounds
     // and default text color — leave semantic colors (plots, colored text) alone
     window.addEventListener('message', function(e) {
-      if (e.data?.type === 'ctd-dark-mode') {
-        document.documentElement.classList.toggle('ctd-dark', !!e.data.dark);
+      if (e.data?.type === 'tlda-dark-mode') {
+        document.documentElement.classList.toggle('tlda-dark', !!e.data.dark);
       }
-      if (e.data?.type === 'ctd-figure-transform') {
+      if (e.data?.type === 'tlda-figure-transform') {
         var wrapper = document.querySelector('[data-figure-idx="' + e.data.figureIdx + '"]');
         if (!wrapper) return;
         var svg = wrapper.querySelector('svg');
@@ -109,7 +109,7 @@ const BRIDGE_SCRIPT = `
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'ctd-wheel', shapeId: shapeId,
+          type: 'tlda-wheel', shapeId: shapeId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
         }, '*');
@@ -140,12 +140,12 @@ const BRIDGE_SCRIPT = `
       }
       var parts = parsed.split('#');
       var targetFile = (parts[0] || '').replace(/^\\.\\//,'').replace(/^.*\\//,'') || null;
-      // Strip query params from targetFile (e.g. "file.html?_ctdShape=..." -> "file.html")
+      // Strip query params from targetFile (e.g. "file.html?_tldaShape=..." -> "file.html")
       if (targetFile) targetFile = targetFile.split('?')[0] || null;
       var anchor = parts[1] || null;
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'ctd-navigate',
+          type: 'tlda-navigate',
           shapeId: shapeId,
           targetFile: targetFile,
           anchor: anchor,
@@ -162,7 +162,7 @@ const BRIDGE_SCRIPT = `
       '.cm-editor { max-width: 100% !important; overflow-x: auto !important; }',
       '.cm-line { overflow-wrap: anywhere; }',
       '.cell-output img, .cell-output svg { max-width: 100%; height: auto; }',
-      '.image-toggle-sidebar div.ctd-inline-svg > svg { max-width: 100%; height: auto; }',
+      '.image-toggle-sidebar div.tlda-inline-svg > svg { max-width: 100%; height: auto; }',
       '.spinner-grow, .spinner-border { opacity: 0.3; }',
       '.exercise-loading-indicator { font-size: 12px; opacity: 0.5; }',
       '.image-toggle .image-toggle-controls { display: none !important; }',
@@ -172,12 +172,12 @@ const BRIDGE_SCRIPT = `
       // Dark mode: CSS invert on html element, counter-rotate semantic color classes.
       // invert(0.92) lands body text at soft off-white; semantic color counter-filter
       // uses invert(0.92) which isn't a perfect identity but keeps colors recognizable.
-      'html.ctd-dark { filter: invert(0.92) hue-rotate(180deg); background: #fff; }',
+      'html.tlda-dark { filter: invert(0.92) hue-rotate(180deg); background: #fff; }',
       // Counter-filter for semantic color classes (text labeled "the red curve" must stay red)
       // Applying the same filter undoes the parent: invert(invert(x)) = x
-      'html.ctd-dark .twocolor-red, html.ctd-dark .twocolor-green, html.ctd-dark .groupa, html.ctd-dark .groupb, html.ctd-dark .midnight, html.ctd-dark .polla, html.ctd-dark .pink, html.ctd-dark .pollb, html.ctd-dark .teal, html.ctd-dark .pollc, html.ctd-dark .polld, html.ctd-dark .magenta, html.ctd-dark .counterfactual, html.ctd-dark .green, html.ctd-dark .cyan, html.ctd-dark .population, html.ctd-dark .blue, html.ctd-dark .sample, html.ctd-dark .red, html.ctd-dark .purple, html.ctd-dark .target, html.ctd-dark .shadedred, html.ctd-dark .todofix { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.tlda-dark .twocolor-red, html.tlda-dark .twocolor-green, html.tlda-dark .groupa, html.tlda-dark .groupb, html.tlda-dark .midnight, html.tlda-dark .polla, html.tlda-dark .pink, html.tlda-dark .pollb, html.tlda-dark .teal, html.tlda-dark .pollc, html.tlda-dark .polld, html.tlda-dark .magenta, html.tlda-dark .counterfactual, html.tlda-dark .green, html.tlda-dark .cyan, html.tlda-dark .population, html.tlda-dark .blue, html.tlda-dark .sample, html.tlda-dark .red, html.tlda-dark .purple, html.tlda-dark .target, html.tlda-dark .shadedred, html.tlda-dark .todofix { filter: invert(0.92) hue-rotate(180deg); }',
       // Counter-filter for semantic colors in inline SVG plots (tagged by inline-svg.lua)
-      'html.ctd-dark .ctd-semantic { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.tlda-dark .tlda-semantic { filter: invert(0.92) hue-rotate(180deg); }',
     ].join('\\n');
     document.head.appendChild(style);
   }
@@ -210,7 +210,7 @@ const BRIDGE_SCRIPT = `
     }
     if (h > 0 && window.parent !== window) {
       window.parent.postMessage({
-        type: 'ctd-resize',
+        type: 'tlda-resize',
         shapeId: shapeId,
         height: h,
       }, '*');
@@ -234,7 +234,7 @@ const BRIDGE_SCRIPT = `
     });
     if (Object.keys(positions).length > 0 && window.parent !== window) {
       window.parent.postMessage({
-        type: 'ctd-headings',
+        type: 'tlda-headings',
         shapeId: shapeId,
         positions: positions,
       }, '*');
@@ -291,7 +291,7 @@ const BRIDGE_SCRIPT = `
     // 2. Inline SVGs from the inline-svg Lua filter
     // The overlay is a transparent glass pane — content stays in the iframe for styling.
     // Each wrapper gets a data-figure-idx for targeted transform messages.
-    var inlineSvgs = document.querySelectorAll('div.ctd-inline-svg > svg');
+    var inlineSvgs = document.querySelectorAll('div.tlda-inline-svg > svg');
     inlineSvgs.forEach(function(svg) {
       var wrapper = svg.parentElement;
       if (wrapper.closest('.image-toggle')) return;
@@ -332,7 +332,7 @@ const BRIDGE_SCRIPT = `
     });
 
     if (result.length > 0 && window.parent !== window) {
-      window.parent.postMessage({ type: 'ctd-figures', shapeId: shapeId, figures: result }, '*');
+      window.parent.postMessage({ type: 'tlda-figures', shapeId: shapeId, figures: result }, '*');
       figuresReported = true;
     }
   }
@@ -364,7 +364,7 @@ const BRIDGE_SCRIPT = `
       var imgUrls = Array.from(cells).map(function(cell) {
         var img = cell.querySelector('img');
         if (img) return img.src;
-        var inlineSvg = cell.querySelector('div.ctd-inline-svg > svg');
+        var inlineSvg = cell.querySelector('div.tlda-inline-svg > svg');
         if (inlineSvg) {
           var serialized = new XMLSerializer().serializeToString(inlineSvg);
           return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(serialized)));
@@ -473,7 +473,7 @@ const BRIDGE_SCRIPT = `
 
     if (regions.length > 0 && window.parent !== window) {
       window.parent.postMessage({
-        type: 'ctd-scrolly-regions',
+        type: 'tlda-scrolly-regions',
         shapeId: shapeId,
         regions: regions,
       }, '*');
@@ -557,8 +557,8 @@ const SLIDES_BRIDGE_SCRIPT = `
 <script>
 (function() {
   var params = new URLSearchParams(window.location.search);
-  var shapeId = params.get('_ctdShape') || '';
-  var slideIndex = parseInt(params.get('_ctdSlide') || '0', 10);
+  var shapeId = params.get('_tldaShape') || '';
+  var slideIndex = parseInt(params.get('_tldaSlide') || '0', 10);
 
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
@@ -601,15 +601,15 @@ const SLIDES_BRIDGE_SCRIPT = `
       '.reveal .slide-logo { display: none !important; }',
       'body { overflow: hidden !important; margin: 0; }',
       // Dark mode
-      'html.ctd-dark .reveal { filter: invert(0.92) hue-rotate(180deg); }',
-      'html.ctd-dark .reveal img, html.ctd-dark .reveal svg, html.ctd-dark .reveal video { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.tlda-dark .reveal { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.tlda-dark .reveal img, html.tlda-dark .reveal svg, html.tlda-dark .reveal video { filter: invert(0.92) hue-rotate(180deg); }',
     ].join('\\n');
     document.head.appendChild(style);
 
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type) return;
-      if (e.data.type === 'ctd-fragment-next') {
+      if (e.data.type === 'tlda-fragment-next') {
         var avail = Reveal.availableFragments();
         if (avail && avail.next) {
           Reveal.next();
@@ -617,14 +617,14 @@ const SLIDES_BRIDGE_SCRIPT = `
         // If no more fragments, do nothing — the tap zone in the parent
         // can handle "advance past last fragment" if needed later
       }
-      if (e.data.type === 'ctd-fragment-prev') {
+      if (e.data.type === 'tlda-fragment-prev') {
         var avail = Reveal.availableFragments();
         if (avail && avail.prev) {
           Reveal.prev();
         }
       }
-      if (e.data.type === 'ctd-dark-mode') {
-        document.documentElement.classList.toggle('ctd-dark', !!e.data.dark);
+      if (e.data.type === 'tlda-dark-mode') {
+        document.documentElement.classList.toggle('tlda-dark', !!e.data.dark);
       }
     });
 
@@ -633,7 +633,7 @@ const SLIDES_BRIDGE_SCRIPT = `
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'ctd-wheel', shapeId: shapeId,
+          type: 'tlda-wheel', shapeId: shapeId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
         }, '*');
@@ -689,17 +689,17 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
   if (chapterTitle) {
     const escaped = chapterTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;')
     const titleCard = `
-<div class="ctd-chapter-title">
-  <div class="ctd-chapter-title-text">${escaped}</div>
+<div class="tlda-chapter-title">
+  <div class="tlda-chapter-title-text">${escaped}</div>
 </div>
 <style>
-.ctd-chapter-title {
+.tlda-chapter-title {
   padding: 40px 0 32px;
   text-align: center;
   border-bottom: 1px solid #ccc;
   margin-bottom: 32px;
 }
-.ctd-chapter-title-text {
+.tlda-chapter-title-text {
   font-family: -apple-system, 'Helvetica Neue', sans-serif;
   font-size: 28px;
   font-weight: 300;
@@ -721,12 +721,12 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
     const escPrev = nav.prev ? nav.prev.replace(/&/g, '&amp;').replace(/</g, '&lt;') : ''
     const escNext = nav.next ? nav.next.replace(/&/g, '&amp;').replace(/</g, '&lt;') : ''
     const navFooter = `
-<div class="ctd-chapter-nav">
-  ${nav.prev ? `<div class="ctd-nav-prev" onclick="window.parent.postMessage({type:'ctd-navigate-rel',direction:'prev'},'*')"><span class="ctd-nav-arrow">\u2190</span> ${escPrev}</div>` : '<div></div>'}
-  ${nav.next ? `<div class="ctd-nav-next" onclick="window.parent.postMessage({type:'ctd-navigate-rel',direction:'next'},'*')"><span class="ctd-nav-arrow">\u2192</span> ${escNext}</div>` : '<div></div>'}
+<div class="tlda-chapter-nav">
+  ${nav.prev ? `<div class="tlda-nav-prev" onclick="window.parent.postMessage({type:'tlda-navigate-rel',direction:'prev'},'*')"><span class="tlda-nav-arrow">\u2190</span> ${escPrev}</div>` : '<div></div>'}
+  ${nav.next ? `<div class="tlda-nav-next" onclick="window.parent.postMessage({type:'tlda-navigate-rel',direction:'next'},'*')"><span class="tlda-nav-arrow">\u2192</span> ${escNext}</div>` : '<div></div>'}
 </div>
 <style>
-.ctd-chapter-nav {
+.tlda-chapter-nav {
   display: flex;
   justify-content: space-between;
   padding: 40px 20px 60px;
@@ -736,7 +736,7 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
   margin-left: auto;
   margin-right: auto;
 }
-.ctd-nav-prev, .ctd-nav-next {
+.tlda-nav-prev, .tlda-nav-next {
   font-family: -apple-system, 'Helvetica Neue', sans-serif;
   font-size: 14px;
   color: #888;
@@ -744,9 +744,9 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
   transition: color 0.15s ease;
   max-width: 45%;
 }
-.ctd-nav-prev:hover, .ctd-nav-next:hover { color: #444; }
-.ctd-nav-next { text-align: right; }
-.ctd-nav-arrow { font-size: 16px; }
+.tlda-nav-prev:hover, .tlda-nav-next:hover { color: #444; }
+.tlda-nav-next { text-align: right; }
+.tlda-nav-arrow { font-size: 16px; }
 </style>`
     patched = patched.replace('</main>', navFooter + '</main>')
   }

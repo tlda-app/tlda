@@ -19,15 +19,15 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = join(__dirname, '..')
-const CTD = join(ROOT, 'cli', 'ctd.mjs')
+const CTD = join(ROOT, 'cli', 'tlda.mjs')
 
-// Helper: run ctd with args, return { stdout, stderr, exitCode }
-function ctd(...args) {
+// Helper: run tlda with args, return { stdout, stderr, exitCode }
+function tlda(...args) {
   try {
     const stdout = execFileSync('node', [CTD, ...args], {
       encoding: 'utf8',
       timeout: 10000,
-      env: { ...process.env, CTD_SERVER: 'http://localhost:99999' }, // unreachable server
+      env: { ...process.env, TLDA_SERVER: 'http://localhost:99999' }, // unreachable server
     })
     return { stdout, stderr: '', exitCode: 0 }
   } catch (e) {
@@ -41,23 +41,23 @@ function ctd(...args) {
 
 describe('argument parser', () => {
   it('shows help with no args', () => {
-    const { stdout } = ctd()
-    assert.ok(stdout.includes('ctd — Claude TLDraw CLI'))
+    const { stdout } = tlda()
+    assert.ok(stdout.includes('tlda — Claude TLDraw CLI'))
     assert.ok(stdout.includes('Commands:'))
   })
 
   it('shows per-command help', () => {
     for (const cmd of ['create', 'push', 'watch', 'open', 'status', 'errors', 'build', 'delete', 'preview', 'server', 'config']) {
-      const { stdout, exitCode } = ctd(cmd, '--help')
+      const { stdout, exitCode } = tlda(cmd, '--help')
       assert.equal(exitCode, 0, `${cmd} --help should exit 0`)
-      assert.ok(stdout.includes('ctd'), `${cmd} --help should show usage`)
+      assert.ok(stdout.includes('tlda'), `${cmd} --help should show usage`)
     }
   })
 
   it('completions outputs zsh script', () => {
-    const { stdout, exitCode } = ctd('completions')
+    const { stdout, exitCode } = tlda('completions')
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('#compdef ctd'))
+    assert.ok(stdout.includes('#compdef tlda'))
     assert.ok(stdout.includes('_ctd'))
   })
 })
@@ -70,7 +70,7 @@ describe('source files', () => {
   let dir
 
   it('collects tex, bib, sty, svg files', async () => {
-    dir = mkdtempSync(join(tmpdir(), 'ctd-test-src-'))
+    dir = mkdtempSync(join(tmpdir(), 'tlda-test-src-'))
     writeFileSync(join(dir, 'main.tex'), '\\documentclass{article}')
     writeFileSync(join(dir, 'refs.bib'), '@article{foo}')
     writeFileSync(join(dir, 'custom.sty'), '\\ProvidesPackage{custom}')
@@ -87,7 +87,7 @@ describe('source files', () => {
   })
 
   it('recurses into subdirectories', async () => {
-    dir = mkdtempSync(join(tmpdir(), 'ctd-test-src-'))
+    dir = mkdtempSync(join(tmpdir(), 'tlda-test-src-'))
     mkdirSync(join(dir, 'sections'))
     mkdirSync(join(dir, 'figs'))
     writeFileSync(join(dir, 'main.tex'), '\\documentclass{article}')
@@ -103,7 +103,7 @@ describe('source files', () => {
   })
 
   it('skips hidden dirs and node_modules', async () => {
-    dir = mkdtempSync(join(tmpdir(), 'ctd-test-src-'))
+    dir = mkdtempSync(join(tmpdir(), 'tlda-test-src-'))
     mkdirSync(join(dir, '.git'))
     mkdirSync(join(dir, 'node_modules'))
     writeFileSync(join(dir, 'main.tex'), 'hello')
@@ -119,7 +119,7 @@ describe('source files', () => {
   })
 
   it('encodes binary files as base64', async () => {
-    dir = mkdtempSync(join(tmpdir(), 'ctd-test-src-'))
+    dir = mkdtempSync(join(tmpdir(), 'tlda-test-src-'))
     writeFileSync(join(dir, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
 
     const { collectSourceFiles } = await import('../cli/lib/source-files.mjs')
@@ -148,7 +148,7 @@ describe('source files', () => {
 
 describe('source hashes', () => {
   it('produces consistent hashes', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ctd-test-hash-'))
+    const dir = mkdtempSync(join(tmpdir(), 'tlda-test-hash-'))
     writeFileSync(join(dir, 'a.tex'), 'hello world')
     writeFileSync(join(dir, 'b.tex'), 'hello world')
     writeFileSync(join(dir, 'c.tex'), 'different')
@@ -167,7 +167,7 @@ describe('source hashes', () => {
   })
 
   it('collectSpecificFiles reads only requested files', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ctd-test-specific-'))
+    const dir = mkdtempSync(join(tmpdir(), 'tlda-test-specific-'))
     writeFileSync(join(dir, 'a.tex'), 'aaa')
     writeFileSync(join(dir, 'b.tex'), 'bbb')
     writeFileSync(join(dir, 'c.tex'), 'ccc')
@@ -183,7 +183,7 @@ describe('source hashes', () => {
   })
 
   it('collectSpecificFiles skips missing files', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ctd-test-specific-'))
+    const dir = mkdtempSync(join(tmpdir(), 'tlda-test-specific-'))
     writeFileSync(join(dir, 'a.tex'), 'aaa')
 
     const { collectSpecificFiles } = await import('../cli/lib/source-files.mjs')

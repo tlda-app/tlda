@@ -4,7 +4,7 @@ Collaborative annotation system for reviewing LaTeX papers. Renders LaTeX as SVG
 
 Built for iPad-first review workflows. Works standalone as a paper viewer and annotation tool — no AI needed. Optionally integrates with Claude Code via MCP for an agent-assisted review loop.
 
-> **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source. Caveat emptor.
+> **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
 **[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — this is a live collaborative canvas. You can draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
@@ -32,7 +32,7 @@ tlda puts everything on the canvas: source-anchored annotations that survive reb
 ## Architecture
 
 ```
-cli/          — `ctd` CLI: project management, file watching, builds
+cli/          — `tlda` CLI: project management, file watching, builds
 server/       — Express + @tldraw/sync: API, real-time sync, build pipeline
 src/          — React + TLDraw viewer SPA
 mcp-server/   — MCP tools for Claude Code integration
@@ -51,7 +51,7 @@ mcp-server/   — MCP tools for Claude Code integration
 npm install -g github:qtm285/tlda
 ```
 
-This installs the `ctd` command globally, builds the viewer, and you're ready to go.
+This installs the `tlda` command globally, builds the viewer, and you're ready to go.
 
 **Or clone and link:**
 
@@ -65,9 +65,9 @@ npm link
 **Then:**
 
 ```bash
-ctd server start      # start the server on port 5176
-ctd create my-paper --dir /path/to/paper --main paper.tex
-ctd watch-all start   # watch all projects for changes
+tlda server start      # start the server on port 5176
+tlda create my-paper --dir /path/to/paper --main paper.tex
+tlda watch-all start   # watch all projects for changes
 ```
 
 ## Figures
@@ -95,10 +95,10 @@ savefig = function(path, plot = last_plot(), width = 3.5, height = 3) {
 }
 
 # Usage: savefig("figures/my-plot", p, width = 3.5, height = 3)
-# Produces my-plot.svg (for ctd) and my-plot.pdf (for pdflatex)
+# Produces my-plot.svg (for tlda) and my-plot.pdf (for pdflatex)
 ```
 
-This way `\includegraphics{figures/my-plot}` works in both pdflatex (picks up the PDF) and the ctd pipeline (falls back to the SVG).
+This way `\includegraphics{figures/my-plot}` works in both pdflatex (picks up the PDF) and the tlda pipeline (falls back to the SVG).
 
 ## Viewer Controls
 
@@ -126,42 +126,42 @@ The viewer UI is minimal by design. The primary interface is touch/stylus — ke
 
 Two kinds of AI agents can interact with the viewer:
 
-- **Todd** — an always-on triage agent that covers all documents. Listens for pings and questions, gives quick answers, drops multiple-choice notes, and escalates to a terminal agent when deeper work is needed. Runs via `ctd server start --agent`. Signs notes "—Todd".
+- **Todd** — an always-on triage agent that covers all documents. Listens for pings and questions, gives quick answers, drops multiple-choice notes, and escalates to a terminal agent when deeper work is needed. Runs via `tlda server start --agent`. Signs notes "—Todd".
 - **Terminal Claude agents** — full Claude Code sessions with access to the source files. Can read and edit LaTeX, do deep math checking, run builds. Connect per-document via the MCP server. Sign notes "—Claude".
 
 Todd yields to terminal agents automatically via heartbeat detection — when a Claude Code session is active on a document, Todd steps back. Color convention: orange = Claude, green = Todd, violet = user.
 
 ### Running Todd against a remote server
 
-Set `CTD_SYNC_SERVER` to route shapes and signals to a remote sync server while reading doc assets from local disk. Run from a published clone (created by `publish-snapshot`) so ongoing work doesn't affect Todd's view of the document:
+Set `TLDA_SYNC_SERVER` to route shapes and signals to a remote sync server while reading doc assets from local disk. Run from a published clone (created by `publish-snapshot`) so ongoing work doesn't affect Todd's view of the document:
 
 ```bash
 cd ~/work/published/tlda
-CTD_SYNC_SERVER=https://example.com node cli/lib/triage-agent.mjs
+TLDA_SYNC_SERVER=https://example.com node cli/lib/triage-agent.mjs
 ```
 
 The publish script (`npm run publish-snapshot -- <doc>`) syncs to the published clone, deploys to GitHub Pages and Fly, and prints the Todd command at the end.
 
 ## CLI Reference
 
-Everything goes through the `ctd` command:
+Everything goes through the `tlda` command:
 
 | Command | What it does |
 |---------|-------------|
-| `ctd server start` | Start the server (port 5176) |
-| `ctd server start --agent` | Start with Todd, the always-on triage agent |
-| `ctd server stop` | Stop the server |
-| `ctd create <name> --dir /path --main file.tex` | Create a project, push files, build |
-| `ctd push [name]` | Push source files, trigger rebuild |
-| `ctd watch-all start` | Watch all projects for changes |
-| `ctd open [name]` | Open viewer in browser |
-| `ctd list` | List projects |
-| `ctd status [name]` | Show build status |
-| `ctd errors [name]` | Show LaTeX errors/warnings |
-| `ctd preview <name> [pages]` | Rasterize SVG pages to PNG |
-| `ctd delete <name>` | Delete a project |
+| `tlda server start` | Start the server (port 5176) |
+| `tlda server start --agent` | Start with Todd, the always-on triage agent |
+| `tlda server stop` | Stop the server |
+| `tlda create <name> --dir /path --main file.tex` | Create a project, push files, build |
+| `tlda push [name]` | Push source files, trigger rebuild |
+| `tlda watch-all start` | Watch all projects for changes |
+| `tlda open [name]` | Open viewer in browser |
+| `tlda list` | List projects |
+| `tlda status [name]` | Show build status |
+| `tlda errors [name]` | Show LaTeX errors/warnings |
+| `tlda preview <name> [pages]` | Rasterize SVG pages to PNG |
+| `tlda delete <name>` | Delete a project |
 
-The server auto-starts on first use. Configure with `ctd config set server <url>` or the `CTD_SERVER` env var.
+The server auto-starts on first use. Configure with `tlda config set server <url>` or the `TLDA_SERVER` env var.
 
 ## Third-party licenses
 

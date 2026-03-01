@@ -19,8 +19,8 @@ export const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 
 /** Start a server on a test port with temp dirs. Returns control object. */
 export function startServer(port = 15176) {
-  const dataDir = mkdtempSync(join(tmpdir(), 'ctd-test-data-'))
-  const projectsDir = mkdtempSync(join(tmpdir(), 'ctd-test-projects-'))
+  const dataDir = mkdtempSync(join(tmpdir(), 'tlda-test-data-'))
+  const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-test-projects-'))
 
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [SERVER_SCRIPT], {
@@ -30,7 +30,7 @@ export function startServer(port = 15176) {
         DATA_DIR: dataDir,
         PROJECTS_DIR: projectsDir,
         PUBLIC_DIR: join(ROOT, 'server', 'public'),
-        CTD_NO_AUTH: '1',
+        TLDA_NO_AUTH: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })

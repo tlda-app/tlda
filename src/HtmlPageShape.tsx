@@ -124,7 +124,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   useEffect(() => {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
-    iframe.contentWindow.postMessage({ type: 'ctd-dark-mode', dark: isDark }, '*')
+    iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
   }, [isDark])
 
   // Also send on iframe load
@@ -132,7 +132,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
-    iframe.contentWindow.postMessage({ type: 'ctd-dark-mode', dark: isDark }, '*')
+    iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
   }, [isDark])
 
   // Viewport gating: only render iframe when near viewport.
@@ -151,7 +151,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   // when multiple postMessages arrive between React re-renders
   useEffect(() => {
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === 'ctd-wheel') {
+      if (e.data?.type === 'tlda-wheel') {
         // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
         // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
@@ -170,7 +170,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         })
         return
       }
-      if (e.data?.type === 'ctd-navigate') {
+      if (e.data?.type === 'tlda-navigate') {
         // Route navigation from iframe links to page switch + anchor scroll.
         // Search ALL pages for the target shape (cross-chapter navigation).
         const allHtmlShapes = Object.values(editor.store.allRecords())
@@ -232,7 +232,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         return
       }
-      if (e.data?.type === 'ctd-navigate-rel') {
+      if (e.data?.type === 'tlda-navigate-rel') {
         // Prev/next chapter navigation from footer links
         const pages = editor.getPages()
         const currentPageId = editor.getCurrentPageId()
@@ -255,15 +255,15 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         return
       }
-      if (e.data?.type === 'ctd-headings' && e.data.shapeId === shape.id) {
+      if (e.data?.type === 'tlda-headings' && e.data.shapeId === shape.id) {
         htmlHeadingPositions.set(shape.id, e.data.positions)
         return
       }
-      if (e.data?.type === 'ctd-scrolly-regions' && e.data.shapeId === shape.id) {
+      if (e.data?.type === 'tlda-scrolly-regions' && e.data.shapeId === shape.id) {
         htmlScrollyRegions.set(shape.id, e.data.regions)
         return
       }
-      if (e.data?.type === 'ctd-figures' && e.data.shapeId === shape.id) {
+      if (e.data?.type === 'tlda-figures' && e.data.shapeId === shape.id) {
         // Defer figure shape creation so it doesn't block initial render
         requestAnimationFrame(() => {
           const current = editor.store.get(shape.id) as any
@@ -317,7 +317,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         })
         return
       }
-      if (e.data?.type === 'ctd-resize' && e.data.shapeId === shape.id) {
+      if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const newH = Math.max(200, Math.round(e.data.height))
         const current = editor.store.get(shape.id) as any
         if (!current) return
@@ -335,17 +335,17 @@ function HtmlPageComponent({ shape }: { shape: any }) {
 
   // Pass shape ID and auth token to iframe
   const urlWithParams = shape.props.url
-    ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_ctdShape=${shape.id}`)
+    ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_tldaShape=${shape.id}`)
     : ''
 
-  // Detect slides format from URL (has _ctdSlide param)
-  const isSlide = shape.props.url?.includes('_ctdSlide=')
+  // Detect slides format from URL (has _tldaSlide param)
+  const isSlide = shape.props.url?.includes('_tldaSlide=')
 
   const handleFragmentStep = useCallback((direction: 'next' | 'prev') => {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
     iframe.contentWindow.postMessage({
-      type: direction === 'next' ? 'ctd-fragment-next' : 'ctd-fragment-prev',
+      type: direction === 'next' ? 'tlda-fragment-next' : 'tlda-fragment-prev',
     }, '*')
   }, [])
 

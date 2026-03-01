@@ -1,5 +1,5 @@
 /**
- * File watcher for ctd CLI.
+ * File watcher for tlda CLI.
  *
  * Watches source files and pushes changes to the server.
  * The server handles building — the watcher only detects and uploads.
@@ -45,7 +45,7 @@ async function awaitBuild(server, name, authHeaders = {}) {
       if (data.status === 'success') {
         console.log(green(`[watch] Build succeeded`) + dim(` (${elapsed}s)`))
       } else {
-        console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`ctd errors ${name}\` for details.`))
+        console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`tlda errors ${name}\` for details.`))
       }
       return
     } catch {
@@ -136,7 +136,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       if (!res.ok) {
         const text = await res.text()
         if (res.status === 401 || res.status === 403) {
-          console.error(`[watch] Authentication failed (${res.status}). Check your token with "ctd config".`)
+          console.error(`[watch] Authentication failed (${res.status}). Check your token with "tlda config".`)
           process.exit(1)
         }
         console.error(`[watch] Push failed: ${text}`)

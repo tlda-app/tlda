@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * ctd — tlda CLI.
+ * tlda — tlda CLI.
  *
  * Commands:
- *   ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]
- *   ctd push [name] [--dir /path]
- *   ctd watch [/path/to/main.tex] [name]
- *   ctd watch-all
- *   ctd open [name]
- *   ctd list
- *   ctd status [name]
- *   ctd config set server <url>
+ *   tlda create <name> [--title "Title"] [--dir /path] [--main main.tex]
+ *   tlda push [name] [--dir /path]
+ *   tlda watch [/path/to/main.tex] [name]
+ *   tlda watch-all
+ *   tlda open [name]
+ *   tlda list
+ *   tlda status [name]
+ *   tlda config set server <url>
  *
  * Server URL resolution:
- *   CTD_SERVER env → --server flag → ~/.config/ctd/config.json → http://localhost:5176
+ *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → http://localhost:5176
  */
 
 import { resolve, basename, dirname, join } from 'path'
@@ -25,7 +25,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 
 // --- Config ---
 
-const CONFIG_DIR = join(homedir(), '.config', 'ctd')
+const CONFIG_DIR = join(homedir(), '.config', 'tlda')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
 
 function loadConfig() {
@@ -45,21 +45,21 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
-  book:    'ctd book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
-  push:    'ctd push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
-  watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
-  'watch-all': 'ctd watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `ctd create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
-  'watch-agent': 'ctd watch-agent\n\n  Replaced by `ctd server start --agent`. The triage agent now\n  covers all documents automatically and runs alongside the server.',
-  open:    'ctd open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'ctd share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
-  status:  'ctd status [name]\n\n  Show build status for a project.',
-  errors:  'ctd errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
-  build:   'ctd build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
-  delete:  'ctd delete <name>\n\n  Delete a project and all its data.',
-  preview: 'ctd preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/ctd-preview-{name}/.',
-  server:  'ctd server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Always-on agent that listens for feedback on all documents\n             and handles lightweight responses (notes, acknowledgments).',
-  config:  'ctd config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: ctd config set server http://myhost:5176',
+  book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
+  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
+  push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
+  watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
+  'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
+  'watch-agent': 'tlda watch-agent\n\n  Replaced by `tlda server start --agent`. The triage agent now\n  covers all documents automatically and runs alongside the server.',
+  open:    'tlda open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
+  share:   'tlda share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
+  status:  'tlda status [name]\n\n  Show build status for a project.',
+  errors:  'tlda errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
+  build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
+  delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
+  preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
+  server:  'tlda server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Always-on agent that listens for feedback on all documents\n             and handles lightweight responses (notes, acknowledgments).',
+  config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
@@ -99,11 +99,11 @@ if (command && hasFlag('help') && COMMAND_HELP[command]) {
 }
 
 function getServer() {
-  return process.env.CTD_SERVER || getFlag('server') || loadConfig().server || 'http://localhost:5176'
+  return process.env.TLDA_SERVER || getFlag('server') || loadConfig().server || 'http://localhost:5176'
 }
 
 function getToken() {
-  return process.env.CTD_TOKEN || getFlag('token') || loadConfig().token || null
+  return process.env.TLDA_TOKEN || getFlag('token') || loadConfig().token || null
 }
 
 // --- Output helpers ---
@@ -222,7 +222,7 @@ async function cmdBook() {
   const name = getPositional(0)
   const membersArg = getFlag('members')
   if (!name || !membersArg) {
-    console.error('Usage: ctd book <name> --members doc1,doc2,doc3,...')
+    console.error('Usage: tlda book <name> --members doc1,doc2,doc3,...')
     process.exit(1)
   }
 
@@ -266,7 +266,7 @@ async function cmdBook() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: ctd create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides]'); process.exit(1) }
 
   const format = getFlag('format') || null
   const dir = resolve(getFlag('dir') || '.')
@@ -341,14 +341,14 @@ async function cmdCreate() {
 
 async function cmdPush() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd push [name] [--dir /path]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda push [name] [--dir /path]'); process.exit(1) }
 
   const dir = resolve(getFlag('dir') || '.')
 
   console.log(`Pushing to "${name}"...`)
   const result = await incrementalPush(name, dir, { sourceDir: dir })
   if (result.unchanged) {
-    console.log(dim('No changes detected (use `ctd build` to force a rebuild).'))
+    console.log(dim('No changes detected (use `tlda build` to force a rebuild).'))
   } else {
     console.log(green('Build triggered.'))
   }
@@ -377,7 +377,7 @@ async function cmdWatch() {
   try {
     await api('GET', `/api/projects/${name}`)
   } catch {
-    console.error(red(`Project "${name}" not found on server. Run \`ctd create ${name}\` first.`))
+    console.error(red(`Project "${name}" not found on server. Run \`tlda create ${name}\` first.`))
     process.exit(1)
   }
 
@@ -392,8 +392,8 @@ async function cmdWatch() {
   await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
-const WATCH_ALL_LOGFILE = join(homedir(), '.config', 'ctd', 'watch-all.log')
-const WATCH_ALL_PIDFILE = join(homedir(), '.config', 'ctd', 'watch-all.pid')
+const WATCH_ALL_LOGFILE = join(homedir(), '.config', 'tlda', 'watch-all.log')
+const WATCH_ALL_PIDFILE = join(homedir(), '.config', 'tlda', 'watch-all.pid')
 
 async function cmdWatchAll() {
   const sub = getPositional(0) || 'start'
@@ -478,8 +478,8 @@ async function cmdWatchAll() {
     return
   }
 
-  console.error(`Unknown subcommand: ctd watch-all ${sub}`)
-  console.error('Usage: ctd watch-all [start|stop|status|log|run]')
+  console.error(`Unknown subcommand: tlda watch-all ${sub}`)
+  console.error('Usage: tlda watch-all [start|stop|status|log|run]')
   process.exit(1)
 }
 
@@ -549,7 +549,7 @@ async function cmdWatchAgent() {
   console.log('The per-document watch-agent has been replaced by the triage agent.')
   console.log('The triage agent covers all documents and runs alongside the server:')
   console.log()
-  console.log(`  ${bold('ctd server start --agent')}`)
+  console.log(`  ${bold('tlda server start --agent')}`)
   console.log()
   console.log('It listens for feedback on all active projects, handles lightweight')
   console.log('responses, and yields to terminal sessions for heavy work.')
@@ -557,7 +557,7 @@ async function cmdWatchAgent() {
 
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd open [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda open [name]'); process.exit(1) }
 
   const server = getServer()
   const token = getToken()
@@ -570,14 +570,14 @@ async function cmdOpen() {
 
 async function cmdShare() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd share [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda share [name]'); process.exit(1) }
 
   const server = getServer()
   const config = loadConfig()
   const readToken = config.tokenRead || null
 
   if (!readToken) {
-    console.error('No read token configured. Run `ctd config init` to generate tokens.')
+    console.error('No read token configured. Run `tlda config init` to generate tokens.')
     process.exit(1)
   }
 
@@ -600,7 +600,7 @@ async function cmdList() {
 
 async function cmdStatus() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd status [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda status [name]'); process.exit(1) }
 
   const data = await api('GET', `/api/projects/${name}/build/status`)
   const statusColor = data.status === 'success' ? green : data.status === 'error' ? red : dim
@@ -616,7 +616,7 @@ async function cmdStatus() {
 
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd errors [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda errors [name]'); process.exit(1) }
 
   const wait = hasFlag('wait') || hasFlag('w')
 
@@ -664,9 +664,9 @@ async function cmdErrors() {
 
 async function cmdBuild() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd build <name>'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda build <name>'); process.exit(1) }
 
-  console.log(dim('Note: prefer the watcher pipeline. ctd build bypasses change detection.'))
+  console.log(dim('Note: prefer the watcher pipeline. tlda build bypasses change detection.'))
   console.log(`Triggering rebuild for "${name}"...`)
   await api('POST', `/api/projects/${name}/build`)
   console.log(green('Build triggered.'))
@@ -674,7 +674,7 @@ async function cmdBuild() {
 
 async function cmdDelete() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: ctd delete <name>'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda delete <name>'); process.exit(1) }
 
   await api('DELETE', `/api/projects/${name}`)
   console.log(green(`Project "${name}" deleted.`))
@@ -682,7 +682,7 @@ async function cmdDelete() {
 
 async function cmdPreview() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: ctd preview <name> [page ...]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda preview <name> [page ...]'); process.exit(1) }
 
   // Collect page numbers from remaining positional args
   const requestedPages = []
@@ -703,7 +703,7 @@ async function cmdPreview() {
 
   // Resolve SVG source directory
   const server = getServer()
-  const outDir = `/tmp/ctd-preview-${name}`
+  const outDir = `/tmp/tlda-preview-${name}`
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
 
   const { execFileSync } = await import('child_process')
@@ -749,7 +749,7 @@ async function cmdConfig() {
   if (sub === 'set') {
     const key = getPositional(1)
     const value = getPositional(2)
-    if (!key || !value) { console.error('Usage: ctd config set <key> <value>'); process.exit(1) }
+    if (!key || !value) { console.error('Usage: tlda config set <key> <value>'); process.exit(1) }
     const config = loadConfig()
     config[key] = value
     saveConfig(config)
@@ -794,7 +794,7 @@ async function cmdAuth() {
     return
   }
 
-  console.log('Usage: ctd auth [init|show]')
+  console.log('Usage: tlda auth [init|show]')
   console.log('  init   Generate and save new tokens')
   console.log('  show   Show current tokens')
 }
@@ -808,13 +808,13 @@ function cmdCompletions() {
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
 
-  console.log(`#compdef ctd
-# Install: ctd completions > ~/.zsh/completions/_ctd && fpath=(~/.zsh/completions $fpath)
+  console.log(`#compdef tlda
+# Install: tlda completions > ~/.zsh/completions/_tlda && fpath=(~/.zsh/completions $fpath)
 # Then restart your shell or run: autoload -Uz compinit && compinit
 
 _ctd_projects() {
   local -a projects
-  projects=(\${(f)"$(ctd list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
+  projects=(\${(f)"$(tlda list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
   _describe 'project' projects
 }
 
@@ -858,10 +858,10 @@ _ctd() {
   esac
 }
 
-_ctd "$@"`)
+_tlda "$@"`)
 }
 
-const LOGFILE = join(homedir(), '.config', 'ctd', 'server.log')
+const LOGFILE = join(homedir(), '.config', 'tlda', 'server.log')
 
 function getPort() {
   try { return new URL(getServer()).port || '5176' } catch { return '5176' }
@@ -880,10 +880,10 @@ async function cmdServer(action) {
   const { execSync } = await import('child_process')
 
   // Clean up stale PID file from old versions
-  const oldPidFile = join(homedir(), '.config', 'ctd', 'server.pid')
+  const oldPidFile = join(homedir(), '.config', 'tlda', 'server.pid')
   try { const fs = await import('fs'); fs.unlinkSync(oldPidFile) } catch {}
 
-  const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.ctd.server.plist')
+  const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
   const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
 
   if (sub === 'install') {
@@ -900,15 +900,15 @@ async function cmdServer(action) {
 
     const config = loadConfig()
     const tokenEnvLines = []
-    if (config.tokenRw) tokenEnvLines.push(`        <key>CTD_TOKEN_RW</key>\n        <string>${config.tokenRw}</string>`)
-    if (config.tokenRead) tokenEnvLines.push(`        <key>CTD_TOKEN_READ</key>\n        <string>${config.tokenRead}</string>`)
+    if (config.tokenRw) tokenEnvLines.push(`        <key>TLDA_TOKEN_RW</key>\n        <string>${config.tokenRw}</string>`)
+    if (config.tokenRead) tokenEnvLines.push(`        <key>TLDA_TOKEN_READ</key>\n        <string>${config.tokenRead}</string>`)
 
     const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.ctd.server</string>
+    <string>com.tlda.server</string>
     <key>ProgramArguments</key>
     <array>
         <string>${nodePath}</string>
@@ -944,13 +944,13 @@ ${tokenEnvLines.join('\n')}
     console.log(`  Port: ${port}`)
     console.log(`  Log: ${LOGFILE}`)
     console.log('\nThe server will auto-restart on crash and start on login.')
-    console.log('Run `ctd server start` to start now.')
+    console.log('Run `tlda server start` to start now.')
     return
   }
 
   if (sub === 'uninstall') {
     if (hasLaunchd) {
-      try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+      try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
       try { const fs = await import('fs'); fs.unlinkSync(PLIST) } catch {}
       console.log('Uninstalled launchd service.')
     } else {
@@ -961,7 +961,7 @@ ${tokenEnvLines.join('\n')}
 
   if (sub === 'stop') {
     if (hasLaunchd) {
-      try { execSync('launchctl bootout gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+      try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     }
 
     // Get the server's actual PID from /health so we only kill the server,
@@ -1053,7 +1053,7 @@ ${tokenEnvLines.join('\n')}
     if (hasLaunchd) {
       // Use launchd — auto-restarts on crash, persists across login
       try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
-      try { execSync('launchctl kickstart -k gui/$(id -u)/com.ctd.server', { stdio: 'pipe' }) } catch {}
+      try { execSync('launchctl kickstart -k gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     } else {
       const { spawn } = await import('child_process')
       const { openSync: fsOpenSync } = await import('fs')
@@ -1088,8 +1088,8 @@ ${tokenEnvLines.join('\n')}
     process.exit(1)
   }
 
-  console.error(`Unknown subcommand: ctd server ${sub}`)
-  console.error('Usage: ctd server [start|stop|status|log|install|uninstall]')
+  console.error(`Unknown subcommand: tlda server ${sub}`)
+  console.error('Usage: tlda server [start|stop|status|log|install|uninstall]')
   process.exit(1)
 }
 
@@ -1161,7 +1161,7 @@ async function main() {
       case 'auth': await cmdAuth(); break
       case 'config': await cmdConfig(); break
       default:
-        console.log(`ctd — tlda CLI
+        console.log(`tlda — tlda CLI
 
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server
@@ -1170,17 +1170,17 @@ Commands:
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   watch-all      Watch all projects (auto-detects new ones)
-  watch-agent    (use: ctd server start --agent)
+  watch-agent    (use: tlda server start --agent)
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status
   errors [name]  Show LaTeX errors/warnings from last build
-  logs           Show server log (alias: ctd server logs)
+  logs           Show server log (alias: tlda server logs)
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
   completions    Output zsh completion script
 
-The server auto-starts on first use. Explicit control: ctd server start/stop.
+The server auto-starts on first use. Explicit control: tlda server start/stop.
 
 Options:
   --server <url>   Server URL (default: http://localhost:5176)
@@ -1189,8 +1189,8 @@ Options:
   --main file.tex  Main tex file (create only)
 
 Config:
-  ctd config set server <url>
-  CTD_SERVER=<url>`)
+  tlda config set server <url>
+  TLDA_SERVER=<url>`)
     }
   } catch (e) {
     console.error(red(`Error: ${e.message}`))

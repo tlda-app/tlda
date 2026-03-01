@@ -1,7 +1,7 @@
 /**
  * Resolve CTD auth token.
  *
- * Priority: CTD_TOKEN env → tokenRw from ~/.config/ctd/config.json → null
+ * Priority: TLDA_TOKEN env → tokenRw from ~/.config/tlda/config.json → null
  */
 
 import { existsSync, readFileSync } from 'fs'
@@ -13,11 +13,11 @@ let resolved = undefined
 export function resolveToken() {
   if (resolved !== undefined) return resolved
 
-  resolved = process.env.CTD_TOKEN || null
+  resolved = process.env.TLDA_TOKEN || null
   if (resolved) return resolved
 
   try {
-    const configPath = join(homedir(), '.config', 'ctd', 'config.json')
+    const configPath = join(homedir(), '.config', 'tlda', 'config.json')
     if (existsSync(configPath)) {
       const config = JSON.parse(readFileSync(configPath, 'utf8'))
       resolved = config.tokenRw || config.token || null

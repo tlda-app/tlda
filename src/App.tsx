@@ -144,7 +144,7 @@ function App() {
           }
           if (i < attempts - 1) await new Promise(r => setTimeout(r, 1000))
         }
-        setState({ phase: 'error', message: 'No documents found. Use `ctd create` to add a project.' })
+        setState({ phase: 'error', message: 'No documents found. Use `tlda create` to add a project.' })
       }
       tryManifest()
     }

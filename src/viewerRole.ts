@@ -15,7 +15,7 @@ const listeners = new Set<() => void>()
 
 export function initRole(doc: string) {
   docName = doc
-  role = (localStorage.getItem(`ctd-role:${doc}`) as Role) || 'viewer'
+  role = (localStorage.getItem(`tlda-role:${doc}`) as Role) || 'viewer'
 }
 
 export function getRole(): Role { return role }
@@ -23,7 +23,7 @@ export function getRole(): Role { return role }
 export function setRole(r: Role) {
   if (r === role) return
   role = r
-  localStorage.setItem(`ctd-role:${docName}`, r)
+  localStorage.setItem(`tlda-role:${docName}`, r)
   listeners.forEach(fn => fn())
 }
 
