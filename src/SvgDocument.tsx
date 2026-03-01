@@ -212,9 +212,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   useMemo(() => initRole(docNameForRole), [docNameForRole])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
-  // Broadcast presenter identity when role changes
+  // Broadcast presenter identity — only when becoming presenter
   useEffect(() => {
-    broadcastPresenter(role === 'presenter')
+    if (role === 'presenter') broadcastPresenter(true)
   }, [role])
 
   const {

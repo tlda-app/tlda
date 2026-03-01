@@ -442,6 +442,7 @@ const REPLAY_SIGNALS = {
   'signal:diff-review': 86_400_000,     // 24h
   'signal:diff-summaries': 86_400_000,  // 24h
   'signal:viewport': 300_000,           // 5 min (for watcher priority rebuild)
+  'signal:presenter': 600_000,          // 10 min — who's presenting
 }
 
 /**
