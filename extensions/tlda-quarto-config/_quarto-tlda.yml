@@ -1,0 +1,80 @@
+# _quarto-tlda.yml
+#
+# Quarto profile config for rendering to tlda.
+# Place alongside your _quarto.yml and render with:
+#
+#   quarto render --profile tlda
+#
+# Or equivalently:
+#   QUARTO_PROFILE=tlda quarto render
+#
+# This produces HTML in _book-tlda/ (or your chosen output-dir),
+# which you then push to the tlda server:
+#
+#   tlda create my-project --format html --dir _book-tlda
+
+project:
+  type: book
+  output-dir: _book-tlda
+
+# Required extensions for tlda HTML viewer:
+#   inline-svg   — inlines SVGs so they render in iframes and support dark mode
+#   image-toggle — (optional) scrollytelling multi-image figures
+#
+# Install with:
+#   quarto add davidahirshberg/quarto-inline-svg
+#   quarto add davidahirshberg/quarto-image-toggle
+filters:
+  - inline-svg
+  # - image-toggle  # uncomment if you use .image-toggle divs
+
+# Book metadata — customize for your project
+book:
+  title: "My Project"
+  author: "Author Name"
+  chapters:
+    - index.qmd
+    # - part: part1.qmd
+    #   chapters:
+    #     - chapter1.qmd
+    #     - chapter2.qmd
+
+format:
+  html:
+    # SVG figures render sharply and support dark mode via inline-svg
+    fig-format: svg
+
+    # Do NOT embed resources — tlda serves assets from the output directory
+    embed-resources: false
+
+    # MathJax: disable accessibility features that interfere with iframe embedding
+    html-math-method: mathjax
+    include-in-header:
+      text: |
+        <script>
+          window.MathJax = {
+            options: {
+              menuOptions: {
+                settings: {
+                  assistiveMml: false,
+                  collapsible: false,
+                  explorer: false
+                }
+              }
+            }
+          }
+        </script>
+
+# R projects only — remove this block if not using R.
+# Requires: install.packages("svglite")
+knitr:
+  opts_chunk:
+    dev: svglite
+    dev.args:
+      bg: transparent
+
+execute:
+  echo: false
+  message: false
+  warning: false
+  freeze: auto

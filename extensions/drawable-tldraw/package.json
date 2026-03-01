@@ -1,0 +1,19 @@
+{
+  "name": "drawable-tldraw",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.tsx --bundle --outfile=drawable.js --format=iife --global-name=Drawable --loader:.css=css --minify"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tldraw": "^4.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  }
+}

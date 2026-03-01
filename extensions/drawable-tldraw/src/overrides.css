@@ -1,0 +1,106 @@
+/* Transparent canvas background */
+.tl-background {
+  background: transparent !important;
+}
+
+.tl-canvas {
+  background: transparent !important;
+}
+
+/* Let TLDraw toolbar stay at bottom where it wants to be */
+
+/* Pencil and reset buttons: transparent until hover on any toolbar element */
+.drawable-toggle,
+.drawable-reset {
+  opacity: 0.25 !important;
+  transition: opacity 0.15s ease !important;
+}
+
+/* When hovering any control, show all controls */
+.drawable-wrapper:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-toggle,
+.drawable-wrapper:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-reset,
+.image-toggle-figure:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-toggle,
+.image-toggle-figure:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-reset {
+  opacity: 1 !important;
+}
+
+/* Hide toolbar when not in drawing mode */
+.drawable-overlay .tlui-toolbar,
+.drawable-overlay .tlui-main-toolbar__mobile-style-panel,
+.drawable-overlay .tlui-layout__bottom {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* When drawing mode active: show but very transparent until hover */
+.drawable-overlay.drawing-active .tlui-toolbar,
+.drawable-overlay.drawing-active .tlui-main-toolbar__mobile-style-panel,
+.drawable-overlay.drawing-active .tlui-layout__bottom {
+  opacity: 0.25;
+  pointer-events: auto;
+  transition: opacity 0.15s ease;
+}
+
+/* When hovering TLDraw toolbar OR the pencil/reset buttons, show all controls */
+.drawable-overlay.drawing-active .tlui-layout__bottom:hover,
+.drawable-overlay.drawing-active .tlui-layout__bottom:hover .tlui-toolbar,
+.drawable-overlay.drawing-active .tlui-layout__bottom:hover .tlui-main-toolbar__mobile-style-panel,
+.image-toggle-figure:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-layout__bottom,
+.image-toggle-figure:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-toolbar,
+.image-toggle-figure:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-main-toolbar__mobile-style-panel,
+.drawable-wrapper:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-layout__bottom,
+.drawable-wrapper:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-toolbar,
+.drawable-wrapper:has(.drawable-toggle:hover, .drawable-reset:hover) .drawable-overlay.drawing-active .tlui-main-toolbar__mobile-style-panel {
+  opacity: 1;
+}
+
+/* Also show pencil/reset when hovering TLDraw toolbar */
+.image-toggle-figure:has(.tlui-layout__bottom:hover) .drawable-toggle,
+.image-toggle-figure:has(.tlui-layout__bottom:hover) .drawable-reset,
+.drawable-wrapper:has(.tlui-layout__bottom:hover) .drawable-toggle,
+.drawable-wrapper:has(.tlui-layout__bottom:hover) .drawable-reset {
+  opacity: 1 !important;
+}
+
+/* Also hide style panel when not drawing */
+.drawable-overlay .tlui-style-panel__wrapper {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.drawable-overlay.drawing-active .tlui-style-panel__wrapper {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Color picker button in toolbar */
+.drawable-color-button {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s;
+}
+
+.drawable-color-button:hover {
+  background: var(--color-muted-2);
+}
+
+.drawable-color-button.active {
+  background: var(--color-muted-2);
+}
+
+.drawable-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--color-text-1);
+  box-shadow: 0 0 0 1px var(--color-background);
+}

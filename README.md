@@ -1,6 +1,6 @@
 # tlda
 
-Collaborative annotation system for reviewing LaTeX papers. Renders LaTeX as SVGs on a TLDraw canvas with KaTeX math in notes, real-time sync, and source-anchored annotations that survive document rebuilds.
+Collaborative annotation system for reviewing LaTeX papers. Renders LaTeX as SVGs on a TLDraw canvas with KaTeX math in notes, real-time sync, and source-anchored annotations that survive document rebuilds. Also supports Quarto HTML and reveal.js slides as experimental input formats.
 
 Built for iPad-first review workflows. Works standalone as a paper viewer and annotation tool — no AI needed. Optionally integrates with Claude Code via MCP for an agent-assisted review loop.
 
@@ -149,7 +149,7 @@ Everything goes through the `tlda` command:
 | `tlda server start` | Start the server (port 5176) |
 | `tlda server start --agent` | Start with Todd, the always-on triage agent |
 | `tlda server stop` | Stop the server |
-| `tlda create <name> --dir /path --main file.tex` | Create a project, push files, build |
+| `tlda create <name> --dir /path [--format html\|slides]` | Create a project, push files, build |
 | `tlda push [name]` | Push source files, trigger rebuild |
 | `tlda watch-all start` | Watch all projects for changes |
 | `tlda open [name]` | Open viewer in browser |
@@ -157,9 +157,27 @@ Everything goes through the `tlda` command:
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
 | `tlda preview <name> [pages]` | Rasterize SVG pages to PNG |
+| `tlda share [name]` | Print read-only viewer URL |
+| `tlda book <name> --members a,b,c` | Create a composite book project |
 | `tlda delete <name>` | Delete a project |
 
 The server auto-starts on first use. Configure with `tlda config set server <url>` or the `TLDA_SERVER` env var.
+
+## Other Input Formats
+
+LaTeX/SVG is the primary and best-supported format. tlda also has experimental support for:
+
+| Format | Source | Command |
+|--------|--------|---------|
+| **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` |
+| **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` |
+| **Book** | existing projects | `tlda book course --members lec1,lec2` |
+
+See [docs/formats.md](docs/formats.md) for a detailed comparison. For Quarto HTML projects, see [docs/quarto-html.md](docs/quarto-html.md) and the config template in `extensions/tlda-quarto-config/`.
+
+## Collaborative Roles
+
+In collaborative sessions, one person presents (broadcasts camera, controls annotation visibility) while others view (follow camera, draft annotations before publishing). See [docs/roles.md](docs/roles.md).
 
 ## Third-party licenses
 

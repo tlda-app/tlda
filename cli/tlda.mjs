@@ -46,7 +46,7 @@ const command = args[0]
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
   book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
+  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
@@ -266,7 +266,7 @@ async function cmdBook() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
 
   const format = getFlag('format') || null
   const dir = resolve(getFlag('dir') || '.')
@@ -302,6 +302,56 @@ async function cmdCreate() {
     console.log(`Pushing ${files.length} HTML file(s)...`)
     await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
     console.log(green('Slides processed.'))
+
+    const server = getServer()
+    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    return
+  }
+
+  // HTML format: push HTML chapters (e.g. from Quarto book render)
+  if (format === 'html') {
+    console.log(dim(`  Source: ${dir}`))
+    console.log(dim(`  Format: html`))
+
+    // Create or update project
+    try {
+      await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: dir })
+      console.log(green(`Created HTML project "${name}".`))
+    } catch (e) {
+      if (e.message.includes('already exists')) {
+        console.log(`Project "${name}" exists, pushing files.`)
+      } else {
+        throw e
+      }
+    }
+
+    // Collect all files from the directory (HTML, CSS, JS, fonts, images, site_libs)
+    const allFiles = []
+    function collectDir(base, prefix = '') {
+      for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          collectDir(base, relPath)
+        } else {
+          const content = readFileSync(join(base, relPath))
+          allFiles.push({
+            path: relPath,
+            content: content.toString('base64'),
+            encoding: 'base64',
+          })
+        }
+      }
+    }
+    collectDir(dir)
+
+    if (allFiles.filter(f => f.path.endsWith('.html')).length === 0) {
+      console.error(`No .html files found in ${dir}`)
+      process.exit(1)
+    }
+
+    console.log(`Pushing ${allFiles.length} file(s)...`)
+    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    console.log(green('HTML project processed.'))
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)

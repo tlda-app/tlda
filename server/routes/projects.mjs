@@ -140,6 +140,67 @@ router.post('/:name/push', requireRw, async (req, res) => {
     }
   }
 
+  // HTML format: copy all files to output, generate page-info.json from HTML titles
+  if (project.format === 'html') {
+    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
+    try {
+      const srcDir2 = getSourceDir(req.params.name)
+      const outDir = getOutputDir(req.params.name)
+      mkdirSync(outDir, { recursive: true })
+
+      // Copy all source files to output (preserving directory structure)
+      const copyRecursive = (src, dest) => {
+        for (const entry of readdirSync(src, { withFileTypes: true })) {
+          const srcPath = join(src, entry.name)
+          const destPath = join(dest, entry.name)
+          if (entry.isDirectory()) {
+            mkdirSync(destPath, { recursive: true })
+            copyRecursive(srcPath, destPath)
+          } else {
+            cpSync(srcPath, destPath)
+          }
+        }
+      }
+      copyRecursive(srcDir2, outDir)
+
+      // Generate page-info.json from HTML files
+      // Look for existing page-info.json (may have been pushed as part of source)
+      const pageInfoPath = join(outDir, 'page-info.json')
+      let pageInfo
+      if (existsSync(pageInfoPath)) {
+        pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+      } else {
+        // Auto-generate from HTML files: extract <title> tags
+        const htmlFiles = readdirSync(outDir).filter(f => f.endsWith('.html') && !f.startsWith('_'))
+        pageInfo = htmlFiles.map(f => {
+          const html = readFileSync(join(outDir, f), 'utf8')
+          const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i)
+          const title = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : basename(f, '.html')
+          return { file: f, width: 800, height: 1000, title }
+        })
+        writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
+      }
+
+      updateProject(req.params.name, {
+        buildStatus: 'success',
+        pages: pageInfo.length,
+        lastBuild: new Date().toISOString(),
+      })
+
+      // Signal reload to connected viewers
+      broadcastSignal(`doc-${req.params.name}`, 'signal:reload', {
+        pages: pageInfo.length,
+        timestamp: Date.now(),
+      })
+
+      console.log(`[html] ${req.params.name}: ${pageInfo.length} pages`)
+    } catch (e) {
+      console.error(`[html] Build failed for ${req.params.name}: ${e.message}`)
+      updateProject(req.params.name, { buildStatus: 'error' })
+    }
+    return
+  }
+
   // Slides format: no LaTeX build — copy HTML to output, generate page-info.json
   if (project.format === 'slides') {
     res.json({ ok: true, filesWritten: files?.length || 0, building: true })

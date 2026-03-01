@@ -1,0 +1,254 @@
+/* image-toggle.css */
+
+.image-toggle-stack {
+  position: relative;
+  width: 100%;
+}
+
+.image-toggle-cell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  opacity: 0;
+  transition: opacity 0.3s ease-in-out;
+  pointer-events: none;
+}
+
+.image-toggle-cell.active {
+  position: relative;
+  opacity: 1;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.image-toggle-cell.active .cell {
+  order: 1;
+}
+
+.image-toggle-cell.active .poll-table {
+  order: 3;
+}
+
+.image-toggle-controls {
+  display: flex;
+  gap: 0.3em;
+  margin: 0.3em 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.image-toggle-btn {
+  padding: 0.1em 0.4em;
+  border: 1px solid #ddd;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.65em;
+  color: #999;
+  transition: all 0.2s ease;
+}
+
+.image-toggle-btn:hover {
+  background: #f5f5f5;
+  border-color: #bbb;
+  color: #666;
+}
+
+.image-toggle-btn.active {
+  background: #e8e8e8;
+  color: #555;
+  border-color: #ccc;
+}
+
+/* Hide caption, show figure label inline with controls */
+.image-toggle figcaption {
+  display: none;
+}
+
+.image-toggle-label {
+  font-size: 0.6em;
+  color: #aaa;
+  margin-left: auto;
+}
+
+.image-toggle-mode-indicator {
+  display: none;
+}
+
+/* For scroll mode, add a subtle hint */
+[data-mode="scroll"] .image-toggle-stack::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(to right, #333 0%, #333 var(--scroll-progress, 0%), #ddd var(--scroll-progress, 0%), #ddd 100%);
+  opacity: 0.5;
+}
+
+/* For hover mode, change cursor */
+[data-mode="hover"] .image-toggle-stack {
+  cursor: ew-resize;
+}
+
+/* Poll tables inside toggle cells */
+.poll-table {
+  font-size: 0.8em;
+  margin-top: 0.5em;
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.poll-table td {
+  padding: 0.2em 0.3em;
+  text-align: center;
+  border-bottom: 1px solid #ddd;
+  overflow: hidden;
+}
+
+.poll-table td:first-child {
+  width: 4.5em;
+  text-align: left;
+}
+
+.poll-table td:last-child {
+  width: 3em;
+}
+
+.poll-table tr:first-child td {
+  color: #888;
+  font-size: 0.9em;
+}
+
+.poll-table .strikethrough {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.poll-table .empty {
+  visibility: hidden;
+}
+
+/* Sidebar layout: sticky figure on left, steps scroll on right */
+.image-toggle-sidebar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5em;
+  align-items: start;
+  margin: 1.5em 0;
+}
+
+.image-toggle-sidebar .image-toggle-figure {
+  position: sticky;
+  top: 2em;
+}
+
+.image-toggle-sidebar .image-toggle-figure img {
+  max-width: 100%;
+  height: auto;
+}
+
+.image-toggle-sidebar .image-toggle-steps {
+  /* Steps column scrolls normally */
+}
+
+.image-toggle-sidebar .image-toggle-steps > * {
+  margin-bottom: 0.75em;
+}
+
+.image-toggle-sidebar .image-toggle-steps h3 {
+  margin-top: 0;
+  font-size: 1em;
+}
+
+.image-toggle-sidebar .image-toggle-steps p {
+  margin: 0 0 0.75em 0;
+}
+
+/* Smaller screens: stack vertically */
+@media (max-width: 768px) {
+  .image-toggle-sidebar {
+    grid-template-columns: 1fr;
+  }
+  
+  .image-toggle-sidebar .image-toggle-figure {
+    position: relative;
+    top: 0;
+  }
+}
+
+/* Nested step groups */
+.step-group {
+  margin-bottom: 1em;
+}
+
+.step-group h3,
+.step-group h4,
+.step-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0 0 0.3em 0;
+  font-size: 0.95em;
+  color: #444;
+  user-select: none;
+}
+
+.step-group-indicator {
+  font-size: 0.8em;
+  color: #888;
+  transition: transform 0.2s ease;
+  width: 1em;
+  text-align: center;
+}
+
+.step-group-substeps {
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  padding-left: 1.2em;
+  border-left: 2px solid #e0e0e0;
+  margin-left: 0.4em;
+}
+
+.step-group-substeps.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.step-group-substeps.expanded {
+  max-height: 1000px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.substep {
+  padding: 0.5em 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.9em;
+  transition: background-color 0.2s ease;
+}
+
+.substep:last-child {
+  border-bottom: none;
+}
+
+.substep.active-step {
+  background-color: #f8f8ff;
+  border-left: 2px solid #6366f1;
+  margin-left: -1.2em;
+  padding-left: calc(1.2em - 2px);
+}
+
+.substep p {
+  margin: 0;
+}
+
+.substep strong {
+  color: #333;
+}

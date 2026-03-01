@@ -1,0 +1,6 @@
+title: Drawable (TLDraw)
+author: David Hirshberg
+version: 1.0.0
+contributes:
+  filters:
+    - drawable.lua
