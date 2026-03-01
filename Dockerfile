@@ -23,11 +23,18 @@ RUN npm install --ignore-scripts && npx vite build && \
 # Seed project data (output only, no source files) into /app/server/seed/
 # On startup, project.json and output/ are copied to projects/ (but sync-snapshot.json
 # on the persistent volume is preserved across deploys).
-RUN mkdir -p server/seed/spinoff3/output server/seed/qtm285/output
-COPY server/projects/spinoff3/project.json ./server/seed/spinoff3/
-COPY server/projects/spinoff3/output/ ./server/seed/spinoff3/output/
-COPY server/projects/qtm285/project.json ./server/seed/qtm285/
-COPY server/projects/qtm285/output/ ./server/seed/qtm285/output/
+# Copy all projects that have output/ dirs — the entrypoint iterates dynamically.
+COPY server/projects/ ./server/projects-tmp/
+RUN mkdir -p server/seed && \
+    for proj in server/projects-tmp/*/; do \
+      name=$(basename "$proj"); \
+      if [ -d "$proj/output" ] && [ -f "$proj/project.json" ]; then \
+        mkdir -p "server/seed/$name/output" && \
+        cp "$proj/project.json" "server/seed/$name/" && \
+        cp -r "$proj/output/." "server/seed/$name/output/"; \
+      fi; \
+    done && \
+    rm -rf server/projects-tmp/
 
 # Entrypoint: seed project data, preserving persistent sync snapshots
 COPY scripts/fly-entrypoint.sh ./
