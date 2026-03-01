@@ -142,7 +142,7 @@ html[data-theme="dark"] .agent-indicator.agent-offline {
 
 html[data-theme="dark"] .agent-indicator.agent-listening,
 html[data-theme="dark"] .agent-indicator.agent-thinking {
-  color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.08);
 }
 
 html[data-theme="dark"] .agent-indicator.agent-listening:hover,
@@ -161,7 +161,7 @@ html[data-theme="dark"] .agent-indicator.agent-stale:hover {
 /* Dark mode: Claude orange */
 html[data-theme="dark"] .agent-indicator[data-agent="claude"].agent-listening,
 html[data-theme="dark"] .agent-indicator[data-agent="claude"].agent-thinking {
-  color: rgba(227, 152, 68, 0.20);
+  color: rgba(227, 152, 68, 0.15);
 }
 html[data-theme="dark"] .agent-indicator[data-agent="claude"].agent-listening:hover,
 html[data-theme="dark"] .agent-indicator[data-agent="claude"].agent-thinking:hover {
@@ -174,7 +174,7 @@ html[data-theme="dark"] .agent-indicator[data-agent="claude"].agent-stale {
 /* Dark mode: Todd green */
 html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-listening,
 html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-thinking {
-  color: rgba(80, 200, 120, 0.20);
+  color: rgba(80, 200, 120, 0.15);
 }
 html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-listening:hover,
 html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-thinking:hover {

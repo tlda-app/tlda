@@ -276,7 +276,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
       }
     >
       {agentState !== 'offline' && (
-        <TldaTittle size={20} className="agent-indicator-logo"
+        <TldaTittle size={16} className="agent-indicator-logo"
           fill={agentState === 'stale' ? undefined : 'currentColor'}
           stroke={agentState === 'stale' ? 'currentColor' : undefined}
           strokeWidth={agentState === 'stale' ? 0.5 : undefined}
