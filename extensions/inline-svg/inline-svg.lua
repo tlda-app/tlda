@@ -52,7 +52,7 @@ local function read_svg(path)
     local fill = style_lower:match('fill:%s*(#[0-9a-f]+)')
     local stroke = style_lower:match('stroke:%s*(#[0-9a-f]+)')
     if (fill and SEMANTIC_COLORS[fill]) or (stroke and SEMANTIC_COLORS[stroke]) then
-      return '<' .. tagname .. ' class="ctd-semantic"' .. attrs .. slash .. '>'
+      return '<' .. tagname .. ' class="darkmode-invariant"' .. attrs .. slash .. '>'
     end
     return '<' .. tagname .. attrs .. slash .. '>'
   end)
@@ -69,7 +69,7 @@ function Image(img)
       if width then
         style = 'width:' .. width .. ';max-width:100%;height:auto'
       end
-      local html = '<div class="ctd-inline-svg" style="' .. style .. '">' .. svg_str .. '</div>'
+      local html = '<div class="inlined-svg" style="' .. style .. '">' .. svg_str .. '</div>'
       return pandoc.RawInline('html', html)
     end
   end

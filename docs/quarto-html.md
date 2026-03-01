@@ -120,4 +120,4 @@ Or use `tlda watch-all` if the project's `sourceDir` is set.
 
 **MathJax errors**: The `_quarto-tlda.yml` template disables MathJax accessibility features (`assistiveMml`, `collapsible`, `explorer`) that interfere with iframe embedding. If you have custom MathJax config in your `.qmd`, make sure it doesn't re-enable these.
 
-**Dark mode colors wrong**: Add semantic colors to the `SEMANTIC_COLORS` table in `inline-svg.lua`. Colors listed there get a `ctd-semantic` CSS class that exempts them from dark mode inversion.
+**Dark mode colors wrong**: Add semantic colors to the `SEMANTIC_COLORS` table in `inline-svg.lua`. Colors listed there get a `darkmode-invariant` CSS class that exempts them from dark mode inversion.

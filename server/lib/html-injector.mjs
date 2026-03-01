@@ -162,7 +162,7 @@ const BRIDGE_SCRIPT = `
       '.cm-editor { max-width: 100% !important; overflow-x: auto !important; }',
       '.cm-line { overflow-wrap: anywhere; }',
       '.cell-output img, .cell-output svg { max-width: 100%; height: auto; }',
-      '.image-toggle-sidebar div.tlda-inline-svg > svg { max-width: 100%; height: auto; }',
+      '.image-toggle-sidebar div.inlined-svg > svg { max-width: 100%; height: auto; }',
       '.spinner-grow, .spinner-border { opacity: 0.3; }',
       '.exercise-loading-indicator { font-size: 12px; opacity: 0.5; }',
       '.image-toggle .image-toggle-controls { display: none !important; }',
@@ -177,7 +177,7 @@ const BRIDGE_SCRIPT = `
       // Applying the same filter undoes the parent: invert(invert(x)) = x
       'html.tlda-dark .twocolor-red, html.tlda-dark .twocolor-green, html.tlda-dark .groupa, html.tlda-dark .groupb, html.tlda-dark .midnight, html.tlda-dark .polla, html.tlda-dark .pink, html.tlda-dark .pollb, html.tlda-dark .teal, html.tlda-dark .pollc, html.tlda-dark .polld, html.tlda-dark .magenta, html.tlda-dark .counterfactual, html.tlda-dark .green, html.tlda-dark .cyan, html.tlda-dark .population, html.tlda-dark .blue, html.tlda-dark .sample, html.tlda-dark .red, html.tlda-dark .purple, html.tlda-dark .target, html.tlda-dark .shadedred, html.tlda-dark .todofix { filter: invert(0.92) hue-rotate(180deg); }',
       // Counter-filter for semantic colors in inline SVG plots (tagged by inline-svg.lua)
-      'html.tlda-dark .tlda-semantic { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.tlda-dark .darkmode-invariant { filter: invert(0.92) hue-rotate(180deg); }',
     ].join('\\n');
     document.head.appendChild(style);
   }
@@ -291,7 +291,7 @@ const BRIDGE_SCRIPT = `
     // 2. Inline SVGs from the inline-svg Lua filter
     // The overlay is a transparent glass pane — content stays in the iframe for styling.
     // Each wrapper gets a data-figure-idx for targeted transform messages.
-    var inlineSvgs = document.querySelectorAll('div.tlda-inline-svg > svg');
+    var inlineSvgs = document.querySelectorAll('div.inlined-svg > svg');
     inlineSvgs.forEach(function(svg) {
       var wrapper = svg.parentElement;
       if (wrapper.closest('.image-toggle')) return;
@@ -364,7 +364,7 @@ const BRIDGE_SCRIPT = `
       var imgUrls = Array.from(cells).map(function(cell) {
         var img = cell.querySelector('img');
         if (img) return img.src;
-        var inlineSvg = cell.querySelector('div.tlda-inline-svg > svg');
+        var inlineSvg = cell.querySelector('div.inlined-svg > svg');
         if (inlineSvg) {
           var serialized = new XMLSerializer().serializeToString(inlineSvg);
           return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(serialized)));
