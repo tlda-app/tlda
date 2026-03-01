@@ -83,9 +83,7 @@ export function PingButton() {
       disabled={state === 'sending'}
       title="Ping agent"
     >
-      <svg width="18" height="18" viewBox="0 0 248 248" fill="currentColor">
-        <path d={TILDA_LOGO_PATH}/>
-      </svg>
+      <TldaTittle size={18} fill="currentColor"/>
     </button>,
     portalRef.current,
   )
@@ -158,7 +156,31 @@ export function DocumentPanel() {
 // Agent indicator (logo only, bottom-right)
 // ======================
 
-const TILDA_LOGO_PATH = "M0 211 C25 198, 37 37, 87 37 C112 37, 112 112, 124 112 C136 112, 144 149, 248 37 C223 50, 211 211, 161 211 C136 211, 136 161, 124 161 C112 161, 104 99, 0 211Z"
+const COMMA_PATH = "M13.125 18.8843C13.125 18.1109 13.3893 17.4548 13.918 16.9158C14.4696 16.3533 15.1362 16.0721 15.9176 16.0721C16.6531 16.0721 17.2967 16.3533 17.8484 16.9158C18.4 17.4548 18.7218 18.0641 18.8137 18.7437C18.9976 20.0092 18.7677 21.2629 18.1242 22.505C17.5036 23.747 16.6072 24.6961 15.435 25.3523C14.7914 25.7273 14.2627 25.7155 13.849 25.3172C13.4583 24.9422 13.5732 24.4969 14.1938 23.9814C14.5386 23.7236 14.8259 23.3955 15.0557 22.9971C15.2856 22.5987 15.435 22.1886 15.5039 21.7668C15.5269 21.5793 15.4465 21.4856 15.2626 21.4856C14.8029 21.4621 14.3317 21.2043 13.849 20.7122C13.3663 20.2201 13.125 19.6108 13.125 18.8843Z"
+
+/** Tittle only: circle at cy=9.25 with rotated-comma tail subtracted */
+function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidth }: {
+  size: number, className?: string, fill?: string, stroke?: string, strokeWidth?: number
+}) {
+  const id = useRef(`tittle-${Math.random().toString(36).slice(2, 8)}`).current
+  return (
+    <svg width={size} height={size} viewBox="4 2 24 16" className={className}>
+      <defs>
+        <path id={`c-${id}`} d={COMMA_PATH}/>
+        <mask id={`m-${id}`}>
+          <rect x="0" y="0" width="32" height="32" fill="black"/>
+          <circle cx="16" cy="9.25" r="3.2" fill="white"/>
+          <g transform="rotate(180, 15.97, 18.5)"><use href={`#c-${id}`} fill="black"/></g>
+        </mask>
+      </defs>
+      {stroke ? (
+        <circle cx="16" cy="9.25" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
+      ) : (
+        <rect width="32" height="32" fill={fill} mask={`url(#m-${id})`}/>
+      )}
+    </svg>
+  )
+}
 
 type AgentState = 'offline' | 'listening' | 'thinking' | 'stale'
 
@@ -254,13 +276,11 @@ export function AgentPill({ editor }: { editor: Editor }) {
       }
     >
       {agentState !== 'offline' && (
-        <svg className="agent-indicator-logo" width="12" height="12" viewBox="0 0 248 248"
-          fill={agentState === 'stale' ? 'none' : 'currentColor'}
-          stroke={agentState === 'stale' ? 'currentColor' : 'none'}
-          strokeWidth={agentState === 'stale' ? 12 : 0}
-        >
-          <path d={TILDA_LOGO_PATH}/>
-        </svg>
+        <TldaTittle size={12} className="agent-indicator-logo"
+          fill={agentState === 'stale' ? undefined : 'currentColor'}
+          stroke={agentState === 'stale' ? 'currentColor' : undefined}
+          strokeWidth={agentState === 'stale' ? 0.5 : undefined}
+        />
       )}
     </span>
   )
