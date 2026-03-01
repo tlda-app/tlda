@@ -327,15 +327,15 @@ export function TocTab() {
             dangerouslySetInnerHTML={{ __html: h.title }} />
         )
       })}
-      {ctx?.onToggleCameraLink && (
+      {ctx?.onToggleRole && (
         <div
           className="toc-diff-hint"
-          onClick={() => ctx.onToggleCameraLink?.()}
+          onClick={() => ctx.onToggleRole?.()}
         >
-          <kbd>l</kbd> {ctx.cameraLinked ? 'Unlink cameras' : 'Link cameras'}
+          {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      {ctx?.cameraLinked && ctx?.onTogglePanelsLocal && (
+      {ctx?.onTogglePanelsLocal && (
         <div
           className="toc-diff-hint"
           onClick={() => ctx.onTogglePanelsLocal?.()}

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useState, useCallback, useContext } from 'react'
+import { useMemo, useEffect, useRef, useState, useCallback, useContext, useSyncExternalStore } from 'react'
 import {
   Tldraw,
   react,
@@ -35,6 +35,9 @@ import { ScrollyOverlay } from './ScrollyOverlay'
 import { RefViewer } from './RefViewer'
 import { BuildErrorOverlay } from './BuildErrorOverlay'
 import { BuildWarningPill } from './BuildWarningPill'
+import { AnnotationVisibilityPill } from './AnnotationVisibilityPill'
+import { DraftPill } from './DraftPill'
+import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
@@ -201,7 +204,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const snapshotSliderIdx = activeHistoryIdx
   const handleSliderChange = handleHistoryChange
 
-  const { cameraLinked, setCameraLinked, cameraLinkedRef, suppressBroadcastRef, broadcastTimerRef, toggleCameraLink } = useCameraLink(editorRef)
+  const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef)
+
+  // Initialize role from localStorage
+  const docNameForRole = new URLSearchParams(window.location.search).get('doc') || document.name
+  useMemo(() => initRole(docNameForRole), [docNameForRole])
+  const role = useSyncExternalStore(subscribeRole, getRole)
 
   const {
     diffMode, diffLoading, toggleDiff,
@@ -519,8 +527,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     proofMode,
     onToggleProof: toggleProof,
     proofLoading,
-    cameraLinked,
-    onToggleCameraLink: toggleCameraLink,
+    role,
+    onToggleRole: toggleRole,
     panelsLocal,
     onTogglePanelsLocal: togglePanelsLocal,
     snapshotCount,
@@ -543,7 +551,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     onSelectChange: handleSelectChange,
     buildErrors,
     buildWarnings,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, cameraLinked, toggleCameraLink, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -676,6 +684,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         />
       )}
       <div className="build-pills-row">
+        {role === 'presenter' ? <AnnotationVisibilityPill /> : <DraftPill />}
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
@@ -829,7 +838,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 tool,
                 diffMode: diffModeRef.current,
                 proofMode: proofModeRef.current,
-                cameraLinked: cameraLinkedRef.current,
                 panelsLocal: panelsLocalRef.current,
               }))
             } catch { /* quota exceeded etc */ }
@@ -839,7 +847,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             try {
               const raw = localStorage.getItem(sessionKey)
               if (!raw) return null
-              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; pageId?: string; tool?: string; diffMode?: boolean; proofMode?: boolean; cameraLinked?: boolean; panelsLocal?: boolean }
+              return JSON.parse(raw) as { camera?: { x: number; y: number; z: number }; pageId?: string; tool?: string; diffMode?: boolean; proofMode?: boolean; panelsLocal?: boolean }
             } catch { return null }
           }
 
@@ -876,9 +884,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               if (session?.proofMode) {
                 toggleProofRef.current()
               }
-              if (session?.cameraLinked) {
-                setCameraLinked(true)
-              }
+              // Role is restored from localStorage by initRole() — no session override needed
               if (session?.panelsLocal === false) {
                 setPanelsLocal(false)
               }
@@ -913,13 +919,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 saveSession()
               })
 
-              // Camera link: broadcast position to other viewers (faster debounce)
+              // Camera broadcast: presenter sends position to viewers
               react('broadcast-camera', () => {
                 const cam = editor.getCamera() // subscribe
-                if (!cameraLinkedRef.current || suppressBroadcastRef.current) return
+                if (getRole() !== 'presenter' || suppressBroadcastRef.current) return
                 if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current)
                 broadcastTimerRef.current = setTimeout(() => {
-                  if (cameraLinkedRef.current && !suppressBroadcastRef.current) {
+                  if (getRole() === 'presenter' && !suppressBroadcastRef.current) {
                     broadcastCamera(cam.x, cam.y, cam.z)
                   }
                 }, 30)

@@ -16,6 +16,12 @@ import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
+import { getViewerId } from './useYjsSync'
+import {
+  getVisibilityMode, subscribeVisibility,
+  isDraft, subscribeDrafts, addDraft, isPublishing,
+} from './annotationVisibility'
+import { getRole } from './viewerRole'
 
 export type ReloadResult = {
   failedPages: number[]
@@ -552,15 +558,36 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // Only re-sort when a NEW shape is created (and only if it's not one of our page shapes).
   // Skip the change handler entirely — page shapes are locked and can't move, so z-order
   // only needs fixing when new user shapes (notes, drawings) appear.
-  editor.sideEffects.registerAfterCreateHandler('shape', (shape) => {
+  editor.sideEffects.registerAfterCreateHandler('shape', (shape, source) => {
     if (!shapeIdSet.has(shape.id)) {
       makeSureShapesAreAtBottom()
-      // Stamp creation time for temporal clustering (if not already set by server/MCP)
-      if (!shape.meta?.createdAt) {
+      // Stamp creation time + authorId (if not already set by server/MCP)
+      if (source === 'user' && !shape.meta?.createdAt) {
         editor.store.update(shape.id, (s: any) => ({
           ...s,
-          meta: { ...s.meta, createdAt: Date.now() },
+          meta: { ...s.meta, createdAt: Date.now(), authorId: getViewerId() },
         }))
+      }
+      // Draft layer (viewer role only): convert user-created annotations to local-only drafts.
+      // Deferred because mergeRemoteChanges can't run inside an atomic operation.
+      // Skip when publishing (re-creating a shape as synced after draft→publish).
+      // Presenter annotations sync immediately — no draft conversion.
+      if (source === 'user' && !isPublishing() && getRole() === 'viewer') {
+        const shapeId = shape.id
+        queueMicrotask(() => {
+          const shapeData = editor.store.get(shapeId)
+          if (!shapeData) return
+          const draftShape = {
+            ...shapeData,
+            meta: { ...shapeData.meta, draft: true, authorId: getViewerId(), createdAt: Date.now() },
+          }
+          // Delete the synced version, recreate as local-only
+          editor.store.remove([shapeId])
+          editor.store.mergeRemoteChanges(() => {
+            editor.store.put([draftShape])
+          })
+          addDraft(shapeId)
+        })
       }
       // Anchor user-created shapes to source lines (fire-and-forget)
       anchorShape(editor, shape)
@@ -678,6 +705,77 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       }
     },
     ensurePagesAtBottom: makeSureShapesAreAtBottom,
+  }
+
+  // --- Dynamic visibility CSS engine ---
+  // Targets foreign annotation shapes by [data-shape-id] — no store mutations, purely local.
+  {
+    const styleEl = window.document.createElement('style')
+    window.document.head.appendChild(styleEl)
+
+    function rebuildVisibilityCSS() {
+      const visMode = getVisibilityMode()
+      const allShapes = editor.getCurrentPageShapes()
+
+      if (visMode === 'visible') {
+        // Draft outlines still needed
+        const draftSelectors = allShapes
+          .filter(s => isDraft(s.id))
+          .map(s => `[data-shape-id="${s.id}"]`)
+
+        if (draftSelectors.length === 0) {
+          styleEl.textContent = ''
+          return
+        }
+        styleEl.textContent = `
+          ${draftSelectors.join(',\n')} {
+            outline: 2px dashed rgba(59, 130, 246, 0.5) !important;
+            outline-offset: 3px !important;
+          }
+        `
+        return
+      }
+
+      const opacity = visMode === 'faint' ? '0.07' : '0'
+      const localViewerId = getViewerId()
+      const foreignSelectors = allShapes
+        .filter(s => !shapeIdSet.has(s.id))
+        .filter(s => (s.meta as any)?.authorId !== localViewerId)
+        .filter(s => !isDraft(s.id))
+        .map(s => `[data-shape-id="${s.id}"]`)
+
+      const draftSelectors = allShapes
+        .filter(s => isDraft(s.id))
+        .map(s => `[data-shape-id="${s.id}"]`)
+
+      let css = ''
+      if (foreignSelectors.length > 0) {
+        css += `${foreignSelectors.join(',\n')} {
+          opacity: ${opacity} !important;
+          pointer-events: none !important;
+          transition: opacity 0.3s;
+        }\n`
+      }
+      if (draftSelectors.length > 0) {
+        css += `${draftSelectors.join(',\n')} {
+          outline: 2px dashed rgba(59, 130, 246, 0.5) !important;
+          outline-offset: 3px !important;
+        }\n`
+      }
+      styleEl.textContent = css
+    }
+
+    const unsubMode = subscribeVisibility(rebuildVisibilityCSS)
+    const unsubDrafts = subscribeDrafts(rebuildVisibilityCSS)
+    let rebuildTimer: ReturnType<typeof setTimeout>
+    const debouncedRebuild = () => {
+      clearTimeout(rebuildTimer)
+      rebuildTimer = setTimeout(rebuildVisibilityCSS, 100)
+    }
+    const unsubStore = editor.store.listen(debouncedRebuild, { scope: 'document' })
+    rebuildVisibilityCSS()
+    // Note: cleanup not strictly needed (editor outlives this setup), but
+    // if needed: styleEl.remove(); unsubMode(); unsubDrafts(); unsubStore();
   }
 
   // Restore magic highlights from persisted metadata shapes

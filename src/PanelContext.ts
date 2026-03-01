@@ -23,8 +23,8 @@ export interface PanelContextValue {
   proofMode?: boolean
   onToggleProof?: () => void
   proofLoading?: boolean
-  cameraLinked?: boolean
-  onToggleCameraLink?: () => void
+  role?: 'presenter' | 'viewer'
+  onToggleRole?: () => void
   panelsLocal?: boolean
   onTogglePanelsLocal?: () => void
   // Legacy localStorage snapshots (kept for compatibility)

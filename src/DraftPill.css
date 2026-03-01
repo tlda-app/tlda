@@ -1,0 +1,77 @@
+/* DraftPill */
+
+.draft-pill-container {
+  position: relative;
+  pointer-events: all;
+}
+
+.draft-pill-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: color 0.3s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.draft-pill-badge:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Popup */
+.draft-pill-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 48px));
+  background: #fafafa;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 4px 0;
+  pointer-events: all;
+  z-index: 10;
+}
+
+.draft-pill-action {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.draft-pill-action:hover {
+  background: rgba(37, 99, 235, 0.05);
+}
+
+.draft-pill-hint {
+  padding: 5px 10px;
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.35);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .draft-pill-badge {
+  color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .draft-pill-badge:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .draft-pill-popup {
+  background: #1e1e1e;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .draft-pill-action {
+  color: #60a5fa;
+}
+
+html[data-theme="dark"] .draft-pill-hint {
+  color: rgba(255, 255, 255, 0.3);
+}

@@ -1,0 +1,104 @@
+/* AnnotationVisibilityPill */
+
+.annot-vis-container {
+  position: relative;
+  pointer-events: all;
+}
+
+.annot-vis-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: color 0.3s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.annot-vis-badge:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Popup */
+.annot-vis-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 48px));
+  background: #fafafa;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 4px 0;
+  pointer-events: all;
+  z-index: 10;
+}
+
+.annot-vis-option {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #555;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.annot-vis-option:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.annot-vis-option.active {
+  font-weight: 600;
+  color: #333;
+}
+
+.annot-vis-option + .annot-vis-option {
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.annot-vis-publish {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #2563eb;
+  cursor: pointer;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.annot-vis-publish:hover {
+  background: rgba(37, 99, 235, 0.05);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .annot-vis-badge {
+  color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .annot-vis-badge:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .annot-vis-popup {
+  background: #1e1e1e;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .annot-vis-option {
+  color: #999;
+}
+
+html[data-theme="dark"] .annot-vis-option.active {
+  color: #ddd;
+}
+
+html[data-theme="dark"] .annot-vis-option + .annot-vis-option {
+  border-top-color: rgba(255, 255, 255, 0.05);
+}
+
+html[data-theme="dark"] .annot-vis-publish {
+  color: #60a5fa;
+  border-top-color: rgba(255, 255, 255, 0.08);
+}

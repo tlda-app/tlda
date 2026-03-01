@@ -19,6 +19,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getActiveMacros } from './katexMacros'
 import { subscribeSearchFilter, getSearchFilter } from './stores'
+import { isDraft, subscribeDrafts, publishDraft } from './annotationVisibility'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -191,6 +192,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const isDone = shape.props.done === true
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
+    const isDraftNote = useSyncExternalStore(subscribeDrafts, () => isDraft(shape.id))
 
     // Memoize KaTeX rendering — only re-parse when text actually changes
     const renderedHtml = useMemo(
@@ -913,6 +915,28 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           </div>
           {/* Spacer */}
           <div style={{ flex: 1 }} />
+          {/* Publish button for draft notes */}
+          {isDraftNote && (
+            <div
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                publishDraft(editor, shape.id)
+              }}
+              style={{
+                padding: '3px 8px',
+                fontSize: '9px',
+                fontFamily: '-apple-system, sans-serif',
+                color: '#2563eb',
+                cursor: 'pointer',
+                userSelect: 'none',
+                pointerEvents: 'all',
+                flexShrink: 0,
+                fontWeight: 500,
+              }}
+            >
+              Publish
+            </div>
+          )}
         </div>
       )
     }
