@@ -194,7 +194,7 @@ router.get('/:name/build/errors', requireRead, (req, res) => {
 
 // ---------- Shape CRUD (backed by @tldraw/sync TLSocketRoom) ----------
 
-import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal } from '../lib/sync-rooms.mjs'
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
 
 // Map project name → sync room name (viewer connects as "doc-{name}")
 function syncRoomName(projectName) {
@@ -262,6 +262,20 @@ router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
   try {
     await deleteShape(syncRoomName(req.params.name), shapeId)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /:name/snapshot — replace the sync room's snapshot (for publish/deploy)
+router.post('/:name/snapshot', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const snapshot = req.body
+  if (!snapshot?.documents) return res.status(400).json({ error: 'Invalid snapshot (missing documents)' })
+  try {
+    replaceRoomSnapshot(syncRoomName(req.params.name), snapshot)
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })

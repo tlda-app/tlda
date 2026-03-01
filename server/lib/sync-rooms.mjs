@@ -63,6 +63,8 @@ const customShapeSchemas = {
       parentShapeId: T.string,
       offsetY: T.number,
       caption: T.optional(T.string),
+      group: T.optional(T.string),
+      figureIdx: T.optional(T.number),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.svg-figure',
@@ -494,6 +496,26 @@ export function flushAllRooms() {
       }
     }
   }
+}
+
+/**
+ * Replace a room's snapshot. Closes the existing room, writes the new snapshot
+ * to disk, and lets it reload on next access. Connected clients will reconnect.
+ */
+export function replaceRoomSnapshot(docName, snapshot) {
+  const existing = rooms.get(docName)
+  if (existing) {
+    existing.close()
+    rooms.delete(docName)
+    console.log(`[sync] Room closed for snapshot replace: ${docName}`)
+  }
+  const path = snapshotPath(docName)
+  const dir = dirname(path)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const tmp = path + '.tmp'
+  writeFileSync(tmp, JSON.stringify(snapshot))
+  renameSync(tmp, path)
+  console.log(`[sync] Snapshot replaced: ${docName}`)
 }
 
 /**

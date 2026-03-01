@@ -131,6 +131,17 @@ Two kinds of AI agents can interact with the viewer:
 
 Todd yields to terminal agents automatically via heartbeat detection — when a Claude Code session is active on a document, Todd steps back. Color convention: orange = Claude, green = Todd, violet = user.
 
+### Running Todd against a remote server
+
+Set `CTD_SYNC_SERVER` to route shapes and signals to a remote sync server while reading doc assets from local disk. Run from a published clone (created by `publish-snapshot`) so ongoing work doesn't affect Todd's view of the document:
+
+```bash
+cd ~/work/published/claude-tldraw
+CTD_SYNC_SERVER=https://example.com node cli/lib/triage-agent.mjs
+```
+
+The publish script (`npm run publish-snapshot -- <doc>`) syncs to the published clone, deploys to GitHub Pages and Fly, and prints the Todd command at the end.
+
 ## CLI Reference
 
 Everything goes through the `ctd` command:

@@ -6,7 +6,9 @@
  *   - Observes DOM mutations to re-report height (e.g. webR cell expansion)
  *   - Reads _ctdShape query param to identify itself
  *   - Processes WebR cells: hides echo:false/include:false, strips #| directives
+ *   - Dark mode via CSS invert with semantic color preservation
  */
+
 
 // MathJax v3 configuration — must be injected BEFORE the MathJax <script> tag
 // Merges with any existing window.MathJax (e.g. Quarto's physics package loader)
@@ -91,6 +93,14 @@ const BRIDGE_SCRIPT = `
       if (e.data?.type === 'ctd-dark-mode') {
         document.documentElement.classList.toggle('ctd-dark', !!e.data.dark);
       }
+      if (e.data?.type === 'ctd-figure-transform') {
+        var wrapper = document.querySelector('[data-figure-idx="' + e.data.figureIdx + '"]');
+        if (!wrapper) return;
+        var svg = wrapper.querySelector('svg');
+        if (!svg) return;
+        svg.style.transformOrigin = '0 0';
+        svg.style.transform = 'scale(' + e.data.zoom + ') translate(' + e.data.panX + 'px, ' + e.data.panY + 'px)';
+      }
     });
     // Prevent iframe from capturing wheel/touch scroll events (Safari ignores
     // pointer-events:none on iframes for scroll gestures).
@@ -152,32 +162,22 @@ const BRIDGE_SCRIPT = `
       '.cm-editor { max-width: 100% !important; overflow-x: auto !important; }',
       '.cm-line { overflow-wrap: anywhere; }',
       '.cell-output img, .cell-output svg { max-width: 100%; height: auto; }',
+      '.image-toggle-sidebar div.ctd-inline-svg > svg { max-width: 100%; height: auto; }',
       '.spinner-grow, .spinner-border { opacity: 0.3; }',
       '.exercise-loading-indicator { font-size: 12px; opacity: 0.5; }',
       '.image-toggle .image-toggle-controls { display: none !important; }',
       '.image-toggle-sidebar .image-toggle-steps > * { margin-bottom: 1em; padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid rgba(100, 100, 200, 0.12); font-size: 0.95em; line-height: 1.5; cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }',
       '.image-toggle-sidebar .image-toggle-steps > *:hover { background: rgba(100, 100, 200, 0.06); }',
       '.image-toggle-sidebar .image-toggle-steps > *.scrolly-active { border-left-color: rgba(80, 100, 200, 0.6); background: rgba(100, 100, 200, 0.06); }',
-      // Dark mode: dark backgrounds, light default text, semantic colors untouched
-      'html.ctd-dark { background: #1a1b2e; }',
-      'html.ctd-dark body { color: #d4d4d8; background: transparent; }',
-      'html.ctd-dark pre, html.ctd-dark .sourceCode { background: #252636 !important; color: #d4d4d8; }',
-      'html.ctd-dark code { background: rgba(255,255,255,0.06); }',
-      'html.ctd-dark pre code { background: transparent; }',
-      'html.ctd-dark table, html.ctd-dark .table { color: #d4d4d8; }',
-      'html.ctd-dark table th { border-color: rgba(255,255,255,0.15); }',
-      'html.ctd-dark table td { border-color: rgba(255,255,255,0.1); }',
-      'html.ctd-dark .callout { border-color: rgba(255,255,255,0.15); background: rgba(255,255,255,0.03); }',
-      'html.ctd-dark a { color: #7cacf8; }',
-      'html.ctd-dark hr { border-color: rgba(255,255,255,0.15); }',
-      'html.ctd-dark blockquote { border-color: rgba(255,255,255,0.2); }',
-      'html.ctd-dark .panel-tabset > .nav-tabs { background: #252636; }',
-      'html.ctd-dark .nav-tabs .nav-link { color: #a0a0b0; }',
-      'html.ctd-dark .nav-tabs .nav-link.active { color: #d4d4d8; background: #1a1b2e; border-bottom-color: #1a1b2e; }',
-      'html.ctd-dark .ctd-chapter-nav { border-top-color: rgba(255,255,255,0.15); }',
-      'html.ctd-dark .ctd-chapter-nav a, html.ctd-dark .ctd-nav-prev, html.ctd-dark .ctd-nav-next { color: #7cacf8; }',
-      'html.ctd-dark .ctd-title-card { color: #d4d4d8; border-bottom-color: rgba(255,255,255,0.1); }',
-      'html.ctd-dark img.filter-invert { filter: invert(1); }',
+      // Dark mode: CSS invert on html element, counter-rotate semantic color classes.
+      // invert(0.92) lands body text at soft off-white; semantic color counter-filter
+      // uses invert(0.92) which isn't a perfect identity but keeps colors recognizable.
+      'html.ctd-dark { filter: invert(0.92) hue-rotate(180deg); background: #fff; }',
+      // Counter-filter for semantic color classes (text labeled "the red curve" must stay red)
+      // Applying the same filter undoes the parent: invert(invert(x)) = x
+      'html.ctd-dark .twocolor-red, html.ctd-dark .twocolor-green, html.ctd-dark .groupa, html.ctd-dark .groupb, html.ctd-dark .midnight, html.ctd-dark .polla, html.ctd-dark .pink, html.ctd-dark .pollb, html.ctd-dark .teal, html.ctd-dark .pollc, html.ctd-dark .polld, html.ctd-dark .magenta, html.ctd-dark .counterfactual, html.ctd-dark .green, html.ctd-dark .cyan, html.ctd-dark .population, html.ctd-dark .blue, html.ctd-dark .sample, html.ctd-dark .red, html.ctd-dark .purple, html.ctd-dark .target, html.ctd-dark .shadedred, html.ctd-dark .todofix { filter: invert(0.92) hue-rotate(180deg); }',
+      // Counter-filter for semantic colors in inline SVG plots (tagged by inline-svg.lua)
+      'html.ctd-dark .ctd-semantic { filter: invert(0.92) hue-rotate(180deg); }',
     ].join('\\n');
     document.head.appendChild(style);
   }
@@ -243,48 +243,81 @@ const BRIDGE_SCRIPT = `
 
   // Report figure positions and hide originals (replaced by TLDraw shapes on canvas)
   var figuresReported = false;
+  function getOffsetY(el) {
+    var y = 0;
+    while (el) {
+      y += el.offsetTop || 0;
+      el = el.offsetParent;
+    }
+    return y;
+  }
+  function getOffsetX(el) {
+    var x = 0;
+    while (el) {
+      x += el.offsetLeft || 0;
+      el = el.offsetParent;
+    }
+    return x;
+  }
+
   function reportFigures() {
-    var figures = document.querySelectorAll('figure.figure, figure.quarto-float');
     var result = [];
-    figures.forEach(function(fig, idx) {
+    var globalIdx = 0;
+
+    // 1. Old-style: <figure> with <img src="...svg">
+    var figures = document.querySelectorAll('figure.figure, figure.quarto-float');
+    figures.forEach(function(fig) {
       var img = fig.querySelector('img[src$=".svg"]');
       if (!img) return;
-      // Skip figures inside image-toggle containers (interactive scrollytelling)
       if (fig.closest('.image-toggle')) return;
-      // Skip figures inside inactive tab panes
       var tabPane = fig.closest('.tab-pane');
       if (tabPane && !tabPane.classList.contains('active')) return;
       var rect = fig.getBoundingClientRect();
       if (rect.height < 10) return;
-      // Hide the original image and insert placeholder to preserve layout
       img.style.visibility = 'hidden';
-      var placeholder = fig.querySelector('.ctd-figure-placeholder');
-      if (!placeholder) {
-        placeholder = document.createElement('div');
-        placeholder.className = 'ctd-figure-placeholder';
-        placeholder.style.width = rect.width + 'px';
-        placeholder.style.height = rect.height + 'px';
-      } else {
-        placeholder.style.width = rect.width + 'px';
-        placeholder.style.height = rect.height + 'px';
-      }
-      // Get absolute Y position in the document
-      var y = 0;
-      var el = fig;
-      while (el) {
-        y += el.offsetTop || 0;
-        el = el.offsetParent;
-      }
+      var tabset = fig.closest('.panel-tabset');
       result.push({
         svgUrl: img.src,
-        offsetY: y,
+        offsetY: getOffsetY(fig),
         w: rect.width,
         h: rect.height,
         id: img.id || fig.id || null,
         caption: (fig.querySelector('figcaption') || {}).textContent || null,
-        index: idx,
+        index: globalIdx++,
+        group: tabset ? (tabset.id || 'tabset-' + tabset.dataset.group || null) : null,
       });
     });
+
+    // 2. Inline SVGs from the inline-svg Lua filter
+    // The overlay is a transparent glass pane — content stays in the iframe for styling.
+    // Each wrapper gets a data-figure-idx for targeted transform messages.
+    var inlineSvgs = document.querySelectorAll('div.ctd-inline-svg > svg');
+    inlineSvgs.forEach(function(svg) {
+      var wrapper = svg.parentElement;
+      if (wrapper.closest('.image-toggle')) return;
+      var tabPane = wrapper.closest('.tab-pane');
+      if (tabPane && !tabPane.classList.contains('active')) return;
+      var wrapperRect = wrapper.getBoundingClientRect();
+      if (wrapperRect.height < 10) return;
+      // Tag wrapper for transform messages and set up clipping
+      wrapper.dataset.figureIdx = String(globalIdx);
+      wrapper.style.overflow = 'hidden';
+      var tabset = wrapper.closest('.panel-tabset');
+      var figEl = wrapper.closest('figure');
+      result.push({
+        svgUrl: '',
+        inline: true,
+        offsetX: getOffsetX(wrapper),
+        offsetY: getOffsetY(wrapper),
+        w: wrapperRect.width,
+        h: wrapperRect.height,
+        id: (figEl && figEl.id) || wrapper.id || null,
+        caption: figEl ? (figEl.querySelector('figcaption') || {}).textContent || null : null,
+        index: globalIdx++,
+        group: tabset ? (tabset.id || 'tabset-' + (tabset.dataset.group || globalIdx)) : null,
+      });
+    });
+
     if (result.length > 0 && window.parent !== window) {
       window.parent.postMessage({ type: 'ctd-figures', shapeId: shapeId, figures: result }, '*');
       figuresReported = true;
@@ -313,10 +346,17 @@ const BRIDGE_SCRIPT = `
       var stepSel = container.getAttribute('data-steps');
 
       // Find images: image-toggle.js wraps cells in .image-toggle-stack > .image-toggle-cell
+      // With inline SVGs (from the Lua filter), there are no <img> tags — serialize SVGs to blob URLs.
       var cells = container.querySelectorAll('.image-toggle-cell');
       var imgUrls = Array.from(cells).map(function(cell) {
         var img = cell.querySelector('img');
-        return img ? img.src : '';
+        if (img) return img.src;
+        var inlineSvg = cell.querySelector('div.ctd-inline-svg > svg');
+        if (inlineSvg) {
+          var serialized = new XMLSerializer().serializeToString(inlineSvg);
+          return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(serialized)));
+        }
+        return '';
       });
 
       // Find step text elements — location depends on layout:
@@ -444,6 +484,9 @@ const BRIDGE_SCRIPT = `
       setTimeout(reportScrollyRegions, 200);
       setTimeout(reportScrollyRegions, 1000);
       setTimeout(reportScrollyRegions, 3000);
+      setTimeout(reportFigures, 500);
+      setTimeout(reportFigures, 2000);
+      setTimeout(reportFigures, 5000);
     });
   } else {
     stripNav();
@@ -454,6 +497,8 @@ const BRIDGE_SCRIPT = `
     setTimeout(reportHeadings, 2500);
     setTimeout(reportScrollyRegions, 500);
     setTimeout(reportScrollyRegions, 2500);
+    setTimeout(reportFigures, 500);
+    setTimeout(reportFigures, 2000);
   }
 
   // Observe DOM mutations (webR output, MathJax rendering, etc.)
@@ -468,6 +513,7 @@ const BRIDGE_SCRIPT = `
         reportHeight();
         reportHeadings();
         reportScrollyRegions();
+        if (!figuresReported) reportFigures();
       }
     }, 300);
   });

@@ -15,6 +15,9 @@ import { appendToken } from './authToken'
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 
+// Iframe element refs, keyed by shape ID (for SvgFigureShape to send transform messages)
+export const htmlIframeElements = new Map<string, HTMLIFrameElement>()
+
 // Scrollytelling region metadata reported by bridge scripts, keyed by shape ID
 export interface ScrollyStep {
   y: number           // document offset (px from top of iframe content)
@@ -73,6 +76,11 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
+  // Register iframe ref for SvgFigureShape to send transform messages
+  useEffect(() => {
+    return () => { htmlIframeElements.delete(shape.id) }
+  }, [shape.id])
+
   // Iframes are pointer-events:none by default so TLDraw tools work normally.
   // Two ways to enable iframe interaction:
   // 1. Text-select tool ('t' key) — global, all iframes become interactive
@@ -118,6 +126,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const handleIframeLoad = useCallback(() => {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
+    htmlIframeElements.set(shape.id, iframe)
     iframe.contentWindow.postMessage({ type: 'ctd-dark-mode', dark: isDark }, '*')
   }, [isDark])
 
@@ -250,44 +259,57 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'ctd-figures' && e.data.shapeId === shape.id) {
-        const current = editor.store.get(shape.id) as any
-        if (!current) return
-        const figures = e.data.figures as Array<{
-          svgUrl: string; offsetY: number; w: number; h: number;
-          id: string | null; caption: string | null; index: number;
-        }>
-        for (const fig of figures) {
-          const figShapeId = createShapeId(`fig-${shape.id}-${fig.index}`)
-          const existing = editor.store.get(figShapeId)
-          if (!existing) {
-            editor.createShapes([{
-              id: figShapeId,
-              type: 'svg-figure' as any,
-              x: current.x,
-              y: current.y + fig.offsetY,
-              isLocked: true,
-              props: {
-                w: fig.w,
-                h: fig.h,
-                svgUrl: fig.svgUrl,
-                parentShapeId: shape.id,
-                offsetY: fig.offsetY,
-                caption: fig.caption || undefined,
-              },
-            }])
-          } else {
-            // Update position if it shifted (MathJax, images loading)
-            const newY = current.y + fig.offsetY
-            if (Math.abs((existing as any).y - newY) > 3 ||
-                Math.abs((existing as any).props.h - fig.h) > 3) {
-              editor.store.update(figShapeId, (s: any) => ({
-                ...s,
-                y: newY,
-                props: { ...s.props, w: fig.w, h: fig.h },
-              }))
+        // Defer figure shape creation so it doesn't block initial render
+        requestAnimationFrame(() => {
+          const current = editor.store.get(shape.id) as any
+          if (!current) return
+          const figures = e.data.figures as Array<{
+            svgUrl: string; inline?: boolean; offsetX?: number; offsetY: number; w: number; h: number;
+            id: string | null; caption: string | null; index: number;
+            group?: string | null;
+          }>
+          // Batch: collect all new shapes, create in one call
+          const toCreate: any[] = []
+          for (const fig of figures) {
+            const figShapeId = createShapeId(`fig-${shape.id}-${fig.index}`)
+            const existing = editor.store.get(figShapeId)
+            if (!existing) {
+              toCreate.push({
+                id: figShapeId,
+                type: 'svg-figure' as any,
+                x: current.x + (fig.offsetX || 0),
+                y: current.y + fig.offsetY,
+                isLocked: true,
+                props: {
+                  w: fig.w,
+                  h: fig.h,
+                  svgUrl: fig.svgUrl,
+                  parentShapeId: shape.id,
+                  offsetY: fig.offsetY,
+                  caption: fig.caption || undefined,
+                  group: fig.group || undefined,
+                  figureIdx: fig.inline ? fig.index : undefined,
+                },
+              })
+            } else {
+              const newX = current.x + (fig.offsetX || 0)
+              const newY = current.y + fig.offsetY
+              if (Math.abs((existing as any).x - newX) > 3 ||
+                  Math.abs((existing as any).y - newY) > 3 ||
+                  Math.abs((existing as any).props.h - fig.h) > 3) {
+                editor.store.update(figShapeId, (s: any) => ({
+                  ...s,
+                  x: newX,
+                  y: newY,
+                  props: { ...s.props, w: fig.w, h: fig.h },
+                }))
+              }
             }
           }
-        }
+          if (toCreate.length > 0) {
+            editor.createShapes(toCreate)
+          }
+        })
         return
       }
       if (e.data?.type === 'ctd-resize' && e.data.shapeId === shape.id) {

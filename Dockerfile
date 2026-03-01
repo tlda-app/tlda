@@ -20,13 +20,19 @@ RUN npm install --ignore-scripts && npx vite build && \
     mkdir -p server/public && cp -r dist/* server/public/ && \
     rm -rf node_modules dist src public
 
-# Seed demo projects (output only, no source files)
-RUN mkdir -p server/projects/spinoff3/output server/projects/qtm285/output
-COPY server/projects/spinoff3/project.json ./server/projects/spinoff3/
-COPY server/projects/spinoff3/output/ ./server/projects/spinoff3/output/
-COPY server/projects/qtm285/project.json ./server/projects/qtm285/
-COPY server/projects/qtm285/output/ ./server/projects/qtm285/output/
+# Seed project data (output only, no source files) into /app/server/seed/
+# On startup, project.json and output/ are copied to projects/ (but sync-snapshot.json
+# on the persistent volume is preserved across deploys).
+RUN mkdir -p server/seed/spinoff3/output server/seed/qtm285/output
+COPY server/projects/spinoff3/project.json ./server/seed/spinoff3/
+COPY server/projects/spinoff3/output/ ./server/seed/spinoff3/output/
+COPY server/projects/qtm285/project.json ./server/seed/qtm285/
+COPY server/projects/qtm285/output/ ./server/seed/qtm285/output/
+
+# Entrypoint: seed project data, preserving persistent sync snapshots
+COPY scripts/fly-entrypoint.sh ./
+RUN chmod +x fly-entrypoint.sh
 
 WORKDIR /app/server
 EXPOSE 5176
-CMD ["node", "unified-server.mjs"]
+CMD ["/app/fly-entrypoint.sh"]

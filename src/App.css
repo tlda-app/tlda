@@ -355,3 +355,23 @@ body.text-select-mode ::selection {
     color: rgba(255, 255, 255, 0.25) !important;
   }
 }
+
+/* Figure zoom reset */
+.figure-zoom-reset {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: color 0.3s;
+  user-select: none;
+  pointer-events: all;
+}
+.figure-zoom-reset:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+.tl-theme__dark .figure-zoom-reset {
+  color: rgba(255, 255, 255, 0.1);
+}
+.tl-theme__dark .figure-zoom-reset:hover {
+  color: rgba(255, 255, 255, 0.6);
+}

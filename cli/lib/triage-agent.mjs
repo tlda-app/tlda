@@ -130,10 +130,19 @@ export async function startTriageAgent({ getServer, getToken }) {
   // when the Agent SDK spawns Claude Code as a subprocess
   delete process.env.CLAUDECODE
   const cleanEnv = { ...process.env }
-  const mcpEnv = { ...cleanEnv, CTD_SERVER: server, SYNC_SERVER: syncServer }
+  const mcpEnv = { ...cleanEnv, SYNC_SERVER: syncServer }
+  // Only set CTD_SERVER for doc assets if explicitly configured (not just the default).
+  // When only CTD_SYNC_SERVER is set, MCP reads doc assets from disk (published snapshot).
+  if (process.env.CTD_SERVER) mcpEnv.CTD_SERVER = server
+  if (process.env.CTD_SYNC_SERVER) {
+    mcpEnv.CTD_SYNC_SERVER = process.env.CTD_SYNC_SERVER
+  } else {
+    // No separate sync server — use CTD_SERVER for both doc assets and sync
+    mcpEnv.CTD_SERVER = server
+  }
   if (token) mcpEnv.CTD_TOKEN = token
 
-  log(`[triage] Server: ${server}`)
+  log(`[triage] Server: ${server}${process.env.CTD_SYNC_SERVER ? `, sync: ${process.env.CTD_SYNC_SERVER}` : ''}`)
 
   let sessionId = null
   let cycle = 0

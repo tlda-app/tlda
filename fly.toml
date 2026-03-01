@@ -30,4 +30,4 @@ primary_region = "sjc"
 
 [mounts]
   source = "sync_data"
-  destination = "/app/server/data"
+  destination = "/app/server/persist"

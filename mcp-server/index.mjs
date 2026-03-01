@@ -27,11 +27,13 @@ import { resolveToken } from './resolve-token.mjs';
 const CTD_TOKEN = resolveToken();
 const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
 const CTD_SERVER = process.env.CTD_SERVER || 'http://localhost:5176';
+// Separate sync server for shapes/signals (e.g. Fly.io) — falls back to CTD_SERVER
+const CTD_SYNC_SERVER = process.env.CTD_SYNC_SERVER || CTD_SERVER;
 
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
-  const url = `${CTD_SERVER}${urlPath}`;
+  const url = `${CTD_SYNC_SERVER}${urlPath}`;
   const headers = { ...CTD_AUTH_HEADERS, ...(options.headers || {}) };
   const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
@@ -110,7 +112,7 @@ async function readSignalRest(docName, key) {
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
  */
 function connectSignalStream(docName, onSignal) {
-  const url = `${CTD_SERVER}/api/projects/${docName}/signal/stream`;
+  const url = `${CTD_SYNC_SERVER}/api/projects/${docName}/signal/stream`;
   const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
 
   const urlObj = new URL(url);
@@ -159,7 +161,7 @@ function connectSignalStream(docName, onSignal) {
  * Calls onChange() whenever shapes change in the sync room.
  */
 function connectShapeStream(docName, onChange) {
-  const url = `${CTD_SERVER}/api/projects/${docName}/shapes/stream`;
+  const url = `${CTD_SYNC_SERVER}/api/projects/${docName}/shapes/stream`;
   const headers = { ...CTD_AUTH_HEADERS, 'Accept': 'text/event-stream' };
 
   // Node doesn't have native EventSource, so use raw HTTP
@@ -256,10 +258,15 @@ async function checkDocBuildStatus(docName) {
     // API returned error — fall back to disk check
     return checkDocBuildStatusDisk(docName);
   } catch (e) {
+    // No local server — fall back to disk (project.json or manifest)
+    const diskResult = checkDocBuildStatusDisk(docName);
+    if (diskResult.ok) return diskResult;
     if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+      // Disk also failed — if we have a separate sync server, that's fine (doc assets are on disk)
+      if (process.env.CTD_SYNC_SERVER) return diskResult;
       return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "ctd server start"' };
     }
-    return checkDocBuildStatusDisk(docName);
+    return diskResult;
   }
 }
 
@@ -1442,7 +1449,7 @@ const httpServer = http.createServer(async (req, res) => {
       ok: true,
       http: { port: HTTP_PORT },
       websocket: { port: WS_PORT, clients: wsClients.size },
-      yjs: { syncServer: SYNC_SERVER, connections: yjsDocs.size },
+      sync: { server: CTD_SYNC_SERVER, docAssets: CTD_SERVER },
       docs: Object.fromEntries(
         Object.entries(docs).map(([name, config]) => [name, {
           name: config.name,

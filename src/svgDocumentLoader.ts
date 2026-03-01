@@ -380,7 +380,8 @@ export async function loadHtmlDocument(
     if (!info.group) {
       // Normal page: own TLDraw page, shape at origin
       const pageId = `${name}-page-${i}`
-      const tlPageId = `page:${name}-ch-${tldrawPageIdx}`
+      // First page reuses TLDraw's default page ID; subsequent pages get synthetic IDs
+      const tlPageId = tldrawPageIdx === 0 ? 'page:page' : `page:${name}-ch-${tldrawPageIdx}`
       const pageName = info.title || info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
         src: basePath + info.file,
