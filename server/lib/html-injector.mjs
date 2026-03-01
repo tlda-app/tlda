@@ -9,19 +9,34 @@
  */
 
 // MathJax v3 configuration — must be injected BEFORE the MathJax <script> tag
+// Merges with any existing window.MathJax (e.g. Quarto's physics package loader)
 const MATHJAX_CONFIG = `
 <script>
-window.MathJax = {
-  tex: {
-    macros: {
-      qqtext: ['\\\\qquad\\\\text{#1}\\\\qquad', 1],
-      qty: ['\\\\left(#1\\\\right)', 1],
-      qfor: ['\\\\quad\\\\text{for}\\\\quad', 0],
-      qand: ['\\\\quad\\\\text{and}\\\\quad', 0],
-      qwhere: ['\\\\quad\\\\text{where}\\\\quad', 0]
-    }
-  }
-};
+(function() {
+  var prev = window.MathJax || {};
+  var prevTex = prev.tex || {};
+  var prevMacros = prevTex.macros || {};
+  window.MathJax = Object.assign({}, prev, {
+    tex: Object.assign({}, prevTex, {
+      macros: Object.assign({}, prevMacros, {
+        qqtext: ['\\\\qquad\\\\text{#1}\\\\qquad', 1],
+        qty: ['\\\\left(#1\\\\right)', 1],
+        qfor: ['\\\\quad\\\\text{for}\\\\quad', 0],
+        qand: ['\\\\quad\\\\text{and}\\\\quad', 0],
+        qwhere: ['\\\\quad\\\\text{where}\\\\quad', 0],
+        E: '\\\\operatorname{E}',
+        Var: '\\\\operatorname{V}',
+        Cov: '\\\\operatorname{Cov}',
+        bias: '\\\\operatorname{bias}',
+        RMSE: '\\\\operatorname{RMSE}',
+        sd: '\\\\operatorname{sd}',
+        hVar: '\\\\widehat{\\\\operatorname{V}}',
+        nprior: 'n_0',
+        ind: '\\\\perp\\\\!\\\\!\\\\!\\\\perp'
+      })
+    })
+  });
+})();
 </script>
 `
 
@@ -69,6 +84,14 @@ const BRIDGE_SCRIPT = `
     document.body.style.overflow = 'hidden';
     document.body.style.background = 'transparent';
     document.documentElement.style.background = 'transparent';
+
+    // Dark mode: toggle via postMessage from parent, only change backgrounds
+    // and default text color — leave semantic colors (plots, colored text) alone
+    window.addEventListener('message', function(e) {
+      if (e.data?.type === 'ctd-dark-mode') {
+        document.documentElement.classList.toggle('ctd-dark', !!e.data.dark);
+      }
+    });
     // Prevent iframe from capturing wheel/touch scroll events (Safari ignores
     // pointer-events:none on iframes for scroll gestures).
     // Forward to parent so TLDraw still scrolls when text-select tool is active.
@@ -129,10 +152,32 @@ const BRIDGE_SCRIPT = `
       '.cm-editor { max-width: 100% !important; overflow-x: auto !important; }',
       '.cm-line { overflow-wrap: anywhere; }',
       '.cell-output img, .cell-output svg { max-width: 100%; height: auto; }',
+      '.spinner-grow, .spinner-border { opacity: 0.3; }',
+      '.exercise-loading-indicator { font-size: 12px; opacity: 0.5; }',
       '.image-toggle .image-toggle-controls { display: none !important; }',
       '.image-toggle-sidebar .image-toggle-steps > * { margin-bottom: 1em; padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid rgba(100, 100, 200, 0.12); font-size: 0.95em; line-height: 1.5; cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }',
       '.image-toggle-sidebar .image-toggle-steps > *:hover { background: rgba(100, 100, 200, 0.06); }',
       '.image-toggle-sidebar .image-toggle-steps > *.scrolly-active { border-left-color: rgba(80, 100, 200, 0.6); background: rgba(100, 100, 200, 0.06); }',
+      // Dark mode: dark backgrounds, light default text, semantic colors untouched
+      'html.ctd-dark { background: #1a1b2e; }',
+      'html.ctd-dark body { color: #d4d4d8; background: transparent; }',
+      'html.ctd-dark pre, html.ctd-dark .sourceCode { background: #252636 !important; color: #d4d4d8; }',
+      'html.ctd-dark code { background: rgba(255,255,255,0.06); }',
+      'html.ctd-dark pre code { background: transparent; }',
+      'html.ctd-dark table, html.ctd-dark .table { color: #d4d4d8; }',
+      'html.ctd-dark table th { border-color: rgba(255,255,255,0.15); }',
+      'html.ctd-dark table td { border-color: rgba(255,255,255,0.1); }',
+      'html.ctd-dark .callout { border-color: rgba(255,255,255,0.15); background: rgba(255,255,255,0.03); }',
+      'html.ctd-dark a { color: #7cacf8; }',
+      'html.ctd-dark hr { border-color: rgba(255,255,255,0.15); }',
+      'html.ctd-dark blockquote { border-color: rgba(255,255,255,0.2); }',
+      'html.ctd-dark .panel-tabset > .nav-tabs { background: #252636; }',
+      'html.ctd-dark .nav-tabs .nav-link { color: #a0a0b0; }',
+      'html.ctd-dark .nav-tabs .nav-link.active { color: #d4d4d8; background: #1a1b2e; border-bottom-color: #1a1b2e; }',
+      'html.ctd-dark .ctd-chapter-nav { border-top-color: rgba(255,255,255,0.15); }',
+      'html.ctd-dark .ctd-chapter-nav a, html.ctd-dark .ctd-nav-prev, html.ctd-dark .ctd-nav-next { color: #7cacf8; }',
+      'html.ctd-dark .ctd-title-card { color: #d4d4d8; border-bottom-color: rgba(255,255,255,0.1); }',
+      'html.ctd-dark img.filter-invert { filter: invert(1); }',
     ].join('\\n');
     document.head.appendChild(style);
   }
@@ -150,11 +195,19 @@ const BRIDGE_SCRIPT = `
 
   // Report height to parent
   function reportHeight() {
-    var h = Math.max(
-      document.body.scrollHeight,
-      document.body.offsetHeight,
-      document.documentElement.scrollHeight
-    );
+    // Prefer <main> bottom to avoid hidden Quarto sidebar/nav inflating height
+    var main = document.querySelector('main');
+    var h;
+    if (main) {
+      var rect = main.getBoundingClientRect();
+      h = Math.ceil(rect.bottom + window.scrollY);
+    } else {
+      h = Math.max(
+        document.body.scrollHeight,
+        document.body.offsetHeight,
+        document.documentElement.scrollHeight
+      );
+    }
     if (h > 0 && window.parent !== window) {
       window.parent.postMessage({
         type: 'ctd-resize',
@@ -442,7 +495,7 @@ const BRIDGE_SCRIPT = `
  * Inject bridge script into HTML content.
  * Inserts just before </body> or appends to end.
  */
-export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false) {
+export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}) {
   // Fix relative paths — Quarto chapters in subdirs reference ../site_libs/
   // Rewrite to absolute doc path so assets resolve correctly from iframe
   let patched = basePath
@@ -469,10 +522,10 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
 </div>
 <style>
 .ctd-chapter-title {
-  padding: 80px 0 60px;
+  padding: 40px 0 32px;
   text-align: center;
   border-bottom: 1px solid #ccc;
-  margin-bottom: 40px;
+  margin-bottom: 32px;
 }
 .ctd-chapter-title-text {
   font-family: -apple-system, 'Helvetica Neue', sans-serif;
@@ -489,6 +542,41 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
         patched = patched.slice(0, bodyCloseAngle + 1) + titleCard + patched.slice(bodyCloseAngle + 1)
       }
     }
+  }
+
+  // Inject chapter navigation footer before </body>
+  if (nav.prev || nav.next) {
+    const escPrev = nav.prev ? nav.prev.replace(/&/g, '&amp;').replace(/</g, '&lt;') : ''
+    const escNext = nav.next ? nav.next.replace(/&/g, '&amp;').replace(/</g, '&lt;') : ''
+    const navFooter = `
+<div class="ctd-chapter-nav">
+  ${nav.prev ? `<div class="ctd-nav-prev" onclick="window.parent.postMessage({type:'ctd-navigate-rel',direction:'prev'},'*')"><span class="ctd-nav-arrow">\u2190</span> ${escPrev}</div>` : '<div></div>'}
+  ${nav.next ? `<div class="ctd-nav-next" onclick="window.parent.postMessage({type:'ctd-navigate-rel',direction:'next'},'*')"><span class="ctd-nav-arrow">\u2192</span> ${escNext}</div>` : '<div></div>'}
+</div>
+<style>
+.ctd-chapter-nav {
+  display: flex;
+  justify-content: space-between;
+  padding: 40px 20px 60px;
+  margin-top: 60px;
+  border-top: 1px solid #ccc;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.ctd-nav-prev, .ctd-nav-next {
+  font-family: -apple-system, 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  color: #888;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  max-width: 45%;
+}
+.ctd-nav-prev:hover, .ctd-nav-next:hover { color: #444; }
+.ctd-nav-next { text-align: right; }
+.ctd-nav-arrow { font-size: 16px; }
+</style>`
+    patched = patched.replace('</main>', navFooter + '</main>')
   }
 
   const bodyCloseIdx = patched.lastIndexOf('</body>')

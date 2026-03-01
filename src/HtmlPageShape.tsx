@@ -107,6 +107,20 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     setIsInteracting(true)
   }, [])
 
+  // Send dark mode state to iframe content (semantic dark mode, no CSS invert)
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe?.contentWindow) return
+    iframe.contentWindow.postMessage({ type: 'ctd-dark-mode', dark: isDark }, '*')
+  }, [isDark])
+
+  // Also send on iframe load
+  const handleIframeLoad = useCallback(() => {
+    const iframe = iframeRef.current
+    if (!iframe?.contentWindow) return
+    iframe.contentWindow.postMessage({ type: 'ctd-dark-mode', dark: isDark }, '*')
+  }, [isDark])
+
   // Viewport gating: only render iframe when near viewport.
   // With multipage, each TLDraw page typically has one iframe, so this mainly
   // avoids rendering when zoomed very far out.
@@ -201,6 +215,29 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }
         } else {
           editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+        }
+        return
+      }
+      if (e.data?.type === 'ctd-navigate-rel') {
+        // Prev/next chapter navigation from footer links
+        const pages = editor.getPages()
+        const currentPageId = editor.getCurrentPageId()
+        const currentIdx = pages.findIndex(p => p.id === currentPageId)
+        const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
+        if (targetIdx >= 0 && targetIdx < pages.length) {
+          editor.setCurrentPage(pages[targetIdx].id)
+          // Center on top of the new page's html-page shape
+          setTimeout(() => {
+            const shapes = editor.getCurrentPageShapes()
+            const htmlShape = shapes.find((s: any) => s.type === 'html-page') as any
+            if (htmlShape) {
+              const vpHeight = editor.getViewportPageBounds().h
+              editor.centerOnPoint(
+                { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
+                { animation: { duration: 300 } }
+              )
+            }
+          }, 100)
         }
         return
       }
@@ -311,11 +348,11 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 height: '100%',
                 border: 'none',
                 pointerEvents: iframeActive ? 'auto' : 'none',
-                filter: isDark ? 'invert(0.88) hue-rotate(180deg)' : 'none',
                 display: 'block',
               }}
               scrolling="no"
               allow="cross-origin-isolated"
+              onLoad={handleIframeLoad}
             />
           ) : (
             <div style={{

@@ -381,7 +381,7 @@ export async function loadHtmlDocument(
       // Normal page: own TLDraw page, shape at origin
       const pageId = `${name}-page-${i}`
       const tlPageId = `page:${name}-ch-${tldrawPageIdx}`
-      const pageName = info.file.replace(/\.html$/, '').replace(/-/g, ' ')
+      const pageName = info.title || info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
         src: basePath + info.file,
         bounds: new Box(0, 0, info.width, info.height),

@@ -185,11 +185,16 @@ app.use('/docs', requireRead, (req, res, next) => {
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''
             let isFirstPage = false
+            let navPrev = null
+            let navNext = null
             try {
               const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
               const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
               const idx = pageInfo.findIndex(p => p.file === filePath)
               isFirstPage = idx === 0
+              // Compute prev/next chapter titles for navigation
+              if (idx > 0) navPrev = pageInfo[idx - 1].title
+              if (idx >= 0 && idx < pageInfo.length - 1) navNext = pageInfo[idx + 1].title
               if (idx >= 0 && pageInfo[idx].title) {
                 const entry = pageInfo[idx]
                 if (entry.tocLevel === 'part') {
@@ -218,7 +223,7 @@ app.use('/docs', requireRead, (req, res, next) => {
                 }
               }
             } catch (e) {}
-            const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage)
+            const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext })
             res.type('html').send(injected)
             return
           }
