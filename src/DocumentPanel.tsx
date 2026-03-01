@@ -176,7 +176,7 @@ function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidt
       {stroke ? (
         <circle cx="16" cy="9.25" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
       ) : (
-        <rect width="32" height="32" fill={fill} mask={`url(#m-${id})`}/>
+        <rect x="12.3" y="5.5" width="7.4" height="7.4" fill={fill} mask={`url(#m-${id})`}/>
       )}
     </svg>
   )
