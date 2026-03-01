@@ -1,4 +1,4 @@
-# Claude TLDraw
+# tlda
 
 Collaborative annotation system for reviewing LaTeX papers. Renders LaTeX as SVGs on a TLDraw canvas with KaTeX math in notes, real-time sync, and source-anchored annotations that survive document rebuilds.
 
@@ -6,7 +6,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source. Caveat emptor.
 
-**[Live demo](https://qtm285.github.io/claude-tldraw/?doc=spinoff3)** — this is a live collaborative canvas. You can draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
+**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — this is a live collaborative canvas. You can draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
 ## Why this exists
 
@@ -48,7 +48,7 @@ mcp-server/   — MCP tools for Claude Code integration
 **Install from GitHub:**
 
 ```bash
-npm install -g github:qtm285/claude-tldraw
+npm install -g github:qtm285/tlda
 ```
 
 This installs the `ctd` command globally, builds the viewer, and you're ready to go.
@@ -56,8 +56,8 @@ This installs the `ctd` command globally, builds the viewer, and you're ready to
 **Or clone and link:**
 
 ```bash
-git clone https://github.com/qtm285/claude-tldraw.git
-cd claude-tldraw
+git clone https://github.com/qtm285/tlda.git
+cd tlda
 npm install
 npm link
 ```
@@ -136,7 +136,7 @@ Todd yields to terminal agents automatically via heartbeat detection — when a 
 Set `CTD_SYNC_SERVER` to route shapes and signals to a remote sync server while reading doc assets from local disk. Run from a published clone (created by `publish-snapshot`) so ongoing work doesn't affect Todd's view of the document:
 
 ```bash
-cd ~/work/published/claude-tldraw
+cd ~/work/published/tlda
 CTD_SYNC_SERVER=https://example.com node cli/lib/triage-agent.mjs
 ```
 

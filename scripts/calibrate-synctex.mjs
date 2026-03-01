@@ -9,7 +9,7 @@
 import puppeteer from 'puppeteer'
 import { execSync } from 'child_process'
 
-const DOC_URL = 'http://localhost:5178/claude-tldraw/?doc=bregman'
+const DOC_URL = 'http://localhost:5178/tlda/?doc=bregman'
 const SYNCTEX_SERVER = 'http://localhost:5177'
 const DOC_NAME = 'Bregman Lower Bound'
 const TEX_FILE = 'bregman-lower-bound.tex'

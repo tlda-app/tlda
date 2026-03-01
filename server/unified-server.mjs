@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Unified claude-tldraw server.
+ * Unified tlda server.
  *
  * Single process serving:
  *   - Yjs WebSocket sync (ws://host:PORT/{room} or /yjs/{room})

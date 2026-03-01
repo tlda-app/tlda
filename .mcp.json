@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "/opt/homebrew/bin/node",
       "args": [
-        "/Users/skip/work/claude-tldraw/mcp-server/index.mjs"
+        "/Users/skip/work/tlda/mcp-server/index.mjs"
       ]
     }
   }

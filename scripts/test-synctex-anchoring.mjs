@@ -6,7 +6,7 @@
 import puppeteer from 'puppeteer'
 import { execSync } from 'child_process'
 
-const DOC_URL = 'http://localhost:5173/claude-tldraw/?doc=bregman'
+const DOC_URL = 'http://localhost:5173/tlda/?doc=bregman'
 const TEX_FILE = '/Users/skip/work/bregman-lower-bound/bregman-lower-bound.tex'
 
 async function sleep(ms) {

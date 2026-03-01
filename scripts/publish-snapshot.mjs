@@ -2,7 +2,7 @@
 /**
  * Publish a snapshot to GitHub Pages + Fly.
  *
- * Syncs the working copy to a published clone at ~/work/published/claude-tldraw/,
+ * Syncs the working copy to a published clone at ~/work/published/tlda/,
  * copies build output and annotations there, builds the viewer, and deploys.
  * The published clone is a stable snapshot that Todd can read from without
  * being affected by ongoing changes to the working copy.
@@ -24,7 +24,7 @@ import { homedir } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
-const PUBLISHED_ROOT = join(homedir(), 'work', 'published', 'claude-tldraw')
+const PUBLISHED_ROOT = join(homedir(), 'work', 'published', 'tlda')
 
 const DOC_NAME = process.argv[2]
 if (!DOC_NAME) {
@@ -164,7 +164,7 @@ try {
   console.log('[publish] Building static site...')
   execSync('npx vite build', { cwd: PUBLISHED_ROOT, stdio: 'inherit', env: {
     ...process.env,
-    VITE_BASE_PATH: '/claude-tldraw/',
+    VITE_BASE_PATH: '/tlda/',
     VITE_SYNC_SERVER: 'wss://tldraw-sync-skip.fly.dev',
   } })
 
@@ -185,7 +185,7 @@ try {
   }
 
   console.log('[publish] Done! Published to GitHub Pages + Fly.')
-  console.log(`[publish] https://qtm285.github.io/claude-tldraw/?doc=${DOC_NAME}`)
+  console.log(`[publish] https://qtm285.github.io/tlda/?doc=${DOC_NAME}`)
   console.log(`[publish] Todd: CTD_SYNC_SERVER=https://tldraw-sync-skip.fly.dev node cli/lib/triage-agent.mjs`)
   console.log(`[publish]   (run from ${PUBLISHED_ROOT})`)
 

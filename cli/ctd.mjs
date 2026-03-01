@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ctd — Claude TLDraw CLI.
+ * ctd — tlda CLI.
  *
  * Commands:
  *   ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]
@@ -552,7 +552,7 @@ async function cmdWatchAgent() {
   console.log(`  ${bold('ctd server start --agent')}`)
   console.log()
   console.log('It listens for feedback on all active projects, handles lightweight')
-  console.log('responses, and yields to terminal Claude Code sessions for heavy work.')
+  console.log('responses, and yields to terminal sessions for heavy work.')
 }
 
 async function cmdOpen() {
@@ -1161,7 +1161,7 @@ async function main() {
       case 'auth': await cmdAuth(); break
       case 'config': await cmdConfig(); break
       default:
-        console.log(`ctd — Claude TLDraw CLI
+        console.log(`ctd — tlda CLI
 
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server

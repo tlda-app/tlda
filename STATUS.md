@@ -33,17 +33,17 @@ TLDraw Canvas ──[Share]──> POST /snapshot ──> /tmp/tldraw-snapshot.j
 
 1. **Dev server** (serves the app):
    ```bash
-   cd ~/work/claude-tldraw && npm run dev
+   cd ~/work/tlda && npm run dev
    ```
 
 2. **Snapshot server** (receives shares):
    ```bash
-   cd ~/work/claude-tldraw && node server.mjs
+   cd ~/work/tlda && node server.mjs
    ```
 
 3. **View a snapshot**:
    ```bash
-   cd ~/work/claude-tldraw && node view-snapshot.mjs
+   cd ~/work/tlda && node view-snapshot.mjs
    ```
 
 ## SVG Documents

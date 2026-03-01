@@ -12,8 +12,8 @@ How to set up and run a collaborative annotation session for your coauthors.
 ## Setup
 
 ```bash
-git clone https://github.com/qtm285/claude-tldraw.git
-cd claude-tldraw
+git clone https://github.com/qtm285/tlda.git
+cd tlda
 npm install
 npm link   # installs the `ctd` CLI globally
 ```
@@ -100,7 +100,7 @@ Each collaborator can run their own Claude Code with the MCP server. Point the M
   "mcpServers": {
     "tldraw-feedback": {
       "command": "node",
-      "args": ["/path/to/claude-tldraw/mcp-server/index.mjs"],
+      "args": ["/path/to/tlda/mcp-server/index.mjs"],
       "env": {
         "CTD_SERVER": "http://HOST_TAILSCALE_IP:5176"
       }

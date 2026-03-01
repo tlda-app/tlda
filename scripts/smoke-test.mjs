@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Smoke test for the claude-tldraw viewer.
+ * Smoke test for the tlda viewer.
  *
  * Usage:
  *   node scripts/smoke-test.mjs [doc-name]
@@ -20,7 +20,7 @@ import { readManifest, listDocs } from './manifest.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const VITE_BASE = '/claude-tldraw/'
+const VITE_BASE = '/tlda/'
 
 function pass(msg) { return { ok: true, msg } }
 function fail(msg, detail) { return { ok: false, msg, detail } }
@@ -237,7 +237,7 @@ async function main() {
     ;[docName, docConfig] = entry
   }
 
-  console.log(`Smoke test: claude-tldraw viewer`)
+  console.log(`Smoke test: tlda viewer`)
   console.log(`Using document: ${docName} (${docConfig.pages} pages)`)
 
   // Phase 1: Services

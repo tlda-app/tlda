@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * End-to-end tests for the claude-tldraw viewer.
+ * End-to-end tests for the tlda viewer.
  *
  * Uses node:test + puppeteer to verify rendering, viewport loading,
  * signal dispatch, binary WebSocket protocol, and absence of regressions.

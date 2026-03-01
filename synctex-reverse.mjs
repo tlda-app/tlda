@@ -12,7 +12,7 @@ import path from 'path';
 
 // Config - must match synctex-lookup.mjs
 const PDF_PATH = '/Users/skip/work/bregman-lower-bound/bregman-lower-bound.pdf';
-const SVG_DIR = '/Users/skip/work/claude-tldraw/public/docs';
+const SVG_DIR = '/Users/skip/work/tlda/public/docs';
 const TARGET_WIDTH = 800;
 const PAGE_SPACING = 32;
 

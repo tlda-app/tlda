@@ -20,7 +20,7 @@ import path from 'path';
 
 // Config
 const PDF_PATH = '/Users/skip/work/bregman-lower-bound/bregman-lower-bound.pdf';
-const SVG_DIR = '/Users/skip/work/claude-tldraw/public/docs';
+const SVG_DIR = '/Users/skip/work/tlda/public/docs';
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 
 // TLDraw layout constants (from SvgDocument.tsx)
