@@ -1,10 +1,24 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShape, TLShapeId, TLPageId } from 'tldraw'
 import { navigateTo, getShapeText, COLOR_HEX } from './helpers'
 import { getTabCount, switchTab } from '../noteThreading'
+import { useBook } from '../BookContext'
 
 type SortMode = 'document' | 'recency'
+
+/** Shape-like data from REST API for remote notes */
+interface RemoteNote {
+  id: string
+  type: string
+  x: number
+  y: number
+  props: Record<string, unknown>
+  meta: Record<string, unknown>
+  parentId?: string
+  docKey: string   // which member doc this came from
+  docName: string  // display name
+}
 
 function isDone(shape: TLShape): boolean {
   return (shape.props as Record<string, unknown>).done === true
@@ -28,10 +42,13 @@ function getAllNotes(editor: ReturnType<typeof useEditor>): TLShape[] {
 
 export function NotesTab() {
   const editor = useEditor()
+  const book = useBook()
   const [notes, setNotes] = useState<TLShape[]>([])
+  const [remoteNotes, setRemoteNotes] = useState<RemoteNote[]>([])
   const [sort, setSort] = useState<SortMode>('document')
   const [hideDone, setHideDone] = useState(false)
 
+  // Local notes from current editor
   useEffect(() => {
     function updateNotes() {
       setNotes(getAllNotes(editor))
@@ -42,6 +59,37 @@ export function NotesTab() {
     const unsub2 = editor.store.listen(updateNotes, { scope: 'document', source: 'remote' })
     return () => { unsub1(); unsub2() }
   }, [editor])
+
+  // Remote notes from other book members
+  useEffect(() => {
+    if (!book) return
+
+    const activeKey = book.members[book.activeIndex]?.key
+    const otherMembers = book.members.filter(m => m.key !== activeKey)
+    if (otherMembers.length === 0) return
+
+    let cancelled = false
+
+    async function fetchRemoteNotes() {
+      const allRemote: RemoteNote[] = []
+      await Promise.all(otherMembers.map(async (member) => {
+        try {
+          const resp = await fetch(`/api/projects/${member.key}/shapes?type=math-note`)
+          if (!resp.ok) return
+          const shapes = await resp.json()
+          for (const s of shapes) {
+            allRemote.push({ ...s, docKey: member.key, docName: member.name })
+          }
+        } catch { /* ignore fetch errors */ }
+      }))
+      if (!cancelled) setRemoteNotes(allRemote)
+    }
+
+    fetchRemoteNotes()
+    // Poll every 15s
+    const timer = setInterval(fetchRemoteNotes, 15000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [book?.activeIndex, book?.members])
 
   const { pendingItems, restItems } = useMemo(() => {
     const sortFn = (a: TLShape, b: TLShape) => {
@@ -79,7 +127,25 @@ export function NotesTab() {
     navigateTo(editor, shape.x, shape.y)
   }, [editor])
 
-  if (notes.length === 0) {
+  const handleRemoteClick = useCallback((note: RemoteNote) => {
+    if (!book) return
+    const idx = book.members.findIndex(m => m.key === note.docKey)
+    if (idx >= 0) book.switchTo(idx)
+  }, [book])
+
+  const handleDragStart = useCallback((e: React.DragEvent, data: {
+    text: string
+    color: string
+    tabs?: string[]
+    activeTab?: number
+    sourceDoc?: string
+    sourceShapeId?: string
+  }) => {
+    e.dataTransfer.setData('application/x-ctd-note', JSON.stringify(data))
+    e.dataTransfer.effectAllowed = 'copy'
+  }, [])
+
+  if (notes.length === 0 && remoteNotes.length === 0) {
     return (
       <div className="doc-panel-content">
         <div className="panel-empty">No annotations yet</div>
@@ -110,9 +176,22 @@ export function NotesTab() {
     const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
 
     const shapeDone = isDone(shape)
+    const props = shape.props as Record<string, unknown>
+    const tabs = props.tabs as string[] | undefined
+    const activeTabIdx = props.activeTab as number | undefined
+
     return (
       <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
         style={shapeDone ? { opacity: 0.55 } : undefined}
+        draggable
+        onDragStart={(e) => handleDragStart(e, {
+          text: text,
+          color,
+          tabs,
+          activeTab: activeTabIdx,
+          sourceDoc: book?.members[book.activeIndex]?.key,
+          sourceShapeId: shape.id,
+        })}
       >
         <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
           <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />
@@ -147,6 +226,51 @@ export function NotesTab() {
       </div>
     )
   }
+
+  function renderRemoteNote(note: RemoteNote) {
+    const text = (note.props.text as string) || ''
+    const color = (note.props.color as string) || 'yellow'
+    const anchor = note.meta?.sourceAnchor as { line?: number } | undefined
+    const noteDone = note.props.done === true
+    const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
+
+    return (
+      <div key={`${note.docKey}:${note.id}`} className="note-item note-item--remote"
+        onClick={() => handleRemoteClick(note)}
+        style={noteDone ? { opacity: 0.4 } : { opacity: 0.7 }}
+        draggable
+        onDragStart={(e) => handleDragStart(e, {
+          text,
+          color,
+          tabs: note.props.tabs as string[] | undefined,
+          activeTab: note.props.activeTab as number | undefined,
+          sourceDoc: note.docKey,
+          sourceShapeId: note.id,
+        })}
+      >
+        <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+          <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />
+          <span style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical' as any,
+            overflow: 'hidden',
+            lineHeight: '1.3',
+          }}>
+            {cleanText || '(empty)'}
+          </span>
+        </div>
+        <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
+          <span className="note-doc-badge">{note.docName}</span>
+          {anchor?.line && <span>L{anchor.line}</span>}
+        </div>
+      </div>
+    )
+  }
+
+  const sortedRemoteNotes = useMemo(() => {
+    return [...remoteNotes].sort((a, b) => sort === 'recency' ? b.y - a.y : a.y - b.y)
+  }, [remoteNotes, sort])
 
   return (
     <div className="doc-panel-content" style={{ display: 'flex', flexDirection: 'column' }}>
@@ -184,7 +308,16 @@ export function NotesTab() {
         )}
         {restItems.map(renderNote)}
 
-        {pendingItems.length === 0 && restItems.length === 0 && (
+        {/* Remote notes from other book members */}
+        {sortedRemoteNotes.length > 0 && (
+          <>
+            <div className="notes-section-divider" />
+            <div className="notes-section-label">Other documents</div>
+            {sortedRemoteNotes.map(renderRemoteNote)}
+          </>
+        )}
+
+        {pendingItems.length === 0 && restItems.length === 0 && sortedRemoteNotes.length === 0 && (
           <div className="panel-empty">No annotations yet</div>
         )}
       </div>

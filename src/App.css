@@ -356,6 +356,82 @@ body.text-select-mode ::selection {
   }
 }
 
+/* Book viewer tab bar */
+.book-viewer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.book-tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+  overflow-x: auto;
+  z-index: 1001;
+}
+
+.book-tab {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font: 13px/1 system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.book-tab:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.book-tab--active {
+  background: white;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.book-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #64748b;
+}
+
+[data-theme="dark"] .book-tab-bar {
+  background: #1e1e2e;
+  border-bottom-color: #2e2e3e;
+}
+
+[data-theme="dark"] .book-tab {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .book-tab:hover {
+  background: #2e2e3e;
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .book-tab--active {
+  background: #2e2e3e;
+  color: #f1f5f9;
+  box-shadow: none;
+}
+
+/* Make the tldraw editor fill remaining space in book viewer */
+.book-viewer .tl-container {
+  flex: 1;
+}
+
 /* Figure zoom reset */
 .figure-zoom-reset {
   font-size: 10px;

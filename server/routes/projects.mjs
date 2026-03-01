@@ -15,15 +15,16 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, cpSync } from 'fs'
+import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
-  listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir,
+  listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
+import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
 import historyRoutes from './history.mjs'
 
 const router = Router()
@@ -39,12 +40,15 @@ router.get('/', requireRead, (req, res) => {
 // Create project
 router.post('/', requireRw, (req, res) => {
   try {
-    const { name, title, mainFile, sourceDir } = req.body
+    const { name, title, mainFile, sourceDir, format, members } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    const project = createProject({ name, title, mainFile, sourceDir })
+    if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
+      return res.status(400).json({ error: 'book format requires a non-empty members array' })
+    }
+    const project = createProject({ name, title, mainFile, sourceDir, format, members })
     res.status(201).json(project)
   } catch (e) {
     res.status(409).json({ error: e.message })
@@ -92,11 +96,19 @@ router.post('/:name/push', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const { files, deletedFiles, priorityPages, sourceDir } = req.body
+  const { files, deletedFiles, priorityPages, sourceDir, members } = req.body
 
   // Update sourceDir if provided (so existing projects learn the path)
   if (sourceDir && !project.sourceDir) {
     updateProject(req.params.name, { sourceDir })
+  }
+
+  // Update members for book projects
+  if (members && Array.isArray(members)) {
+    updateProject(req.params.name, { members })
+    if (project.format === 'book') {
+      return res.json({ ok: true, members })
+    }
   }
 
   // Write files, track if anything actually changed
@@ -126,6 +138,47 @@ router.post('/:name/push', requireRw, async (req, res) => {
     if (project.buildStatus === 'success') {
       return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
     }
+  }
+
+  // Slides format: no LaTeX build — copy HTML to output, generate page-info.json
+  if (project.format === 'slides') {
+    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
+    try {
+      const srcDir2 = getSourceDir(req.params.name)
+      const outDir = getOutputDir(req.params.name)
+      mkdirSync(outDir, { recursive: true })
+
+      // Find HTML files in source and copy to output
+      const htmlFiles = readdirSync(srcDir2).filter(f => f.endsWith('.html'))
+      for (const f of htmlFiles) {
+        cpSync(join(srcDir2, f), join(outDir, f))
+      }
+
+      // Generate page-info.json from the first HTML file
+      if (htmlFiles.length > 0) {
+        const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
+        const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
+        writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+
+        updateProject(req.params.name, {
+          buildStatus: 'success',
+          pages: pageInfo.length,
+          lastBuild: new Date().toISOString(),
+        })
+
+        // Signal reload to connected viewers
+        broadcastSignal(`doc-${req.params.name}`, 'signal:reload', {
+          pages: pageInfo.length,
+          timestamp: Date.now(),
+        })
+
+        console.log(`[slides] ${req.params.name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
+      }
+    } catch (e) {
+      console.error(`[slides] Build failed for ${req.params.name}: ${e.message}`)
+      updateProject(req.params.name, { buildStatus: 'error' })
+    }
+    return
   }
 
   // Respond immediately, build runs async

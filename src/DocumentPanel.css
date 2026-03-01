@@ -733,6 +733,26 @@ html[data-theme="dark"] .note-undone-btn:hover {
   background: rgba(255,255,255,0.15);
 }
 
+.note-item--remote {
+  border-left: 2px solid rgba(100, 116, 139, 0.2);
+}
+
+.note-doc-badge {
+  background: rgba(100, 116, 139, 0.12);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 9px;
+  opacity: 1;
+}
+
+html[data-theme="dark"] .note-item--remote {
+  border-left-color: rgba(148, 163, 184, 0.2);
+}
+
+html[data-theme="dark"] .note-doc-badge {
+  background: rgba(148, 163, 184, 0.15);
+}
+
 .note-color-dot {
   display: inline-block;
   width: 5px;

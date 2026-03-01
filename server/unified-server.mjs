@@ -32,7 +32,7 @@ import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, requireRead } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
-import { injectBridge } from './lib/html-injector.mjs'
+import { injectBridge, injectSlidesBridge } from './lib/html-injector.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -180,6 +180,13 @@ app.use('/docs', requireRead, (req, res, next) => {
         const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
         if (existsSync(projectJsonPath)) {
           const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+          if (project.format === 'slides') {
+            // Slides format: inject the reveal.js bridge script
+            const html = readFileSync(projectPath, 'utf8')
+            const injected = injectSlidesBridge(html)
+            res.type('html').send(injected)
+            return
+          }
           if (project.format === 'html') {
             const html = readFileSync(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
@@ -335,6 +342,7 @@ function generateManifest() {
             pages: project.pages || 0,
             format: project.format || 'svg',
             ...(project.sourceDoc && { sourceDoc: project.sourceDoc }),
+            ...(project.members && { members: project.members }),
             ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
           }
         } catch (e) {

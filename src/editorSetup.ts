@@ -9,7 +9,7 @@ import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighligh
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
-import { createSvgShapes, createHtmlShapes, createImageShapes } from './loaders/createShapes'
+import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { mergeTabs } from './noteThreading'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
@@ -477,6 +477,8 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // Create page shapes if they don't already exist (from Yjs sync)
   if (document.format === 'html') {
     createHtmlShapes(editor, document)
+  } else if (document.format === 'slides') {
+    createSlidesShapes(editor, document)
   } else if (document.format === 'png') {
     createImageShapes(editor, document)
   } else {

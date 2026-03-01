@@ -85,6 +85,13 @@ const HTML_CONFIG: FormatConfig = {
   browseBounce: true,
 }
 
+const SLIDES_CONFIG: FormatConfig = {
+  tools: HTML_TOOLS,
+  showScrollyOverlay: false,
+  navigationMode: 'scroll',
+  browseBounce: true,
+}
+
 const DIFF_CONFIG: FormatConfig = {
   ...SVG_CONFIG,
   // Diff uses SVG pages with the history overlay — same tools as SVG
@@ -93,6 +100,7 @@ const DIFF_CONFIG: FormatConfig = {
 export function getFormatConfig(format?: string): FormatConfig {
   switch (format) {
     case 'html': return HTML_CONFIG
+    case 'slides': return SLIDES_CONFIG
     case 'diff': return DIFF_CONFIG
     default: return SVG_CONFIG  // svg, png, undefined
   }

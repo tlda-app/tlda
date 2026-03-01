@@ -1,8 +1,10 @@
 import { useState, useEffect, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
-import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument } from './svgDocumentLoader'
+import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken } from './authToken'
+import { BookViewer } from './BookViewer'
+import type { BookMember } from './BookContext'
 import './App.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
@@ -44,8 +46,10 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'diff'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides'
   sourceDoc?: string
+  members?: string[]
+  buildStatus?: string
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -60,6 +64,7 @@ type State =
   | { phase: 'error'; message: string }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
+  | { phase: 'book'; bookName: string; members: BookMember[] }
 
 // When the SPA is hosted on a different origin than the sync/asset server
 // (e.g. GitHub Pages SPA → Fly.io server), derive the HTTP base from VITE_SYNC_SERVER.
@@ -161,6 +166,31 @@ function App() {
 
     const config = manifest[docName]
 
+    // Book format: resolve member docs and render BookViewer
+    if (config?.format === 'book' && config.members) {
+      const members: BookMember[] = config.members
+        .map(key => {
+          const memberConfig = manifest[key]
+          if (!memberConfig) return null
+          return {
+            key,
+            name: memberConfig.name || key,
+            format: memberConfig.format,
+            pages: memberConfig.pages,
+            basePath: memberConfig.basePath,
+          }
+        })
+        .filter((m): m is BookMember => m !== null)
+
+      if (members.length === 0) {
+        setState({ phase: 'error', message: `Book "${docName}" has no loadable members.` })
+        return
+      }
+
+      setState({ phase: 'book', bookName: docName, members })
+      return
+    }
+
     // If project is missing, still building, or has no pages yet, poll until ready
     if (!config || config.buildStatus === 'building' || config.pages === 0) {
       const label = config?.name || docName
@@ -206,6 +236,8 @@ function App() {
         document = await loadDiffDocument(docName, fullBasePath)
       } else if (config.format === 'html') {
         document = await loadHtmlDocument(config.name, fullBasePath)
+      } else if (config.format === 'slides') {
+        document = await loadSlidesDocument(config.name, fullBasePath)
       } else if (config.format === 'png') {
         const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
         // Probe beyond manifest hint to discover extra pages (handles stale page counts)
@@ -321,6 +353,14 @@ function App() {
               ))}
             </div>
           </div>
+        </div>
+      )
+    case 'book':
+      return (
+        <div className="App">
+          <ErrorBoundary>
+            <BookViewer bookName={state.bookName} members={state.members} />
+          </ErrorBoundary>
         </div>
       )
     case 'svg':

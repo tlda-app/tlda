@@ -41,7 +41,7 @@ export function readProject(name) {
   }
 }
 
-export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir }) {
+export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir, members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -50,16 +50,18 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
   mkdirSync(join(dir, 'source'), { recursive: true })
   mkdirSync(join(dir, 'output'), { recursive: true })
 
+  const isBook = format === 'book'
   const project = {
     name,
     title: title || name,
-    mainFile,
+    ...(!isBook && { mainFile }),
     format,
     ...(srcDir && { sourceDir: srcDir }),
+    ...(isBook && members && { members }),
     pages: 0,
     createdAt: new Date().toISOString(),
     lastBuild: null,
-    buildStatus: 'none',
+    buildStatus: isBook ? 'success' : 'none',  // books don't need builds
   }
 
   writeFileSync(join(dir, 'project.json'), JSON.stringify(project, null, 2))

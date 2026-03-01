@@ -141,6 +141,33 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 }
 
 /**
+ * Create slides shapes (reveal.js decks).
+ * All slides on a single TLDraw page, stacked vertically like SVG pages.
+ * Each slide is an html-page shape with a URL containing _ctdSlide param.
+ */
+export function createSlidesShapes(editor: Editor, document: SvgDocument): boolean {
+  const existingShapes = editor.getCurrentPageShapes()
+  const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
+  if (hasHtmlShapes) return true
+
+  editor.createShapes(
+    document.pages.map((page) => ({
+      id: page.shapeId,
+      type: 'html-page' as any,
+      x: page.bounds.x,
+      y: page.bounds.y,
+      isLocked: true,
+      props: {
+        w: page.bounds.w,
+        h: page.bounds.h,
+        url: page.src,
+      },
+    }))
+  )
+  return false
+}
+
+/**
  * Create PNG image page shapes (vestigial format).
  */
 export function createImageShapes(editor: Editor, document: SvgDocument): boolean {

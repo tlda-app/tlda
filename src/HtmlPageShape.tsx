@@ -338,6 +338,17 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_ctdShape=${shape.id}`)
     : ''
 
+  // Detect slides format from URL (has _ctdSlide param)
+  const isSlide = shape.props.url?.includes('_ctdSlide=')
+
+  const handleFragmentStep = useCallback((direction: 'next' | 'prev') => {
+    const iframe = iframeRef.current
+    if (!iframe?.contentWindow) return
+    iframe.contentWindow.postMessage({
+      type: direction === 'next' ? 'ctd-fragment-next' : 'ctd-fragment-prev',
+    }, '*')
+  }, [])
+
   const ribbonStyle: React.CSSProperties = {
     position: 'absolute',
     top: 0,
@@ -396,8 +407,39 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             </div>
           )}
         </div>
-        {/* Margin ribbons: always pointer-events:auto, outside the none wrapper */}
-        {!iframeActive && (
+        {/* Slides: edge tap zones for fragment stepping (work from any tool) */}
+        {isSlide && !iframeActive && (
+          <>
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: 44,
+                height: '100%',
+                pointerEvents: 'auto',
+                cursor: 'pointer',
+                zIndex: 2,
+              }}
+              onPointerDown={(e) => { stopEventPropagation(e); handleFragmentStep('prev') }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: 44,
+                height: '100%',
+                pointerEvents: 'auto',
+                cursor: 'pointer',
+                zIndex: 2,
+              }}
+              onPointerDown={(e) => { stopEventPropagation(e); handleFragmentStep('next') }}
+            />
+          </>
+        )}
+        {/* Margin ribbons: always pointer-events:auto, outside the none wrapper (non-slides) */}
+        {!isSlide && !iframeActive && (
           <>
             <div
               className="iframe-ribbon"

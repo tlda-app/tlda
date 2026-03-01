@@ -31,7 +31,7 @@ export interface SvgDocument {
   pages: SvgPage[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'diff'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides'
   diffLayout?: DiffLayout
 }
 

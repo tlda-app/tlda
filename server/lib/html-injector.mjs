@@ -550,6 +550,119 @@ const BRIDGE_SCRIPT = `
 </script>
 `
 
+// Bridge script for reveal.js slides format.
+// Navigates to the target slide, disables reveal's own navigation,
+// and handles fragment stepping via postMessage from parent.
+const SLIDES_BRIDGE_SCRIPT = `
+<script>
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var shapeId = params.get('_ctdShape') || '';
+  var slideIndex = parseInt(params.get('_ctdSlide') || '0', 10);
+
+  function init() {
+    if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
+      setTimeout(init, 100);
+      return;
+    }
+
+    // Navigate to the target slide
+    Reveal.slide(slideIndex, 0, 0);
+
+    // Disable reveal's own navigation UI
+    Reveal.configure({
+      keyboard: false,
+      controls: false,
+      touch: false,
+      embedded: true,
+      progress: false,
+      slideNumber: false,
+      hash: false,
+      history: false,
+      overview: false,
+    });
+
+    // Prevent reveal from changing slides (lock to this slide)
+    Reveal.on('slidechanged', function(ev) {
+      if (ev.indexh !== slideIndex) {
+        Reveal.slide(slideIndex, 0);
+      }
+    });
+
+    // Hide non-essential UI elements
+    var style = document.createElement('style');
+    style.textContent = [
+      '.reveal .controls { display: none !important; }',
+      '.reveal .progress { display: none !important; }',
+      '.reveal .slide-number { display: none !important; }',
+      '.reveal .slide-menu-button { display: none !important; }',
+      '.reveal .slide-chalkboard-buttons { display: none !important; }',
+      '.reveal .footer { display: none !important; }',
+      '.reveal .slide-logo { display: none !important; }',
+      'body { overflow: hidden !important; margin: 0; }',
+      // Dark mode
+      'html.ctd-dark .reveal { filter: invert(0.92) hue-rotate(180deg); }',
+      'html.ctd-dark .reveal img, html.ctd-dark .reveal svg, html.ctd-dark .reveal video { filter: invert(0.92) hue-rotate(180deg); }',
+    ].join('\\n');
+    document.head.appendChild(style);
+
+    // Listen for messages from parent (edge tap zones, dark mode)
+    window.addEventListener('message', function(e) {
+      if (!e.data || !e.data.type) return;
+      if (e.data.type === 'ctd-fragment-next') {
+        var avail = Reveal.availableFragments();
+        if (avail && avail.next) {
+          Reveal.next();
+        }
+        // If no more fragments, do nothing — the tap zone in the parent
+        // can handle "advance past last fragment" if needed later
+      }
+      if (e.data.type === 'ctd-fragment-prev') {
+        var avail = Reveal.availableFragments();
+        if (avail && avail.prev) {
+          Reveal.prev();
+        }
+      }
+      if (e.data.type === 'ctd-dark-mode') {
+        document.documentElement.classList.toggle('ctd-dark', !!e.data.dark);
+      }
+    });
+
+    // Forward wheel events to parent (TLDraw handles scrolling)
+    document.addEventListener('wheel', function(e) {
+      e.preventDefault();
+      if (window.parent !== window) {
+        window.parent.postMessage({
+          type: 'ctd-wheel', shapeId: shapeId,
+          deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+          ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+        }, '*');
+      }
+    }, { passive: false });
+    document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(init, 50); });
+  } else {
+    setTimeout(init, 50);
+  }
+})();
+</script>
+`
+
+/**
+ * Inject slides bridge into reveal.js HTML.
+ * Much simpler than the standard bridge — just adds the script before </body>.
+ */
+export function injectSlidesBridge(html) {
+  const bodyCloseIdx = html.lastIndexOf('</body>')
+  if (bodyCloseIdx !== -1) {
+    return html.slice(0, bodyCloseIdx) + SLIDES_BRIDGE_SCRIPT + html.slice(bodyCloseIdx)
+  }
+  return html + SLIDES_BRIDGE_SCRIPT
+}
+
 /**
  * Inject bridge script into HTML content.
  * Inserts just before </body> or appends to end.

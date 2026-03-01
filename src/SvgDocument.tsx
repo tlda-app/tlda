@@ -28,6 +28,7 @@ import { AgentAttentionOverlay } from './AgentAttentionOverlay'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
+import { NoteDropHandler } from './NoteDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
 import { ScrollyOverlay } from './ScrollyOverlay'
@@ -992,6 +993,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         forceMobile
     >
       <DarkModeSync />
+      <NoteDropHandler />
     </Tldraw>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>

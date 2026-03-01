@@ -45,6 +45,7 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
+  book:    'ctd book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   create:  'ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.',
   push:    'ctd push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'ctd watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
@@ -61,7 +62,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -216,12 +217,96 @@ function findMainTex(dir) {
 
 // --- Commands ---
 
+async function cmdBook() {
+  const name = getPositional(0)
+  const membersArg = getFlag('members')
+  if (!name || !membersArg) {
+    console.error('Usage: ctd book <name> --members doc1,doc2,doc3,...')
+    process.exit(1)
+  }
+
+  const members = membersArg.split(',').map(s => s.trim()).filter(Boolean)
+  if (members.length === 0) {
+    console.error('At least one member is required.')
+    process.exit(1)
+  }
+
+  const title = getFlag('title') || name
+
+  // Verify all members exist on the server
+  for (const member of members) {
+    try {
+      await api('GET', `/api/projects/${member}`)
+    } catch {
+      console.error(red(`Member "${member}" not found on server.`))
+      process.exit(1)
+    }
+  }
+
+  // Create the book project
+  try {
+    await api('POST', '/api/projects', { name, title, format: 'book', members })
+    console.log(green(`Created book "${name}" with ${members.length} members.`))
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      // Update members on existing book
+      await api('POST', `/api/projects/${name}/push`, { files: [], members })
+      console.log(`Updated book "${name}" with ${members.length} members.`)
+    } else {
+      throw e
+    }
+  }
+
+  for (const m of members) console.log(dim(`  ${m}`))
+
+  const server = getServer()
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+}
+
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: ctd create <name> [--title "Title"] [--dir /path] [--main main.tex]'); process.exit(1) }
+  if (!name) { console.error('Usage: ctd create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides]'); process.exit(1) }
 
+  const format = getFlag('format') || null
   const dir = resolve(getFlag('dir') || '.')
   const title = getFlag('title') || name
+
+  // Slides format: push HTML files, no TeX
+  if (format === 'slides') {
+    console.log(dim(`  Source: ${dir}`))
+    console.log(dim(`  Format: slides`))
+
+    // Create or update project
+    try {
+      await api('POST', '/api/projects', { name, title, format: 'slides', sourceDir: dir })
+      console.log(green(`Created slides project "${name}".`))
+    } catch (e) {
+      if (e.message.includes('already exists')) {
+        console.log(`Project "${name}" exists, pushing files.`)
+      } else {
+        throw e
+      }
+    }
+
+    // Push HTML files from the directory
+    const htmlFiles = readdirSync(dir).filter(f => f.endsWith('.html'))
+    if (htmlFiles.length === 0) {
+      console.error(`No .html files found in ${dir}`)
+      process.exit(1)
+    }
+    const files = htmlFiles.map(f => ({
+      path: f,
+      content: readFileSync(join(dir, f), 'utf8'),
+    }))
+    console.log(`Pushing ${files.length} HTML file(s)...`)
+    await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+    console.log(green('Slides processed.'))
+
+    const server = getServer()
+    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    return
+  }
+
   const mainFile = getFlag('main') || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
@@ -1036,6 +1121,7 @@ async function main() {
   try {
     switch (command) {
       case 'server': await cmdServer(); break
+      case 'book':   await ensureServer(); await cmdBook(); break
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'watch':  await ensureServer(); await cmdWatch(); break
@@ -1061,6 +1147,7 @@ async function main() {
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server
   create <name>  Create project (or update existing), upload files, build
+  book <name>    Create a book grouping existing docs (--members doc1,doc2,...)
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   watch-all      Watch all projects (auto-detects new ones)
