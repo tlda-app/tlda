@@ -23,6 +23,11 @@ import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
+import {
+  isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
+  pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
+  PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
+} from './lib/formatCoords.mjs';
 
 const CTD_TOKEN = resolveToken();
 const CTD_AUTH_HEADERS = CTD_TOKEN ? { 'Authorization': `Bearer ${CTD_TOKEN}` } : {};
@@ -346,184 +351,7 @@ function lookupLine(docName, lineNum, file) {
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
 
-// PDF → canvas coordinate conversion (constants from shared/layout-constants.json)
-const _lc = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'shared', 'layout-constants.json'), 'utf8'));
-const PDF_WIDTH = _lc.PDF_WIDTH;
-const PDF_HEIGHT = _lc.PDF_HEIGHT;
-const PAGE_WIDTH = _lc.TARGET_WIDTH;
-const PAGE_HEIGHT = PDF_HEIGHT * (PAGE_WIDTH / PDF_WIDTH);
-const PAGE_GAP = _lc.PAGE_GAP;
-
-function pdfToCanvas(page, pdfX, pdfY) {
-  const pageY = (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
-  const scaleX = PAGE_WIDTH / PDF_WIDTH;
-  const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
-  return {
-    x: pdfX * scaleX,
-    y: pageY + pdfY * scaleY,
-  };
-}
-
-function canvasToPdf(canvasX, canvasY) {
-  const page = Math.floor(canvasY / (PAGE_HEIGHT + PAGE_GAP)) + 1;
-  const localY = canvasY - (page - 1) * (PAGE_HEIGHT + PAGE_GAP);
-  const scaleX = PAGE_WIDTH / PDF_WIDTH;
-  const scaleY = PAGE_HEIGHT / PDF_HEIGHT;
-  return {
-    page,
-    pdfX: canvasX / scaleX,
-    pdfY: localY / scaleY,
-  };
-}
-
-// ---- HTML document layout support ----
-
-const pageInfoCache = new Map(); // docName → computed layout
-const HTML_PAGE_SPACING = PAGE_GAP;
-const HTML_TAB_SPACING = 24;
-
-function loadHtmlLayout(docName) {
-  if (pageInfoCache.has(docName)) return pageInfoCache.get(docName);
-  const pageInfos = readJsonSync(docName, 'page-info.json');
-  if (!pageInfos) return null;
-  const layout = computeHtmlLayout(pageInfos);
-  pageInfoCache.set(docName, layout);
-  return layout;
-}
-
-function computeHtmlLayout(pageInfos) {
-  // Replicates svgDocumentLoader.ts layout algorithm
-  const pages = []; // { x, y, width, height } per page (0-indexed)
-  let top = 0;
-  let widest = 0;
-  let i = 0;
-
-  while (i < pageInfos.length) {
-    const info = pageInfos[i];
-    if (!info.group) {
-      pages.push({ x: 0, y: top, width: info.width, height: info.height });
-      top += info.height + HTML_PAGE_SPACING;
-      widest = Math.max(widest, info.width);
-      i++;
-    } else {
-      const groupId = info.group;
-      let left = 0;
-      let tallest = 0;
-      while (i < pageInfos.length && pageInfos[i].group === groupId) {
-        const gp = pageInfos[i];
-        pages.push({ x: left, y: top, width: gp.width, height: gp.height });
-        left += gp.width + HTML_TAB_SPACING;
-        tallest = Math.max(tallest, gp.height);
-        i++;
-      }
-      const groupWidth = left - HTML_TAB_SPACING;
-      widest = Math.max(widest, groupWidth);
-      top += tallest + HTML_PAGE_SPACING;
-    }
-  }
-
-  // Center: single pages individually, tab groups as units
-  for (let j = 0; j < pages.length; j++) {
-    if (!pageInfos[j].group) {
-      pages[j].x = (widest - pages[j].width) / 2;
-    }
-  }
-  const groupOffsets = new Map();
-  for (let j = 0; j < pageInfos.length; j++) {
-    const g = pageInfos[j].group;
-    if (!g || groupOffsets.has(g)) continue;
-    let gw = 0, k = j;
-    while (k < pageInfos.length && pageInfos[k].group === g) {
-      gw += pageInfos[k].width + HTML_TAB_SPACING;
-      k++;
-    }
-    gw -= HTML_TAB_SPACING;
-    groupOffsets.set(g, { startIdx: j, totalWidth: gw });
-  }
-  for (const [, { startIdx, totalWidth }] of groupOffsets) {
-    const offset = (widest - totalWidth) / 2;
-    let k = startIdx;
-    while (k < pageInfos.length && pageInfos[k].group === pageInfos[startIdx].group) {
-      pages[k].x += offset;
-      k++;
-    }
-  }
-
-  return { pages, widest };
-}
-
-function isHtmlDoc(docName) {
-  const lookup = loadLookup(docName);
-  if (lookup?.meta?.format === 'html') return true;
-  const manifest = readManifestSync();
-  return manifest?.documents?.[docName]?.format === 'html';
-}
-
-function htmlToCanvas(docName, page, localX, localY) {
-  const layout = loadHtmlLayout(docName);
-  if (!layout || page < 1 || page > layout.pages.length) return null;
-  const p = layout.pages[page - 1];
-  return { x: p.x + localX, y: p.y + localY };
-}
-
-function canvasToHtml(docName, canvasX, canvasY) {
-  const layout = loadHtmlLayout(docName);
-  if (!layout) return null;
-  // Find which page contains this point (check both X and Y for tab groups)
-  let bestMatch = null;
-  let bestDist = Infinity;
-  for (let i = 0; i < layout.pages.length; i++) {
-    const p = layout.pages[i];
-    if (canvasY >= p.y && canvasY < p.y + p.height + HTML_PAGE_SPACING) {
-      if (canvasX >= p.x && canvasX < p.x + p.width) {
-        // Exact hit
-        return { page: i + 1, localX: canvasX - p.x, localY: canvasY - p.y };
-      }
-      // Track closest page in this Y band
-      const dx = canvasX < p.x ? p.x - canvasX : canvasX - (p.x + p.width);
-      if (dx < bestDist) {
-        bestDist = dx;
-        bestMatch = i;
-      }
-    }
-  }
-  if (bestMatch !== null) {
-    const p = layout.pages[bestMatch];
-    return { page: bestMatch + 1, localX: canvasX - p.x, localY: canvasY - p.y };
-  }
-  // Past the last page — assign to last
-  const last = layout.pages.length;
-  const lp = layout.pages[last - 1];
-  return { page: last, localX: canvasX - lp.x, localY: canvasY - lp.y };
-}
-
-// Format-aware coordinate conversion
-function docToCanvas(docName, page, x, y) {
-  if (isHtmlDoc(docName)) {
-    const result = htmlToCanvas(docName, page, x, y);
-    if (result) return result;
-    // Fallback: treat as simple vertical stack
-    return { x, y: (page - 1) * 432 + y };
-  }
-  return pdfToCanvas(page, x, y);
-}
-
-function canvasToDoc(docName, canvasX, canvasY) {
-  if (isHtmlDoc(docName)) {
-    const result = canvasToHtml(docName, canvasX, canvasY);
-    if (!result) return { page: 1, pdfX: canvasX, pdfY: canvasY };
-    return { page: result.page, pdfX: result.localX, pdfY: result.localY };
-  }
-  return canvasToPdf(canvasX, canvasY);
-}
-
-function getPageWidth(docName) {
-  if (isHtmlDoc(docName)) {
-    const layout = loadHtmlLayout(docName);
-    return layout?.pages?.[0]?.width || 800;
-  }
-  return PAGE_WIDTH;
-}
+// Coordinate mapping now lives in lib/formatCoords.mjs (imported above)
 
 function findNearbyLines(docName, canvasBBox) {
   const lookup = loadLookup(docName);

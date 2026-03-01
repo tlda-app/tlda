@@ -297,6 +297,19 @@ const BRIDGE_SCRIPT = `
       if (wrapper.closest('.image-toggle')) return;
       var tabPane = wrapper.closest('.tab-pane');
       if (tabPane && !tabPane.classList.contains('active')) return;
+      // Fix case-sensitive viewBox attribute (svglite outputs lowercase "viewbox")
+      // and make SVG scale responsively within its container
+      if (!svg.getAttribute('viewBox') && svg.getAttribute('viewbox')) {
+        svg.setAttribute('viewBox', svg.getAttribute('viewbox'));
+      }
+      if (!svg.getAttribute('viewBox')) {
+        var w = svg.getAttribute('width'), h = svg.getAttribute('height');
+        if (w && h) svg.setAttribute('viewBox', '0 0 ' + parseFloat(w) + ' ' + parseFloat(h));
+      }
+      svg.style.width = '100%';
+      svg.style.height = 'auto';
+      svg.removeAttribute('width');
+      svg.removeAttribute('height');
       var wrapperRect = wrapper.getBoundingClientRect();
       if (wrapperRect.height < 10) return;
       // Tag wrapper for transform messages and set up clipping

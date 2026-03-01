@@ -4,11 +4,12 @@ import {
   react,
   sortByIndex,
 } from 'tldraw'
-import type { TLImageShape, TLShapePartial, Editor, TLShape, TLShapeId, TLPageId } from 'tldraw'
+import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
+import { createSvgShapes, createHtmlShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { mergeTabs } from './noteThreading'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
@@ -473,174 +474,13 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   updateBounds: (bounds: any) => void
   ensurePagesAtBottom: () => void
 } {
-  // Check if page shapes already exist (from sync)
-  const existingShapes = editor.getCurrentPageShapes()
-  let hasPages: boolean
+  // Create page shapes if they don't already exist (from Yjs sync)
   if (document.format === 'html') {
-    // For multipage HTML: check if TLDraw pages already exist (not just shapes on default page).
-    // If shapes exist on the default page only (old single-page format), we need to migrate.
-    const tlPages = editor.getPages()
-    const hasMultiplePages = tlPages.length > 1
-    const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
-    if (hasMultiplePages && hasHtmlShapes) {
-      hasPages = true  // Already migrated to multipage
-    } else if (hasHtmlShapes) {
-      // Old format: shapes on single page. Delete them and recreate as multipage.
-      // Preserve math-note annotations — we'll migrate them after creating new pages.
-      const oldHtmlShapes = existingShapes.filter(s => (s.type as string) === 'html-page')
-      const oldFigShapes = existingShapes.filter(s => (s.type as string) === 'svg-figure')
-      // Record annotation positions relative to html-page shapes for migration
-      const annotations = existingShapes.filter(s =>
-        (s.type as string) === 'math-note' || s.type === 'note'
-      )
-      const annotationMigration = annotations.map(note => {
-        // Find which old html-page shape this note is closest to (by Y position)
-        let bestIdx = 0
-        let bestDist = Infinity
-        const sortedOld = [...oldHtmlShapes].sort((a, b) => a.y - b.y)
-        for (let ci = 0; ci < sortedOld.length; ci++) {
-          const dist = Math.abs(note.y - sortedOld[ci].y)
-          if (dist < bestDist) { bestDist = dist; bestIdx = ci }
-        }
-        return { noteId: note.id, chapterIdx: bestIdx, relY: note.y - sortedOld[bestIdx].y }
-      })
-      // Delete old shapes
-      editor.deleteShapes([...oldHtmlShapes.map(s => s.id), ...oldFigShapes.map(s => s.id)])
-      // Store migration info for after page creation
-      ;(editor as any).__annotationMigration = annotationMigration
-      hasPages = false
-    } else {
-      hasPages = false
-    }
+    createHtmlShapes(editor, document)
   } else if (document.format === 'png') {
-    hasPages = editor.getAssets().some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
+    createImageShapes(editor, document)
   } else {
-    hasPages = existingShapes.some(s => (s.type as string) === 'svg-page')
-  }
-
-  if (!hasPages) {
-    if (document.format === 'html') {
-      // Multipage HTML: create one TLDraw page per chapter, then shapes on each page.
-      // Collect unique tldrawPageIds in order.
-      const seenPages = new Set<string>()
-      const pageIds: string[] = []
-      for (const page of document.pages) {
-        const pid = page.tldrawPageId
-        if (pid && !seenPages.has(pid)) {
-          seenPages.add(pid)
-          pageIds.push(pid)
-        }
-      }
-
-      // Create TLDraw pages (skip the default page — we'll use it for the first chapter)
-      const defaultPageId = editor.getCurrentPageId()
-      const pageIdMap = new Map<string, TLPageId>()
-
-      for (let pi = 0; pi < pageIds.length; pi++) {
-        const tlPageId = pageIds[pi]
-        if (pi === 0) {
-          // Reuse the default page for the first chapter
-          // Rename it to the chapter name
-          const firstPage = document.pages.find(p => p.tldrawPageId === tlPageId)
-          if (firstPage?.tldrawPageName) {
-            editor.renamePage(defaultPageId, firstPage.tldrawPageName)
-          }
-          pageIdMap.set(tlPageId, defaultPageId)
-        } else {
-          const newPageId = tlPageId as TLPageId
-          const pageName = document.pages.find(p => p.tldrawPageId === tlPageId)?.tldrawPageName || `Chapter ${pi + 1}`
-          editor.createPage({ id: newPageId, name: pageName })
-          pageIdMap.set(tlPageId, newPageId)
-        }
-      }
-
-      // Create shapes on their respective pages using parentId
-      for (const page of document.pages) {
-        const targetPageId = page.tldrawPageId ? pageIdMap.get(page.tldrawPageId) : defaultPageId
-        editor.createShapes([{
-          id: page.shapeId,
-          type: 'html-page' as any,
-          parentId: targetPageId,
-          x: page.bounds.x,
-          y: page.bounds.y,
-          isLocked: true,
-          props: {
-            w: page.bounds.w,
-            h: page.bounds.h,
-            url: page.src,
-          },
-        }])
-      }
-
-      // Switch back to first page
-      editor.setCurrentPage(defaultPageId)
-
-      // Migrate annotations from old single-page format to multipage
-      const migration = (editor as any).__annotationMigration as Array<{ noteId: TLShapeId; chapterIdx: number; relY: number }> | undefined
-      if (migration?.length) {
-        delete (editor as any).__annotationMigration
-        for (const { noteId, chapterIdx } of migration) {
-          const targetPage = document.pages[chapterIdx]
-          const targetTlPageId = targetPage?.tldrawPageId ? pageIdMap.get(targetPage.tldrawPageId) : defaultPageId
-          if (targetTlPageId) {
-            editor.reparentShapes([noteId], targetTlPageId)
-          }
-        }
-      }
-    } else if (document.format === 'png') {
-      // PNG pages: use image assets + shapes
-      editor.createAssets(
-        document.pages.map((page) => ({
-          id: page.assetId,
-          typeName: 'asset',
-          type: 'image',
-          meta: {},
-          props: {
-            w: page.width,
-            h: page.height,
-            mimeType: 'image/png',
-            src: page.src,
-            name: 'svg-page',
-            isAnimated: false,
-          },
-        }))
-      )
-
-      editor.createShapes(
-        document.pages.map(
-          (page, i): TLShapePartial<TLImageShape> => ({
-            id: page.shapeId,
-            type: 'image',
-            x: page.bounds.x,
-            y: page.bounds.y,
-            isLocked: true,
-            opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
-            props: {
-              assetId: page.assetId,
-              w: page.bounds.w,
-              h: page.bounds.h,
-            },
-          })
-        )
-      )
-    } else {
-      // SVG pages: use inline svg-page custom shapes (hyperref links are clickable)
-      editor.createShapes(
-        document.pages.map((page, i) => ({
-          id: page.shapeId,
-          type: 'svg-page' as any,
-          x: page.bounds.x,
-          y: page.bounds.y,
-          isLocked: true,
-          opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
-          props: {
-            w: page.bounds.w,
-            h: page.bounds.h,
-            pageIndex: i,
-          },
-        }))
-      )
-    }
+    createSvgShapes(editor, document)
   }
 
   // Set up diff layout: old page opacity, highlight overlays

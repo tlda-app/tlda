@@ -3,26 +3,11 @@ import {
   Tldraw,
   react,
   useEditor,
-  DefaultToolbar,
   DefaultColorStyle,
   DefaultSizeStyle,
   defaultShapeUtils,
   defaultBindingUtils,
   HighlightShapeUtil,
-} from 'tldraw'
-import {
-  SelectToolbarItem,
-  HandToolbarItem,
-  DrawToolbarItem,
-  HighlightToolbarItem,
-  EraserToolbarItem,
-  ArrowToolbarItem,
-  TextToolbarItem,
-  AssetToolbarItem,
-  RectangleToolbarItem,
-  EllipseToolbarItem,
-  LineToolbarItem,
-  LaserToolbarItem,
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
@@ -40,7 +25,8 @@ import { useSync, type RemoteTLStoreWithStatus } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './AgentAttentionOverlay'
-import { BrowseToolbarItem, MathNoteToolbarItem, TextSelectToolbarItem, PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
+import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
+import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './ProofStatementOverlay'
@@ -56,6 +42,7 @@ import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
 import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
@@ -489,26 +476,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       PageMenu: null,
       SharePanel: null,
       MainMenu: null,
-      Toolbar: (props) => (
-        <DefaultToolbar {...props} orientation="vertical">
-          {document.format === 'html' ? <BrowseToolbarItem /> : <SelectToolbarItem />}
-          <HandToolbarItem />
-          <DrawToolbarItem />
-          <HighlightToolbarItem />
-          <EraserToolbarItem />
-          <TextSelectToolbarItem />
-          <ArrowToolbarItem />
-          <TextToolbarItem />
-          <MathNoteToolbarItem />
-          <AssetToolbarItem />
-          {document.format === 'html' && <SelectToolbarItem />}
-          <RectangleToolbarItem />
-          <EllipseToolbarItem />
-          <LineToolbarItem />
-          <LaserToolbarItem />
-        </DefaultToolbar>
-      ),
-      HelperButtons: PenHelperButtons,
+      Toolbar: () => <FormatToolbar format={document.format} />,
+      HelperButtons: () => <PenHelperButtons format={document.format} />,
       InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><BottomPanelsSlot /><AgentPillSlot /></>,
     }),
     [document, roomId]
@@ -632,12 +601,26 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
       }
-      // Register browse tool — same icon as select (it behaves like select
-      // for unlocked shapes, passes through to iframes otherwise)
+      // Register browse tool — pointer with starburst sparkle (interactive pages)
       tools['browse'] = {
         id: 'browse',
-        icon: 'tool-pointer',
-        label: 'tool.select',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          {/* Smaller pointer arrow, shifted down-left */}
+          <path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor" stroke="none" />
+          <path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="none" />
+          {/* Starburst sparkle — 8 spikes, prominent */}
+          {(() => {
+            const cx = 12.5, cy = 5.5, rOuter = 5, rInner = 1.8, spikes = 8
+            const pts = []
+            for (let i = 0; i < spikes * 2; i++) {
+              const angle = (i * Math.PI) / spikes - Math.PI / 2
+              const r = i % 2 === 0 ? rOuter : rInner
+              pts.push(`${+(cx + Math.cos(angle) * r).toFixed(1)},${+(cy + Math.sin(angle) * r).toFixed(1)}`)
+            }
+            return <polygon points={pts.join(' ')} fill="currentColor" stroke="none" />
+          })()}
+        </svg>) as any,
+        label: 'Browse',
         onSelect: () => _editor.setCurrentTool('browse'),
       }
       return tools
@@ -676,7 +659,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           licenseKey={LICENSE_KEY}
         />
       )}
-      {panelsLocal && document.format === 'html' && editorMounted && editorRef.current && (
+      {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
       )}
       {selectedChangeId && editorRef.current && (
@@ -879,8 +862,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               }
               if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
-              } else if (document.format === 'html') {
-                editor.setCurrentTool('browse')
+              } else {
+                const home = getHomeTool(getFormatConfig(document.format))
+                if (home !== 'select') {
+                  editor.setCurrentTool(home)
+                }
               }
               // Restore diff mode if it was active
               if (session?.diffMode && hasDiffToggle) {
@@ -944,9 +930,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               })
 
               // Browse bounce-back: when the select tool deselects everything
-              // in an HTML doc, return to browse mode. The browse tool delegates
+              // in an interactive doc, return to browse mode. The browse tool delegates
               // to select for note interaction; this closes the loop.
-              if (document.format === 'html') {
+              if (getFormatConfig(document.format).browseBounce) {
                 let bounceTimer: ReturnType<typeof setTimeout> | null = null
                 react('browse-bounce', () => {
                   const tool = editor.getCurrentToolId()

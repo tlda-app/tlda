@@ -15,6 +15,11 @@ import { appendToken } from './authToken'
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 
+/** Get the Y offset of a heading anchor within an HTML page shape, or undefined if not found. */
+export function getHtmlHeadingY(shapeId: string, anchor: string): number | undefined {
+  return htmlHeadingPositions.get(shapeId)?.[anchor]
+}
+
 // Iframe element refs, keyed by shape ID (for SvgFigureShape to send transform messages)
 export const htmlIframeElements = new Map<string, HTMLIFrameElement>()
 

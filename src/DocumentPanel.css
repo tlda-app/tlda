@@ -343,9 +343,9 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
     mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-highlight");
   }
 
-  .tool-toggle-zone-icon--select {
-    -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-pointer");
-    mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-pointer");
+  .tool-toggle-zone-icon--draw {
+    -webkit-mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-draw");
+    mask-image: url("https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg#tool-draw");
   }
 
   .tool-toggle-zone-icon--eraser {

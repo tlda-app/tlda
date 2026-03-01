@@ -3,7 +3,7 @@ import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
 import type { DocContextValue } from '../PanelContext'
-import { htmlHeadingPositions } from '../HtmlPageShape'
+import { getHtmlHeadingY } from '../HtmlPageShape'
 
 // --- Helpers ---
 
@@ -60,7 +60,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
   const cx = shape.x + shape.props.w / 2
 
   // Check if anchor position is already known
-  const yOff = htmlHeadingPositions.get(shape.id)?.[anchor]
+  const yOff = getHtmlHeadingY(shape.id, anchor)
   if (yOff != null) {
     editor.centerOnPoint({ x: cx, y: shape.y + yOff }, { animation: { duration: 300 } })
     return
@@ -72,7 +72,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
 
   const targetId = shape.id
   const poll = setInterval(() => {
-    const y = htmlHeadingPositions.get(targetId)?.[anchor]
+    const y = getHtmlHeadingY(targetId, anchor)
     if (y != null) {
       clearInterval(poll)
       const fresh = editor.store.get(targetId) as any

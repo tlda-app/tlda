@@ -6,6 +6,7 @@ import {
   useTools,
   useIsToolSelected,
 } from 'tldraw'
+import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
 
 export function BrowseToolbarItem() {
   const tools = useTools()
@@ -53,12 +54,20 @@ const highlightColors: Record<string, string> = {
 
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 
-export function ToolToggleZones() {
+/**
+ * ToolToggleZones — pen-mode-only touch targets for quick tool switching.
+ * Reads double-tap targets from FormatConfig positions 1-3 (the three tools
+ * after the home tool). Double-tapping the current tool returns to position 0.
+ */
+export function ToolToggleZones({ format }: { format?: string }) {
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
   const [currentTool, setCurrentTool] = useState(editor.getCurrentToolId())
   const [highlightColor, setHighlightColor] = useState('#c77cff')
   const lastTapRef = useRef<{ tool: string; time: number }>({ tool: '', time: 0 })
+  const fmt = getFormatConfig(format)
+  const home = homeTool(fmt)
+  const zoneTools = doubleTapTools(fmt)
 
   // Track tool and color changes
   useEffect(() => {
@@ -89,52 +98,41 @@ export function ToolToggleZones() {
     const last = lastTapRef.current
     if (last.tool === targetTool && now - last.time < 400) {
       const cur = editor.getCurrentToolId()
-      editor.setCurrentTool(cur === targetTool ? 'draw' : targetTool)
+      // Double-tap current tool → return to home; double-tap different → switch to it
+      editor.setCurrentTool(cur === targetTool ? home : targetTool)
       lastTapRef.current = { tool: '', time: 0 }
     } else {
       lastTapRef.current = { tool: targetTool, time: now }
     }
-  }, [editor])
+  }, [editor, home])
 
   // Only show on touch devices in pen mode
   if (!isTouch || !isPenMode) return null
 
+  // Zones map to config positions 1-3 (the three tools after home)
   return (
     <div className="tool-toggle-zones">
-      <div
-        className={`tool-toggle-zone tool-toggle-zone--select ${currentTool === 'select' ? 'active' : ''}`}
-        onPointerDown={handleDoubleTap('select')}
-        onPointerEnter={handlePenEnter}
-        onPointerLeave={handlePenLeave}
-      >
-        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--select" />
-      </div>
-      <div
-        className={`tool-toggle-zone tool-toggle-zone--highlight ${currentTool === 'highlight' ? 'active' : ''}`}
-        style={{ '--zone-highlight-color': highlightColor } as React.CSSProperties}
-        onPointerDown={handleDoubleTap('highlight')}
-        onPointerEnter={handlePenEnter}
-        onPointerLeave={handlePenLeave}
-      >
-        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--highlight" />
-      </div>
-      <div
-        className={`tool-toggle-zone ${currentTool === 'eraser' ? 'active' : ''}`}
-        onPointerDown={handleDoubleTap('eraser')}
-        onPointerEnter={handlePenEnter}
-        onPointerLeave={handlePenLeave}
-      >
-        <div className="tool-toggle-zone-icon tool-toggle-zone-icon--eraser" />
-      </div>
+      {zoneTools.map((toolId) => (
+        <div
+          key={toolId}
+          className={`tool-toggle-zone tool-toggle-zone--${toolId} ${currentTool === toolId ? 'active' : ''}`}
+          style={toolId === 'highlight' ? { '--zone-highlight-color': highlightColor } as React.CSSProperties : undefined}
+          onPointerDown={handleDoubleTap(toolId)}
+          onPointerEnter={handlePenEnter}
+          onPointerLeave={handlePenLeave}
+        >
+          <div className={`tool-toggle-zone-icon tool-toggle-zone-icon--${toolId}`} />
+        </div>
+      ))}
     </div>
   )
 }
 
-export function PenHelperButtons() {
+export function PenHelperButtons({ format }: { format?: string }) {
   return (
     <>
       <ExitPenModeButton />
-      <ToolToggleZones />
+      <ToolToggleZones format={format} />
     </>
   )
 }
