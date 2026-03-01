@@ -1,13 +1,16 @@
 /**
  * DraftPill — viewer control for draft annotations.
- * Shows draft count; click to publish all.
+ * Shows draft count; click to publish all or publish selected.
  */
-import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
-import { useEditor } from 'tldraw'
+import { useState, useEffect, useRef, useMemo, useSyncExternalStore } from 'react'
+import { useEditor, useValue } from 'tldraw'
 import {
   getDraftCount,
+  getDraftIds,
+  isDraft,
   subscribeDrafts,
   publishAllDrafts,
+  publishDrafts,
 } from './annotationVisibility'
 import './DraftPill.css'
 
@@ -16,6 +19,14 @@ export function DraftPill() {
   const [showPopup, setShowPopup] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const draftCount = useSyncExternalStore(subscribeDrafts, getDraftCount)
+
+  // Track how many selected shapes are drafts
+  const selectedIds = useValue('selectedIds', () => editor.getSelectedShapeIds(), [editor])
+  const selectedDraftIds = useMemo(
+    () => selectedIds.filter(id => isDraft(id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedIds, draftCount] // draftCount as dep so we re-filter when drafts change
+  )
 
   useEffect(() => {
     if (!showPopup) return
@@ -29,6 +40,8 @@ export function DraftPill() {
   }, [showPopup])
 
   if (draftCount === 0) return null
+
+  const hasSelection = selectedDraftIds.length > 0
 
   return (
     <div className="draft-pill-container" ref={containerRef}>
@@ -45,6 +58,17 @@ export function DraftPill() {
           className="draft-pill-popup"
           onPointerDown={e => e.stopPropagation()}
         >
+          {hasSelection && (
+            <div
+              className="draft-pill-action"
+              onClick={() => {
+                publishDrafts(editor, selectedDraftIds)
+                setShowPopup(false)
+              }}
+            >
+              Publish {selectedDraftIds.length} selected
+            </div>
+          )}
           <div
             className="draft-pill-action"
             onClick={() => {
@@ -52,7 +76,7 @@ export function DraftPill() {
               setShowPopup(false)
             }}
           >
-            Publish {draftCount} draft{draftCount !== 1 ? 's' : ''}
+            Publish all {draftCount}
           </div>
           <div className="draft-pill-hint">
             Drafts are only visible to you until published

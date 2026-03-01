@@ -20,7 +20,7 @@ import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasS
 import { BrowseTool } from './BrowseTool'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onPresenterSignal, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync, type RemoteTLStoreWithStatus } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
@@ -37,6 +37,7 @@ import { BuildErrorOverlay } from './BuildErrorOverlay'
 import { BuildWarningPill } from './BuildWarningPill'
 import { AnnotationVisibilityPill } from './AnnotationVisibilityPill'
 import { DraftPill } from './DraftPill'
+import { FollowingBadge } from './FollowingBadge'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
@@ -210,6 +211,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const docNameForRole = new URLSearchParams(window.location.search).get('doc') || document.name
   useMemo(() => initRole(docNameForRole), [docNameForRole])
   const role = useSyncExternalStore(subscribeRole, getRole)
+
+  // Broadcast presenter identity when role changes
+  useEffect(() => {
+    broadcastPresenter(role === 'presenter')
+  }, [role])
 
   const {
     diffMode, diffLoading, toggleDiff,
@@ -684,7 +690,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         />
       )}
       <div className="build-pills-row">
-        {role === 'presenter' ? <AnnotationVisibilityPill /> : <DraftPill />}
+        {role === 'presenter' ? <AnnotationVisibilityPill /> : <><DraftPill /><FollowingBadge /></>}
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay

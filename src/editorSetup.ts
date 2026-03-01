@@ -718,7 +718,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       const allShapes = editor.getCurrentPageShapes()
 
       if (visMode === 'visible') {
-        // Draft outlines still needed
+        // Draft styling still needed
         const draftSelectors = allShapes
           .filter(s => isDraft(s.id))
           .map(s => `[data-shape-id="${s.id}"]`)
@@ -729,8 +729,10 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         }
         styleEl.textContent = `
           ${draftSelectors.join(',\n')} {
-            outline: 2px dashed rgba(59, 130, 246, 0.5) !important;
-            outline-offset: 3px !important;
+            opacity: 0.45 !important;
+            outline: 1.5px dashed rgba(59, 130, 246, 0.4) !important;
+            outline-offset: 2px !important;
+            transition: opacity 0.2s;
           }
         `
         return
@@ -758,8 +760,10 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       }
       if (draftSelectors.length > 0) {
         css += `${draftSelectors.join(',\n')} {
-          outline: 2px dashed rgba(59, 130, 246, 0.5) !important;
-          outline-offset: 3px !important;
+          opacity: 0.45 !important;
+          outline: 1.5px dashed rgba(59, 130, 246, 0.4) !important;
+          outline-offset: 2px !important;
+          transition: opacity 0.2s;
         }\n`
       }
       styleEl.textContent = css

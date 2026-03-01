@@ -201,6 +201,18 @@ export function readSignal<T = Record<string, unknown>>(key: string): (T & { tim
   return signalCache.get(key) ?? null
 }
 
+export type PresenterSignal = { viewerId: string; active: boolean; timestamp: number }
+const presenterHandle = bus.register<PresenterSignal>({
+  key: 'signal:presenter',
+  initBehavior: 'fire-if-recent',
+  recentMs: 600_000, // 10 min — presenter identity persists across brief reconnects
+})
+export const onPresenterSignal = presenterHandle.on
+
+export function broadcastPresenter(active: boolean) {
+  writeSignal('signal:presenter', { viewerId: localViewerId, active })
+}
+
 export function broadcastCamera(x: number, y: number, z: number) {
   writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
 }

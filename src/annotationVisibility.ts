@@ -119,6 +119,15 @@ export function publishAllDrafts(editor: Editor) {
 }
 
 /**
+ * Publish specific draft shapes by ID.
+ */
+export function publishDrafts(editor: Editor, ids: TLShapeId[]) {
+  for (const id of ids) {
+    if (isDraft(id)) publishDraft(editor, id)
+  }
+}
+
+/**
  * Discard a draft shape (delete without publishing).
  */
 export function discardDraft(editor: Editor, shapeId: TLShapeId) {

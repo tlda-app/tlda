@@ -1,0 +1,15 @@
+/* FollowingBadge */
+
+.following-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.3s;
+}
+
+html[data-theme="dark"] .following-badge {
+  color: rgba(255, 255, 255, 0.1);
+}
