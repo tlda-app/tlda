@@ -164,7 +164,7 @@ function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidt
 }) {
   const id = useRef(`tittle-${Math.random().toString(36).slice(2, 8)}`).current
   return (
-    <svg width={size} height={size} viewBox="4 2 24 16" className={className}>
+    <svg width={size} height={size} viewBox="12.3 5.5 7.4 7.4" className={className}>
       <defs>
         <path id={`c-${id}`} d={COMMA_PATH}/>
         <mask id={`m-${id}`}>
