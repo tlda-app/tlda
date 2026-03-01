@@ -156,26 +156,18 @@ export function DocumentPanel() {
 // Agent indicator (logo only, bottom-right)
 // ======================
 
-const COMMA_PATH = "M13.125 18.8843C13.125 18.1109 13.3893 17.4548 13.918 16.9158C14.4696 16.3533 15.1362 16.0721 15.9176 16.0721C16.6531 16.0721 17.2967 16.3533 17.8484 16.9158C18.4 17.4548 18.7218 18.0641 18.8137 18.7437C18.9976 20.0092 18.7677 21.2629 18.1242 22.505C17.5036 23.747 16.6072 24.6961 15.435 25.3523C14.7914 25.7273 14.2627 25.7155 13.849 25.3172C13.4583 24.9422 13.5732 24.4969 14.1938 23.9814C14.5386 23.7236 14.8259 23.3955 15.0557 22.9971C15.2856 22.5987 15.435 22.1886 15.5039 21.7668C15.5269 21.5793 15.4465 21.4856 15.2626 21.4856C14.8029 21.4621 14.3317 21.2043 13.849 20.7122C13.3663 20.2201 13.125 19.6108 13.125 18.8843Z"
+/** Tittle: circle with rotated-comma tail boolean-subtracted (no mask) */
+const TITTLE_PATH = "M12.8,9.25c0,-1.76731 1.43269,-3.2 3.2,-3.2c1.76731,0 3.2,1.43269 3.2,3.2c0,0.97071 -0.43222,1.84047 -1.11471,2.42733c-0.41285,-0.39293 -0.93965,-0.40291 -1.58029,-0.02963c-0.38956,0.21807 -0.74865,0.4685 -1.07729,0.75127c-1.49424,-0.26978 -2.62771,-1.57701 -2.62771,-3.14897z"
 
-/** Tittle only: circle at cy=9.25 with rotated-comma tail subtracted */
 function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidth }: {
   size: number, className?: string, fill?: string, stroke?: string, strokeWidth?: number
 }) {
-  const id = useRef(`tittle-${Math.random().toString(36).slice(2, 8)}`).current
   return (
     <svg width={size} height={size} viewBox="12.3 5.5 7.4 7.4" className={className}>
-      <defs>
-        <path id={`c-${id}`} d={COMMA_PATH}/>
-        <mask id={`m-${id}`}>
-          <rect x="0" y="0" width="32" height="32" fill="white"/>
-          <g transform="rotate(180, 15.97, 18.5)"><use href={`#c-${id}`} fill="black"/></g>
-        </mask>
-      </defs>
       {stroke ? (
         <circle cx="16" cy="9.25" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
       ) : (
-        <circle cx="16" cy="9.25" r="3.2" fill={fill} mask={`url(#m-${id})`}/>
+        <path d={TITTLE_PATH} fill={fill}/>
       )}
     </svg>
   )
