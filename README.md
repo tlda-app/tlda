@@ -10,23 +10,21 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 ## Why this exists
 
-When an AI agent produces content faster than you can review it, the standard text-editor-plus-PDF setup stops working. You need to stay oriented in a document that changes faster than you can re-read it, verify cross-page dependencies without flipping back and forth, and communicate with the agent on the document rather than in a separate chat window.
-
-tlda puts everything on the canvas: source-anchored annotations that survive rebuilds, cross-page proof and definition viewers, structured diff review, and an MCP integration so the agent sees what you're pointing at. It works just as well for human collaborators or for reading any paper — most papers on arXiv have TeX source available.
+When you're working with an AI agent that writes faster than you can read, it's easy to get disoriented. tlda helps. It anchors your annotations to the text so they move with it as it changes; uses MCP integration to help you communicate with the agent right on the canvas — highlight a passage and it reads the text under your stroke, ping and it sees your viewport, or let it scroll you through its changes and drop notes addressing your questions; and puts definitions and diffs right on the page with you. The canvas is shared in real time — collaborators and agents see each other's annotations as they appear. No AI required; it works just as well for reading any paper with a friend. Most papers on arXiv have TeX source available.
 
 ## What it does
 
 - Converts LaTeX documents to SVG pages via `latexmk` + `dvisvgm`
 - Displays them on a TLDraw canvas with pan/zoom and multi-page layout
-- Math notes with KaTeX rendering (paper macros automatically available)
+- Sticky notes with KaTeX rendering (paper macros automatically available). Notes support threaded replies (tabs) and multiple-choice buttons — an agent can ask a question with tappable options, and your selection syncs back immediately.
 - Source-anchored annotations via synctex — annotations track source lines, not page coordinates
 - Real-time sync between iPad viewer and Claude Code via MCP
-- Reference viewer: double-click any `\ref` or `\eqref` in the rendered text and a panel shows the referenced definition, equation, or lemma inline — no scrolling away from where you are. Arrow buttons step through refs on the same line; go-there (↗) jumps to the target; go-back (↩) returns.
-- Proof statement overlay: when you scroll into a proof, a pill appears with the theorem name. Click to expand into a panel showing the theorem statement — no need to flip back to where it was stated.
-- Build error overlay: when LaTeX fails, errors appear as text shapes anchored to the source line where they occur, with a navigation panel to cycle through them. Clickable to open in your editor.
-- Build warning pill: small warning count badge; click to expand the list, click a warning to jump to it in the editor
+- Reference viewer: double-click any `\ref` or `\eqref` in the rendered text and a panel shows the referenced definition, equation, or lemma inline — no scrolling away from where you are. Arrow buttons step to the previous and next reference in the text; go-there (↗) jumps to the target; go-back (↩) returns. It's a window to another place on the canvas. You can pan to see context just like you would in the main view. 
+- Proof statement overlay: when you scroll into a proof, a pill appears with the theorem name. Click to expand into a panel showing the theorem statement — no need to flip back to where it was stated. It's another window.
+- Build error overlay: when LaTeX fails, errors appear as text shapes anchored to the source line where they occur, with a navigation panel to cycle through them. Clickable to open in your editor. Warning count is displayed in a small badge; click to expand the list, click a warning to jump to it in the editor.
 - Editor integration (`texsync://`): Cmd-click rendered text to open the source file at that line in your editor. Errors and warnings are clickable too. Run `./scripts/install-texsync.sh` to set up the URL handler (macOS; defaults to Zed, `--editor code` for VS Code)
-- Magic highlighter: freehand highlight strokes that extract the underlying text and attach it as metadata, so agents can read what you highlighted without a screenshot. Glows on hover.
+- Magic highlighter: freehand highlight strokes that extract the underlying text and attach it as metadata, so agents can read what you highlighted without a screenshot. Glows on hover so you know what text has been attached.
+- Change review: pick any point from a unified timeline of your git history and last 30 builds, then diff it against the current version — side-by-side pages with tappable status dots per change (keep / revert / discuss), `n`/`p` to jump between changes, and agent-generated summaries.
 - File watcher for live rebuild on save
 
 ## Architecture
