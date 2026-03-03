@@ -206,19 +206,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const snapshotSliderIdx = activeHistoryIdx
   const handleSliderChange = handleHistoryChange
 
-  const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef)
+  const isPresentation = document.format === 'slides'
+  const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
-  // Initialize role from localStorage
+  // Role only meaningful in presentation (slides) format
   const docNameForRole = new URLSearchParams(window.location.search).get('doc') || document.name
-  useMemo(() => { initRole(docNameForRole); setDraftMode(getRole() === 'viewer') }, [docNameForRole])
+  useMemo(() => {
+    if (isPresentation) { initRole(docNameForRole); setDraftMode(getRole() === 'viewer') }
+  }, [docNameForRole, isPresentation])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
-  // Broadcast presenter identity — only when becoming presenter
-  // Also sync draft mode default whenever role changes
+  // Presentation: broadcast presenter identity + sync draft mode to role
   useEffect(() => {
+    if (!isPresentation) return
     if (role === 'presenter') broadcastPresenter(true)
     setDraftMode(role === 'viewer')
-  }, [role])
+  }, [role, isPresentation])
 
   const {
     diffMode, diffLoading, toggleDiff,
@@ -693,7 +696,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         />
       )}
       <div className="build-pills-row">
-        <DraftPill />{role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
+        {isPresentation && <DraftPill />}{(!isPresentation || role === 'presenter') && <AnnotationVisibilityPill />}<FollowingBadge />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
@@ -928,15 +931,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 saveSession()
               })
 
-              // Camera broadcast: presenter sends position to viewers
+              // Camera broadcast: presenter-only in slides, everyone in peer-to-peer
               react('broadcast-camera', () => {
                 const cam = editor.getCamera() // subscribe
-                if (getRole() !== 'presenter' || suppressBroadcastRef.current) return
+                if (isPresentation && getRole() !== 'presenter') return
+                if (suppressBroadcastRef.current) return
                 if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current)
                 broadcastTimerRef.current = setTimeout(() => {
-                  if (getRole() === 'presenter' && !suppressBroadcastRef.current) {
-                    broadcastCamera(cam.x, cam.y, cam.z)
-                  }
+                  if (suppressBroadcastRef.current) return
+                  if (isPresentation && getRole() !== 'presenter') return
+                  broadcastCamera(cam.x, cam.y, cam.z)
                 }, 30)
               })
 
