@@ -62,6 +62,9 @@ function SvgFigureComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const isPenMode = useValue('pen-mode', () => editor.getInstanceState().isPenMode, [editor])
+  const isBrowseTool = useValue('browse-tool', () => editor.getCurrentToolId() === 'browse', [editor])
+  const isTextSelectTool = useValue('text-select-tool', () => editor.getCurrentToolId() === 'text-select', [editor])
+  const canInteract = isBrowseTool || isTextSelectTool
   const containerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const [svgContent, setSvgContent] = useState<string | null>(null)
@@ -69,6 +72,11 @@ function SvgFigureComponent({ shape }: { shape: any }) {
   const [isActive, setIsActive] = useState(false)
 
   const isInline = shape.props.figureIdx != null
+
+  // Deactivate zoom mode when switching to a drawing tool
+  useEffect(() => {
+    if (!canInteract) setIsActive(false)
+  }, [canInteract])
 
   // Click outside or wheel outside deactivates zoom mode
   useEffect(() => {
@@ -215,8 +223,8 @@ function SvgFigureComponent({ shape }: { shape: any }) {
   }, [isPenMode, setView])
 
   const view = getView()
-  // When inactive, only intercept pointer (for click-to-activate) not wheel
-  const pointerEvents = isPenMode ? 'none' : 'all'
+  // Only intercept pointer events when browse/text-select is active — drawing tools need them
+  const pointerEvents = (isPenMode || !canInteract) ? 'none' : 'all'
 
   // Inline figures: transparent overlay, content stays in iframe
   const isZoomed = view.zoom !== 1 || view.panX !== 0 || view.panY !== 0

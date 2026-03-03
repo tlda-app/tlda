@@ -19,7 +19,7 @@ import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from '
 import { getViewerId } from './useYjsSync'
 import {
   getVisibilityMode, subscribeVisibility,
-  isDraft, subscribeDrafts, addDraft, isPublishing,
+  isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
 } from './annotationVisibility'
 import { getRole } from './viewerRole'
 
@@ -481,7 +481,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   ensurePagesAtBottom: () => void
 } {
   // Create page shapes if they don't already exist (from Yjs sync)
-  if (document.format === 'html') {
+  if (document.format === 'html' || document.format === 'markdown') {
     createHtmlShapes(editor, document)
   } else if (document.format === 'slides') {
     createSlidesShapes(editor, document)
@@ -561,33 +561,22 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   editor.sideEffects.registerAfterCreateHandler('shape', (shape, source) => {
     if (!shapeIdSet.has(shape.id)) {
       makeSureShapesAreAtBottom()
-      // Stamp creation time + authorId (if not already set by server/MCP)
+      // Stamp creation time + authorId (if not already set by server/MCP).
+      // In viewer mode, also stamp draft:true — shapes sync normally but are
+      // hidden from presenter until published. (The old remove+mergeRemoteChanges
+      // approach fought @tldraw/sync's rebase protocol and shapes disappeared.)
       if (source === 'user' && !shape.meta?.createdAt) {
+        const isViewerDraft = isDraftMode()
         editor.store.update(shape.id, (s: any) => ({
           ...s,
-          meta: { ...s.meta, createdAt: Date.now(), authorId: getViewerId() },
+          meta: {
+            ...s.meta,
+            createdAt: Date.now(),
+            authorId: getViewerId(),
+            ...(isViewerDraft ? { draft: true } : {}),
+          },
         }))
-      }
-      // Draft layer (viewer role only): convert user-created annotations to local-only drafts.
-      // Deferred because mergeRemoteChanges can't run inside an atomic operation.
-      // Skip when publishing (re-creating a shape as synced after draft→publish).
-      // Presenter annotations sync immediately — no draft conversion.
-      if (source === 'user' && !isPublishing() && getRole() === 'viewer') {
-        const shapeId = shape.id
-        queueMicrotask(() => {
-          const shapeData = editor.store.get(shapeId)
-          if (!shapeData) return
-          const draftShape = {
-            ...shapeData,
-            meta: { ...shapeData.meta, draft: true, authorId: getViewerId(), createdAt: Date.now() },
-          }
-          // Delete the synced version, recreate as local-only
-          editor.store.remove([shapeId])
-          editor.store.mergeRemoteChanges(() => {
-            editor.store.put([draftShape])
-          })
-          addDraft(shapeId)
-        })
+        if (isViewerDraft) addDraft(shape.id as any)
       }
       // Anchor user-created shapes to source lines (fire-and-forget)
       anchorShape(editor, shape)
@@ -716,61 +705,64 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     function rebuildVisibilityCSS() {
       const visMode = getVisibilityMode()
       const allShapes = editor.getCurrentPageShapes()
-
-      if (visMode === 'visible') {
-        // Draft styling still needed
-        const draftSelectors = allShapes
-          .filter(s => isDraft(s.id))
-          .map(s => `[data-shape-id="${s.id}"]`)
-
-        if (draftSelectors.length === 0) {
-          styleEl.textContent = ''
-          return
-        }
-        styleEl.textContent = `
-          ${draftSelectors.join(',\n')} {
-            opacity: 0.45 !important;
-            outline: 1.5px dashed rgba(59, 130, 246, 0.4) !important;
-            outline-offset: 2px !important;
-            transition: opacity 0.2s;
-          }
-        `
-        return
-      }
-
-      const opacity = visMode === 'faint' ? '0.07' : '0'
       const localViewerId = getViewerId()
-      const foreignSelectors = allShapes
+
+      // Own draft shapes: visible but dimmed so viewer knows they're unpublished
+      const ownDraftSelectors = allShapes
+        .filter(s => isDraft(s.id))
+        .map(s => `[data-shape-id="${s.id}"]`)
+
+      // Foreign draft shapes: always hidden regardless of visibility mode.
+      // Shapes synced from server with meta.draft:true that belong to another viewer.
+      const foreignDraftSelectors = allShapes
         .filter(s => !shapeIdSet.has(s.id))
+        .filter(s => (s.meta as any)?.draft === true)
         .filter(s => (s.meta as any)?.authorId !== localViewerId)
         .filter(s => !isDraft(s.id))
         .map(s => `[data-shape-id="${s.id}"]`)
 
-      const draftSelectors = allShapes
-        .filter(s => isDraft(s.id))
-        .map(s => `[data-shape-id="${s.id}"]`)
-
       let css = ''
-      if (foreignSelectors.length > 0) {
-        css += `${foreignSelectors.join(',\n')} {
-          opacity: ${opacity} !important;
+
+      if (ownDraftSelectors.length > 0) {
+        const hovering = getDraftHovering()
+        css += `${ownDraftSelectors.join(',\n')} {
+          opacity: ${hovering ? '1' : '0.6'} !important;
+          filter: ${hovering ? 'none' : 'saturate(0.35)'} !important;
+          transition: opacity 0.15s, filter 0.15s;
+        }\n`
+      }
+
+      if (foreignDraftSelectors.length > 0) {
+        css += `${foreignDraftSelectors.join(',\n')} {
+          opacity: 0 !important;
           pointer-events: none !important;
-          transition: opacity 0.3s;
         }\n`
       }
-      if (draftSelectors.length > 0) {
-        css += `${draftSelectors.join(',\n')} {
-          opacity: 0.45 !important;
-          outline: 1.5px dashed rgba(59, 130, 246, 0.4) !important;
-          outline-offset: 2px !important;
-          transition: opacity 0.2s;
-        }\n`
+
+      if (visMode !== 'visible') {
+        const opacity = visMode === 'faint' ? '0.07' : '0'
+        const foreignSelectors = allShapes
+          .filter(s => !shapeIdSet.has(s.id))
+          .filter(s => (s.meta as any)?.authorId !== localViewerId)
+          .filter(s => !isDraft(s.id))
+          .filter(s => (s.meta as any)?.draft !== true)
+          .map(s => `[data-shape-id="${s.id}"]`)
+
+        if (foreignSelectors.length > 0) {
+          css += `${foreignSelectors.join(',\n')} {
+            opacity: ${opacity} !important;
+            pointer-events: none !important;
+            transition: opacity 0.3s;
+          }\n`
+        }
       }
+
       styleEl.textContent = css
     }
 
     const unsubMode = subscribeVisibility(rebuildVisibilityCSS)
     const unsubDrafts = subscribeDrafts(rebuildVisibilityCSS)
+    const unsubHover = subscribeDraftHovering(rebuildVisibilityCSS)
     let rebuildTimer: ReturnType<typeof setTimeout>
     const debouncedRebuild = () => {
       clearTimeout(rebuildTimer)

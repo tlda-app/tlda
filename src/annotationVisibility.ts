@@ -75,6 +75,45 @@ export function subscribeDrafts(fn: () => void): () => void {
   return () => { draftListeners.delete(fn) }
 }
 
+// --- Draft mode (new annotations become drafts) ---
+// Defaults to !canPresent() on connect: r tokens start in draft mode, rw do not.
+
+let draftMode = false
+const draftModeListeners = new Set<() => void>()
+
+export function isDraftMode(): boolean { return draftMode }
+
+export function setDraftMode(v: boolean) {
+  if (v === draftMode) return
+  draftMode = v
+  draftModeListeners.forEach(fn => fn())
+}
+
+export function toggleDraftMode() { setDraftMode(!draftMode) }
+
+export function subscribeDraftMode(fn: () => void): () => void {
+  draftModeListeners.add(fn)
+  return () => { draftModeListeners.delete(fn) }
+}
+
+// --- Draft hover state (pill hover → preview drafts at full opacity) ---
+
+let draftHovering = false
+const hoverListeners = new Set<() => void>()
+
+export function setDraftHovering(v: boolean) {
+  if (v === draftHovering) return
+  draftHovering = v
+  hoverListeners.forEach(fn => fn())
+}
+
+export function getDraftHovering(): boolean { return draftHovering }
+
+export function subscribeDraftHovering(fn: () => void): () => void {
+  hoverListeners.add(fn)
+  return () => { hoverListeners.delete(fn) }
+}
+
 // --- Publishing guard ---
 // When true, the afterCreateHandler skips draft conversion
 let publishing = false
@@ -85,26 +124,16 @@ export function isPublishing(): boolean { return publishing }
 import type { Editor } from 'tldraw'
 
 /**
- * Publish a draft shape: delete the local-only version,
- * re-create as a normal synced shape.
+ * Publish a draft shape: clear the draft flag so it becomes visible to all.
+ * The shape already exists on the server (synced normally); we just flip meta.draft.
  */
 export function publishDraft(editor: Editor, shapeId: TLShapeId) {
   const shape = editor.store.get(shapeId)
   if (!shape) { removeDraft(shapeId); return }
-
-  // Delete local-only version (inside mergeRemoteChanges so sync sees a remote delete = no-op)
-  editor.store.mergeRemoteChanges(() => {
-    editor.store.remove([shapeId])
-  })
-
-  // Re-create as synced (normal put, source: 'user' — will be pushed to server)
-  const published = {
-    ...shape,
-    meta: { ...shape.meta, draft: false },
-  }
-  publishing = true
-  editor.store.put([published])
-  publishing = false
+  editor.store.update(shapeId, (s: any) => ({
+    ...s,
+    meta: { ...s.meta, draft: false },
+  }))
   removeDraft(shapeId)
 }
 
@@ -131,8 +160,6 @@ export function publishDrafts(editor: Editor, ids: TLShapeId[]) {
  * Discard a draft shape (delete without publishing).
  */
 export function discardDraft(editor: Editor, shapeId: TLShapeId) {
-  editor.store.mergeRemoteChanges(() => {
-    editor.store.remove([shapeId])
-  })
+  editor.store.remove([shapeId])
   removeDraft(shapeId)
 }

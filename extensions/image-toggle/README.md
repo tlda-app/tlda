@@ -1,5 +1,7 @@
 # Image Toggle
 
+> **Fair warning:** This was vibe-coded with Claude Code. The author has not read the source.
+
 A Quarto filter for scrollytelling figures. Create multi-step image sequences where text on one side drives image changes on the other.
 
 ## Installation

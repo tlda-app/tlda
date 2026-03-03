@@ -98,7 +98,7 @@ type Tab = 'history' | 'toc' | 'notes'
 export function DocumentPanel() {
   const ctx = useContext(PanelContext)
   const doc = useContext(DocContext)
-  const isHtml = doc?.format === 'html'
+  const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)

@@ -1,6 +1,7 @@
 /**
- * AnnotationVisibilityPill — presenter control for foreign annotation visibility.
- * Cycles: visible → faint → hidden.
+ * AnnotationVisibilityPill — controls visibility of others' annotations.
+ * Icon: two stacked layers. Bottom (own) always filled. Top (others) fill = mode:
+ *   visible → filled, faint → half-filled (clip), hidden → outline only.
  */
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import {
@@ -17,10 +18,34 @@ const MODE_LABELS: Record<VisibilityMode, string> = {
   hidden: 'Hidden',
 }
 
-const MODE_ICONS: Record<VisibilityMode, string> = {
-  visible: '\u{1F441}',  // eye
-  faint: '\u25CC',        // dotted circle
-  hidden: '\u2014',       // em dash
+function LayersIcon({ mode }: { mode: VisibilityMode }) {
+  const id = `lc-${mode}`
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" className="annot-vis-icon">
+      {mode === 'faint' && (
+        <defs>
+          <clipPath id={id}>
+            <rect x="4" y="1" width="4.5" height="8" />
+          </clipPath>
+        </defs>
+      )}
+      {/* bottom layer — own annotations, always filled */}
+      <rect x="1" y="4" width="9" height="8" rx="1" fill="currentColor" opacity="0.9" />
+      {/* top layer — others' annotations, fill = visibility mode */}
+      {mode === 'visible' && (
+        <rect x="4" y="1" width="9" height="8" rx="1" fill="currentColor" opacity="0.9" />
+      )}
+      {mode === 'faint' && (
+        <>
+          <rect x="4" y="1" width="9" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.7" />
+          <rect x="4" y="1" width="9" height="8" rx="1" fill="currentColor" opacity="0.9" clipPath={`url(#${id})`} />
+        </>
+      )}
+      {mode === 'hidden' && (
+        <rect x="4" y="1" width="9" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.7" />
+      )}
+    </svg>
+  )
 }
 
 export function AnnotationVisibilityPill() {
@@ -47,7 +72,7 @@ export function AnnotationVisibilityPill() {
         onPointerDown={e => e.stopPropagation()}
         title={`Others' annotations: ${MODE_LABELS[mode]}`}
       >
-        {MODE_ICONS[mode]}
+        <LayersIcon mode={mode} />
       </span>
       {showPopup && (
         <div
@@ -60,7 +85,7 @@ export function AnnotationVisibilityPill() {
               className={`annot-vis-option${mode === m ? ' active' : ''}`}
               onClick={() => { setVisibilityMode(m); setShowPopup(false) }}
             >
-              <span>{MODE_ICONS[m]}</span>
+              <LayersIcon mode={m} />
               <span>{MODE_LABELS[m]}</span>
             </div>
           ))}

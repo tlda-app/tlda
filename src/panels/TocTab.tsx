@@ -200,7 +200,17 @@ export function TocTab() {
   const useHtml = headings.length === 0 && tocItems !== null
 
   if (headings.length === 0 && !useHtml) {
-    return <div className="panel-empty">No headings found</div>
+    return (
+      <div className="doc-panel-content">
+        <div className="panel-empty">No headings found</div>
+        {ctx?.onToggleRole && hasPresenterPrivilege && (
+          <div className="toc-diff-hint" onClick={() => ctx.onToggleRole?.()}>
+            {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
+          </div>
+        )}
+        <DarkModeToggle />
+      </div>
+    )
   }
 
   const liveUrl = getLiveUrl()

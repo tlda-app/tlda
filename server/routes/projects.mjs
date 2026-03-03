@@ -25,6 +25,7 @@ import {
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
+import { buildMarkdownDocument } from '../lib/build-markdown.mjs'
 import historyRoutes from './history.mjs'
 
 const router = Router()
@@ -138,6 +139,16 @@ router.post('/:name/push', requireRw, async (req, res) => {
     if (project.buildStatus === 'success') {
       return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
     }
+  }
+
+  // Markdown format: render .md → HTML with KaTeX math, write index.html + page-info.json
+  if (project.format === 'markdown') {
+    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
+    buildMarkdownDocument(req.params.name, (msg) => console.log(msg)).catch(e => {
+      console.error(`[markdown] Build failed for ${req.params.name}: ${e.message}`)
+      updateProject(req.params.name, { buildStatus: 'error' })
+    })
+    return
   }
 
   // HTML format: copy all files to output, generate page-info.json from HTML titles
@@ -262,7 +273,11 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true })
 
   try {
-    await runBuild(req.params.name, { priorityPages })
+    if (project.format === 'markdown') {
+      await buildMarkdownDocument(req.params.name, (msg) => console.log(msg))
+    } else {
+      await runBuild(req.params.name, { priorityPages })
+    }
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }

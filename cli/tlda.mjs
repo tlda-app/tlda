@@ -46,7 +46,7 @@ const command = args[0]
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
   book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)',
+  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
@@ -352,6 +352,43 @@ async function cmdCreate() {
     console.log(`Pushing ${allFiles.length} file(s)...`)
     await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
     console.log(green('HTML project processed.'))
+
+    const server = getServer()
+    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    return
+  }
+
+  // Markdown format: push .md file, server renders to HTML with KaTeX
+  if (format === 'markdown') {
+    const mainFile = getFlag('main') || readdirSync(dir).find(f => f.endsWith('.md'))
+    if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
+
+    console.log(dim(`  Source: ${dir}`))
+    console.log(dim(`  Format: markdown`))
+    console.log(dim(`  Main file: ${mainFile}`))
+
+    try {
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown', sourceDir: dir })
+      console.log(green(`Created markdown project "${name}".`))
+    } catch (e) {
+      if (e.message.includes('already exists')) {
+        console.log(`Project "${name}" exists, pushing files.`)
+      } else {
+        throw e
+      }
+    }
+
+    // Push .md file (and any images/assets alongside it)
+    const allFiles = []
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      const content = readFileSync(join(dir, entry.name))
+      allFiles.push({ path: entry.name, content: content.toString('base64'), encoding: 'base64' })
+    }
+
+    console.log(`Pushing ${allFiles.length} file(s)...`)
+    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    console.log(green('Markdown project processed.'))
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)

@@ -265,6 +265,13 @@ app.use('/docs', requireRead, (req, res, next) => {
 
 app.use('/api/projects', projectRoutes)
 
+// ---------- KaTeX static assets ----------
+// Served at /katex/ for markdown pages that use KaTeX-rendered math
+const katexDir = join(__dirname, '..', 'node_modules', 'katex', 'dist')
+if (existsSync(katexDir)) {
+  app.use('/katex', express.static(katexDir))
+}
+
 // ---------- Viewer SPA ----------
 // Serve built SPA from server/public/ (Vite build output)
 // Fall back to project root's public/ for dev compatibility

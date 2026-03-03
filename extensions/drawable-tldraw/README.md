@@ -1,5 +1,7 @@
 # Drawable (TLDraw)
 
+> **Fair warning:** This was vibe-coded with Claude Code. The author has not read the source.
+
 A Quarto filter that adds per-figure TLDraw drawing canvases to standalone HTML pages. Click the pencil button on any figure to draw on it.
 
 This is an independent extension, not a tlda dependency. It shares group specification conventions with tlda (how you mark up figure groups) but has no runtime overlap. Use this when you want lightweight per-figure drawing in normal Quarto HTML output, without the full tlda annotation system.

@@ -100,6 +100,7 @@ const DIFF_CONFIG: FormatConfig = {
 export function getFormatConfig(format?: string): FormatConfig {
   switch (format) {
     case 'html': return HTML_CONFIG
+    case 'markdown': return HTML_CONFIG
     case 'slides': return SLIDES_CONFIG
     case 'diff': return DIFF_CONFIG
     default: return SVG_CONFIG  // svg, png, undefined

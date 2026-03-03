@@ -10,12 +10,12 @@
 export type Role = 'presenter' | 'viewer'
 
 let docName = ''
-let role: Role = 'viewer'
+let role: Role = 'presenter'
 const listeners = new Set<() => void>()
 
 export function initRole(doc: string) {
   docName = doc
-  role = (localStorage.getItem(`tlda-role:${doc}`) as Role) || 'viewer'
+  role = (localStorage.getItem(`tlda-role:${doc}`) as Role) || 'presenter'
 }
 
 export function getRole(): Role { return role }

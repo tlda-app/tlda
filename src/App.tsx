@@ -48,7 +48,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown'
   sourceDoc?: string
   members?: string[]
   buildStatus?: string
@@ -236,7 +236,7 @@ function App() {
       let document
       if (config.format === 'diff') {
         document = await loadDiffDocument(docName, fullBasePath)
-      } else if (config.format === 'html') {
+      } else if (config.format === 'html' || config.format === 'markdown') {
         document = await loadHtmlDocument(config.name, fullBasePath)
       } else if (config.format === 'slides') {
         document = await loadSlidesDocument(config.name, fullBasePath)

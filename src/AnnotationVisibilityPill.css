@@ -6,13 +6,16 @@
 }
 
 .annot-vis-badge {
-  font-size: 10px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  color: rgba(0, 0, 0, 0.12);
   cursor: pointer;
-  transition: color 0.3s;
+  transition: color 0.2s;
   user-select: none;
-  white-space: nowrap;
+}
+
+.annot-vis-icon {
+  display: block;
 }
 
 .annot-vis-badge:hover {

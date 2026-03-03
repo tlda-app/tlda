@@ -39,6 +39,7 @@ import { AnnotationVisibilityPill } from './AnnotationVisibilityPill'
 import { DraftPill } from './DraftPill'
 import { FollowingBadge } from './FollowingBadge'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
+import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
@@ -209,12 +210,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
   // Initialize role from localStorage
   const docNameForRole = new URLSearchParams(window.location.search).get('doc') || document.name
-  useMemo(() => initRole(docNameForRole), [docNameForRole])
+  useMemo(() => { initRole(docNameForRole); setDraftMode(getRole() === 'viewer') }, [docNameForRole])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
   // Broadcast presenter identity — only when becoming presenter
+  // Also sync draft mode default whenever role changes
   useEffect(() => {
     if (role === 'presenter') broadcastPresenter(true)
+    setDraftMode(role === 'viewer')
   }, [role])
 
   const {
@@ -690,7 +693,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         />
       )}
       <div className="build-pills-row">
-        {role === 'presenter' ? <AnnotationVisibilityPill /> : <><DraftPill /><FollowingBadge /></>}
+        <DraftPill />{role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
