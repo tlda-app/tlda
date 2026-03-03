@@ -21,7 +21,7 @@ import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
-  extractBuildErrors, extractPipelineWarnings,
+  extractBuildErrors, extractPipelineWarnings, addBookMember, aggregateBookToc,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
@@ -78,6 +78,18 @@ router.delete('/:name', requireRw, (req, res) => {
   }
 })
 
+// Add member to book (create book project if needed)
+router.patch('/:name/members', requireRw, (req, res) => {
+  const { add } = req.body
+  if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name required' })
+  try {
+    const book = addBookMember(req.params.name, add)
+    res.json({ ok: true, members: book.members })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // List source files
 router.get('/:name/files', requireRead, (req, res) => {
   const project = readProject(req.params.name)
@@ -97,11 +109,16 @@ router.post('/:name/push', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const { files, deletedFiles, priorityPages, sourceDir, members } = req.body
+  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt } = req.body
 
   // Update sourceDir if provided (so existing projects learn the path)
   if (sourceDir && !project.sourceDir) {
     updateProject(req.params.name, { sourceDir })
+  }
+
+  // Store session tag if provided
+  if (session) {
+    updateProject(req.params.name, { session, sessionAt: sessionAt || Date.now() })
   }
 
   // Update members for book projects
@@ -144,10 +161,20 @@ router.post('/:name/push', requireRw, async (req, res) => {
   // Markdown format: render .md → HTML with KaTeX math, write index.html + page-info.json
   if (project.format === 'markdown') {
     res.json({ ok: true, filesWritten: files?.length || 0, building: true })
-    buildMarkdownDocument(req.params.name, (msg) => console.log(msg)).catch(e => {
-      console.error(`[markdown] Build failed for ${req.params.name}: ${e.message}`)
-      updateProject(req.params.name, { buildStatus: 'error' })
-    })
+    buildMarkdownDocument(req.params.name, (msg) => console.log(msg))
+      .then(() => {
+        // Regenerate any book toc.json that includes this member
+        const allProjects = listProjects()
+        for (const p of allProjects) {
+          if (p.format === 'book' && Array.isArray(p.members) && p.members.includes(req.params.name)) {
+            aggregateBookToc(p.name, p.members)
+          }
+        }
+      })
+      .catch(e => {
+        console.error(`[markdown] Build failed for ${req.params.name}: ${e.message}`)
+        updateProject(req.params.name, { buildStatus: 'error' })
+      })
     return
   }
 
@@ -263,6 +290,37 @@ router.post('/:name/push', requireRw, async (req, res) => {
   }
 })
 
+async function buildSlidesDocument(projectName) {
+  const { broadcastSignal } = await import('../lib/sync-rooms.mjs')
+  const srcDir = getSourceDir(projectName)
+  const outDir = getOutputDir(projectName)
+  mkdirSync(outDir, { recursive: true })
+
+  const htmlFiles = readdirSync(srcDir).filter(f => f.endsWith('.html'))
+  for (const f of htmlFiles) {
+    cpSync(join(srcDir, f), join(outDir, f))
+  }
+
+  if (htmlFiles.length === 0) throw new Error('No HTML file found in source')
+
+  const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
+  const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
+  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+
+  updateProject(projectName, {
+    buildStatus: 'success',
+    pages: pageInfo.length,
+    lastBuild: new Date().toISOString(),
+  })
+
+  broadcastSignal(`doc-${projectName}`, 'signal:reload', {
+    pages: pageInfo.length,
+    timestamp: Date.now(),
+  })
+
+  console.log(`[slides] ${projectName}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
+}
+
 // Trigger rebuild (no file changes)
 router.post('/:name/build', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
@@ -275,6 +333,8 @@ router.post('/:name/build', requireRw, async (req, res) => {
   try {
     if (project.format === 'markdown') {
       await buildMarkdownDocument(req.params.name, (msg) => console.log(msg))
+    } else if (project.format === 'slides') {
+      await buildSlidesDocument(req.params.name)
     } else {
       await runBuild(req.params.name, { priorityPages })
     }

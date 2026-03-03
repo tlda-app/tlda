@@ -41,7 +41,7 @@ export function FormatToolbar({ format }: { format?: string }) {
 
 function ToolbarButton({ toolId, tool }: {
   toolId: string
-  tool: { id: string; icon: any; label: string; onSelect: (source: string) => void; kbd?: string }
+  tool: { id: string; icon: any; label: string; onSelect: (source: any) => void; kbd?: string }
 }) {
   const isSelected = useIsToolSelected(tool)
   return (

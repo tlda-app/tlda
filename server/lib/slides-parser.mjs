@@ -62,11 +62,16 @@ export function parseRevealSlides(html) {
     }
   }
 
-  // Walk events to find slides. A slide is any <section> at depth 1 or 2
-  // that has "slide" in its class or "quarto-title-block".
-  // Depth 1 = direct child of .slides div (standalone slides or wrappers)
-  // Depth 2 = inside a wrapper section (level1 groups their level2 children)
+  // Walk events to find slides, tracking (indexh, indexv) coordinates.
+  // Depth 1 = direct child of .slides div
+  //   - with "slide" class = standalone horizontal slide (indexh++, indexv=0)
+  //   - without "slide" class = horizontal section wrapper (indexh++)
+  // Depth 2 = inside a wrapper = vertical sub-slide (indexv++)
   depth = 0
+  let indexh = -1
+  let indexv = 0
+  let inWrapper = false  // depth-1 section that is NOT itself a slide
+
   for (const event of events) {
     if (event.type === 'open') {
       depth++
@@ -75,28 +80,38 @@ export function parseRevealSlides(html) {
       const idMatch = attrs.match(/id="([^"]*)"/)
       const cls = classMatch ? classMatch[1] : ''
       const id = idMatch ? idMatch[1] : ''
-
       const isSlide = cls.includes('slide') || cls.includes('quarto-title-block')
 
-      if (isSlide && (depth === 1 || depth === 2)) {
-        // Extract title: look for <h1> or <h2> shortly after this section open
+      if (depth === 1) {
+        if (isSlide) {
+          // Standalone horizontal slide
+          indexh++
+          indexv = 0
+          inWrapper = false
+          const afterSection = content.slice(event.pos, event.pos + 2000)
+          let title = ''
+          const h1Match = afterSection.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/)
+          if (h1Match) title = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+          slides.push({ index: slideIndex++, indexh, indexv, title: title || `Slide ${slideIndex}`, id })
+        } else {
+          // Wrapper section — starts a new horizontal group
+          indexh++
+          indexv = 0
+          inWrapper = true
+        }
+      } else if (depth === 2 && inWrapper && isSlide) {
+        // Vertical sub-slide within a wrapper
         const afterSection = content.slice(event.pos, event.pos + 2000)
         let title = ''
         const h1Match = afterSection.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/)
-        if (h1Match) {
-          // Strip HTML tags from title
-          title = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-        }
-
-        slides.push({
-          index: slideIndex++,
-          title: title || `Slide ${slideIndex}`,
-          id: id || `slide-${slideIndex - 1}`,
-        })
+        if (h1Match) title = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+        slides.push({ index: slideIndex++, indexh, indexv, title: title || `Slide ${slideIndex}`, id })
+        indexv++
       }
     } else {
+      if (depth === 1) inWrapper = false
       depth--
-      if (depth < 0) break  // exited the .slides div container
+      if (depth < 0) break
     }
   }
 
@@ -117,5 +132,7 @@ export function generateSlidesPageInfo(html, filename) {
     height,
     title: s.title,
     slideIndex: s.index,
+    indexh: s.indexh,
+    indexv: s.indexv,
   }))
 }

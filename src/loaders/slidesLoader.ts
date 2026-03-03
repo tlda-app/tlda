@@ -12,6 +12,8 @@ export interface SlidePageEntry {
   height: number
   title?: string
   slideIndex: number
+  indexh?: number
+  indexv?: number
 }
 
 /**
@@ -34,8 +36,10 @@ export async function loadSlidesDocument(
   let top = 0
   const pages: SvgPage[] = pageInfos.map((info, i) => {
     const pageId = `${name}-slide-${i}`
-    // Build URL with slide index query param
-    const url = basePath + info.file + `?_tldaSlide=${info.slideIndex}`
+    // Build URL with reveal.js (indexh, indexv) coordinates
+    const h = info.indexh ?? info.slideIndex
+    const v = info.indexv ?? 0
+    const url = basePath + info.file + `?_tldaH=${h}&_tldaV=${v}`
     const page: SvgPage = {
       src: url,
       bounds: new Box(0, top, info.width, info.height),

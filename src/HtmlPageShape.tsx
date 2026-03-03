@@ -339,7 +339,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     : ''
 
   // Detect slides format from URL (has _tldaSlide param)
-  const isSlide = shape.props.url?.includes('_tldaSlide=')
+  const isSlide = shape.props.url?.includes('_tldaH=')
 
   const handleFragmentStep = useCallback((direction: 'next' | 'prev') => {
     const iframe = iframeRef.current

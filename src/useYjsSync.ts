@@ -113,6 +113,7 @@ export type BuildWarning = {
   message: string
   line?: number | null
   file?: string | null
+  category?: string
 }
 export type BuildStatusSignal = {
   error: string | null

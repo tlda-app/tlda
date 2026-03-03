@@ -54,7 +54,7 @@ export class SvgFigureShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-function SvgFigureBackground({ shape }: { shape: any }) {
+function SvgFigureBackground(_props: { shape: any }) {
   return null
 }
 

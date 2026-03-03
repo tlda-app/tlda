@@ -16,12 +16,12 @@ import { switchTab, addTab } from './noteThreading'
 import { HtmlPageShapeUtil } from './HtmlPageShape'
 import { SvgPageShapeUtil } from './SvgPageShape'
 import { SvgFigureShapeUtil } from './SvgFigureShape'
-import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages, type ChangeRegion } from './stores'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './BrowseTool'
 import { MathNoteTool } from './MathNoteTool'
 import { TextSelectTool } from './TextSelectTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onPresenterSignal, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
-import { useSync, type RemoteTLStoreWithStatus } from '@tldraw/sync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './AgentAttentionOverlay'
@@ -43,7 +43,7 @@ import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './ChangePreviewPanel'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
-import { PDF_HEIGHT, PAGE_HEIGHT, PAGE_GAP } from './layoutConstants'
+import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
@@ -141,7 +141,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
   // --- Hooks ---
   const docName = new URLSearchParams(window.location.search).get('doc') || document.name
-  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, refreshHistory } = useSnapshotTimeline(document, docName)
+  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, docName)
   const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(
     editorRef, document, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef,
   )
@@ -569,7 +569,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     // Suppress the default hover/selection indicator on highlight shapes —
     // it draws a blue path outline that competes with our text glow effect
     class QuietHighlightShapeUtil extends HighlightShapeUtil {
-      override indicator() { return null }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
     return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil]

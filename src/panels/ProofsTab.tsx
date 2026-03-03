@@ -16,7 +16,7 @@ export function ProofsTab() {
     const page = doc.pages[pageIdx]
 
     // Turn on proof mode if off
-    if (!ctx.proofMode && ctx.onToggleProof) {
+    if (ctx && !ctx.proofMode && ctx.onToggleProof) {
       ctx.onToggleProof()
     }
 

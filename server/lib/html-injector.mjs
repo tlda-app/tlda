@@ -558,7 +558,8 @@ const SLIDES_BRIDGE_SCRIPT = `
 (function() {
   var params = new URLSearchParams(window.location.search);
   var shapeId = params.get('_tldaShape') || '';
-  var slideIndex = parseInt(params.get('_tldaSlide') || '0', 10);
+  var indexh = parseInt(params.get('_tldaH') || '0', 10);
+  var indexv = parseInt(params.get('_tldaV') || '0', 10);
 
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
@@ -566,14 +567,15 @@ const SLIDES_BRIDGE_SCRIPT = `
       return;
     }
 
-    // Navigate to the target slide
-    Reveal.slide(slideIndex, 0, 0);
+    // Navigate to the target slide using (indexh, indexv) coordinates
+    Reveal.slide(indexh, indexv, 0);
 
-    // Disable reveal's own navigation UI
+    // Disable reveal's own navigation UI and wheel handling
     Reveal.configure({
       keyboard: false,
       controls: false,
       touch: false,
+      mouseWheel: false,
       embedded: true,
       progress: false,
       slideNumber: false,
@@ -584,8 +586,8 @@ const SLIDES_BRIDGE_SCRIPT = `
 
     // Prevent reveal from changing slides (lock to this slide)
     Reveal.on('slidechanged', function(ev) {
-      if (ev.indexh !== slideIndex) {
-        Reveal.slide(slideIndex, 0);
+      if (ev.indexh !== indexh || ev.indexv !== indexv) {
+        Reveal.slide(indexh, indexv, 0);
       }
     });
 
@@ -651,16 +653,38 @@ const SLIDES_BRIDGE_SCRIPT = `
 </script>
 `
 
+// Injected into <head> before reveal.js loads — clears any stored slide position
+// so each iframe starts fresh and navigates to its own _tldaSlide index.
+const SLIDES_HEAD_SCRIPT = `
+<script>
+(function() {
+  try {
+    Object.keys(sessionStorage).forEach(function(k) {
+      if (k.indexOf('reveal') !== -1 || k.indexOf('Reveal') !== -1) {
+        sessionStorage.removeItem(k);
+      }
+    });
+  } catch(e) {}
+})();
+</script>
+`
+
 /**
  * Inject slides bridge into reveal.js HTML.
- * Much simpler than the standard bridge — just adds the script before </body>.
+ * Also injects a head script to clear stored reveal state before initialization.
  */
 export function injectSlidesBridge(html) {
-  const bodyCloseIdx = html.lastIndexOf('</body>')
-  if (bodyCloseIdx !== -1) {
-    return html.slice(0, bodyCloseIdx) + SLIDES_BRIDGE_SCRIPT + html.slice(bodyCloseIdx)
+  // Inject head script before </head> to clear sessionStorage before reveal.js reads it
+  let patched = html
+  const headCloseIdx = patched.indexOf('</head>')
+  if (headCloseIdx !== -1) {
+    patched = patched.slice(0, headCloseIdx) + SLIDES_HEAD_SCRIPT + patched.slice(headCloseIdx)
   }
-  return html + SLIDES_BRIDGE_SCRIPT
+  const bodyCloseIdx = patched.lastIndexOf('</body>')
+  if (bodyCloseIdx !== -1) {
+    return patched.slice(0, bodyCloseIdx) + SLIDES_BRIDGE_SCRIPT + patched.slice(bodyCloseIdx)
+  }
+  return patched + SLIDES_BRIDGE_SCRIPT
 }
 
 /**

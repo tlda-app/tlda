@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore } from 'react'
+import { useBook } from '../BookContext'
 import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
@@ -35,8 +36,20 @@ export function TocTab() {
   const hasPresenterPrivilege = useSyncExternalStore(subscribeCanPresent, canPresent)
   const [headings, setHeadings] = useState<TocEntry[]>([])
   const [htmlToc, setHtmlToc] = useState<HtmlTocEntry[] | null>(null)
+  const [slideTitles, setSlideTitles] = useState<string[] | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
+
+  // Hot session: most recently pushed book member (must be before any early returns)
+  const book = useBook()
+  const hotKey = useMemo(() => {
+    if (!book) return null
+    let best: string | null = null, bestAt = 0
+    for (const m of book.members) {
+      if (m.sessionAt && m.sessionAt > bestAt) { bestAt = m.sessionAt; best = m.key }
+    }
+    return best
+  }, [book])
 
   // Re-fetch TOC when reload signal arrives
   useEffect(() => {
@@ -50,6 +63,16 @@ export function TocTab() {
 
   useEffect(() => {
     if (!doc) return
+    // Slides format: load TOC from page-info.json
+    if (doc?.format === 'slides') {
+      fetch(`/docs/${doc.docName}/page-info.json`)
+        .then(r => r.ok ? r.json() : null)
+        .then((entries: Array<{ title?: string }> | null) => {
+          if (entries) setSlideTitles(entries.map(e => e.title || ''))
+        })
+        .catch(() => {})
+      return
+    }
     loadLookup(doc.docName).then(data => {
       if (data) {
         const h = parseHeadings(data.lines, data.meta)
@@ -66,7 +89,7 @@ export function TocTab() {
         })
       }
     })
-  }, [doc?.docName, reloadCount])
+  }, [doc?.docName, doc?.format, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -78,8 +101,13 @@ export function TocTab() {
     navigateTo(editor, pos.x, pos.y, pageCenterX)
   }, [editor, doc])
 
-  const handleHtmlNav = useCallback((pageNum: number, anchor?: string) => {
+  const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string) => {
     if (!doc) return
+    if (targetFile) {
+      // Book cross-member navigation: post tlda-navigate, BookViewer handles the switch
+      window.postMessage({ type: 'tlda-navigate', targetFile, anchor: anchor || null, shapeId: null }, '*')
+      return
+    }
     if (anchor) {
       navigateToAnchor(editor, doc, pageNum, anchor)
     } else {
@@ -195,6 +223,29 @@ export function TocTab() {
   const hasSearchResults = debouncedQuery && (docResults.length > 0 || noteResults.length > 0)
   const hasNoResults = debouncedQuery && docResults.length === 0 && noteResults.length === 0
 
+  // Slides format: render TOC from page-info.json titles
+  if (doc?.format === 'slides' && slideTitles) {
+    return (
+      <div className="doc-panel-content">
+        {slideTitles.map((title, i) => (
+          <div
+            key={i}
+            className="toc-item section"
+            onClick={() => doc && navigateToPage(editor, doc, i + 1)}
+          >
+            {title || `Slide ${i + 1}`}
+          </div>
+        ))}
+        {ctx?.onToggleRole && hasPresenterPrivilege && (
+          <div className="toc-diff-hint" onClick={() => ctx.onToggleRole?.()}>
+            {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
+          </div>
+        )}
+        <DarkModeToggle />
+      </div>
+    )
+  }
+
   // Use HTML TOC if no TeX headings
   const tocItems = htmlToc || null
   const useHtml = headings.length === 0 && tocItems !== null
@@ -203,7 +254,7 @@ export function TocTab() {
     return (
       <div className="doc-panel-content">
         <div className="panel-empty">No headings found</div>
-        {ctx?.onToggleRole && hasPresenterPrivilege && ctx.format === 'slides' && (
+        {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
           <div className="toc-diff-hint" onClick={() => ctx.onToggleRole?.()}>
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
@@ -216,8 +267,8 @@ export function TocTab() {
   const liveUrl = getLiveUrl()
 
   // Unified render for both TeX and HTML TOC entries
-  const items: Array<{ level: TocLevel; title: string; nav: () => void }> = useHtml
-    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page, h.anchor) }))
+  const items: Array<{ level: TocLevel; title: string; nav: () => void; targetFile?: string }> = useHtml
+    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile), targetFile: h.targetFile }))
     : headings.map(h => ({ level: h.level, title: renderTocTitle(h.title), nav: () => handleNav(h.entry) }))
 
   // Build visibility: children hidden if their parent is collapsed
@@ -226,11 +277,12 @@ export function TocTab() {
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
 
-  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void }, nextLevel: TocLevel | TocLevel[]) {
+  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; targetFile?: string }, nextLevel: TocLevel | TocLevel[]) {
     const isCollapsed = collapsed?.has(i) ?? false
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
     const hasChildren = next && childLevels.includes(next.level)
+    const isHot = h.level === 'chapter' && h.targetFile != null && h.targetFile === hotKey
     return (
       <div key={i} className={`toc-item ${h.level}`}>
         {hasChildren ? (
@@ -242,6 +294,7 @@ export function TocTab() {
           <span className="toc-fold-spacer" />
         )}
         <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+        {isHot && <span className="book-tab-hot-dot" title="Active session" />}
       </div>
     )
   }
@@ -339,7 +392,7 @@ export function TocTab() {
             dangerouslySetInnerHTML={{ __html: h.title }} />
         )
       })}
-      {ctx?.onToggleRole && hasPresenterPrivilege && ctx.format === 'slides' && (
+      {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
         <div
           className="toc-diff-hint"
           onClick={() => ctx.onToggleRole?.()}
