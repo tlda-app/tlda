@@ -84,11 +84,8 @@ function AgentPillSlot() {
   return <>{content}</>
 }
 
-// Sync server URL for @tldraw/sync shape CRDT (WebSocket)
-const SHAPE_SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
-  (import.meta.env.DEV
-    ? `ws://${window.location.hostname}:5176`
-    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
+// Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
+const SHAPE_SYNC_SERVER = SYNC_SERVER
 
 // Initialize signal connection when the document mounts (signals go via HTTP POST + @tldraw/sync custom messages)
 function useSignalInit(docName: string) {

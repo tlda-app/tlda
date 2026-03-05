@@ -15,7 +15,6 @@
  * Environment:
  *   PORT       — listen port (default: 5176)
  *   HOST       — bind address (default: 0.0.0.0)
- *   DATA_DIR   — (legacy, unused)
  *   PROJECTS_DIR — project storage (default: server/projects/)
  */
 
@@ -31,7 +30,7 @@ import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -39,7 +38,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 5176
 const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
-const PUBLIC_DIR = process.env.PUBLIC_DIR || join(__dirname, 'public')
 
 // Initialize stores
 initProjectStore(PROJECTS_DIR)
@@ -283,13 +281,6 @@ app.use('/docs', requireRead, (req, res, next) => {
     return res.sendFile(resolve(projectPath))
   }
 
-  // Fall back to public/docs (legacy/dev)
-  const legacyPath = join(__dirname, '..', 'public', 'docs', name, filePath)
-  if (existsSync(legacyPath)) {
-    res.set('Cache-Control', 'no-cache')
-    return res.sendFile(resolve(legacyPath))
-  }
-
   res.status(404).json({ error: 'Not found' })
 })
 
@@ -305,14 +296,7 @@ if (existsSync(katexDir)) {
 }
 
 // ---------- Viewer SPA ----------
-// Serve built SPA from server/public/ (Vite build output)
-// Fall back to project root's public/ for dev compatibility
-
-if (existsSync(PUBLIC_DIR)) {
-  app.use(express.static(PUBLIC_DIR))
-}
-
-// Also try the project root's dist/ (from `npm run build`)
+// Serve built SPA from dist/ (Vite build output)
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
   app.use(express.static(distDir))
@@ -325,12 +309,9 @@ app.get('/{*path}', (req, res) => {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  // Try server/public/index.html first, then dist/index.html
-  for (const dir of [PUBLIC_DIR, distDir]) {
-    const indexPath = join(dir, 'index.html')
-    if (existsSync(indexPath)) {
-      return res.sendFile(indexPath)
-    }
+  const indexPath = join(distDir, 'index.html')
+  if (existsSync(indexPath)) {
+    return res.sendFile(indexPath)
   }
 
   res.status(404).send('Viewer not built. Run: npm run build')
@@ -399,21 +380,6 @@ function generateManifest() {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)
         }
       }
-    }
-  }
-
-  // Also include legacy docs from public/docs/manifest.json
-  const legacyManifestPath = join(__dirname, '..', 'public', 'docs', 'manifest.json')
-  if (existsSync(legacyManifestPath)) {
-    try {
-      const legacy = JSON.parse(readFileSync(legacyManifestPath, 'utf8'))
-      for (const [name, config] of Object.entries(legacy.documents || {})) {
-        if (!documents[name]) {
-          documents[name] = config
-        }
-      }
-    } catch (e) {
-      console.error('[manifest] Failed to read legacy manifest:', e.message)
     }
   }
 
@@ -519,9 +485,7 @@ process.on('unhandledRejection', (err) => {
 server.listen(PORT, HOST, () => {
   console.log(`Unified server running on http://${HOST}:${PORT}`)
   console.log(`  Projects: ${PROJECTS_DIR}`)
-  if (existsSync(PUBLIC_DIR)) {
-    console.log(`  Viewer SPA: ${PUBLIC_DIR}`)
-  } else if (existsSync(distDir)) {
+  if (existsSync(distDir)) {
     console.log(`  Viewer SPA: ${distDir}`)
   } else {
     console.log(`  Viewer SPA: not built (run: npm run build)`)

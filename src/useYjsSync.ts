@@ -38,12 +38,6 @@ export function isSignalConnected(): boolean {
   return activeDocName !== null
 }
 
-// Keep for backward compat — some callers import getYRecords for null-check pattern
-/** @deprecated Use isSignalConnected() instead */
-export function getYRecords(): unknown | null {
-  return activeDocName ? {} : null  // truthy when connected, null when not
-}
-
 // Live URL from static annotations (set when loading annotations.json)
 let staticLiveUrl: string | null = null
 export function getLiveUrl() { return staticLiveUrl }

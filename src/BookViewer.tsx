@@ -111,33 +111,3 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
     </BookContext.Provider>
   )
 }
-
-function BookTabBar({ members, activeIndex, onSwitch }: {
-  members: BookMember[]
-  activeIndex: number
-  onSwitch: (index: number) => void
-}) {
-  // Hot session: most recently pushed member with a sessionAt tag
-  const hotIdx = useMemo(() => {
-    let best = -1, bestAt = 0
-    members.forEach((m, i) => {
-      if (m.sessionAt && m.sessionAt > bestAt) { bestAt = m.sessionAt; best = i }
-    })
-    return best
-  }, [members])
-
-  return (
-    <div className="book-tab-bar">
-      {members.map((member, i) => (
-        <button
-          key={member.key}
-          className={`book-tab ${i === activeIndex ? 'book-tab--active' : ''} ${i === hotIdx ? 'book-tab--hot' : ''}`}
-          onClick={() => onSwitch(i)}
-        >
-          {i === hotIdx && <span className="book-tab-hot-dot" title="Active session" />}
-          {member.name}
-        </button>
-      ))}
-    </div>
-  )
-}

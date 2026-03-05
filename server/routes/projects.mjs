@@ -27,6 +27,7 @@ import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
 import { buildMarkdownDocument } from '../lib/build-markdown.mjs'
 import historyRoutes from './history.mjs'
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
 
 const router = Router()
 
@@ -327,7 +328,6 @@ router.post('/:name/push', requireRw, async (req, res) => {
 })
 
 async function buildSlidesDocument(projectName) {
-  const { broadcastSignal } = await import('../lib/sync-rooms.mjs')
   const srcDir = getSourceDir(projectName)
   const outDir = getOutputDir(projectName)
   mkdirSync(outDir, { recursive: true })
@@ -418,8 +418,6 @@ router.get('/:name/build/errors', requireRead, (req, res) => {
 })
 
 // ---------- Shape CRUD (backed by @tldraw/sync TLSocketRoom) ----------
-
-import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
 
 // Map project name → sync room name (viewer connects as "doc-{name}")
 function syncRoomName(projectName) {

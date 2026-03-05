@@ -242,21 +242,6 @@
   text-overflow: ellipsis;
 }
 
-/* TLDraw overlay styles */
-.PageOverlayScreen-screen {
-  pointer-events: none;
-  fill: var(--color-background, #f8fafc);
-  fill-opacity: 0.9;
-  stroke: none;
-}
-
-.PageOverlayScreen-outline {
-  position: absolute;
-  pointer-events: none;
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  border-radius: 2px;
-}
-
 /* Forward sync highlight marker */
 @keyframes pulse {
   0%, 100% {
@@ -438,10 +423,6 @@ body.text-select-mode ::selection {
 .tl-theme__dark [class*="tlui-"][class*="menu"],
 .tl-theme__dark .tlui-toolbar {
   background: rgba(0, 0, 0, 0.3) !important;
-}
-
-.tl-theme__dark .PageOverlayScreen-screen {
-  fill: #0f0f1a;
 }
 
 .tl-theme__dark .exit-pen-mode-btn {
