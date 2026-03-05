@@ -273,6 +273,7 @@ export interface HtmlTocEntry {
   level: 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection'
   page: number
   anchor?: string
+  targetFile?: string  // book cross-member navigation: member key
 }
 
 export interface HtmlSearchEntry {

@@ -80,6 +80,60 @@ export function updateProject(name, updates) {
   return project
 }
 
+/**
+ * Add a member to a book project, creating the book if it doesn't exist.
+ * Deduplicates members. Returns the updated project.
+ */
+export function addBookMember(bookName, memberName) {
+  let book = readProject(bookName)
+  if (!book) {
+    book = createProject({ name: bookName, title: bookName, format: 'book', members: [memberName] })
+  } else {
+    const members = Array.from(new Set([...(book.members || []), memberName]))
+    book = updateProject(bookName, { members })
+  }
+  aggregateBookToc(bookName, book.members || [memberName])
+  return book
+}
+
+export function aggregateBookToc(bookName, members) {
+  const bookOutDir = outputDir(bookName)
+  mkdirSync(bookOutDir, { recursive: true })
+
+  const LEVEL_UP = { section: 'subsection', subsection: 'subsubsection', subsubsection: 'subsubsection' }
+  const bookToc = []
+
+  for (const key of members) {
+    const memberTocPath = join(outputDir(key), 'toc.json')
+    let memberToc = []
+    if (existsSync(memberTocPath)) {
+      try { memberToc = JSON.parse(readFileSync(memberTocPath, 'utf8')) } catch {}
+    }
+
+    // If the member's toc starts with a top-level section, promote it to the chapter title
+    // and skip it from the nested entries (avoids "kernel-is-free / The kernel is free" redundancy)
+    let chapterTitle = key
+    let chapterAnchor = undefined
+    let startIdx = 0
+    if (memberToc.length > 0 && memberToc[0].level === 'section') {
+      chapterTitle = memberToc[0].title
+      chapterAnchor = memberToc[0].anchor
+      startIdx = 1
+    }
+
+    bookToc.push({ title: chapterTitle, level: 'chapter', page: 1, targetFile: key, ...(chapterAnchor && { anchor: chapterAnchor }) })
+
+    for (let i = startIdx; i < memberToc.length; i++) {
+      const entry = memberToc[i]
+      // Demote levels: section→subsection, subsection→subsubsection
+      const newLevel = LEVEL_UP[entry.level] || entry.level
+      bookToc.push({ title: entry.title, level: newLevel, page: 1, anchor: entry.anchor, targetFile: key })
+    }
+  }
+
+  writeFileSync(join(bookOutDir, 'toc.json'), JSON.stringify(bookToc, null, 2))
+}
+
 export function deleteProject(name) {
   const dir = join(projectsDir, name)
   if (!existsSync(join(dir, 'project.json'))) {

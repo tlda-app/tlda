@@ -6,6 +6,7 @@ export interface BookMember {
   format?: string
   pages: number
   basePath: string
+  sessionAt?: number  // timestamp of last push with session tag (for hot session)
 }
 
 export interface BookContextValue {

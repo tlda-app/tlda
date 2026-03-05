@@ -38,8 +38,8 @@ export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages
       )
     }
   } else {
-    // SVG fallback: scroll to page bounds
-    navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y)
+    // SVG/slides: center the slide in the viewport
+    navigateTo(editor, page.bounds.x + page.bounds.width / 2, page.bounds.y + page.bounds.height / 2)
   }
 }
 

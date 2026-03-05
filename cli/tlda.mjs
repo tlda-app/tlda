@@ -63,7 +63,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -155,7 +155,7 @@ async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
  * Falls back to full push if the hashes endpoint isn't available.
  * Returns the push API response.
  */
-async function incrementalPush(name, dir, extraBody = {}) {
+async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = false } = {}) {
   // Compute local hashes (fast — just reads + MD5, no encoding)
   const localHashes = collectSourceHashes(dir)
   const localPaths = Object.keys(localHashes)
@@ -176,7 +176,7 @@ async function incrementalPush(name, dir, extraBody = {}) {
     // Find files on server that aren't local
     deletedFiles = Object.keys(serverHashes).filter(p => !(p in localHashes))
 
-    if (changedPaths.length === 0 && deletedFiles.length === 0) {
+    if (changedPaths.length === 0 && deletedFiles.length === 0 && !forceMetadata) {
       return { unchanged: true }
     }
 
@@ -432,12 +432,38 @@ async function cmdPush() {
 
   const dir = resolve(getFlag('dir') || '.')
 
+  // Session tagging: --session <id> or CLAUDE_SESSION_ID env var
+  const session = getFlag('session') || process.env.CLAUDE_SESSION_ID || null
+
   console.log(`Pushing to "${name}"...`)
-  const result = await incrementalPush(name, dir, { sourceDir: dir })
+  const result = await incrementalPush(name, dir, {
+    sourceDir: dir,
+    ...(session && { session, sessionAt: Date.now() }),
+  }, { forceMetadata: !!session })
   if (result.unchanged) {
     console.log(dim('No changes detected (use `tlda build` to force a rebuild).'))
   } else {
     console.log(green('Build triggered.'))
+  }
+
+  // Auto-join book group from .tlda-book config in source dir
+  const bookConfigPath = join(dir, '.tlda-book')
+  if (existsSync(bookConfigPath)) {
+    const bookConfig = Object.fromEntries(
+      readFileSync(bookConfigPath, 'utf8')
+        .split('\n')
+        .filter(l => l.includes(':'))
+        .map(l => l.split(':').map(s => s.trim()))
+    )
+    const group = bookConfig.group
+    if (group) {
+      try {
+        await api('PATCH', `/api/projects/${group}/members`, { add: name })
+        console.log(dim(`  Joined book "${group}"`))
+      } catch (e) {
+        console.log(dim(`  Book "${group}": ${e.message}`))
+      }
+    }
   }
 }
 
