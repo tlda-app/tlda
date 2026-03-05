@@ -13,6 +13,7 @@ import { watch, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { spawn } from 'child_process'
 import { isSourceFile, isJunk, readForUpload } from './source-files.mjs'
+import { connectSSE } from '../../shared/sse-parser.mjs'
 
 const isTTY = process.stderr.isTTY
 const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
@@ -200,68 +201,35 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
  */
 function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) {
   let lastReverseTs = 0
+  const url = `${server}/api/projects/${name}/signal/stream`
 
-  function connect() {
-    const url = `${server}/api/projects/${name}/signal/stream`
-    fetch(url, { headers: authHeaders, signal: AbortSignal.timeout(0) }).catch(() => {})
-    // Use native http for SSE (fetch doesn't stream in Node < 22 without extra work)
-    import('http').then(({ default: http }) => {
-      const parsed = new URL(url)
-      const opts = {
-        hostname: parsed.hostname,
-        port: parsed.port,
-        path: parsed.pathname + parsed.search,
-        headers: { ...authHeaders, 'Accept': 'text/event-stream' },
+  const sse = connectSSE({
+    url,
+    headers: authHeaders,
+    onEvent(signal) {
+      if (signal.key === 'signal:viewport' && signal.pages) {
+        onViewportUpdate(signal.pages)
       }
-      const req = http.get(opts, (res) => {
-        if (res.statusCode !== 200) {
-          console.log(`[watch] Signal stream returned ${res.statusCode}`)
-          res.resume()
-          setTimeout(connect, 5000)
-          return
-        }
-        let buffer = ''
-        res.on('data', (chunk) => {
-          buffer += chunk.toString()
-          let idx
-          while ((idx = buffer.indexOf('\n\n')) !== -1) {
-            const block = buffer.slice(0, idx).trim()
-            buffer = buffer.slice(idx + 2)
-            if (!block.startsWith('data: ')) continue
-            try {
-              const signal = JSON.parse(block.slice(6))
-              if (signal.key === 'signal:viewport' && signal.pages) {
-                onViewportUpdate(signal.pages)
-              }
-              if (signal.key === 'signal:reverse-sync' && signal.line && signal.file) {
-                if (signal.timestamp && signal.timestamp <= lastReverseTs) continue
-                lastReverseTs = signal.timestamp || Date.now()
-                const target = `${resolve(texDir, signal.file)}:${signal.line}`
-                console.log(`[reverse-sync] Opening ${target}`)
-                spawn('zed', [target], { stdio: 'ignore', detached: true }).unref()
-              }
-            } catch {}
-          }
-        })
-        res.on('end', () => {
-          console.log('[watch] Signal stream ended, reconnecting...')
-          setTimeout(connect, 3000)
-        })
-        res.on('error', () => {
-          setTimeout(connect, 3000)
-        })
-      })
-      req.on('error', () => {
-        setTimeout(connect, 5000)
-      })
-    })
-  }
+      if (signal.key === 'signal:reverse-sync' && signal.line && signal.file) {
+        if (signal.timestamp && signal.timestamp <= lastReverseTs) return
+        lastReverseTs = signal.timestamp || Date.now()
+        const target = `${resolve(texDir, signal.file)}:${signal.line}`
+        console.log(`[reverse-sync] Opening ${target}`)
+        spawn('zed', [target], { stdio: 'ignore', detached: true }).unref()
+      }
+    },
+    onEnd() {
+      console.log('[watch] Signal stream ended, reconnecting...')
+      setTimeout(() => sse.reconnect(), 3000)
+    },
+    onError() {
+      setTimeout(() => sse.reconnect(), 5000)
+    },
+  })
 
   // Seed viewport from cached signal
   fetch(`${server}/api/projects/${name}/signal/${encodeURIComponent('signal:viewport')}`, { headers: authHeaders })
     .then(r => r.ok ? r.json() : null)
     .then(sig => { if (sig?.pages) onViewportUpdate(sig.pages) })
     .catch(() => {})
-
-  connect()
 }

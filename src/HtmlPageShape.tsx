@@ -23,6 +23,13 @@ export function getHtmlHeadingY(shapeId: string, anchor: string): number | undef
 // Iframe element refs, keyed by shape ID (for SvgFigureShape to send transform messages)
 export const htmlIframeElements = new Map<string, HTMLIFrameElement>()
 
+/** Clean up global maps for a deleted shape. Call from store listener on shape removal. */
+export function cleanupHtmlShapeData(shapeId: string) {
+  htmlHeadingPositions.delete(shapeId)
+  htmlIframeElements.delete(shapeId)
+  htmlScrollyRegions.delete(shapeId)
+}
+
 // Scrollytelling region metadata reported by bridge scripts, keyed by shape ID
 export interface ScrollyStep {
   y: number           // document offset (px from top of iframe content)

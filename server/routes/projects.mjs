@@ -15,17 +15,16 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, cpSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
-  extractBuildErrors, extractPipelineWarnings, addBookMember, aggregateBookToc, getProjectsDir,
+  extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
-import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
-import { buildMarkdownDocument } from '../lib/build-markdown.mjs'
+import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
 
@@ -195,125 +194,14 @@ router.post('/:name/push', requireRw, async (req, res) => {
     }
   }
 
-  // Markdown format: render .md → HTML with KaTeX math, write index.html + page-info.json
-  if (project.format === 'markdown') {
+  // Non-SVG formats: respond immediately, build async
+  if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
     res.json({ ok: true, filesWritten: files?.length || 0, building: true })
-    buildMarkdownDocument(req.params.name, (msg) => console.log(msg))
-      .then(() => {
-        // Regenerate any book toc.json that includes this member
-        const allProjects = listProjects()
-        for (const p of allProjects) {
-          if (p.format === 'book' && Array.isArray(p.members) && p.members.includes(req.params.name)) {
-            aggregateBookToc(p.name, p.members)
-          }
-        }
-      })
-      .catch(e => {
-        console.error(`[markdown] Build failed for ${req.params.name}: ${e.message}`)
-        updateProject(req.params.name, { buildStatus: 'error' })
-      })
-    return
-  }
-
-  // HTML format: copy all files to output, generate page-info.json from HTML titles
-  if (project.format === 'html') {
-    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
-    try {
-      const srcDir2 = getSourceDir(req.params.name)
-      const outDir = getOutputDir(req.params.name)
-      mkdirSync(outDir, { recursive: true })
-
-      // Copy all source files to output (preserving directory structure)
-      const copyRecursive = (src, dest) => {
-        for (const entry of readdirSync(src, { withFileTypes: true })) {
-          const srcPath = join(src, entry.name)
-          const destPath = join(dest, entry.name)
-          if (entry.isDirectory()) {
-            mkdirSync(destPath, { recursive: true })
-            copyRecursive(srcPath, destPath)
-          } else {
-            cpSync(srcPath, destPath)
-          }
-        }
-      }
-      copyRecursive(srcDir2, outDir)
-
-      // Generate page-info.json from HTML files
-      // Look for existing page-info.json (may have been pushed as part of source)
-      const pageInfoPath = join(outDir, 'page-info.json')
-      let pageInfo
-      if (existsSync(pageInfoPath)) {
-        pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
-      } else {
-        // Auto-generate from HTML files: extract <title> tags
-        const htmlFiles = readdirSync(outDir).filter(f => f.endsWith('.html') && !f.startsWith('_'))
-        pageInfo = htmlFiles.map(f => {
-          const html = readFileSync(join(outDir, f), 'utf8')
-          const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i)
-          const title = titleMatch ? titleMatch[1].replace(/\s*[-–|].*$/, '').trim() : basename(f, '.html')
-          return { file: f, width: 800, height: 1000, title }
-        })
-        writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
-      }
-
-      updateProject(req.params.name, {
-        buildStatus: 'success',
-        pages: pageInfo.length,
-        lastBuild: new Date().toISOString(),
-      })
-
-      // Signal reload to connected viewers
-      broadcastSignal(`doc-${req.params.name}`, 'signal:reload', {
-        pages: pageInfo.length,
-        timestamp: Date.now(),
-      })
-
-      console.log(`[html] ${req.params.name}: ${pageInfo.length} pages`)
-    } catch (e) {
-      console.error(`[html] Build failed for ${req.params.name}: ${e.message}`)
+    const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
+    builder(req.params.name).catch(e => {
+      console.error(`[${project.format}] Build failed for ${req.params.name}: ${e.message}`)
       updateProject(req.params.name, { buildStatus: 'error' })
-    }
-    return
-  }
-
-  // Slides format: no LaTeX build — copy HTML to output, generate page-info.json
-  if (project.format === 'slides') {
-    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
-    try {
-      const srcDir2 = getSourceDir(req.params.name)
-      const outDir = getOutputDir(req.params.name)
-      mkdirSync(outDir, { recursive: true })
-
-      // Find HTML files in source and copy to output
-      const htmlFiles = readdirSync(srcDir2).filter(f => f.endsWith('.html'))
-      for (const f of htmlFiles) {
-        cpSync(join(srcDir2, f), join(outDir, f))
-      }
-
-      // Generate page-info.json from the first HTML file
-      if (htmlFiles.length > 0) {
-        const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
-        const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
-        writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
-
-        updateProject(req.params.name, {
-          buildStatus: 'success',
-          pages: pageInfo.length,
-          lastBuild: new Date().toISOString(),
-        })
-
-        // Signal reload to connected viewers
-        broadcastSignal(`doc-${req.params.name}`, 'signal:reload', {
-          pages: pageInfo.length,
-          timestamp: Date.now(),
-        })
-
-        console.log(`[slides] ${req.params.name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
-      }
-    } catch (e) {
-      console.error(`[slides] Build failed for ${req.params.name}: ${e.message}`)
-      updateProject(req.params.name, { buildStatus: 'error' })
-    }
+    })
     return
   }
 
@@ -327,36 +215,6 @@ router.post('/:name/push', requireRw, async (req, res) => {
   }
 })
 
-async function buildSlidesDocument(projectName) {
-  const srcDir = getSourceDir(projectName)
-  const outDir = getOutputDir(projectName)
-  mkdirSync(outDir, { recursive: true })
-
-  const htmlFiles = readdirSync(srcDir).filter(f => f.endsWith('.html'))
-  for (const f of htmlFiles) {
-    cpSync(join(srcDir, f), join(outDir, f))
-  }
-
-  if (htmlFiles.length === 0) throw new Error('No HTML file found in source')
-
-  const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')
-  const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
-  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
-
-  updateProject(projectName, {
-    buildStatus: 'success',
-    pages: pageInfo.length,
-    lastBuild: new Date().toISOString(),
-  })
-
-  broadcastSignal(`doc-${projectName}`, 'signal:reload', {
-    pages: pageInfo.length,
-    timestamp: Date.now(),
-  })
-
-  console.log(`[slides] ${projectName}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
-}
-
 // Trigger rebuild (no file changes)
 router.post('/:name/build', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
@@ -367,10 +225,9 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true })
 
   try {
-    if (project.format === 'markdown') {
-      await buildMarkdownDocument(req.params.name, (msg) => console.log(msg))
-    } else if (project.format === 'slides') {
-      await buildSlidesDocument(req.params.name)
+    const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
+    if (builder) {
+      await builder(req.params.name)
     } else {
       await runBuild(req.params.name, { priorityPages })
     }

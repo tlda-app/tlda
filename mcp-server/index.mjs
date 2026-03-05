@@ -18,6 +18,7 @@ import fs from 'fs';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { connectSSE } from '../shared/sse-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
@@ -117,99 +118,25 @@ async function readSignalRest(docName, key) {
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
  */
 function connectSignalStream(docName, onSignal) {
-  const url = `${TLDA_SYNC_SERVER}/api/projects/${docName}/signal/stream`;
-  const headers = { ...TLDA_AUTH_HEADERS, 'Accept': 'text/event-stream' };
-
-  const urlObj = new URL(url);
-  const req = http.request({
-    hostname: urlObj.hostname,
-    port: urlObj.port,
-    path: urlObj.pathname,
-    method: 'GET',
-    headers,
-  }, (res) => {
-    if (res.statusCode !== 200) {
-      console.error(`[SSE] Signal stream ${docName}: HTTP ${res.statusCode}`);
-      return;
-    }
-    let buffer = '';
-    res.on('data', (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n\n');
-      buffer = lines.pop();
-      for (const block of lines) {
-        const dataLine = block.split('\n').find(l => l.startsWith('data: '));
-        if (!dataLine) continue;
-        try {
-          const event = JSON.parse(dataLine.slice(6));
-          if (event.type !== 'connected') {
-            onSignal(event);
-          }
-        } catch {}
-      }
-    });
+  return connectSSE({
+    url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/signal/stream`,
+    headers: TLDA_AUTH_HEADERS,
+    onEvent: onSignal,
+    onError() { console.error(`[SSE] Signal stream ${docName} error`); },
   });
-  req.on('error', (e) => {
-    console.error(`[SSE] Signal stream ${docName} error: ${e.message}`);
-  });
-  req.end();
-
-  return {
-    close() {
-      try { req.destroy(); } catch {}
-    },
-  };
 }
 
 /**
- * Connect to shape change SSE stream. Returns { eventSource, close() }.
+ * Connect to shape change SSE stream. Returns { close() }.
  * Calls onChange() whenever shapes change in the sync room.
  */
 function connectShapeStream(docName, onChange) {
-  const url = `${TLDA_SYNC_SERVER}/api/projects/${docName}/shapes/stream`;
-  const headers = { ...TLDA_AUTH_HEADERS, 'Accept': 'text/event-stream' };
-
-  // Node doesn't have native EventSource, so use raw HTTP
-  const urlObj = new URL(url);
-  const req = http.request({
-    hostname: urlObj.hostname,
-    port: urlObj.port,
-    path: urlObj.pathname,
-    method: 'GET',
-    headers,
-  }, (res) => {
-    if (res.statusCode !== 200) {
-      console.error(`[SSE] Shape stream ${docName}: HTTP ${res.statusCode}`);
-      return;
-    }
-    let buffer = '';
-    res.on('data', (chunk) => {
-      buffer += chunk.toString();
-      // Parse SSE: lines starting with "data: " followed by \n\n
-      const lines = buffer.split('\n\n');
-      buffer = lines.pop(); // keep incomplete last chunk
-      for (const block of lines) {
-        const dataLine = block.split('\n').find(l => l.startsWith('data: '));
-        if (!dataLine) continue;
-        try {
-          const event = JSON.parse(dataLine.slice(6));
-          if (event.type !== 'connected') {
-            onChange(event);
-          }
-        } catch {}
-      }
-    });
+  return connectSSE({
+    url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/shapes/stream`,
+    headers: TLDA_AUTH_HEADERS,
+    onEvent: onChange,
+    onError() { console.error(`[SSE] Shape stream ${docName} error`); },
   });
-  req.on('error', (e) => {
-    console.error(`[SSE] Shape stream ${docName} error: ${e.message}`);
-  });
-  req.end();
-
-  return {
-    close() {
-      try { req.destroy(); } catch {}
-    },
-  };
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -22,6 +22,7 @@ import {
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
 } from './annotationVisibility'
 import { getRole } from './viewerRole'
+import { cleanupHtmlShapeData } from './HtmlPageShape'
 
 export type ReloadResult = {
   failedPages: number[]
@@ -517,6 +518,15 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     if (next.isLocked) return next
     return { ...prev, isLocked: true }
   })
+
+  // Clean up global maps when html-page shapes are deleted
+  editor.store.listen(({ changes }) => {
+    for (const shape of Object.values(changes.removed) as any[]) {
+      if (shape?.typeName === 'shape' && shape?.type === 'html-page') {
+        cleanupHtmlShapeData(shape.id)
+      }
+    }
+  }, { scope: 'document' })
 
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
