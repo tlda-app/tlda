@@ -6,7 +6,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
-**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — this is a live collaborative canvas. You can draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
+**[Live demo](https://qtm285.github.io/tlda/?doc=synth-randomization)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
 ## Why this exists
 
@@ -147,7 +147,6 @@ Everything goes through the `tlda` command:
 | Command | What it does |
 |---------|-------------|
 | `tlda server start` | Start the server (port 5176) |
-| `tlda server start --agent` | Start with Todd, the always-on triage agent |
 | `tlda server stop` | Stop the server |
 | `tlda create <name> --dir /path [--format html\|slides]` | Create a project, push files, build |
 | `tlda push [name]` | Push source files, trigger rebuild |
@@ -159,20 +158,23 @@ Everything goes through the `tlda` command:
 | `tlda preview <name> [pages]` | Rasterize SVG pages to PNG |
 | `tlda share [name]` | Print read-only viewer URL |
 | `tlda book <name> --members a,b,c` | Create a composite book project |
+| `tlda publish [doc ...]` | Publish docs to GitHub Pages + Fly |
+| `tlda agent start [--remote]` | Start Todd, the always-on triage agent |
+| `tlda agent stop` | Stop Todd |
 | `tlda delete <name>` | Delete a project |
 
-The server auto-starts on first use. Configure with `tlda config set server <url>` or the `TLDA_SERVER` env var.
+The server auto-starts on first use. Configure with `tlda config set server <url>` or the `TLDA_SERVER` env var. For remote publishing: `tlda config set remote <url>` and `tlda config set published doc1,doc2,...`.
 
 ## Other Input Formats
 
 LaTeX/SVG is the primary and best-supported format. tlda also has experimental support for:
 
-| Format | Source | Command |
-|--------|--------|---------|
-| **Markdown** | `.md` with KaTeX math | `tlda create notes --format markdown --dir /path` |
-| **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` |
-| **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` |
-| **Book** | existing projects | `tlda book course --members lec1,lec2` |
+| Format | Source | Command | Demo |
+|--------|--------|---------|------|
+| **Markdown** | `.md` with KaTeX math | `tlda create notes --format markdown --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=markdown-demo) |
+| **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` | [demo](https://qtm285.github.io/tlda/?doc=qtm285) |
+| **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=swissrollera) |
+| **Book** | existing projects | `tlda book course --members lec1,lec2` | — |
 
 See [docs/formats.md](docs/formats.md) for a detailed comparison. For Quarto HTML projects, see [docs/quarto-html.md](docs/quarto-html.md) and the config template in `extensions/tlda-quarto-config/`.
 

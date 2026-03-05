@@ -50,7 +50,8 @@ const COMMAND_HELP = {
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
-  'watch-agent': 'tlda watch-agent\n\n  Replaced by `tlda server start --agent`. The triage agent now\n  covers all documents automatically and runs alongside the server.',
+  agent:   'tlda agent [start|stop|status|log] [--remote]\n\n  Manage the triage agent (Todd).\n\n  start    Start Todd in the background\n  stop     Stop Todd\n  status   Check if Todd is running\n  log      Show recent agent log\n\n  --remote  Connect to the configured remote server instead of localhost.\n            Set the remote URL with: tlda config set remote <url>',
+  'watch-agent': 'tlda watch-agent\n\n  Replaced by `tlda agent start`. The triage agent now\n  covers all documents automatically.',
   open:    'tlda open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
   share:   'tlda share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
   status:  'tlda status [name]\n\n  Show build status for a project.',
@@ -58,7 +59,8 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
   preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
-  server:  'tlda server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Always-on agent that listens for feedback on all documents\n             and handles lightweight responses (notes, acknowledgments).',
+  server:  'tlda server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Equivalent to running `tlda agent start` separately.',
+  publish: 'tlda publish [doc ...]\n\n  Publish docs to GitHub Pages + Fly.\n\n  With no args, publishes all docs in config.published.\n  With doc names, publishes those and adds them to the list.\n\n  Config:\n    tlda config set published doc1,doc2,doc3\n    tlda config set remote https://your-fly-app.fly.dev',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
 
@@ -490,7 +492,8 @@ async function cmdWatch() {
   try {
     await api('GET', `/api/projects/${name}`)
   } catch {
-    console.error(red(`Project "${name}" not found on server. Run \`tlda create ${name}\` first.`))
+    console.error(red(`Project "${name}" not found on server.`))
+    console.error(`  Run \`tlda create ${name}\` first, or did you mean \`tlda watch-all start\`?`)
     process.exit(1)
   }
 
@@ -659,13 +662,153 @@ async function watchAllRun() {
 }
 
 async function cmdWatchAgent() {
-  console.log('The per-document watch-agent has been replaced by the triage agent.')
-  console.log('The triage agent covers all documents and runs alongside the server:')
+  console.log('The per-document watch-agent has been replaced by `tlda agent start`.')
   console.log()
-  console.log(`  ${bold('tlda server start --agent')}`)
+  console.log(`  ${bold('tlda agent start')}          # against localhost`)
+  console.log(`  ${bold('tlda agent start --remote')}  # against configured remote`)
   console.log()
-  console.log('It listens for feedback on all active projects, handles lightweight')
-  console.log('responses, and yields to terminal sessions for heavy work.')
+  console.log(dim('Set your remote: tlda config set remote <url>'))
+}
+
+// --- Agent (Todd) management ---
+
+const AGENT_LOGFILE = join(homedir(), '.config', 'tlda', 'agent.log')
+const AGENT_PIDFILE = join(homedir(), '.config', 'tlda', 'agent.pid')
+
+function readAgentPid() {
+  if (!existsSync(AGENT_PIDFILE)) return null
+  try {
+    const raw = readFileSync(AGENT_PIDFILE, 'utf8').trim()
+    // Handle both JSON format and legacy plain-number format
+    if (raw.startsWith('{')) {
+      const info = JSON.parse(raw)
+      return { pid: info.pid, target: info.target }
+    }
+    return { pid: parseInt(raw, 10), target: null }
+  } catch { return null }
+}
+
+async function cmdAgent() {
+  const sub = getPositional(0) || 'start'
+
+  if (sub === 'stop') {
+    const info = readAgentPid()
+    if (info) {
+      try { process.kill(info.pid, 'SIGTERM') } catch {}
+      try { unlinkSync(AGENT_PIDFILE) } catch {}
+    }
+    console.log(green('Agent stopped.'))
+    return
+  }
+
+  if (sub === 'status') {
+    const info = readAgentPid()
+    if (info) {
+      try {
+        process.kill(info.pid, 0)
+        const target = info.target || getServer()
+        console.log(green('Agent running') + dim(` (pid ${info.pid}, target: ${target})`))
+        return
+      } catch {}
+    }
+    console.log(red('Agent not running.'))
+    return
+  }
+
+  if (sub === 'log' || sub === 'logs') {
+    if (existsSync(AGENT_LOGFILE)) {
+      const { execSync } = await import('child_process')
+      execSync(`tail -50 "${AGENT_LOGFILE}"`, { stdio: 'inherit' })
+    } else {
+      console.log('No agent log.')
+    }
+    return
+  }
+
+  if (sub === 'start') {
+    // Check if already running
+    const existing = readAgentPid()
+    if (existing) {
+      try {
+        process.kill(existing.pid, 0)
+        console.log('Agent already running' + dim(` (pid ${existing.pid})`))
+        return
+      } catch {
+        // Stale PID file
+      }
+    }
+
+    const remote = hasFlag('remote')
+    const config = loadConfig()
+    let serverUrl, syncServerUrl
+
+    if (remote) {
+      const remoteUrl = config.remote
+      if (!remoteUrl) {
+        console.error(red('No remote configured.'))
+        console.error(dim('Set one with: tlda config set remote <url>'))
+        process.exit(1)
+      }
+      serverUrl = remoteUrl
+      syncServerUrl = remoteUrl
+    } else {
+      serverUrl = getServer()
+      syncServerUrl = null
+    }
+
+    const token = getToken()
+    const agentScript = join(dirname(fileURLToPath(import.meta.url)), 'lib', 'triage-agent.mjs')
+
+    if (!existsSync(agentScript)) {
+      console.error(red('Triage agent not found: ' + agentScript))
+      process.exit(1)
+    }
+
+    const { spawn: cpSpawn } = await import('child_process')
+    const { openSync: fsOpenSync } = await import('fs')
+
+    if (!existsSync(dirname(AGENT_LOGFILE))) mkdirSync(dirname(AGENT_LOGFILE), { recursive: true })
+    const logFd = fsOpenSync(AGENT_LOGFILE, 'a')
+
+    // Build env: strip CLAUDECODE to avoid nested-session rejection from agent SDK
+    const env = { ...process.env }
+    delete env.CLAUDECODE
+    delete env.CLAUDE_CODE_ENTRYPOINT
+    env.TLDA_SERVER = serverUrl
+    if (syncServerUrl) env.TLDA_SYNC_SERVER = syncServerUrl
+    if (token) env.TLDA_TOKEN = token
+
+    const child = cpSpawn('node', [agentScript], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env,
+    })
+    child.unref()
+
+    // Write PID file with target info
+    const target = remote ? config.remote : serverUrl
+    writeFileSync(AGENT_PIDFILE, JSON.stringify({ pid: child.pid, target }))
+
+    // Wait briefly to confirm it started
+    await new Promise(r => setTimeout(r, 2000))
+    try {
+      process.kill(child.pid, 0) // test if alive
+      const target = remote ? config.remote : serverUrl
+      console.log(green('Agent started') + dim(` (pid ${child.pid})`))
+      console.log(dim(`  Target: ${target}`))
+      console.log(dim(`  Log: ${AGENT_LOGFILE}`))
+    } catch {
+      console.error(red('Agent failed to start'))
+      console.error(dim(`Check log: ${AGENT_LOGFILE}`))
+      try { unlinkSync(AGENT_PIDFILE) } catch {}
+      process.exit(1)
+    }
+    return
+  }
+
+  console.error(`Unknown subcommand: tlda agent ${sub}`)
+  console.error('Usage: tlda agent [start|stop|status|log]')
+  process.exit(1)
 }
 
 async function cmdOpen() {
@@ -857,6 +1000,13 @@ async function cmdPreview() {
   for (const p of results) console.log(p)
 }
 
+async function cmdPublish() {
+  const { execSync: exec } = await import('child_process')
+  const scriptPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'publish-snapshot.mjs')
+  const docArgs = args.slice(1).filter(a => !a.startsWith('-'))
+  exec(`node ${scriptPath} ${docArgs.join(' ')}`, { stdio: 'inherit' })
+}
+
 async function cmdConfig() {
   const sub = getPositional(0)
   if (sub === 'set') {
@@ -939,7 +1089,8 @@ _ctd() {
     'push:Push source files and rebuild'
     'watch:Watch for changes and auto-push'
     'watch-all:Watch all projects'
-    'watch-agent:Run triage agent (use server --agent)'
+    'agent:Manage the triage agent (Todd)'
+    'publish:Publish docs to GitHub Pages + Fly'
     'open:Open viewer in browser'
     'list:List projects'
     'status:Show build status'
@@ -1257,7 +1408,8 @@ async function main() {
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'watch':  await ensureServer(); await cmdWatch(); break
       case 'watch-all': await ensureServer(); await cmdWatchAll(); break
-      case 'watch-agent': await ensureServer(); await cmdWatchAgent(); break
+      case 'agent': await cmdAgent(); break
+      case 'watch-agent': await cmdWatchAgent(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
       case 'list':   await ensureServer(); await cmdList(); break
@@ -1270,6 +1422,7 @@ async function main() {
       case 'rm':      await ensureServer(); await cmdDelete(); break
       case 'logs':    await cmdServer('logs'); break
       case 'log':     await cmdServer('logs'); break
+      case 'publish': await cmdPublish(); break
       case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
       case 'config': await cmdConfig(); break
@@ -1283,7 +1436,7 @@ Commands:
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   watch-all      Watch all projects (auto-detects new ones)
-  watch-agent    (use: tlda server start --agent)
+  agent          Manage the triage agent (Todd) [start|stop|status|log]
   open [name]    Open viewer in browser
   list           List projects
   status [name]  Show build status
@@ -1291,6 +1444,7 @@ Commands:
   logs           Show server log (alias: tlda server logs)
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
+  publish [doc ...]  Publish docs to GitHub Pages + Fly
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.
