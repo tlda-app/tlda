@@ -9,16 +9,14 @@ RUN cd server && npm install --production
 COPY server/lib/ ./server/lib/
 COPY server/routes/ ./server/routes/
 COPY server/unified-server.mjs ./server/
-COPY server/sync-server.js ./server/
 
 # Build the viewer SPA
 COPY package.json vite.config.ts tsconfig*.json index.html ./
 COPY shared/ ./shared/
 COPY src/ ./src/
-COPY public/ ./public/
 RUN npm install --ignore-scripts && npx vite build && \
     mkdir -p server/public && cp -r dist/* server/public/ && \
-    rm -rf node_modules dist src public
+    rm -rf node_modules dist src
 
 # Seed project data (output only, no source files) into /app/server/seed/
 # On startup, project.json and output/ are copied to projects/ (but sync-snapshot.json

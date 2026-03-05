@@ -244,7 +244,7 @@ async function ensureFormat(ctx) {
   const { srcDir, buildDir, projDir, texBase, texPath, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
 
-  const preamble = extractPreamble(join(srcDir, `${texBase}.tex`))
+  const preamble = extractPreamble(ctx.texPath)
   if (!preamble) {
     addLog('Could not extract preamble — skipping format')
     return null
@@ -305,7 +305,7 @@ async function ensureFormat(ctx) {
  * to the build dir. Cached .aux/.bbl/.fmt seeded into build dir from build-cache.
  */
 async function compileLaTeX(ctx) {
-  const { name, srcDir, buildDir, projDir, texBase, addLog, run } = ctx
+  const { name, srcDir, buildDir, projDir, texBase, texDir, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
 
   // Seed build dir with cached state (.aux, .bbl, .fmt) from last build
@@ -322,7 +322,8 @@ async function compileLaTeX(ctx) {
   //   3. dvisvgm converts DVI → SVG pages with placeholder boxes
   //   4. patch-svg-images.mjs replaces placeholders with actual SVG content
   // Do NOT use dvipdfmx driver — it requires .xbb files, causing corrupt DVI.
-  generateStubPdfs(srcDir, addLog)
+  generateStubPdfs(texDir, addLog)
+  if (texDir !== srcDir) generateStubPdfs(srcDir, addLog)
 
   // Try to use precompiled preamble format
   const fmtBase = await ensureFormat(ctx)
@@ -332,7 +333,7 @@ async function compileLaTeX(ctx) {
   const env = {
     ...process.env,
     TEXMFOUTPUT: buildDir,
-    TEXINPUTS: `${buildDir}:${srcDir}:`,
+    TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
 
   // Build the pdflatex command — cwd is srcDir, output goes to buildDir
@@ -351,7 +352,7 @@ async function compileLaTeX(ctx) {
   const compileStart = Date.now()
   addLog(`Compiling${fmtBase ? ' (fmt)' : ''}...`)
   try {
-    await run(cmd, { cwd: srcDir, timeout: 120000, env })
+    await run(cmd, { cwd: texDir, timeout: 120000, env })
   } catch (e) {
     addLog(`pdflatex exited with warnings (continuing): ${e.message.split('\n')[0]}`)
   }
@@ -367,8 +368,8 @@ async function compileLaTeX(ctx) {
     if (hasBrokenCites) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
-        ? `biber --input-directory="${srcDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
-        : `BIBINPUTS="${srcDir}:" BSTINPUTS="${srcDir}:" bibtex "${join(buildDir, texBase)}"`
+        ? `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${join(buildDir, texBase)}"`
       const bibTool = useBiblatex ? 'biber' : 'bibtex'
       // Remove stale .bbl — if we're here, citations are broken anyway.
       // Prevents format-switch corruption (biblatex↔bibtex cached .bbl).
@@ -383,7 +384,7 @@ async function compileLaTeX(ctx) {
       }
       // Recompile with bibliography — pdflatex may exit non-zero on warnings, that's fine
       try {
-        await run(cmd, { cwd: srcDir, timeout: 120000, env })
+        await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch (e) {
         addLog(`pdflatex exited with warnings after ${bibTool} (continuing): ${e.message.split('\n')[0]}`)
       }
@@ -396,7 +397,7 @@ async function compileLaTeX(ctx) {
     if (logText.includes('Label(s) may have changed') || logText.includes('Rerun to get')) {
       addLog('References changed — running second pass')
       try {
-        await run(cmd, { cwd: srcDir, timeout: 120000, env })
+        await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch {}
     }
   }
@@ -668,6 +669,9 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const mainFile = project.mainFile || 'main.tex'
   const texBase = basename(mainFile, '.tex')
   const texPath = join(srcDir, mainFile)
+  // If mainFile has a directory prefix (e.g. "revision/manuscript.tex"),
+  // the compilation cwd must be that subdirectory so pdflatex finds the file.
+  const texDir = join(srcDir, dirname(mainFile))
 
   if (!existsSync(texPath)) {
     throw new Error(`Main file "${mainFile}" not found in source`)
@@ -690,7 +694,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const ctx = {
     name, project, buildId,
     srcDir, outDir, projDir, buildDir,
-    texBase, texPath, mainFile,
+    texBase, texPath, texDir, mainFile,
     run: (cmd, opts = {}) => trackedExec(buildId, cmd, opts),
     addLog: (msg) => {
       const line = `[${new Date().toISOString()}] ${msg}`

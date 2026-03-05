@@ -4,17 +4,17 @@ tlda supports several input formats. Each has its own build pipeline, viewer beh
 
 ## Format Comparison
 
-| Feature | SVG (LaTeX) | HTML (Quarto) | Slides (reveal.js) | Book (composite) |
-|---------|-------------|---------------|---------------------|-----------------|
-| Source | `.tex` | `.html` (pre-rendered) | `.html` (reveal.js) | existing projects |
-| Build | latexmk → dvisvgm | copy + inject | parse slides | none |
-| Navigation | scroll | pages (tabs) | scroll | member tabs |
-| Source anchoring | synctex | no | no | per-member |
-| Proof reader | yes | no | no | per-member |
-| Dark mode | yes | yes | yes | per-member |
-| Figure overlays | patched from DVI | detected by bridge | no | per-member |
-| Math notes | yes | yes | yes | yes |
-| Drawing/highlight | yes | yes | yes | yes |
+| Feature | SVG (LaTeX) | HTML (Quarto) | Slides (reveal.js) | Markdown | Book (composite) |
+|---------|-------------|---------------|---------------------|----------|-----------------|
+| Source | `.tex` | `.html` (pre-rendered) | `.html` (reveal.js) | `.md` | existing projects |
+| Build | latexmk → dvisvgm | copy + inject | parse slides | markdown-it + KaTeX | none |
+| Navigation | scroll | pages (tabs) | scroll | single page | member tabs |
+| Source anchoring | synctex | no | no | no | per-member |
+| Proof reader | yes | no | no | no | per-member |
+| Dark mode | yes | yes | yes | yes | per-member |
+| Figure overlays | patched from DVI | detected by bridge | no | no | per-member |
+| Math notes | yes | yes | yes | yes | yes |
+| Drawing/highlight | yes | yes | yes | yes | yes |
 
 ## SVG (LaTeX) — default
 
@@ -63,6 +63,22 @@ Features:
 - Edge tap zones for fragment stepping
 - Reveal.js navigation disabled (TLDraw handles it)
 - Dark mode
+
+## Markdown — `--format markdown`
+
+Lightweight notes and scratch documents. No LaTeX build pipeline — the server renders `.md` files with markdown-it and KaTeX, served as an HTML iframe page.
+
+```bash
+tlda create my-notes --format markdown --dir ~/work/notes/ --title "My Notes"
+```
+
+Features:
+- Inline math (`$x^2$`) and display math (`$$\int_0^1 f(x)\,dx$$`) via KaTeX
+- Auto-rebuilds on save via watcher
+- Same annotation tools as all other formats (math notes, drawing, highlight)
+- No source-line anchoring (annotations are placed visually)
+
+Good for scratch work, meeting notes, or any document where you want math rendering without the full LaTeX pipeline.
 
 ## Book (composite) — `tlda book`
 

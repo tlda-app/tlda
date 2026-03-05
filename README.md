@@ -169,6 +169,7 @@ LaTeX/SVG is the primary and best-supported format. tlda also has experimental s
 
 | Format | Source | Command |
 |--------|--------|---------|
+| **Markdown** | `.md` with KaTeX math | `tlda create notes --format markdown --dir /path` |
 | **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` |
 | **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` |
 | **Book** | existing projects | `tlda book course --members lec1,lec2` |
