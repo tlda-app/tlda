@@ -97,6 +97,29 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const [isInteracting, setIsInteracting] = useState(false)
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
 
+  // Detect slides format from URL (has _tldaH param)
+  const isSlide = shape.props.url?.includes('_tldaH=')
+
+  // Viewport gating: only render iframe when near viewport.
+  // With multipage, each TLDraw page typically has one iframe, so this mainly
+  // avoids rendering when zoomed very far out.
+  const isNearViewport = useValue('near-viewport-' + shape.id, () => {
+    const viewport = editor.getViewportPageBounds()
+    // Slides use a larger keep-alive margin so scrolling back doesn't trigger a full reload.
+    // SVG pages use 2x height since each page is on its own TLDraw page anyway.
+    const margin = viewport.height * (isSlide ? 6 : 2)
+    const shapeTop = shape.y
+    const shapeBottom = shape.y + shape.props.h
+    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
+  }, [editor, shape.id, shape.y, shape.props.h, isSlide])
+
+  // Slide fade-in: start invisible, show when Reveal signals ready.
+  // Reset when isNearViewport goes false (iframe unmounted).
+  const [slideReady, setSlideReady] = useState(false)
+  useEffect(() => {
+    if (!isNearViewport) setSlideReady(false)
+  }, [isNearViewport])
+
   // When entering local interaction mode, listen for clicks or wheel outside to exit
   useEffect(() => {
     if (!isInteracting) return
@@ -133,18 +156,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
-  }, [isDark])
-
-  // Viewport gating: only render iframe when near viewport.
-  // With multipage, each TLDraw page typically has one iframe, so this mainly
-  // avoids rendering when zoomed very far out.
-  const isNearViewport = useValue('near-viewport-' + shape.id, () => {
-    const viewport = editor.getViewportPageBounds()
-    const margin = viewport.height * 2
-    const shapeTop = shape.y
-    const shapeBottom = shape.y + shape.props.h
-    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
-  }, [editor, shape.id, shape.y, shape.props.h])
+    // Mark ready on load. For slides, Reveal.js navigates to the target slide during
+    // initialization, so by the time onLoad fires the slide is already at the right position.
+    setSlideReady(true)
+  }, [isDark, isSlide])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
@@ -181,7 +196,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           targetShape = allHtmlShapes.find((s: any) => {
             const url = s.props.url || ''
             return url.endsWith('/' + e.data.targetFile) ||
-              url.includes('/' + e.data.targetFile + '?')
+              url.includes('/' + e.data.targetFile + '?') ||
+              url.includes('/' + e.data.targetFile + '/')
           })
         } else {
           targetShape = allHtmlShapes.find((s: any) => s.id === e.data.shapeId)
@@ -211,7 +227,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         if (anchor) {
           const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
           if (yOff != null) {
-            editor.centerOnPoint({ x: cx, y: targetShape.y + yOff }, { animation: { duration: 300 } })
+            // Place heading at ~15% from top (center + 0.35*vh pushes heading up from center)
+            editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
           } else {
             // Anchor not resolved yet — center on page top, poll for anchor
             editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
@@ -221,7 +238,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 clearInterval(poll)
                 const fresh = editor.store.get(targetShape.id) as any
                 if (fresh) {
-                  editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 }, { animation: { duration: 300 } })
+                  const vph = editor.getViewportPageBounds().h
+                  editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
                 }
               }
             }, 200)
@@ -317,6 +335,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         })
         return
       }
+      if (e.data?.type === 'tlda-slide-ready' && e.data.shapeId === shape.id) {
+        setSlideReady(true)
+        return
+      }
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const newH = Math.max(200, Math.round(e.data.height))
         const current = editor.store.get(shape.id) as any
@@ -337,9 +359,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const urlWithParams = shape.props.url
     ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_tldaShape=${shape.id}`)
     : ''
-
-  // Detect slides format from URL (has _tldaSlide param)
-  const isSlide = shape.props.url?.includes('_tldaH=')
 
   const handleFragmentStep = useCallback((direction: 'next' | 'prev') => {
     const iframe = iframeRef.current
@@ -387,6 +406,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 border: 'none',
                 pointerEvents: iframeActive ? 'auto' : 'none',
                 display: 'block',
+                opacity: isSlide ? (slideReady ? 1 : 0) : 1,
+                transition: isSlide ? 'opacity 0.25s ease' : undefined,
               }}
               scrolling="no"
               allow="cross-origin-isolated"
@@ -407,6 +428,16 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             </div>
           )}
         </div>
+        {/* Slides: full-size overlay captures wheel events in parent context,
+            avoiding the Safari postMessage round-trip for scroll gestures */}
+        {isSlide && !iframeActive && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'auto',
+            zIndex: 1,
+          }} />
+        )}
         {/* Slides: edge tap zones for fragment stepping (work from any tool) */}
         {isSlide && !iframeActive && (
           <>

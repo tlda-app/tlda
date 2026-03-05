@@ -570,6 +570,13 @@ const SLIDES_BRIDGE_SCRIPT = `
     // Navigate to the target slide using (indexh, indexv) coordinates
     Reveal.slide(indexh, indexv, 0);
 
+    // Signal parent that this slide is ready to show (triggers fade-in)
+    setTimeout(function() {
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'tlda-slide-ready', shapeId: shapeId }, '*');
+      }
+    }, 150);
+
     // Disable reveal's own navigation UI and wheel handling
     Reveal.configure({
       keyboard: false,
@@ -674,10 +681,24 @@ const SLIDES_HEAD_SCRIPT = `
  * Also injects a head script to clear stored reveal state before initialization.
  */
 export function injectSlidesBridge(html) {
-  // Inject head script before </head> to clear sessionStorage before reveal.js reads it
+  // Escape </body> and </html> that appear inside inline scripts to prevent Safari's strict
+  // HTML parser from terminating the document early when these sequences appear in JS strings.
+  // Keep the last occurrence of each (the real structural tag); escape all earlier ones.
+  html = html
+    .replace(/<\/body>/gi, (match, offset, str) =>
+      str.lastIndexOf('</body>') === offset ? match : '<\\/body>')
+    .replace(/<\/html>/gi, (match, offset, str) =>
+      str.lastIndexOf('</html>') === offset ? match : '<\\/html>')
+
+  // Inject head script before the structural </head> tag.
+  // Quarto reveal.js files have multiple </head> occurrences inside JS template literals
+  // (e.g. the speaker notes plugin embeds a popup HTML template). The real structural </head>
+  // is distinguished by being followed by <body class=... (with a class attribute), while
+  // the embedded template </head> tags are followed by plain <body> with no class.
   let patched = html
-  const headCloseIdx = patched.indexOf('</head>')
-  if (headCloseIdx !== -1) {
+  const headCloseMatch = /(<\/head>)(\s*<body\s)/i.exec(patched)
+  if (headCloseMatch) {
+    const headCloseIdx = headCloseMatch.index
     patched = patched.slice(0, headCloseIdx) + SLIDES_HEAD_SCRIPT + patched.slice(headCloseIdx)
   }
   const bodyCloseIdx = patched.lastIndexOf('</body>')
@@ -691,6 +712,79 @@ export function injectSlidesBridge(html) {
  * Inject bridge script into HTML content.
  * Inserts just before </body> or appends to end.
  */
+/**
+ * Inject only a chapter title card into already-bridged HTML.
+ * Use this for markdown-format docs where the bridge is already injected at build time.
+ */
+// prev/next: { name, title } or null
+export function injectChapterTitle(html, chapterTitle, prev = null, next = null) {
+  if (!chapterTitle) return html
+  const escaped = chapterTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  const titleCard = `
+<div class="tlda-chapter-title">
+  <div class="tlda-chapter-title-text">${escaped}</div>
+</div>
+<style>
+.tlda-chapter-title {
+  padding: 40px 0 32px;
+  text-align: center;
+  border-bottom: 1px solid #ccc;
+  margin-bottom: 32px;
+}
+.tlda-chapter-title-text {
+  font-family: -apple-system, 'Helvetica Neue', sans-serif;
+  font-size: 28px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  color: #222;
+}
+.tlda-chapter-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px solid #e0e0e0;
+  font-family: -apple-system, 'Helvetica Neue', sans-serif;
+  font-size: 0.82rem;
+  gap: 16px;
+}
+.tlda-chapter-nav a {
+  color: #2563eb;
+  text-decoration: none;
+  max-width: 45%;
+  line-height: 1.4;
+}
+.tlda-chapter-nav a:hover { text-decoration: underline; }
+.tlda-chapter-nav .nav-label { color: #999; display: block; font-size: 0.75rem; margin-bottom: 2px; }
+.tlda-chapter-nav .nav-spacer { flex: 1; }
+</style>`
+
+  let footer = ''
+  if (prev || next) {
+    const prevHtml = prev
+      ? `<a href="#" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${JSON.stringify(prev.name)}},'*')">
+           <span class="nav-label">← Previous</span>${prev.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}
+         </a>`
+      : '<span class="nav-spacer"></span>'
+    const nextHtml = next
+      ? `<a href="#" style="text-align:right" onclick="event.preventDefault();window.parent.postMessage({type:'tlda-navigate',targetFile:${JSON.stringify(next.name)}},'*')">
+           <span class="nav-label">Next →</span>${next.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}
+         </a>`
+      : '<span class="nav-spacer"></span>'
+    footer = `<div class="tlda-chapter-nav">${prevHtml}${nextHtml}</div>`
+  }
+
+  const bodyOpenIdx = html.indexOf('<body')
+  if (bodyOpenIdx === -1) return html
+  const bodyCloseAngle = html.indexOf('>', bodyOpenIdx)
+  if (bodyCloseAngle === -1) return html
+  const bodyCloseIdx = html.lastIndexOf('</body>')
+  if (bodyCloseIdx === -1) return html
+
+  return html.slice(0, bodyCloseAngle + 1) + titleCard + html.slice(bodyCloseAngle + 1, bodyCloseIdx) + footer + html.slice(bodyCloseIdx)
+}
+
 export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage = false, nav = {}) {
   // Fix relative paths — Quarto chapters in subdirs reference ../site_libs/
   // Rewrite to absolute doc path so assets resolve correctly from iframe

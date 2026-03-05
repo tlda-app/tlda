@@ -38,6 +38,7 @@
     "jsdom": "^27.0.1",
     "katex": "^0.16.28",
     "markdown-it": "^14.1.1",
+    "markdown-it-anchor": "^9.2.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",
     "playwright": "^1.58.2",
