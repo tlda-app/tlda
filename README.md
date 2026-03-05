@@ -6,7 +6,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
-**[Live demo](https://qtm285.github.io/tlda/?doc=synth-randomization&token=45f7a7c4d19234c961ad6cf707838a91)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
+**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3&token=45f7a7c4d19234c961ad6cf707838a91)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
 ## Why this exists
 
