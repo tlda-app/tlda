@@ -27,12 +27,12 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
 import { homedir } from 'os'
-import { initProjectStore } from './lib/project-store.mjs'
+import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, getRoomRecords, putShape, updateShape, deleteShape, onShapeChange, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
-import { injectBridge, injectSlidesBridge } from './lib/html-injector.mjs'
+import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -196,6 +196,38 @@ app.use('/docs', requireRead, (req, res, next) => {
             res.type('html').send(injected)
             return
           }
+          if (project.format === 'markdown') {
+            // Markdown: bridge already injected at build time; inject chapter title + prev/next at serve time.
+            const html = readFileSync(projectPath, 'utf8')
+
+            // Resolve chapter title: promote h1 to chapter title if present (matches aggregateBookToc logic)
+            function memberTitle(memberName) {
+              const tp = join(PROJECTS_DIR, memberName, 'output', 'toc.json')
+              if (!existsSync(tp)) return memberName
+              try {
+                const toc = JSON.parse(readFileSync(tp, 'utf8'))
+                return (toc.length > 0 && toc[0].level === 'section') ? toc[0].title : memberName
+              } catch { return memberName }
+            }
+
+            const chapterTitle = memberTitle(name)
+
+            // Find which book contains this member and compute prev/next
+            let prev = null, next = null
+            for (const p of listProjects()) {
+              if (p.format !== 'book') continue
+              const members = p.members || []
+              const idx = members.indexOf(name)
+              if (idx === -1) continue
+              if (idx > 0) prev = { name: members[idx - 1], title: memberTitle(members[idx - 1]) }
+              if (idx < members.length - 1) next = { name: members[idx + 1], title: memberTitle(members[idx + 1]) }
+              break  // use first book found
+            }
+
+            const injected = injectChapterTitle(html, chapterTitle, prev, next)
+            res.type('html').send(injected)
+            return
+          }
           if (project.format === 'html') {
             const html = readFileSync(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
@@ -353,6 +385,7 @@ function generateManifest() {
       if (existsSync(projectJsonPath)) {
         try {
           const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+          if (project.archived) continue
           documents[name] = {
             name: project.title || project.name || name,
             pages: project.pages || 0,
@@ -360,6 +393,7 @@ function generateManifest() {
             ...(project.sourceDoc && { sourceDoc: project.sourceDoc }),
             ...(project.members && { members: project.members }),
             ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
+            ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)

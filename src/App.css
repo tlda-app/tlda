@@ -95,6 +95,144 @@
   font-family: system-ui, -apple-system, sans-serif;
 }
 
+.PickerScreen {
+  font-family: system-ui, -apple-system, sans-serif;
+  padding: 2rem;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.picker-table {
+  width: 100%;
+  max-width: 640px;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.picker-table thead th {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  font-weight: 500;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.picker-table tbody tr {
+  cursor: pointer;
+}
+
+.picker-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.picker-table td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.picker-table a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.picker-table tbody tr:hover a {
+  color: #3b82f6;
+}
+
+.picker-date {
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.picker-archive {
+  width: 2rem;
+  text-align: center;
+}
+
+.archive-btn {
+  background: none;
+  border: none;
+  color: #cbd5e1;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.picker-table tbody tr:hover .archive-btn {
+  opacity: 1;
+}
+
+.archive-btn:hover {
+  color: #ef4444;
+  background: #fef2f2;
+}
+
+.picker-search {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.picker-search:focus {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.picker-archived-header {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
+
+.picker-table-archived td {
+  color: #94a3b8;
+}
+
+.picker-archived-name {
+  padding: 0.3rem 0.75rem;
+}
+
+.restore-btn {
+  background: none;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.picker-table-archived tbody tr:hover .restore-btn {
+  opacity: 1;
+}
+
+.restore-btn:hover {
+  color: #3b82f6;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
 .LoadingScreen .url {
   color: #64748b;
   font-size: 0.875rem;
@@ -396,6 +534,17 @@ body.text-select-mode ::selection {
   background: white;
   color: #0f172a;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.book-tab-hot-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  margin-left: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
 }
 
 .book-loading {

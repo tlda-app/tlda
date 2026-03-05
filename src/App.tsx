@@ -106,6 +106,13 @@ let loadAbort: AbortController | null = null
 function App() {
   const [state, setState] = useState<State | null>(null)
 
+  // Handle browser back/forward — reload to cleanly reset TLDraw state
+  useEffect(() => {
+    const onPopState = () => window.location.reload()
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const docName = params.get('doc')
@@ -180,6 +187,7 @@ function App() {
             format: memberConfig.format,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
+            ...(memberConfig.sessionAt && { sessionAt: memberConfig.sessionAt }),
           }
         })
         .filter((m): m is BookMember => m !== null)
@@ -334,27 +342,14 @@ function App() {
     case 'picker':
       return (
         <div className="App">
-          <div className="LoadingScreen">
-            <h2>Choose a document</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
-              {Object.entries(state.manifest).map(([key, config]) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                    const newUrl = new URL(window.location.href)
-                    newUrl.searchParams.set('doc', key)
-                    window.history.replaceState({}, '', newUrl.toString())
-                    const roomId = `doc-${key}`
-                    setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
-                    loadDocument(key, roomId)
-                  }}
-                  style={{ padding: '12px 24px', fontSize: '16px', cursor: 'pointer' }}
-                >
-                  {config.name || key}
-                </button>
-              ))}
-            </div>
-          </div>
+          <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
+            const newUrl = new URL(window.location.href)
+            newUrl.searchParams.set('doc', key)
+            window.history.pushState({}, '', newUrl.toString())
+            const roomId = `doc-${key}`
+            setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
+            loadDocument(key, roomId)
+          }} />
         </div>
       )
     case 'book':
@@ -374,6 +369,172 @@ function App() {
         </div>
       )
   }
+}
+
+type SortKey = 'name' | 'lastBuild' | 'lastAnnotated'
+type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>
+
+function relativeTime(iso: string | undefined): string {
+  if (!iso) return '—'
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 30) return `${days}d ago`
+  return `${Math.floor(days / 30)}mo ago`
+}
+
+interface ArchivedProject { name: string; title?: string }
+
+function DocumentPicker({ manifest, onSelect }: {
+  manifest: Record<string, DocConfig>
+  onSelect: (key: string, config: DocConfig) => void
+}) {
+  const [meta, setMeta] = useState<ProjectMeta>({})
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortAsc, setSortAsc] = useState(true)
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  const [archived, setArchived] = useState<ArchivedProject[]>([])
+  const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    fetch(`${ASSET_BASE}/api/projects/meta`)
+      .then(r => r.ok ? r.json() : {})
+      .then(setMeta)
+      .catch(() => {})
+  }, [])
+
+  // Fetch archived list when search is non-empty
+  useEffect(() => {
+    if (!search) { setArchived([]); return }
+    fetch(`${ASSET_BASE}/api/projects/archived`)
+      .then(r => r.ok ? r.json() : { projects: [] })
+      .then(data => setArchived(data.projects || []))
+      .catch(() => {})
+  }, [search])
+
+  const bookMembers = new Set<string>()
+  for (const config of Object.values(manifest)) {
+    if (config.format === 'book' && config.members) {
+      for (const m of config.members) bookMembers.add(m)
+    }
+  }
+
+  const q = search.toLowerCase()
+
+  const entries = Object.entries(manifest)
+    .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
+    .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
+    .sort(([keyA, a], [keyB, b]) => {
+      let cmp = 0
+      if (sortKey === 'name') {
+        cmp = (a.name || keyA).localeCompare(b.name || keyB)
+      } else {
+        const metaA = meta[keyA]?.[sortKey] || ''
+        const metaB = meta[keyB]?.[sortKey] || ''
+        cmp = metaA < metaB ? -1 : metaA > metaB ? 1 : 0
+      }
+      return sortAsc ? cmp : -cmp
+    })
+
+  const archivedFiltered = archived
+    .filter(p => !restoredKeys.has(p.name))
+    .filter(p => (p.title || p.name).toLowerCase().includes(q) || p.name.includes(q))
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc)
+    else { setSortKey(key); setSortAsc(key === 'name') }
+  }
+
+  const sortIndicator = (key: SortKey) =>
+    sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''
+
+  const archiveProject = (key: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setHiddenKeys(prev => new Set(prev).add(key))
+    fetch(`${ASSET_BASE}/api/projects/${key}/archive`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+    }).catch(() => {
+      setHiddenKeys(prev => { const next = new Set(prev); next.delete(key); return next })
+    })
+  }
+
+  const restoreProject = (key: string) => {
+    setRestoredKeys(prev => new Set(prev).add(key))
+    fetch(`${ASSET_BASE}/api/projects/${key}/archive`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived: false }),
+    }).catch(() => {
+      setRestoredKeys(prev => { const next = new Set(prev); next.delete(key); return next })
+    })
+  }
+
+  return (
+    <div className="PickerScreen">
+      <input
+        className="picker-search"
+        type="text"
+        placeholder="Search documents..."
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        autoFocus
+      />
+      <table className="picker-table">
+        <thead>
+          <tr>
+            <th onClick={() => toggleSort('name')}>Document{sortIndicator('name')}</th>
+            <th onClick={() => toggleSort('lastBuild')}>Last build{sortIndicator('lastBuild')}</th>
+            <th onClick={() => toggleSort('lastAnnotated')}>Last annotated{sortIndicator('lastAnnotated')}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([key, config]) => (
+            <tr key={key} onClick={() => onSelect(key, config)}>
+              <td><a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a></td>
+              <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
+              <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
+              <td className="picker-archive">
+                <button
+                  className="archive-btn"
+                  title="Archive"
+                  onClick={(e) => archiveProject(key, e)}
+                >&times;</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {archivedFiltered.length > 0 && (
+        <>
+          <div className="picker-archived-header">Archived</div>
+          <table className="picker-table picker-table-archived">
+            <tbody>
+              {archivedFiltered.map(p => (
+                <tr key={p.name}>
+                  <td className="picker-archived-name">{p.title || p.name}</td>
+                  <td className="picker-archive">
+                    <button
+                      className="restore-btn"
+                      title="Restore"
+                      onClick={() => restoreProject(p.name)}
+                    >Restore</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  )
 }
 
 export default App

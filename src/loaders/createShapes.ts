@@ -14,24 +14,27 @@ import type { SvgDocument } from './types'
  * Also handles diff documents (SVG + old page overlay).
  */
 export function createSvgShapes(editor: Editor, document: SvgDocument): boolean {
-  const existingShapes = editor.getCurrentPageShapes()
-  const hasPages = existingShapes.some(s => (s.type as string) === 'svg-page')
-  if (hasPages) return true
+  // Find which pages are missing (snapshot may have partial set)
+  const missingPages = document.pages.filter((page) => !editor.getShape(page.shapeId))
+  if (missingPages.length === 0) return true
 
   editor.createShapes(
-    document.pages.map((page, i) => ({
-      id: page.shapeId,
-      type: 'svg-page' as any,
-      x: page.bounds.x,
-      y: page.bounds.y,
-      isLocked: true,
-      opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
-      props: {
-        w: page.bounds.w,
-        h: page.bounds.h,
-        pageIndex: i,
-      },
-    }))
+    missingPages.map((page) => {
+      const i = document.pages.indexOf(page)
+      return {
+        id: page.shapeId,
+        type: 'svg-page' as any,
+        x: page.bounds.x,
+        y: page.bounds.y,
+        isLocked: true,
+        opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
+        props: {
+          w: page.bounds.w,
+          h: page.bounds.h,
+          pageIndex: i,
+        },
+      }
+    })
   )
   return false
 }

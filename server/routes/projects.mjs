@@ -15,13 +15,13 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, cpSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, cpSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
-  extractBuildErrors, extractPipelineWarnings, addBookMember, aggregateBookToc,
+  extractBuildErrors, extractPipelineWarnings, addBookMember, aggregateBookToc, getProjectsDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { generateSlidesPageInfo } from '../lib/slides-parser.mjs'
@@ -36,6 +36,31 @@ router.use('/:name/history', historyRoutes)
 // List all projects
 router.get('/', requireRead, (req, res) => {
   res.json({ projects: listProjects() })
+})
+
+// Project timestamps — computed from disk, not stored in manifest
+router.get('/meta', requireRead, (req, res) => {
+  const meta = {}
+  const dir = getProjectsDir()
+  for (const project of listProjects()) {
+    const name = project.name
+    let lastAnnotated = null
+    const snapPath = join(dir, name, 'sync-snapshot.json')
+    if (existsSync(snapPath)) {
+      try { lastAnnotated = statSync(snapPath).mtime.toISOString() } catch {}
+    }
+    meta[name] = {
+      ...(project.lastBuild && { lastBuild: project.lastBuild }),
+      ...(lastAnnotated && { lastAnnotated }),
+    }
+  }
+  res.json(meta)
+})
+
+// List archived projects
+router.get('/archived', requireRead, (req, res) => {
+  const projects = listProjects().filter(p => p.archived)
+  res.json({ projects })
 })
 
 // Create project
@@ -66,6 +91,17 @@ router.get('/:name', requireRead, (req, res) => {
     ...project,
     ...(activeBuild?.building && { activeBuild }),
   })
+})
+
+// Archive/unarchive project
+router.patch('/:name/archive', requireRw, (req, res) => {
+  try {
+    const { archived } = req.body
+    const project = updateProject(req.params.name, { archived: !!archived })
+    res.json({ ok: true, archived: project.archived })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
 })
 
 // Delete project
