@@ -7,6 +7,7 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
+import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
 const CHILDREN: Record<string, string[]> = {
@@ -241,6 +242,7 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <VimModeToggle />
         <DarkModeToggle />
       </div>
     )
@@ -259,6 +261,7 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <VimModeToggle />
         <DarkModeToggle />
       </div>
     )
@@ -408,9 +411,19 @@ export function TocTab() {
           {ctx.panelsLocal ? 'Hide panels here' : 'Show panels here'}
         </div>
       )}
+      <VimModeToggle />
       <DarkModeToggle />
     </div>
     </>
+  )
+}
+
+export function VimModeToggle() {
+  const enabled = useSyncExternalStore(subscribeVimMode, getVimMode)
+  return (
+    <div className="toc-diff-hint" onClick={toggleVimMode}>
+      {enabled ? 'vim' : 'vim off'}
+    </div>
   )
 }
 

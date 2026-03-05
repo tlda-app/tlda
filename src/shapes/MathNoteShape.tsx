@@ -20,6 +20,7 @@ import 'katex/dist/katex.min.css'
 import { getActiveMacros } from '../katexMacros'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
+import { getVimMode, subscribeVimMode } from '../vimMode'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -193,6 +194,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
     const isDraftNote = useSyncExternalStore(subscribeDrafts, () => isDraft(shape.id))
+    const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
 
     // Memoize KaTeX rendering — only re-parse when text actually changes
     const renderedHtml = useMemo(
@@ -306,7 +308,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const startState = EditorState.create({
         doc: shape.props.text || '',
         extensions: [
-          vim(),
+          ...(useVim ? [vim()] : []),
           latex(),
           // Auto-expand $$: typing second $ after first opens display math block
           EditorView.inputHandler.of((view, from, to, text) => {
@@ -366,7 +368,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       lastSentTextRef.current = shape.props.text || ''
 
       // Track vim mode changes for Yjs sync and Escape handling
-      const cm = getCM(view)
+      const cm = useVim ? getCM(view) : null
       if (cm) {
         CM5.on(cm, 'vim-mode-change', (e: any) => {
           const inInsert = e.mode === 'insert'
@@ -404,7 +406,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       view.focus()
 
       // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
-      if (pendingEntryMode && cm) {
+      if (useVim && pendingEntryMode && cm) {
         const mode = pendingEntryMode
         pendingEntryMode = null
         if (mode === 'i') {
@@ -421,7 +423,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setIsVimInsert(false)
         setVimMode('normal')
       }
-    }, [isEditing])
+    }, [isEditing, useVim])
 
     // Wrapper keydown: stop TLDraw from stealing keys, handle Escape fallback
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -430,15 +432,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         e.preventDefault()
       }
       if (e.key === 'Escape') {
-        if (modeJustChangedRef.current) {
+        if (useVim && modeJustChangedRef.current) {
           // Mode just changed (insert→normal) on this keypress — don't exit
           modeJustChangedRef.current = false
+        } else if (!useVim) {
+          // No vim — Escape always exits
+          editor.setEditingShape(null)
         } else {
-          // Already in normal mode — exit editing
+          // Vim normal mode — exit editing
           editor.setEditingShape(null)
         }
       }
-    }, [editor])
+    }, [editor, useVim])
 
     // Divider drag handlers
     const handleDividerPointerDown = useCallback((e: React.PointerEvent) => {
@@ -576,7 +581,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               justifyContent: 'space-between',
             }}
           >
-            <span>-- {vimMode.toUpperCase()} --</span>
+            <span>{useVim ? `-- ${vimMode.toUpperCase()} --` : ''}</span>
             <span className="math-note-colors" style={{
               display: 'flex',
               gap: '2px',
