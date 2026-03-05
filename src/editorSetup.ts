@@ -22,7 +22,7 @@ import {
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
 } from './annotationVisibility'
 import { getRole } from './viewerRole'
-import { cleanupHtmlShapeData } from './HtmlPageShape'
+import { cleanupHtmlShapeData } from './shapes/HtmlPageShape'
 
 export type ReloadResult = {
   failedPages: number[]

@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { react } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { htmlScrollyRegions, type ScrollyRegion } from './HtmlPageShape'
+import { htmlScrollyRegions, type ScrollyRegion } from '../shapes/HtmlPageShape'
 import './ScrollyOverlay.css'
 
 interface ScrollyOverlayProps {

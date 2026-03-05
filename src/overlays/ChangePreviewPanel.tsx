@@ -6,9 +6,9 @@
 import { useMemo, useCallback, useRef, useState } from 'react'
 import { stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import type { ChangeItem } from './historyStore'
-import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
-import { PDF_HEIGHT } from './layoutConstants'
+import type { ChangeItem } from '../historyStore'
+import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
+import { PDF_HEIGHT } from '../layoutConstants'
 import './ChangePreviewPanel.css'
 
 const MARGIN_INSET = 70

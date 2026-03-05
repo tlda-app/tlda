@@ -6,11 +6,11 @@ import {
   useValue,
 } from 'tldraw'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { injectSvgFonts } from './svgFonts'
-import { injectWordSpaces } from './svgWordSpaces'
-import { subscribeSvgText, getSvgText } from './stores/svgTextStore'
-import { changeStore, onShapeChangeUpdate, type ChangeRegion } from './stores/changeStore'
-import { getNavigateToAnchor, getOnSourceClick } from './stores/anchorIndex'
+import { injectSvgFonts } from '../svgFonts'
+import { injectWordSpaces } from '../svgWordSpaces'
+import { subscribeSvgText, getSvgText } from '../stores/svgTextStore'
+import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
+import { getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const

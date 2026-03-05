@@ -14,12 +14,12 @@ import {
   switchTab,
   addTab,
   detachTab,
-} from './noteThreading'
+} from '../noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
-import { getActiveMacros } from './katexMacros'
-import { subscribeSearchFilter, getSearchFilter } from './stores'
-import { isDraft, subscribeDrafts, publishDraft } from './annotationVisibility'
+import { getActiveMacros } from '../katexMacros'
+import { subscribeSearchFilter, getSearchFilter } from '../stores'
+import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'

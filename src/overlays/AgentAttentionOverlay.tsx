@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Editor } from 'tldraw'
-import { onAgentAttention } from './useYjsSync'
+import { onAgentAttention } from '../useYjsSync'
 import './AgentAttentionOverlay.css'
 
 const FLASH_DURATION = 60000

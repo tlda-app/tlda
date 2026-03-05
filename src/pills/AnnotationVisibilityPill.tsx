@@ -9,7 +9,7 @@ import {
   setVisibilityMode,
   subscribeVisibility,
   type VisibilityMode,
-} from './annotationVisibility'
+} from '../annotationVisibility'
 import './AnnotationVisibilityPill.css'
 
 const MODE_LABELS: Record<VisibilityMode, string> = {

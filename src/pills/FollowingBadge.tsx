@@ -3,8 +3,8 @@
  * Small, unobtrusive indicator that the camera is being driven by someone else.
  */
 import { useState, useEffect, useSyncExternalStore } from 'react'
-import { onPresenterSignal } from './useYjsSync'
-import { getRole, subscribeRole } from './viewerRole'
+import { onPresenterSignal } from '../useYjsSync'
+import { getRole, subscribeRole } from '../viewerRole'
 import './FollowingBadge.css'
 
 export function FollowingBadge() {

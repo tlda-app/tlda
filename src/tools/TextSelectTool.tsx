@@ -1,5 +1,5 @@
 import { StateNode } from 'tldraw'
-import { writeSignal } from './useYjsSync'
+import { writeSignal } from '../useYjsSync'
 
 /**
  * Custom tool that activates native SVG text selection mode.

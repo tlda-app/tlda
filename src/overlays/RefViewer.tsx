@@ -6,9 +6,9 @@
  */
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import type { LabelRegion } from './svgDocumentLoader'
-import { PDF_HEIGHT } from './layoutConstants'
-import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
+import type { LabelRegion } from '../svgDocumentLoader'
+import { PDF_HEIGHT } from '../layoutConstants'
+import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import './RefViewer.css'
 
 const MARGIN_INSET = 70

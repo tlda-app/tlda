@@ -1,7 +1,7 @@
 import { StateNode, createShapeId, DefaultColorStyle, type JsonObject } from 'tldraw'
-import { currentDocumentInfo } from './svgDocumentLoader'
-import { getSourceAnchor, canvasToPdf, type SourceAnchor } from './synctexAnchor'
-import { NOTE_COLORS } from './MathNoteShape'
+import { currentDocumentInfo } from '../svgDocumentLoader'
+import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
+import { NOTE_COLORS } from '../shapes/MathNoteShape'
 
 const NOTE_W = 200
 const NOTE_H = 50

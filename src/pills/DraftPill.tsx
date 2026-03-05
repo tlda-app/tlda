@@ -14,7 +14,7 @@ import {
   isDraftMode,
   toggleDraftMode,
   subscribeDraftMode,
-} from './annotationVisibility'
+} from '../annotationVisibility'
 import './DraftPill.css'
 
 export function DraftPill() {

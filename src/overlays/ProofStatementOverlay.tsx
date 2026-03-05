@@ -6,9 +6,9 @@ import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
 import { react, stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
 import type { TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import type { ProofData } from './svgDocumentLoader'
-import { PDF_HEIGHT } from './layoutConstants'
-import { CanvasClipPanel, type ClipBounds } from './CanvasClipPanel'
+import type { ProofData } from '../svgDocumentLoader'
+import { PDF_HEIGHT } from '../layoutConstants'
+import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import './ProofStatementOverlay.css'
 
 const MARGIN_INSET = 70

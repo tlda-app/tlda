@@ -3,7 +3,7 @@ import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
 import type { DocContextValue } from '../PanelContext'
-import { getHtmlHeadingY } from '../HtmlPageShape'
+import { getHtmlHeadingY } from '../shapes/HtmlPageShape'
 
 // --- Helpers ---
 

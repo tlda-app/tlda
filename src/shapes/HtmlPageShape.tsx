@@ -10,7 +10,7 @@ import {
 } from 'tldraw'
 import type { TLPageId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { appendToken } from './authToken'
+import { appendToken } from '../authToken'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
