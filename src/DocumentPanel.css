@@ -1143,6 +1143,17 @@ html[data-theme="dark"] .history-compare-btn.active {
   opacity: 0.5;
 }
 
+.toc-toggle-icon {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.toc-toggle-indented {
+  padding-left: calc(8px + 1.2em);
+}
+
 /* Proofs tab */
 
 .proof-item {

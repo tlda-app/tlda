@@ -4,7 +4,7 @@ import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
-import { DocContext, PanelContext } from '../PanelContext'
+import { DocContext, PanelContext, type PanelContextValue } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
@@ -243,9 +243,10 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
-        <CameraLinkToggle />
         <DarkModeToggle />
         <VimModeToggle />
+        <CameraLinkToggle />
+        <HideDefsToggle ctx={ctx} />
       </div>
     )
   }
@@ -263,9 +264,10 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
-        <CameraLinkToggle />
         <DarkModeToggle />
         <VimModeToggle />
+        <CameraLinkToggle />
+        <HideDefsToggle ctx={ctx} />
       </div>
     )
   }
@@ -406,17 +408,10 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      {doc?.format !== 'slides' && <CameraLinkToggle />}
-      {ctx?.onTogglePanelsLocal && (
-        <div
-          className="toc-diff-hint"
-          onClick={() => ctx.onTogglePanelsLocal?.()}
-        >
-          {ctx.panelsLocal ? 'Hide defs' : 'Show defs'}
-        </div>
-      )}
       <DarkModeToggle />
       <VimModeToggle />
+      <CameraLinkToggle />
+      <HideDefsToggle ctx={ctx} />
     </div>
     </>
   )
@@ -426,7 +421,16 @@ export function CameraLinkToggle() {
   const linked = useSyncExternalStore(subscribeCameraLinked, getCameraLinked)
   return (
     <div className="toc-diff-hint" onClick={toggleCameraLinked}>
-      {linked ? '🔗' : '⛓️‍💥'} {linked ? 'Unlink cameras' : 'Link cameras'}
+      <span className="toc-toggle-icon">{'\u21C6'}</span> {linked ? 'Linked' : 'Link cameras'}
+    </div>
+  )
+}
+
+export function HideDefsToggle({ ctx }: { ctx: PanelContextValue | null }) {
+  if (!ctx?.onTogglePanelsLocal) return null
+  return (
+    <div className="toc-diff-hint toc-toggle-indented" onClick={() => ctx.onTogglePanelsLocal?.()}>
+      {ctx.panelsLocal ? 'Hide defs' : 'Show defs'}
     </div>
   )
 }
@@ -435,7 +439,7 @@ export function VimModeToggle() {
   const enabled = useSyncExternalStore(subscribeVimMode, getVimMode)
   return (
     <div className="toc-diff-hint" onClick={toggleVimMode}>
-      {enabled ? '>' : '⌨'} Vim mode{enabled ? '' : ' off'}
+      <span className="toc-toggle-icon">{'\u276F'}</span> {enabled ? 'Vim' : 'Vim off'}
     </div>
   )
 }
@@ -452,7 +456,7 @@ export function DarkModeToggle() {
         editor.user.updateUserPreferences({ colorScheme: next })
       }}
     >
-      {scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'} {label}
+      <span className="toc-toggle-icon">{scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'}</span> {label}
     </div>
   )
 }
