@@ -113,7 +113,8 @@ export function readManifestSync() {
   try {
     return JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   } catch {
-    return null
+    // Fallback: scan server/projects/ for project.json files
+    return buildManifestFromProjects()
   }
 }
 
@@ -124,12 +125,16 @@ export async function readManifest() {
 
     try {
       const res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
-      if (!res.ok) return null
+      if (!res.ok) {
+        // HTTP failed — fall back to scanning projects on disk
+        return buildManifestFromProjects()
+      }
       const data = await res.json()
       setCache('_root', 'manifest.json', data)
       return data
     } catch {
-      return null
+      // fetch() itself failed (sandbox, network) — fall back to disk scan
+      return buildManifestFromProjects()
     }
   }
 
@@ -230,6 +235,37 @@ async function fetchJson(docName, filename) {
     const data = await res.json()
     setCache(docName, filename, data)
     return data
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Build a manifest-like object by scanning server/projects/ for project.json files.
+ * Fallback for when public/docs/manifest.json doesn't exist (unified server mode).
+ */
+function buildManifestFromProjects() {
+  if (!projectRoot) return null
+  const projectsDir = path.join(projectRoot, 'server', 'projects')
+  try {
+    const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
+    const documents = {}
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const projPath = path.join(projectsDir, entry.name, 'project.json')
+      try {
+        const proj = JSON.parse(fs.readFileSync(projPath, 'utf8'))
+        documents[entry.name] = {
+          title: proj.title || entry.name,
+          pages: proj.pages || 0,
+          mainFile: proj.mainFile,
+        }
+      } catch { /* skip dirs without valid project.json */ }
+    }
+    if (Object.keys(documents).length === 0) return null
+    const manifest = { documents }
+    setCache('_root', 'manifest.json', manifest)
+    return manifest
   } catch {
     return null
   }

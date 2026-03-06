@@ -6,7 +6,7 @@ Built for iPad-first review workflows. Works standalone as a paper viewer and an
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
-**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3&token=45f7a7c4d19234c961ad6cf707838a91)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
+**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time. Please be cool.
 
 ## Why this exists
 
@@ -171,9 +171,9 @@ LaTeX/SVG is the primary and best-supported format. tlda also has experimental s
 
 | Format | Source | Command | Demo |
 |--------|--------|---------|------|
-| **Markdown** | `.md` with KaTeX math | `tlda create notes --format markdown --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=markdown-demo&token=45f7a7c4d19234c961ad6cf707838a91) |
-| **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` | [demo](https://qtm285.github.io/tlda/?doc=qtm285&token=45f7a7c4d19234c961ad6cf707838a91) |
-| **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=swissrollera&token=45f7a7c4d19234c961ad6cf707838a91) |
+| **Markdown** | `.md` with KaTeX math | `tlda create notes --format markdown --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=markdown-demo) |
+| **HTML** | Quarto-rendered chapters | `tlda create book --format html --dir _book-tlda` | [demo](https://qtm285.github.io/tlda/?doc=qtm285) |
+| **Slides** | reveal.js HTML | `tlda create deck --format slides --dir /path` | [demo](https://qtm285.github.io/tlda/?doc=swissrollera) |
 | **Book** | existing projects | `tlda book course --members lec1,lec2` | — |
 
 See [docs/formats.md](docs/formats.md) for a detailed comparison. For Quarto HTML projects, see [docs/quarto-html.md](docs/quarto-html.md) and the config template in `extensions/tlda-quarto-config/`.

@@ -50,6 +50,8 @@ const COMMAND_HELP = {
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
   'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
+  listen:  'tlda listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
+  monitor: 'tlda monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
   agent:   'tlda agent [start|stop|status|log] --target <name>\n\n  Manage the triage agent (Todd). One agent per target.\n\n  start    Start Todd for the given target\n  stop     Stop Todd (no --target = stop all)\n  status   Show running agents (no --target = show all)\n  log      Show recent agent log for a target\n\n  --target <name>  Required for start/log. Optional for stop/status.',
   'watch-agent': 'tlda watch-agent\n\n  Replaced by `tlda agent start`. The triage agent now\n  covers all documents automatically.',
   open:    'tlda open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
@@ -65,7 +67,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -691,6 +693,104 @@ function allAgentTargets() {
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter(f => f.startsWith('agent-') && f.endsWith('.pid'))
     .map(f => f.slice(6, -4)) // extract target name
+}
+
+async function cmdMonitor() {
+  const sub = getPositional(0) // add, remove, list, clear
+  const doc = getPositional(1)
+  const watchFile = '/tmp/tlda-listen-docs'
+  const stateDir = '/tmp/tlda-listen-state'
+
+  function readDocs() {
+    if (!existsSync(watchFile)) return []
+    return readFileSync(watchFile, 'utf8').split('\n').filter(Boolean)
+  }
+  function writeDocs(docs) {
+    writeFileSync(watchFile, docs.join('\n') + (docs.length ? '\n' : ''))
+  }
+
+  if (!sub || sub === 'list') {
+    const docs = readDocs()
+    if (docs.length === 0) {
+      console.log(dim('No docs being monitored.'))
+      console.log(dim('  tlda monitor add <doc>'))
+    } else {
+      console.log(`Monitoring: ${docs.join(', ')}`)
+    }
+    return
+  }
+
+  if (sub === 'add') {
+    if (!doc) { console.error('Usage: tlda monitor add <doc>'); process.exit(1) }
+    const docs = readDocs()
+    if (!docs.includes(doc)) {
+      docs.push(doc)
+      writeDocs(docs)
+    }
+    // Seed the snapshot so the hook doesn't fire on existing shapes
+    mkdirSync(stateDir, { recursive: true })
+    try {
+      const server = getServer()
+      const token = getToken()
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
+      const res = await fetch(`${server}/api/projects/${doc}/shapes`, { headers })
+      if (res.ok) {
+        const shapes = await res.json()
+        writeFileSync(join(stateDir, `shapes-${doc}.json`), JSON.stringify(shapes))
+      }
+      // Seed ping timestamp
+      const pingRes = await fetch(`${server}/api/projects/${doc}/signal/signal:ping`, { headers })
+      if (pingRes.ok) {
+        const ping = await pingRes.json()
+        if (ping?.timestamp) writeFileSync(join(stateDir, `signal-ts-${doc}`), String(ping.timestamp))
+      }
+    } catch {}
+    console.log(green(`Monitoring ${doc}`) + dim(' (hook will check between tool calls)'))
+    console.log(dim(`  When idle, call wait_for_feedback("${doc}") to block until feedback arrives.`))
+    return
+  }
+
+  if (sub === 'remove' || sub === 'rm') {
+    if (!doc) { console.error('Usage: tlda monitor remove <doc>'); process.exit(1) }
+    const docs = readDocs().filter(d => d !== doc)
+    writeDocs(docs)
+    // Clean up state
+    try { unlinkSync(join(stateDir, `shapes-${doc}.json`)) } catch {}
+    try { unlinkSync(join(stateDir, `signal-ts-${doc}`)) } catch {}
+    console.log(dim(`Stopped monitoring ${doc}`))
+    return
+  }
+
+  if (sub === 'clear') {
+    writeDocs([])
+    try { unlinkSync(join(stateDir, 'last-check')) } catch {}
+    console.log(dim('Cleared all monitored docs'))
+    return
+  }
+
+  console.error(`Unknown subcommand: ${sub}\nUsage: tlda monitor [add|remove|list|clear] [doc]`)
+  process.exit(1)
+}
+
+async function cmdListen() {
+  const doc = getPositional(0)
+  if (!doc) {
+    console.error('Usage: tlda listen <doc> [--timeout <seconds>]')
+    process.exit(1)
+  }
+  const timeout = parseInt(getFlag('timeout', '300')) || 300
+  const { listen } = await import('./lib/listener.mjs')
+  try {
+    const result = await listen(doc, { timeout })
+    console.log(JSON.stringify(result))
+  } catch (e) {
+    if (e.message === 'timeout') {
+      console.error(`[listen] No feedback within ${timeout}s`)
+      process.exit(1)
+    }
+    console.error(`[listen] Error: ${e.message}`)
+    process.exit(1)
+  }
 }
 
 async function cmdAgent() {
@@ -1451,6 +1551,8 @@ async function main() {
       case 'watch-all': await ensureServer(); await cmdWatchAll(); break
       case 'agent': await cmdAgent(); break
       case 'watch-agent': await cmdWatchAgent(); break
+      case 'listen': await ensureServer(); await cmdListen(); break
+      case 'monitor': await ensureServer(); await cmdMonitor(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
       case 'list':   await ensureServer(); await cmdList(); break
@@ -1477,6 +1579,8 @@ Commands:
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
   watch-all      Watch all projects (auto-detects new ones)
+  listen <doc>   Block until feedback arrives, print JSON, exit
+  monitor        Manage hook-based doc monitoring [add|remove|list|clear]
   agent          Manage the triage agent (Todd) [start|stop|status|log]
   open [name]    Open viewer in browser
   list           List projects

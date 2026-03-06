@@ -152,6 +152,7 @@ function connectShapeStream(docName, onChange) {
       setTimeout(() => stream.reconnect(), 5000);
     },
   });
+  return stream;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2060,11 +2061,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       writeAgentHeartbeat(docName, 'listening', 'claude');
       heartbeatInterval = setInterval(() => writeAgentHeartbeat(docName, 'listening', 'claude'), 15000);
 
-      // Initialize ping timestamp from signal cache so stale pings are ignored
+      // Shared snapshot state with the PostToolUse hook (tlda monitor).
+      // If the hook has been running, its snapshot is the ground truth for
+      // what the agent has already seen. Read it as our baseline so we don't
+      // re-fire on shapes the hook already reported.
+      const SHARED_STATE_DIR = '/tmp/tlda-listen-state';
+      const sharedSnapshotFile = `${SHARED_STATE_DIR}/shapes-${docName}.json`;
+      const sharedPingFile = `${SHARED_STATE_DIR}/signal-ts-${docName}`;
+
+      // Initialize ping timestamp — prefer shared state, fall back to server
+      try {
+        const savedTs = fs.existsSync(sharedPingFile) ? parseInt(fs.readFileSync(sharedPingFile, 'utf8').trim()) : 0;
+        if (savedTs > lastPingTimestamp) lastPingTimestamp = savedTs;
+      } catch {}
       const existingPing = await readSignalRest(docName, 'signal:ping');
       if (existingPing?.timestamp > lastPingTimestamp) {
         if (lastPingTimestamp > 0) {
           lastPingTimestamp = existingPing.timestamp;
+          // Write back shared state before early return so hook doesn't re-fire
+          try {
+            fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
+            fs.writeFileSync(sharedPingFile, String(lastPingTimestamp));
+          } catch {}
           clearInterval(heartbeatInterval);
           writeAgentHeartbeat(docName, 'thinking', 'claude');
           return { content: [{ type: 'text', text: await formatPing(existingPing, docName) }] };
@@ -2072,15 +2090,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         lastPingTimestamp = existingPing.timestamp;
       }
 
-      // Snapshot current shapes (from @tldraw/sync via REST) for diffing
+      // Snapshot shapes — prefer shared state from hook, fall back to fresh fetch
       const knownShapes = new Map(); // id → shape
       try {
-        const allShapes = await fetchShapes(docName);
-        for (const s of allShapes) {
+        let baseline;
+        if (fs.existsSync(sharedSnapshotFile)) {
+          baseline = JSON.parse(fs.readFileSync(sharedSnapshotFile, 'utf8'));
+          console.error(`[wait] Loaded shared snapshot for ${docName} (${baseline.length} records)`);
+        } else {
+          baseline = await fetchShapes(docName);
+        }
+        for (const s of baseline) {
           if (s.typeName === 'shape') knownShapes.set(s.id, s);
         }
       } catch (e) {
-        console.error(`[wait] Failed to snapshot shapes for ${docName}: ${e.message}`);
+        console.error(`[wait] Failed to load snapshot for ${docName}: ${e.message}`);
+        // Fall back to fresh fetch
+        try {
+          const allShapes = await fetchShapes(docName);
+          for (const s of allShapes) {
+            if (s.typeName === 'shape') knownShapes.set(s.id, s);
+          }
+        } catch {}
       }
 
       const DEBOUNCE_MS = 5000;
@@ -2199,6 +2230,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (shapeStream) { shapeStream.close(); shapeStream = null; }
       if (signalStream) { signalStream.close(); signalStream = null; }
       writeAgentHeartbeat(docName, 'thinking', 'claude');
+
+      // Write back shared snapshot so the hook picks up where we left off
+      try {
+        const currentShapes = await fetchShapes(docName);
+        fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
+        fs.writeFileSync(sharedSnapshotFile, JSON.stringify(currentShapes));
+        fs.writeFileSync(sharedPingFile, String(lastPingTimestamp));
+      } catch (e) {
+        console.error(`[wait] Failed to write shared snapshot: ${e.message}`);
+      }
 
       if (result?.type === 'http-snapshot') {
         return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };

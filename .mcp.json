@@ -5,7 +5,10 @@
       "command": "/opt/homebrew/bin/node",
       "args": [
         "/Users/skip/work/tlda/mcp-server/index.mjs"
-      ]
+      ],
+      "env": {
+        "TLDA_SERVER": "http://localhost:5176"
+      }
     }
   }
 }
