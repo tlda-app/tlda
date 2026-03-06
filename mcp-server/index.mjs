@@ -118,12 +118,20 @@ async function readSignalRest(docName, key) {
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
  */
 function connectSignalStream(docName, onSignal) {
-  return connectSSE({
+  const stream = connectSSE({
     url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/signal/stream`,
     headers: TLDA_AUTH_HEADERS,
     onEvent: onSignal,
-    onError() { console.error(`[SSE] Signal stream ${docName} error`); },
+    onEnd() {
+      console.error(`[SSE] Signal stream ${docName} ended, reconnecting...`);
+      setTimeout(() => stream.reconnect(), 3000);
+    },
+    onError() {
+      console.error(`[SSE] Signal stream ${docName} error, reconnecting...`);
+      setTimeout(() => stream.reconnect(), 5000);
+    },
   });
+  return stream;
 }
 
 /**
@@ -131,11 +139,18 @@ function connectSignalStream(docName, onSignal) {
  * Calls onChange() whenever shapes change in the sync room.
  */
 function connectShapeStream(docName, onChange) {
-  return connectSSE({
+  const stream = connectSSE({
     url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/shapes/stream`,
     headers: TLDA_AUTH_HEADERS,
     onEvent: onChange,
-    onError() { console.error(`[SSE] Shape stream ${docName} error`); },
+    onEnd() {
+      console.error(`[SSE] Shape stream ${docName} ended, reconnecting...`);
+      setTimeout(() => stream.reconnect(), 3000);
+    },
+    onError() {
+      console.error(`[SSE] Shape stream ${docName} error, reconnecting...`);
+      setTimeout(() => stream.reconnect(), 5000);
+    },
   });
 }
 

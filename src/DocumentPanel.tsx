@@ -260,7 +260,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
       onTouchStart={e => e.stopPropagation()}
       onTouchEnd={e => e.stopPropagation()}
       title={
-        agentState === 'offline' ? 'No agent connected — tap to ping' :
+        agentState === 'offline' ? 'No agent connected' :
         agentState === 'listening' ? `${agentName === 'todd' ? 'Todd' : 'Claude'} listening — tap to ping` :
         agentState === 'thinking' ? `${agentName === 'todd' ? 'Todd' : 'Claude'} thinking` :
         'Agent may be disconnected — tap to ping'

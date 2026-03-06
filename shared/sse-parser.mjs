@@ -5,6 +5,7 @@
  */
 
 import http from 'http'
+import https from 'https'
 
 /**
  * Parse an SSE data block into a JSON object.
@@ -40,13 +41,15 @@ export function connectSSE({ url, headers = {}, onEvent, onError, onEnd, filter 
   function connect() {
     if (closed) return
     const parsed = new URL(url)
+    const isHttps = parsed.protocol === 'https:'
     const opts = {
       hostname: parsed.hostname,
-      port: parsed.port,
+      port: parsed.port || (isHttps ? 443 : 80),
       path: parsed.pathname + parsed.search,
       headers: { ...headers, 'Accept': 'text/event-stream' },
     }
-    req = http.get(opts, (res) => {
+    const transport = isHttps ? https : http
+    req = transport.get(opts, (res) => {
       if (res.statusCode !== 200) {
         res.resume()
         onError?.()

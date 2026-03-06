@@ -21,7 +21,8 @@ function log(msg) {
   console.log(line)
 }
 
-const SYSTEM_PROMPT = `You are a triage agent. You listen across all documents and respond with brief notes.
+function buildSystemPrompt(extraMcp) {
+  return `You are a triage agent. You listen across all documents and respond with brief notes.
 
 ## When to respond
 
@@ -107,6 +108,18 @@ There are also paper-specific terminal agents (Claude) that run in terminal sess
 
 **Colors:** Green for answers, blue for questions, violet for escalation.
 
+${extraMcp['agent-manager'] ? `## Agent manager
+
+You are connected to the agent-manager MCP server. On your first cycle:
+1. Call register(name: "todd") to register yourself.
+2. Read ${KNOWLEDGE_PATH} for project context.
+
+Each cycle, after responding to feedback (or if there's no feedback to respond to), call my_task() to check for messages or tasks from the manager.
+
+**Escalation via chat:** When something needs a terminal agent (tex edits, deep analysis), use chat(message: "...") to tell the manager what's needed — include the doc name, source line, and what kind of work. The manager can spin up or redirect a terminal agent. You can still drop a violet note for the user too.` : `## Project knowledge
+
+Read ${KNOWLEDGE_PATH} on your first cycle for context about the projects you cover.`}
+
 ## Do NOT
 
 - Respond to marks that aren't directed at you
@@ -115,20 +128,17 @@ There are also paper-specific terminal agents (Claude) that run in terminal sess
 - Loop on screenshots — one is enough
 - Read files outside ~/work — macOS-managed folders (Desktop, Documents, Downloads, etc.) trigger permission popups
 
-## Project knowledge
-
-Read ${KNOWLEDGE_PATH} on your first cycle for context about the projects you cover — what each paper is about, how they relate, key references. This helps you respond knowledgeably without needing to read source every time.
-
 Call wait_for_any_feedback() now.`
+}
 
 export async function startTriageAgent({ getServer, getToken }) {
   const server = getServer()
   const syncServer = server.replace(/^http/, 'ws')
   const token = getToken()
 
-  // Strip CLAUDECODE from process.env to avoid "nested session" rejection
-  // when the Agent SDK spawns Claude Code as a subprocess
-  delete process.env.CLAUDECODE
+  // Strip env vars that would confuse subprocesses
+  delete process.env.CLAUDECODE  // avoid "nested session" rejection
+  delete process.env.AGENT_WIN   // Todd is headless, not a kitty window
   const cleanEnv = { ...process.env }
   const mcpEnv = { ...cleanEnv, SYNC_SERVER: syncServer }
   // Only set TLDA_SERVER for doc assets if explicitly configured (not just the default).
@@ -158,12 +168,20 @@ export async function startTriageAgent({ getServer, getToken }) {
     process.exit(0)
   })
 
+  // Load extra MCP servers from user config (e.g. agent-manager)
+  let extraMcp = {}
+  try {
+    const toddConfig = join(homedir(), '.config', 'tlda', 'todd-mcp.json')
+    extraMcp = JSON.parse(readFileSync(toddConfig, 'utf8'))
+  } catch {}
+
   const mcpConfig = {
     'tldraw-feedback': {
       command: 'node',
       args: [MCP_SERVER_PATH],
       env: mcpEnv,
-    }
+    },
+    ...extraMcp,
   }
 
   const allowedTools = [
@@ -176,16 +194,50 @@ export async function startTriageAgent({ getServer, getToken }) {
     'mcp__tldraw-feedback__screenshot',
     'mcp__tldraw-feedback__highlight_location',
     'mcp__tldraw-feedback__scroll_to_line',
+    ...(extraMcp['agent-manager'] ? [
+      'mcp__agent-manager__register',
+      'mcp__agent-manager__chat',
+      'mcp__agent-manager__my_task',
+    ] : []),
     'Read', 'Glob', 'Grep',
   ]
 
   log('[triage] Starting triage agent')
 
+  // Heartbeat independent of SDK cycles — keeps viewer showing "agent connected"
+  // even during SDK startup/rate-limiting gaps between cycles
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      const manifest = await fetch(`${server}/docs/manifest.json`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      }).then(r => r.ok ? r.json() : null)
+      const docs = manifest?.documents ? Object.keys(manifest.documents) : []
+      for (const doc of docs) {
+        await fetch(`${server}/api/projects/${doc}/signal`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            key: 'signal:agent-heartbeat',
+            state: 'listening',
+            agent: 'todd',
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {})
+      }
+    } catch {}
+  }, 15000)
+
   while (true) {
     cycle++
+    const hasManager = !!extraMcp['agent-manager']
     const prompt = cycle === 1
-      ? SYSTEM_PROMPT
-      : 'Call wait_for_any_feedback() to listen for the next feedback on any document. Interpret and respond, then return.'
+      ? buildSystemPrompt(extraMcp)
+      : hasManager
+        ? 'Check my_task() for messages from the manager, then call wait_for_any_feedback() to listen for the next feedback on any document. Interpret and respond, then return.'
+        : 'Call wait_for_any_feedback() to listen for the next feedback on any document. Interpret and respond, then return.'
 
     try {
       for await (const msg of query({

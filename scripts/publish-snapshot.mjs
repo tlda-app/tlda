@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 /**
- * Publish docs to GitHub Pages + Fly.
+ * Publish docs to GitHub Pages (+ optionally Fly).
  *
- * Syncs the working copy to a published clone at ~/work/published/tlda/,
- * copies build output for all published docs, builds the viewer, and deploys.
+ * Syncs the working copy to a published clone, copies build output for all
+ * published docs, builds the viewer, and deploys.
  *
  * Usage:
- *   tlda publish                    # publish all docs in config.published
- *   tlda publish foo bar            # publish specific docs (adds to list)
- *   node scripts/publish-snapshot.mjs foo bar
+ *   tlda publish                          # publish all docs using "default" target
+ *   tlda publish foo bar                  # publish specific docs (adds to list)
+ *   tlda publish --target live            # publish using the "live" target config
+ *   tlda publish --target live foo bar    # both
  *
- * Config (via tlda config):
- *   published  — comma-separated list of doc names to publish
- *   remote     — remote server URL (used for sync WebSocket in viewer build)
+ * Config (via tlda config or ~/.config/tlda/config.json):
+ *   targets.<name>.sync   — sync server WebSocket URL (baked into viewer build)
+ *   targets.<name>.repo   — git remote for gh-pages deploy (null = same repo)
+ *   targets.<name>.fly    — whether to deploy to Fly (default: false)
+ *   targets.<name>.basePath — vite base path (default: /tlda/)
+ *   published             — comma-separated list of doc names to publish
  *
  * Environment:
  *   TLDA_SERVER - Server URL for fetching annotations (default: http://localhost:5176)
@@ -27,7 +31,6 @@ import { homedir } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
-const PUBLISHED_ROOT = join(homedir(), 'work', 'published', 'tlda')
 const CONFIG_FILE = join(homedir(), '.config', 'tlda', 'config.json')
 
 function loadConfig() {
@@ -41,14 +44,42 @@ function saveConfig(config) {
   writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2))
 }
 
-// --- Resolve doc list ---
+// --- Parse args ---
+
+const argv = process.argv.slice(2)
+let targetName = 'default'
+const argDocs = []
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--target' && argv[i + 1]) {
+    targetName = argv[++i]
+  } else if (!argv[i].startsWith('-')) {
+    argDocs.push(argv[i])
+  }
+}
+
+// --- Load config and resolve target ---
 
 const config = loadConfig()
-const argDocs = process.argv.slice(2).filter(a => !a.startsWith('-'))
+
+const targets = config.targets || {}
+const target = targets[targetName]
+if (!target) {
+  console.error(`[publish] Unknown target "${targetName}". Available: ${Object.keys(targets).join(', ') || '(none)'}`)
+  console.error('  Configure targets in ~/.config/tlda/config.json')
+  process.exit(1)
+}
+
+const syncWsUrl = target.sync || null
+const targetRepo = target.repo || null
+const deployFly = target.fly !== undefined ? target.fly : false
+const basePath = target.basePath || '/tlda/'
+const PUBLISHED_ROOT = join(homedir(), 'work', 'published', targetName === 'default' ? 'tlda' : `tlda-${targetName}`)
+
+// --- Resolve doc list ---
+
 let publishedList = config.published ? config.published.split(',').map(s => s.trim()).filter(Boolean) : []
 
 if (argDocs.length > 0) {
-  // Add any new docs to the published list
   for (const d of argDocs) {
     if (!publishedList.includes(d)) publishedList.push(d)
   }
@@ -64,8 +95,6 @@ if (publishedList.length === 0) {
 }
 
 const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
-const remoteUrl = config.remote
-const syncWsUrl = remoteUrl ? remoteUrl.replace(/^http/, 'ws') : null
 
 // Validate all docs exist before starting
 const docs = []
@@ -84,8 +113,10 @@ if (docs.length === 0) {
   process.exit(1)
 }
 
+console.log(`[publish] Target: ${targetName}`)
 console.log(`[publish] Publishing ${docs.length} doc${docs.length > 1 ? 's' : ''}: ${docs.map(d => d.name).join(', ')}`)
-if (remoteUrl) console.log(`[publish] Remote: ${remoteUrl}`)
+if (syncWsUrl) console.log(`[publish] Sync: ${syncWsUrl}`)
+console.log(`[publish] Clone: ${PUBLISHED_ROOT}`)
 
 // Detect Tailscale or LAN IP for live URL
 function detectLiveHost() {
@@ -111,6 +142,7 @@ function detectLiveHost() {
 
 try {
   // Step 1: Sync working copy to published clone
+  // Always clone from the main tlda repo — targetRepo only affects where gh-pages pushes to
   console.log(`[publish] Syncing code to ${PUBLISHED_ROOT}...`)
   if (!existsSync(PUBLISHED_ROOT)) {
     mkdirSync(dirname(PUBLISHED_ROOT), { recursive: true })
@@ -195,32 +227,42 @@ try {
   console.log('[publish] Installing dependencies...')
   execSync('npm install --ignore-scripts', { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
   console.log('[publish] Building viewer...')
-  const buildEnv = { ...process.env, VITE_BASE_PATH: '/tlda/', VITE_BUILD_ID: Date.now().toString() }
+  const buildEnv = { ...process.env, VITE_BASE_PATH: basePath, VITE_BUILD_ID: Date.now().toString() }
   if (syncWsUrl) buildEnv.VITE_SYNC_SERVER = syncWsUrl
   execSync('npx vite build', { cwd: PUBLISHED_ROOT, stdio: 'inherit', env: buildEnv })
 
   // Step 4: Deploy to GitHub Pages
   console.log('[publish] Deploying to GitHub Pages...')
-  execSync('npx gh-pages -d dist', { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
+  if (targetRepo) {
+    // Deploy to a different repo — gh-pages needs --repo flag
+    execSync(`npx gh-pages -d dist --repo ${targetRepo}`, { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
+  } else {
+    execSync('npx gh-pages -d dist', { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
+  }
 
-  // Step 5: Deploy to Fly
-  console.log('[publish] Deploying to Fly...')
-  try {
-    execSync('fly deploy --remote-only', { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
-    console.log('[publish] Fly deployment complete')
-  } catch (e) {
-    console.warn(`[publish] Warning: Fly deploy failed: ${e.message}`)
+  // Step 5: Deploy to Fly (if enabled for this target)
+  if (deployFly) {
+    console.log('[publish] Deploying to Fly...')
+    try {
+      execSync('fly deploy --remote-only', { cwd: PUBLISHED_ROOT, stdio: 'inherit' })
+      console.log('[publish] Fly deployment complete')
+    } catch (e) {
+      console.warn(`[publish] Warning: Fly deploy failed: ${e.message}`)
+    }
   }
 
   // Done
+  const pageUrl = target.url || `https://qtm285.github.io${basePath}`
   console.log()
-  console.log('[publish] Done!')
+  console.log(`[publish] Done! (target: ${targetName})`)
   for (const doc of docs) {
-    console.log(`  https://qtm285.github.io/tlda/?doc=${doc.name}`)
+    console.log(`  ${pageUrl}?doc=${doc.name}`)
   }
-  if (remoteUrl) {
+  if (syncWsUrl) {
     console.log()
-    console.log(`  Todd: tlda agent start --remote`)
+    console.log(`  Sync: ${syncWsUrl}`)
+    const agentFlag = targetName === 'default' ? '--target default' : `--target ${targetName}`
+    console.log(`  Todd: tlda agent start ${agentFlag}`)
   }
 
 } catch (e) {

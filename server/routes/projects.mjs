@@ -382,11 +382,14 @@ router.get('/:name/signal/stream', requireRead, (req, res) => {
   })
   res.write('data: {"type":"connected"}\n\n')
 
+  // SSE keepalive to prevent proxy (Fly) from killing idle connections
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000)
+
   const unsub = onSignal(syncRoomName(req.params.name), (signal) => {
     res.write(`data: ${JSON.stringify(signal)}\n\n`)
   })
 
-  req.on('close', () => unsub())
+  req.on('close', () => { clearInterval(keepalive); unsub() })
 })
 
 // GET /:name/signal/:key — read last cached value of a signal
@@ -408,6 +411,9 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   })
   res.write('data: {"type":"connected"}\n\n')
 
+  // SSE keepalive to prevent proxy (Fly) from killing idle connections
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000)
+
   // Ensure room exists so we get change notifications
   getOrCreateRoom(syncRoomName(req.params.name))
 
@@ -415,7 +421,7 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`)
   })
 
-  req.on('close', () => unsub())
+  req.on('close', () => { clearInterval(keepalive); unsub() })
 })
 
 // GET /:name/shapes/:id — get a single shape
