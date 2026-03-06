@@ -8,6 +8,7 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
+  TLDA_NO_AUTH = "1"
 
 [http_service]
   internal_port = 5176
