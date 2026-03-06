@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/logo.svg" width="128" height="128" alt="tlda">
+</p>
+
 # tlda
 
 Collaborative annotation system for reviewing LaTeX papers. Renders LaTeX as SVGs on a TLDraw canvas with KaTeX math in notes, real-time sync, and source-anchored annotations that survive document rebuilds. Also supports Quarto HTML and reveal.js slides as experimental input formats.
