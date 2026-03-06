@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/logo.svg" width="128" height="128" alt="tlda">
+  <img src="public/logo.svg" width="260" height="160" alt="tlda">
 </p>
 
 # tlda
