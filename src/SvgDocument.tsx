@@ -51,6 +51,7 @@ import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult 
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
+import { getCameraLinked } from './cameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
@@ -694,7 +695,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         />
       )}
       <div className="build-pills-row">
-        {isPresentation && <DraftPill />}{(!isPresentation || role === 'presenter') && <AnnotationVisibilityPill />}<FollowingBadge />
+        {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
@@ -929,9 +930,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 saveSession()
               })
 
-              // Camera broadcast: presenter-only in slides, everyone in peer-to-peer
+              // Camera broadcast: gated on camera-link toggle; slides also gate on presenter role
               react('broadcast-camera', () => {
                 const cam = editor.getCamera() // subscribe
+                if (!getCameraLinked()) return
                 if (isPresentation && getRole() !== 'presenter') return
                 if (suppressBroadcastRef.current) return
                 if (broadcastTimerRef.current) clearTimeout(broadcastTimerRef.current)

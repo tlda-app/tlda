@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { onCameraLink } from '../useYjsSync'
 import { getRole } from '../viewerRole'
+import { getCameraLinked } from '../cameraLink'
 import type { Editor } from 'tldraw'
 
 export function useCameraLink(editorRef: React.MutableRefObject<Editor | null>, isPresentation: boolean) {
@@ -11,7 +12,8 @@ export function useCameraLink(editorRef: React.MutableRefObject<Editor | null>, 
     return onCameraLink((signal) => {
       const editor = editorRef.current
       if (!editor) return
-      // Presentation: only viewers follow. Peer-to-peer: everyone syncs.
+      if (!getCameraLinked()) return
+      // Presentation: only viewers follow by default
       if (isPresentation && getRole() !== 'viewer') return
       suppressBroadcastRef.current = true
       editor.setCamera({ x: signal.x, y: signal.y, z: signal.z }, { animation: { duration: 80 } })
