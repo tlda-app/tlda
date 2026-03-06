@@ -163,9 +163,9 @@ function TldaTittle({ size, className, fill = 'currentColor', stroke, strokeWidt
   size: number, className?: string, fill?: string, stroke?: string, strokeWidth?: number
 }) {
   return (
-    <svg width={size} height={size} viewBox="12.3 5.5 7.4 7.4" className={className}>
+    <svg width={size} height={size} viewBox="12.3 7 7.4 7.4" className={className}>
       {stroke ? (
-        <circle cx="16" cy="9.25" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
+        <circle cx="16" cy="10.75" r="3.2" fill="none" stroke={stroke} strokeWidth={strokeWidth}/>
       ) : (
         <path d={TITTLE_PATH} fill={fill}/>
       )}
