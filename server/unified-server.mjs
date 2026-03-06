@@ -35,6 +35,18 @@ import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+// Load .env from project root (for MYSCRIPT_APP_KEY, etc.)
+try {
+  const _envFile = join(__dirname, '..', '.env')
+  const _envContent = readFileSync(_envFile, 'utf8')
+  let _envCount = 0
+  for (const line of _envContent.split('\n')) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)/)
+    if (m && !process.env[m[1]]) { process.env[m[1]] = m[2].trim(); _envCount++ }
+  }
+  if (_envCount > 0) console.log(`[env] Loaded ${_envCount} vars from ${_envFile}`)
+} catch (e) { console.warn('[env] Failed to load .env:', e.message) }
+
 const PORT = process.env.PORT || 5176
 const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
@@ -291,6 +303,10 @@ app.use('/docs', (req, res, next) => {
 // ---------- API routes ----------
 
 app.use('/api/projects', projectRoutes)
+
+// Handwriting recognition (MyScript proxy)
+import recognizeRoutes from './routes/recognize.mjs'
+app.use('/api/recognize', recognizeRoutes)
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math

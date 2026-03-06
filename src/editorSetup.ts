@@ -11,8 +11,8 @@ import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
-import { mergeTabs } from './noteThreading'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
+import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
@@ -619,33 +619,8 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   })
 
-  // Drag-to-merge: when a math-note is dropped overlapping another, merge tabs
-  editor.sideEffects.registerAfterChangeHandler('shape', (prev, next) => {
-    if (next.type !== 'math-note') return
-    if (shapeIdSet.has(next.id)) return
-    if (prev.x === next.x && prev.y === next.y) return
-
-    const allShapes = editor.getCurrentPageShapes()
-    for (const other of allShapes) {
-      if (other.id === next.id) continue
-      if (other.type !== 'math-note') continue
-
-      // Simple bounding box overlap
-      const ow = (other.props as any).w || 200
-      const oh = (other.props as any).h || 50
-      const nw = (next.props as any).w || 200
-      const nh = (next.props as any).h || 50
-
-      const overlapX = next.x < other.x + ow && next.x + nw > other.x
-      const overlapY = next.y < other.y + oh && next.y + nh > other.y
-
-      if (overlapX && overlapY) {
-        // Merge: dragged note's tabs merge into target
-        setTimeout(() => mergeTabs(editor, next.id, other.id), 0)
-        return
-      }
-    }
-  })
+  // Drag-to-merge is handled by onTranslateEnd in MathNoteShapeUtil
+  // (fires only on drop, not mid-drag)
 
   // Constrain the camera to the bounds of the pages
   let targetBounds = document.pages.reduce(
@@ -803,6 +778,10 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           const shape = editor.getShape(id)
           if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
             glowCleanup = showGlow(editor, id)
+          }
+          // Show transcription toast on hover for recognized draw shapes
+          if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {
+            glowCleanup = showTranscriptionToast(editor, shape)
           }
         }
       } catch { /* editor not ready */ }

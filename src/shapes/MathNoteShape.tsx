@@ -14,6 +14,7 @@ import {
   switchTab,
   addTab,
   detachTab,
+  mergeTabs,
 } from '../noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
@@ -157,6 +158,28 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => false
   override hideSelectionBoundsFg = () => false
+
+  override onTranslateEnd = (_initial: any, current: any) => {
+    const editor = this.editor
+    const allShapes = editor.getCurrentPageShapes()
+    for (const other of allShapes) {
+      if (other.id === current.id) continue
+      if (other.type !== 'math-note') continue
+
+      const ow = (other.props as any).w || 200
+      const oh = (other.props as any).h || 50
+      const nw = current.props.w || 200
+      const nh = current.props.h || 50
+
+      const overlapX = current.x < other.x + ow && current.x + nw > other.x
+      const overlapY = current.y < other.y + oh && current.y + nh > other.y
+
+      if (overlapX && overlapY) {
+        setTimeout(() => mergeTabs(editor, current.id, other.id), 0)
+        return
+      }
+    }
+  }
 
   override onResize = (shape: any, info: any) => {
     const next = super.onResize!(shape, info) as any

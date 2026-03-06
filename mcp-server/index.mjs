@@ -561,8 +561,12 @@ async function collectDrawnShapes(docName) {
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
       const sourceLine = record.meta?.sourceLine || null;
+      // Handwriting recognition metadata
+      const transcription = record.meta?.transcription || null;
+      const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine });
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
+        transcription, transcriptionVerified });
       continue;
     }
 
@@ -1998,6 +2002,17 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
       for (const line of lines) text += `\n    "${line}"`;
     }
     text += `\n  NOTE: edge lines and first/last words may bleed from adjacent text`;
+    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    return { content: [{ type: 'text', text }], page: pos?.page || null };
+  }
+
+  // Handwriting recognition: has LaTeX transcription from MyScript
+  if (r.type === 'draw' && r.meta?.transcription) {
+    const pos = bbox ? describePagePosition(docName, bbox) : null;
+    let text = `${prefix}Handwriting (${color})`;
+    if (pos) text += ` ${pos.description}`;
+    text += `\n  transcription: "${r.meta.transcription}"`;
+    if (!r.meta.transcriptionVerified) text += ` (unverified)`;
     if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
     return { content: [{ type: 'text', text }], page: pos?.page || null };
   }

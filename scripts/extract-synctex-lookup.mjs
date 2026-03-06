@@ -103,7 +103,19 @@ for await (const line of rl) {
   if (line.startsWith('Input:')) {
     const match = line.match(/^Input:(\d+):(.+)$/)
     if (match) {
-      inputMap.set(parseInt(match[1]), realResolve(match[2]))
+      const resolved = realResolve(match[2])
+      inputMap.set(parseInt(match[1]), resolved)
+      // Auto-discover source files the regex missed (e.g. paths relative to project root)
+      if (!sourceLines.has(resolved) && resolved.endsWith('.tex') && existsSync(resolved)) {
+        const resolvedDir = realResolve(dir)
+        if (resolved.startsWith(resolvedDir)) {
+          sourceLines.set(resolved, readFileSync(resolved, 'utf8').split('\n'))
+          const relName = basename(resolved)
+          if (!inputFiles.find(f => realResolve(f.path) === resolved)) {
+            inputFiles.push({ name: relName, path: resolved })
+          }
+        }
+      }
     }
     continue
   }

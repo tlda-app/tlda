@@ -579,7 +579,8 @@ async function extractSynctex(ctx) {
 
   // The extractor derives synctex.gz location from the .tex path's directory.
   // Copy synctex.gz next to the source .tex so the script finds both.
-  cpSync(synctexFile, join(srcDir, `${texBase}.synctex.gz`))
+  // mainFile may have a subdir prefix (e.g. "revision/foo.tex"), so use dirname(mainFile).
+  cpSync(synctexFile, join(srcDir, dirname(mainFile), `${texBase}.synctex.gz`))
 
   addLog('Extracting synctex lookup...')
   const synctexStart = Date.now()

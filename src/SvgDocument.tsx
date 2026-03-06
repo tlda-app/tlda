@@ -25,6 +25,7 @@ import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
+import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
@@ -497,7 +498,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><BottomPanelsSlot /><AgentPillSlot /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
     }),
     [document, roomId]
   )
