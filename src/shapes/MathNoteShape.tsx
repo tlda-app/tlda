@@ -274,36 +274,52 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => clearTimeout(timer)
     }, [localText, isEditing])
 
-    // Grow note height when editing starts
+    // Adjust note height on edit start/end
     useEffect(() => {
-      if (isEditing && shape.props.h < 350) {
-        editor.updateShape({
-          id: shape.id,
-          type: 'math-note' as any,
-          props: { h: 350 },
-        })
-      }
       if (isEditing) {
+        // Expand for editing — at least 200px, but don't shrink if already larger
+        const minEditH = 200
+        if (shape.props.h < minEditH) {
+          editor.updateShape({
+            id: shape.id,
+            type: 'math-note' as any,
+            props: { h: minEditH },
+          })
+        }
         setSplitPx(null) // reset split on edit start
-        // Pick up reply context if set
         if (pendingReplyContext) {
           setReplyContextState(pendingReplyContext)
           pendingReplyContext = null
         }
       } else {
         setReplyContextState(null)
+        // Shrink to fit content when exiting edit mode
+        if (shape.props.autoSize) {
+          requestAnimationFrame(() => {
+            const el = contentRef.current
+            if (!el) return
+            const measured = el.scrollHeight
+            const target = Math.max(40, measured)
+            if (Math.abs(target - shape.props.h) > 2) {
+              editor.updateShape({
+                id: shape.id,
+                type: 'math-note' as any,
+                props: { h: target },
+              })
+            }
+          })
+        }
       }
     }, [isEditing])
 
-    // Auto-size: measure rendered content and grow shape height (never shrink)
+    // Auto-size: measure rendered content and adjust shape height to fit
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
       const measured = el.scrollHeight
       const target = Math.max(40, measured)
-      // Only grow — never shrink unless user manually resizes
-      if (target > shape.props.h + 2) {
+      if (Math.abs(target - shape.props.h) > 2) {
         editor.updateShape({
           id: shape.id,
           type: 'math-note' as any,
@@ -808,9 +824,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           drag.active = true
           // Detach at pointer position (convert screen to page coords)
           const pagePoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
-          detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
+          const newId = detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
           dragTabRef.current = null
           ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+          if (newId) {
+            editor.select(newId)
+          }
         }
       }
 

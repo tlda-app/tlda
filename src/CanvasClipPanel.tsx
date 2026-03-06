@@ -10,7 +10,7 @@
  * buttons and title.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, defaultShapeUtils, stopEventPropagation } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import './CanvasClipPanel.css'
 
@@ -55,7 +55,7 @@ export function CanvasClipPanel({
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
     const docRecords = allRecords.filter(isDocRecord)
-    const s = createTLStore({ shapeUtils: [...defaultShapeUtils, ...shapeUtils] })
+    const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
   // eslint-disable-next-line react-hooks/exhaustive-deps
