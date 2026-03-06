@@ -83,7 +83,7 @@ export function PingButton() {
       disabled={state === 'sending'}
       title="Ping agent"
     >
-      <TldaTittle size={18} fill="currentColor"/>
+      <TldaTittle size={27} fill="currentColor"/>
     </button>,
     portalRef.current,
   )
