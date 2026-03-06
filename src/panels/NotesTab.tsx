@@ -145,6 +145,21 @@ export function NotesTab() {
     e.dataTransfer.effectAllowed = 'copy'
   }, [])
 
+  // Build page name lookup for chapter labels (must be before any early returns — hooks ordering)
+  const pageNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const p of editor.getPages()) {
+      map.set(p.id, p.name)
+    }
+    return map
+  }, [editor, notes])
+
+  const multiPage = editor.getPages().length > 1
+
+  const sortedRemoteNotes = useMemo(() => {
+    return [...remoteNotes].sort((a, b) => sort === 'recency' ? b.y - a.y : a.y - b.y)
+  }, [remoteNotes, sort])
+
   if (notes.length === 0 && remoteNotes.length === 0) {
     return (
       <div className="doc-panel-content">
@@ -152,17 +167,6 @@ export function NotesTab() {
       </div>
     )
   }
-
-  // Build page name lookup for chapter labels
-  const pageNames = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const p of editor.getPages()) {
-      map.set(p.id, p.name)
-    }
-    return map
-  }, [editor, notes]) // re-derive when notes change (pages may have been created)
-
-  const multiPage = editor.getPages().length > 1
 
   function renderNote(shape: TLShape) {
     const text = getShapeText(shape)
@@ -267,10 +271,6 @@ export function NotesTab() {
       </div>
     )
   }
-
-  const sortedRemoteNotes = useMemo(() => {
-    return [...remoteNotes].sort((a, b) => sort === 'recency' ? b.y - a.y : a.y - b.y)
-  }, [remoteNotes, sort])
 
   return (
     <div className="doc-panel-content" style={{ display: 'flex', flexDirection: 'column' }}>
