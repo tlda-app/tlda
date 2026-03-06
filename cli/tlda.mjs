@@ -67,7 +67,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -698,14 +698,21 @@ function allAgentTargets() {
 async function cmdMonitor() {
   const sub = getPositional(0) // add, remove, list, clear
   const doc = getPositional(1)
-  const watchFile = '/tmp/tlda-listen-docs'
-  const stateDir = '/tmp/tlda-listen-state'
+  const agentId = getFlag('id') || process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID
+  if (!agentId) {
+    console.error('No agent ID. Pass --id <name> (or set $AGENT_WIN).')
+    process.exit(1)
+  }
+  const agentDir = `/tmp/tlda-listen-${agentId}`
+  const watchFile = join(agentDir, 'docs')
+  const stateDir = join(agentDir, 'state')
 
   function readDocs() {
     if (!existsSync(watchFile)) return []
     return readFileSync(watchFile, 'utf8').split('\n').filter(Boolean)
   }
   function writeDocs(docs) {
+    mkdirSync(agentDir, { recursive: true })
     writeFileSync(watchFile, docs.join('\n') + (docs.length ? '\n' : ''))
   }
 
@@ -728,6 +735,7 @@ async function cmdMonitor() {
       writeDocs(docs)
     }
     // Seed the snapshot so the hook doesn't fire on existing shapes
+    mkdirSync(agentDir, { recursive: true })
     mkdirSync(stateDir, { recursive: true })
     try {
       const server = getServer()
@@ -764,7 +772,7 @@ async function cmdMonitor() {
   if (sub === 'clear') {
     writeDocs([])
     try { unlinkSync(join(stateDir, 'last-check')) } catch {}
-    console.log(dim('Cleared all monitored docs'))
+    console.log(dim(`Cleared all monitored docs (agent ${agentId})`))
     return
   }
 

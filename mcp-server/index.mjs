@@ -2065,13 +2065,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // If the hook has been running, its snapshot is the ground truth for
       // what the agent has already seen. Read it as our baseline so we don't
       // re-fire on shapes the hook already reported.
-      const SHARED_STATE_DIR = '/tmp/tlda-listen-state';
-      const sharedSnapshotFile = `${SHARED_STATE_DIR}/shapes-${docName}.json`;
-      const sharedPingFile = `${SHARED_STATE_DIR}/signal-ts-${docName}`;
+      // State dir is scoped per agent via AGENT_WIN.
+      const agentId = process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID;
+      const SHARED_STATE_DIR = agentId ? `/tmp/tlda-listen-${agentId}/state` : null;
+      const sharedSnapshotFile = SHARED_STATE_DIR ? `${SHARED_STATE_DIR}/shapes-${docName}.json` : null;
+      const sharedPingFile = SHARED_STATE_DIR ? `${SHARED_STATE_DIR}/signal-ts-${docName}` : null;
 
       // Initialize ping timestamp — prefer shared state, fall back to server
       try {
-        const savedTs = fs.existsSync(sharedPingFile) ? parseInt(fs.readFileSync(sharedPingFile, 'utf8').trim()) : 0;
+        const savedTs = sharedPingFile && fs.existsSync(sharedPingFile) ? parseInt(fs.readFileSync(sharedPingFile, 'utf8').trim()) : 0;
         if (savedTs > lastPingTimestamp) lastPingTimestamp = savedTs;
       } catch {}
       const existingPing = await readSignalRest(docName, 'signal:ping');
@@ -2079,7 +2081,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (lastPingTimestamp > 0) {
           lastPingTimestamp = existingPing.timestamp;
           // Write back shared state before early return so hook doesn't re-fire
-          try {
+          if (SHARED_STATE_DIR) try {
             fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
             fs.writeFileSync(sharedPingFile, String(lastPingTimestamp));
           } catch {}
@@ -2094,7 +2096,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const knownShapes = new Map(); // id → shape
       try {
         let baseline;
-        if (fs.existsSync(sharedSnapshotFile)) {
+        if (sharedSnapshotFile && fs.existsSync(sharedSnapshotFile)) {
           baseline = JSON.parse(fs.readFileSync(sharedSnapshotFile, 'utf8'));
           console.error(`[wait] Loaded shared snapshot for ${docName} (${baseline.length} records)`);
         } else {
@@ -2232,7 +2234,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       writeAgentHeartbeat(docName, 'thinking', 'claude');
 
       // Write back shared snapshot so the hook picks up where we left off
-      try {
+      if (SHARED_STATE_DIR) try {
         const currentShapes = await fetchShapes(docName);
         fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
         fs.writeFileSync(sharedSnapshotFile, JSON.stringify(currentShapes));
