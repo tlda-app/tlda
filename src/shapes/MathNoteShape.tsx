@@ -814,13 +814,55 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         const dy = Math.abs(e.clientY - drag.startY)
         if (dy > 30 && !drag.active) {
           drag.active = true
-          // Detach at pointer position (convert screen to page coords)
           const pagePoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
           const newId = detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
           dragTabRef.current = null
           ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+
+          // Continue dragging the detached shape via document-level listeners.
+          // The user's pointer is still held down; we track it manually and
+          // update the new shape's position until pointerup.
           if (newId) {
             editor.select(newId)
+            const startPage = { ...pagePoint }
+            const shapeStart = { x: pagePoint.x, y: pagePoint.y }
+            let rafId = 0
+            let lastClientX = e.clientX
+            let lastClientY = e.clientY
+
+            const onMove = (ev: PointerEvent) => {
+              lastClientX = ev.clientX
+              lastClientY = ev.clientY
+              if (!rafId) {
+                rafId = requestAnimationFrame(() => {
+                  rafId = 0
+                  const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
+                  editor.updateShape({
+                    id: newId,
+                    type: 'math-note',
+                    x: shapeStart.x + (p.x - startPage.x),
+                    y: shapeStart.y + (p.y - startPage.y),
+                  } as any)
+                })
+              }
+            }
+            const onUp = () => {
+              document.removeEventListener('pointermove', onMove)
+              document.removeEventListener('pointerup', onUp)
+              if (rafId) cancelAnimationFrame(rafId)
+              // Final position update
+              const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
+              editor.updateShape({
+                id: newId,
+                type: 'math-note',
+                x: shapeStart.x + (p.x - startPage.x),
+                y: shapeStart.y + (p.y - startPage.y),
+              } as any)
+              // Check for merge overlap on drop
+              setTimeout(() => checkMergeOverlap(editor, newId), 0)
+            }
+            document.addEventListener('pointermove', onMove)
+            document.addEventListener('pointerup', onUp)
           }
         }
       }

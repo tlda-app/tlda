@@ -188,9 +188,9 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?:
       color: (shape.props as any).color || 'light-blue',
       autoSize: true,
     },
-    meta: {
-      sourceAnchor: (shape.meta as any).sourceAnchor || undefined,
-    },
+    meta: (shape.meta as any).sourceAnchor
+      ? { sourceAnchor: (shape.meta as any).sourceAnchor }
+      : {},
   })
 
   return newId
