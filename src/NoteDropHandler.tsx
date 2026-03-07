@@ -15,13 +15,47 @@ export function NoteDropHandler() {
     if (!container) return
 
     function handleDragOver(e: DragEvent) {
-      if (e.dataTransfer?.types.includes('application/x-tlda-note')) {
+      if (e.dataTransfer?.types.includes('application/x-tlda-note') ||
+          e.dataTransfer?.types.includes('application/x-chat-attachment')) {
         e.preventDefault()
         e.dataTransfer.dropEffect = 'copy'
       }
     }
 
     function handleDrop(e: DragEvent) {
+      // Accept fleet chat attachments — convert to tlda note format
+      const fleetJson = e.dataTransfer?.getData('application/x-chat-attachment')
+      if (fleetJson && !e.dataTransfer?.getData('application/x-tlda-note')) {
+        e.preventDefault()
+        try {
+          const item = JSON.parse(fleetJson)
+          const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+          const shapeId = createShapeId()
+          editor.createShape({
+            id: shapeId,
+            type: 'math-note',
+            x: point.x,
+            y: point.y,
+            props: {
+              text: item.snippet || '',
+              color: 'blue',
+              w: 250,
+              h: 150,
+            },
+            meta: {
+              createdAt: Date.now(),
+              copiedFrom: {
+                doc: 'fleet',
+                shapeId: item.source || '',
+                timestamp: Date.now(),
+              },
+              fleetSource: item,
+            },
+          })
+        } catch {}
+        return
+      }
+
       const json = e.dataTransfer?.getData('application/x-tlda-note')
       if (!json) return
       e.preventDefault()
