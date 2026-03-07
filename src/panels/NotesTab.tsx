@@ -142,6 +142,8 @@ export function NotesTab() {
     sourceShapeId?: string
   }) => {
     e.dataTransfer.setData('application/x-tlda-note', JSON.stringify(data))
+    // text/plain with marker for cross-window Safari compatibility
+    e.dataTransfer.setData('text/plain', JSON.stringify({ _tlda: true, ...data }))
     e.dataTransfer.effectAllowed = 'copy'
   }, [])
 

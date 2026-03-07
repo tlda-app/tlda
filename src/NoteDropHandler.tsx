@@ -16,19 +16,27 @@ export function NoteDropHandler() {
 
     function handleDragOver(e: DragEvent) {
       if (e.dataTransfer?.types.includes('application/x-tlda-note') ||
-          e.dataTransfer?.types.includes('application/x-chat-attachment')) {
+          e.dataTransfer?.types.includes('application/x-chat-attachment') ||
+          e.dataTransfer?.types.includes('text/plain')) {
         e.preventDefault()
         e.dataTransfer.dropEffect = 'copy'
       }
     }
 
+    function parseFleetDrop(e: DragEvent): Record<string, any> | null {
+      // Try custom MIME first, fall back to text/plain with _fleet marker
+      const custom = e.dataTransfer?.getData('application/x-chat-attachment')
+      if (custom) try { return JSON.parse(custom) } catch {}
+      const plain = e.dataTransfer?.getData('text/plain')
+      if (plain) try { const p = JSON.parse(plain); if (p._fleet) return p; } catch {}
+      return null
+    }
+
     function handleDrop(e: DragEvent) {
       // Accept fleet chat attachments — convert to tlda note format
-      const fleetJson = e.dataTransfer?.getData('application/x-chat-attachment')
-      if (fleetJson && !e.dataTransfer?.getData('application/x-tlda-note')) {
+      const item = parseFleetDrop(e)
+      if (item && !e.dataTransfer?.getData('application/x-tlda-note')) {
         e.preventDefault()
-        try {
-          const item = JSON.parse(fleetJson)
           const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
           const shapeId = createShapeId()
           editor.createShape({
@@ -56,7 +64,12 @@ export function NoteDropHandler() {
         return
       }
 
-      const json = e.dataTransfer?.getData('application/x-tlda-note')
+      let json = e.dataTransfer?.getData('application/x-tlda-note')
+      if (!json) {
+        // Cross-window fallback: check text/plain for _tlda marker
+        const plain = e.dataTransfer?.getData('text/plain')
+        if (plain) try { const p = JSON.parse(plain); if (p._tlda) json = plain } catch {}
+      }
       if (!json) return
       e.preventDefault()
 
