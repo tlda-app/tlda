@@ -297,12 +297,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
-    // Auto-size: measure rendered content + tab bar and adjust shape height to fit
+    // Auto-size: use ResizeObserver to track content height changes reliably.
+    // This fires after KaTeX renders, font loading, and any async layout changes.
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
+      const el = contentRef.current
+      if (!el) return
       const measure = () => {
-        const el = contentRef.current
-        if (!el) return
         const contentH = el.scrollHeight
         const tabBarH = tabBarRef.current?.offsetHeight || 0
         const target = Math.max(40, contentH + tabBarH)
@@ -314,10 +315,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           })
         }
       }
-      // Measure immediately and also after a frame (KaTeX may not be laid out yet)
+      const ro = new ResizeObserver(measure)
+      ro.observe(el)
+      // Also measure immediately for cases where ResizeObserver doesn't fire
       measure()
-      const raf = requestAnimationFrame(measure)
-      return () => cancelAnimationFrame(raf)
+      return () => ro.disconnect()
     }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
 
     // Create/destroy CodeMirror when editing state changes
