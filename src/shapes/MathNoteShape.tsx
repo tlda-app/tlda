@@ -15,6 +15,7 @@ import {
   addTab,
   detachTab,
   mergeTabs,
+  checkMergeOverlap,
 } from '../noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
@@ -160,25 +161,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideSelectionBoundsFg = () => false
 
   override onTranslateEnd = (_initial: any, current: any) => {
-    const editor = this.editor
-    const allShapes = editor.getCurrentPageShapes()
-    for (const other of allShapes) {
-      if (other.id === current.id) continue
-      if (other.type !== 'math-note') continue
-
-      const ow = (other.props as any).w || 200
-      const oh = (other.props as any).h || 50
-      const nw = current.props.w || 200
-      const nh = current.props.h || 50
-
-      const overlapX = current.x < other.x + ow && current.x + nw > other.x
-      const overlapY = current.y < other.y + oh && current.y + nh > other.y
-
-      if (overlapX && overlapY) {
-        setTimeout(() => mergeTabs(editor, current.id, other.id), 0)
-        return
-      }
-    }
+    checkMergeOverlap(this.editor, current.id)
   }
 
   override onResize = (shape: any, info: any) => {
@@ -207,6 +190,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const [replyContext, setReplyContextState] = useState<string | null>(null)
 
     // Refs for sync coordination
+    const tabBarRef = useRef<HTMLDivElement>(null)
     const suppressUpdateRef = useRef(false)
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
@@ -298,8 +282,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           requestAnimationFrame(() => {
             const el = contentRef.current
             if (!el) return
-            const measured = el.scrollHeight
-            const target = Math.max(40, measured)
+            const contentH = el.scrollHeight
+            const tabBarH = tabBarRef.current?.offsetHeight || 0
+            const target = Math.max(40, contentH + tabBarH)
             if (Math.abs(target - shape.props.h) > 2) {
               editor.updateShape({
                 id: shape.id,
@@ -312,20 +297,27 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
-    // Auto-size: measure rendered content and adjust shape height to fit
+    // Auto-size: measure rendered content + tab bar and adjust shape height to fit
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
-      const el = contentRef.current
-      if (!el) return
-      const measured = el.scrollHeight
-      const target = Math.max(40, measured)
-      if (Math.abs(target - shape.props.h) > 2) {
-        editor.updateShape({
-          id: shape.id,
-          type: 'math-note' as any,
-          props: { h: target },
-        })
+      const measure = () => {
+        const el = contentRef.current
+        if (!el) return
+        const contentH = el.scrollHeight
+        const tabBarH = tabBarRef.current?.offsetHeight || 0
+        const target = Math.max(40, contentH + tabBarH)
+        if (Math.abs(target - shape.props.h) > 2) {
+          editor.updateShape({
+            id: shape.id,
+            type: 'math-note' as any,
+            props: { h: target },
+          })
+        }
       }
+      // Measure immediately and also after a frame (KaTeX may not be laid out yet)
+      measure()
+      const raf = requestAnimationFrame(measure)
+      return () => cancelAnimationFrame(raf)
     }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
 
     // Create/destroy CodeMirror when editing state changes
@@ -845,6 +837,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       tabBar = (
         <div
+          ref={tabBarRef}
           className="math-note-tabbar"
           style={{
             display: 'flex',

@@ -196,6 +196,27 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?:
   return newId
 }
 
+/** Check if a math-note overlaps another and merge if so. */
+export function checkMergeOverlap(editor: Editor, shapeId: TLShapeId) {
+  const shape = editor.getShape(shapeId)
+  if (!shape || shape.type !== 'math-note') return
+  const allShapes = editor.getCurrentPageShapes()
+  for (const other of allShapes) {
+    if (other.id === shape.id) continue
+    if (other.type !== 'math-note') continue
+    const ow = (other.props as any).w || 200
+    const oh = (other.props as any).h || 50
+    const nw = (shape.props as any).w || 200
+    const nh = (shape.props as any).h || 50
+    const overlapX = shape.x < other.x + ow && shape.x + nw > other.x
+    const overlapY = shape.y < other.y + oh && shape.y + nh > other.y
+    if (overlapX && overlapY) {
+      setTimeout(() => mergeTabs(editor, shape.id, other.id), 0)
+      return
+    }
+  }
+}
+
 /** Merge all tabs from source into target. Deletes source. */
 export function mergeTabs(editor: Editor, sourceId: TLShapeId, targetId: TLShapeId) {
   const source = editor.getShape(sourceId)
