@@ -619,6 +619,24 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   })
 
+  // Re-saturate addressed highlights on tap/click.
+  // When a highlight has meta.addressed = true, clicking it re-activates it
+  // (sets addressed = false, restores opacity) so the agent retries.
+  editor.on('event', (event) => {
+    if (event.name !== 'pointer_up' || event.type !== 'pointer') return
+    const selectedIds = editor.getSelectedShapeIds()
+    if (selectedIds.length !== 1) return
+    const shape = editor.getShape(selectedIds[0])
+    if (!shape || shape.type !== 'highlight') return
+    if (!shape.meta?.addressed) return
+    // Re-saturate: clear addressed flag and restore opacity
+    editor.store.update(shape.id, (s: any) => ({
+      ...s,
+      opacity: 1,
+      meta: { ...s.meta, addressed: false },
+    }))
+  })
+
   // Drag-to-merge is handled by onTranslateEnd in MathNoteShapeUtil
   // (fires only on drop, not mid-drag)
 

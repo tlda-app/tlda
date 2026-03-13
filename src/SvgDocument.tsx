@@ -19,6 +19,7 @@ import { SvgPageShapeUtil } from './shapes/SvgPageShape'
 import { SvgFigureShapeUtil } from './shapes/SvgFigureShape'
 import { ReadingAssistBarShapeUtil } from './shapes/ReadingAssistBarShape'
 import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
+import { TimelineOverlayShapeUtil } from './shapes/TimelineOverlayShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
@@ -62,6 +63,7 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
+import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 
 // Sync server URL - use env var, or derive from window.location
@@ -263,6 +265,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Fleet playback — listen for BroadcastChannel and swap annotation shapes
   const playbackState = useSyncedPlayback(editorRef, docName)
+
+  // Spatial timeline overlay — activity scatter plot
+  const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
 
   useYjsSignals({
     editorRef, document,
@@ -572,7 +577,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onSelectChange: handleSelectChange,
     buildErrors,
     buildWarnings,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
+    timelineActive,
+    onToggleTimeline: toggleTimeline,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -582,7 +589,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches

@@ -103,8 +103,22 @@ async function fetchManifest(bustCache = false): Promise<Record<string, DocConfi
 let loadGeneration = 0
 let loadAbort: AbortController | null = null
 
+// Parse initial camera from URL params (?cx=...&cy=...&cz=...&page=...)
+function parseInitialCamera(): { x: number; y: number; z: number; page?: string } | undefined {
+  const params = new URLSearchParams(window.location.search)
+  const cx = params.get('cx'), cy = params.get('cy'), cz = params.get('cz')
+  if (cx == null && cy == null && cz == null) return undefined
+  return {
+    x: cx ? parseFloat(cx) : 0,
+    y: cy ? parseFloat(cy) : 0,
+    z: cz ? parseFloat(cz) : 1,
+    page: params.get('page') || undefined,
+  }
+}
+
 function App() {
   const [state, setState] = useState<State | null>(null)
+  const [initialCamera] = useState(parseInitialCamera)
 
   // Handle browser back/forward — reload to cleanly reset TLDraw state
   useEffect(() => {
@@ -364,7 +378,7 @@ function App() {
       return (
         <div className="App">
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} />
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>
         </div>
       )

@@ -45,7 +45,8 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 }
 
 // Number of page-heights beyond the viewport to keep SVG content injected
-const VIEWPORT_BUFFER_PAGES = 2
+const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const VIEWPORT_BUFFER_PAGES = IS_PHONE ? 4 : 2
 
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()

@@ -208,6 +208,7 @@ export function broadcastPresenter(active: boolean) {
   writeSignal('signal:presenter', { viewerId: localViewerId, active })
 }
 
+
 export function broadcastCamera(x: number, y: number, z: number) {
   writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
 }
