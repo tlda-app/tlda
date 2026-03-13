@@ -30,37 +30,180 @@ import { EditorState, Prec } from '@codemirror/state'
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 
-// Render LaTeX - always returns something, errors shown inline
-function renderMath(text: string, showErrors = false): string {
+// Render markdown + KaTeX math
+// Splits on math delimiters, renders non-math as markdown, math as KaTeX
+function renderMarkdownMath(text: string, showErrors = false): string {
   const katexOptions = { macros: getActiveMacros(), throwOnError: true }
 
-  // Display math ($$...$$)
-  let result = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => {
-    try {
-      return katex.renderToString(tex.trim(), { ...katexOptions, displayMode: true })
-    } catch (e: any) {
-      if (!showErrors) return ''
-      const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-      return `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
-    }
-  })
+  // Split text into math and non-math segments
+  // Preserve $$...$$ and $...$ as-is, render everything else as markdown
+  const segments: Array<{ type: 'text' | 'display' | 'inline'; content: string }> = []
+  let remaining = text
 
-  // Inline math ($...$)
-  result = result.replace(/\$([^$]+)\$/g, (_, tex) => {
-    try {
-      return katex.renderToString(tex.trim(), { ...katexOptions, displayMode: false })
-    } catch (e: any) {
-      if (!showErrors) return ''
-      const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-      return `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
-    }
-  })
+  while (remaining.length > 0) {
+    // Look for display math first ($$...$$)
+    const displayMatch = remaining.match(/\$\$([\s\S]+?)\$\$/)
+    // Look for inline math ($...$)
+    const inlineMatch = remaining.match(/\$([^$\n]+)\$/)
 
-  return result.replace(/\n/g, '<br>')
+    const displayIdx = displayMatch?.index ?? Infinity
+    const inlineIdx = inlineMatch?.index ?? Infinity
+
+    if (displayIdx === Infinity && inlineIdx === Infinity) {
+      // No more math
+      segments.push({ type: 'text', content: remaining })
+      break
+    }
+
+    const nextMathIdx = Math.min(displayIdx, inlineIdx)
+    const isDisplay = displayIdx <= inlineIdx
+
+    // Text before math
+    if (nextMathIdx > 0) {
+      segments.push({ type: 'text', content: remaining.slice(0, nextMathIdx) })
+    }
+
+    if (isDisplay && displayMatch) {
+      segments.push({ type: 'display', content: displayMatch[1] })
+      remaining = remaining.slice(nextMathIdx + displayMatch[0].length)
+    } else if (inlineMatch) {
+      segments.push({ type: 'inline', content: inlineMatch[1] })
+      remaining = remaining.slice(nextMathIdx + inlineMatch[0].length)
+    }
+  }
+
+  // Render each segment
+  return segments.map(seg => {
+    if (seg.type === 'display') {
+      try {
+        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: true })
+      } catch (e: any) {
+        if (!showErrors) return ''
+        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
+        return `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
+      }
+    }
+    if (seg.type === 'inline') {
+      try {
+        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: false })
+      } catch (e: any) {
+        if (!showErrors) return ''
+        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
+        return `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
+      }
+    }
+    // Markdown rendering for text segments
+    return renderMarkdownText(seg.content)
+  }).join('')
+}
+
+// Simple markdown rendering — no external deps
+function renderMarkdownText(text: string): string {
+  // Process line-by-line for block elements
+  const lines = text.split('\n')
+  const result: string[] = []
+  let inCodeBlock = false
+  let codeLines: string[] = []
+  let inList = false
+
+  for (const line of lines) {
+    // Code blocks
+    if (line.trimStart().startsWith('```')) {
+      if (inCodeBlock) {
+        result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
+        codeLines = []
+        inCodeBlock = false
+      } else {
+        if (inList) { result.push('</ul>'); inList = false }
+        inCodeBlock = true
+      }
+      continue
+    }
+    if (inCodeBlock) {
+      codeLines.push(escapeHtml(line))
+      continue
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,3})\s+(.+)/)
+    if (headingMatch) {
+      if (inList) { result.push('</ul>'); inList = false }
+      const level = headingMatch[1].length
+      const sizes = ['1.3em', '1.1em', '1em']
+      const weights = ['700', '600', '600']
+      result.push(`<div style="font-size:${sizes[level - 1]};font-weight:${weights[level - 1]};margin:${level === 1 ? '0 0 4px' : '6px 0 2px'}">${renderInline(headingMatch[2])}</div>`)
+      continue
+    }
+
+    // Bullet lists
+    if (line.match(/^\s*[-*]\s+/)) {
+      if (!inList) { result.push('<ul style="margin:2px 0;padding-left:20px">'); inList = true }
+      const content = line.replace(/^\s*[-*]\s+/, '')
+      result.push(`<li style="margin:1px 0">${renderInline(content)}</li>`)
+      continue
+    }
+
+    // End list if we're in one and this isn't a list item
+    if (inList && line.trim() !== '') {
+      result.push('</ul>')
+      inList = false
+    }
+
+    // Empty lines
+    if (line.trim() === '') {
+      result.push('<br>')
+      continue
+    }
+
+    // Regular text
+    result.push(renderInline(line) + '<br>')
+  }
+
+  if (inCodeBlock) {
+    result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
+  }
+  if (inList) result.push('</ul>')
+
+  return result.join('')
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// Inline markdown: bold, italic, code
+function renderInline(text: string): string {
+  let result = escapeHtml(text)
+  // Inline code (before bold/italic to avoid conflicts)
+  result = result.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.06);padding:1px 4px;border-radius:2px;font-size:0.9em">$1</code>')
+  // Bold
+  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  // Italic
+  result = result.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  return result
+}
+
+// Legacy alias for KaTeX-only rendering (used in edit preview)
+function renderMath(text: string, showErrors = false): string {
+  return renderMarkdownMath(text, showErrors)
 }
 
 function hasMath(text: string): boolean {
   return /\$[^$]+\$/.test(text)
+}
+
+function hasMarkdown(text: string): boolean {
+  return /^#{1,3}\s|^\s*[-*]\s|\*\*|`[^`]+`|```/.test(text) || text.includes('\n')
+}
+
+// Chapter-capable: starts with # (h1)
+function isChapterCapable(text: string): boolean {
+  return /^#\s+/.test(text.trim())
+}
+
+function getChapterTitle(text: string): string {
+  const match = text.trim().match(/^#\s+(.+)/)
+  return match ? match[1].trim() : ''
 }
 
 export const NOTE_COLORS: Record<string, string> = {
@@ -194,6 +337,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const suppressUpdateRef = useRef(false)
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
+    // Track measured content height per tab so shape height = max across tabs
+    const tabHeightsRef = useRef<number[]>([])
 
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
@@ -203,14 +348,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const isDraftNote = useSyncExternalStore(subscribeDrafts, () => isDraft(shape.id))
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
 
-    // Memoize KaTeX rendering — only re-parse when text actually changes
+    // Memoize KaTeX + markdown rendering — only re-parse when text actually changes
     const renderedHtml = useMemo(
       () => {
         const t = shape.props.text || ''
-        return hasMath(t) ? renderMath(t) : null
+        if (hasMath(t) || hasMarkdown(t)) return renderMarkdownMath(t)
+        return null
       },
       [shape.props.text],
     )
+    const chapterCapable = useMemo(() => isChapterCapable(shape.props.text || ''), [shape.props.text])
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
@@ -285,7 +432,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             const contentH = el.scrollHeight
             const tabBarH = tabBarRef.current?.offsetHeight || 0
             const target = Math.max(40, contentH + tabBarH)
-            if (Math.abs(target - shape.props.h) > 2) {
+            const diff = target - shape.props.h
+            if (Math.abs(diff) > 2) {
+              if (diff < 0) {
+                const rect = el.getBoundingClientRect()
+                if (rect.height < 1) return // culled — skip shrink
+              }
               editor.updateShape({
                 id: shape.id,
                 type: 'math-note' as any,
@@ -297,17 +449,39 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
+    // Reset per-tab height cache when tab count changes (tab added/removed)
+    const numTabs = (shape.props.tabs as string[] | undefined)?.length || 1
+    useEffect(() => { tabHeightsRef.current = [] }, [numTabs])
+
     // Auto-size: use ResizeObserver to track content height changes reliably.
     // This fires after KaTeX renders, font loading, and any async layout changes.
+    // Height = max across all tabs so switching tabs doesn't cause resize jitter.
+    // Only allow shrinking when the element is actually visible (not culled by TLDraw).
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
+      const activeIdx = (shape.props.activeTab as number) || 0
       const measure = () => {
         const contentH = el.scrollHeight
         const tabBarH = tabBarRef.current?.offsetHeight || 0
-        const target = Math.max(40, contentH + tabBarH)
-        if (Math.abs(target - shape.props.h) > 2) {
+        const thisTabH = contentH + tabBarH
+
+        // Record this tab's measured height
+        const heights = tabHeightsRef.current
+        while (heights.length <= activeIdx) heights.push(0)
+        heights[activeIdx] = thisTabH
+
+        // Target = max across all measured tabs
+        const target = Math.max(40, ...heights)
+        const diff = target - shape.props.h
+        if (Math.abs(diff) > 2) {
+          // Only allow shrinking if the element is actually rendered.
+          // TLDraw culls off-screen shapes — their content has 0/tiny scrollHeight.
+          if (diff < 0) {
+            const rect = el.getBoundingClientRect()
+            if (rect.height < 1) return // culled — skip shrink
+          }
           editor.updateShape({
             id: shape.id,
             type: 'math-note' as any,
@@ -317,10 +491,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
       const ro = new ResizeObserver(measure)
       ro.observe(el)
-      // Also measure immediately for cases where ResizeObserver doesn't fire
       measure()
       return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.activeTab])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -1021,6 +1194,23 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               Publish
             </div>
           )}
+          {/* Chapter indicator — drag note to right edge to add as book chapter */}
+          {chapterCapable && (
+            <div
+              style={{
+                padding: '2px 5px',
+                fontSize: '9px',
+                fontFamily: '-apple-system, sans-serif',
+                color: isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.18)',
+                userSelect: 'none',
+                pointerEvents: 'none',
+                flexShrink: 0,
+              }}
+              title="Drag note to right edge to add as book chapter"
+            >
+              {'\u00A7'}
+            </div>
+          )}
         </div>
       )
     }
@@ -1085,6 +1275,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }}
       >
           {tabBar}
+          {shape.meta?.friendly_name && (
+            <div style={{
+              fontSize: 9,
+              lineHeight: '14px',
+              color: isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.35)',
+              textAlign: 'right',
+              padding: '0 6px',
+              fontFamily: 'Inter, system-ui, sans-serif',
+              letterSpacing: '0.02em',
+              userSelect: 'none',
+            }}>
+              {shape.meta.friendly_name}
+            </div>
+          )}
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
             ...(isDone && !isEditing ? { maxHeight: '28px', opacity: 0.35 } : {}),
