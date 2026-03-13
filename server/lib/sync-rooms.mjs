@@ -11,6 +11,7 @@ import { T } from '@tldraw/validate'
 import { createMigrationSequence } from '@tldraw/store'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { emitShapeChangedDebounced } from './webhooks.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
 
@@ -91,6 +92,16 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.reading-assist-bar',
+      sequence: [],
+    }),
+  },
+  'timeline-overlay': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.timeline-overlay',
       sequence: [],
     }),
   },
@@ -207,6 +218,10 @@ function notifyChangeListeners(docName, changes) {
   if (changes && changes.length > 0) event.changes = changes
   for (const cb of listeners) {
     try { cb(event) } catch {}
+  }
+  // Emit webhook to fleet (debounced, annotations fire immediately)
+  if (changes && changes.length > 0) {
+    emitShapeChangedDebounced(docName, changes)
   }
 }
 

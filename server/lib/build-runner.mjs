@@ -30,6 +30,7 @@ import { updateProject, sourceDir, outputDir, projectDir, readProject, listProje
 import { broadcastSignal } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
 import { appendBuildEntry } from './changelog.mjs'
+import { emitBuildComplete } from './webhooks.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -757,6 +758,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
 
     status.building = false
     status.phase = 'done'
@@ -775,6 +777,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
     signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
+    emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
     throw e
   } finally {
     buildChildProcesses.delete(buildId)

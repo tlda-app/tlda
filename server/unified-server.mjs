@@ -29,7 +29,7 @@ import { homedir } from 'os'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead } from './lib/auth.mjs'
+import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 
@@ -77,6 +77,9 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
+// Cookie login — set token as cookie, redirect to viewer
+app.get('/auth/login', loginRoute)
+
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', (req, res) => {
   if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
@@ -88,7 +91,6 @@ app.get('/api/auth/me', (req, res) => {
 
 // ---------- Doc asset serving ----------
 // Serves from server/projects/{name}/output/ at /docs/{name}/*
-// Falls back to public/docs/{name}/* for legacy/dev compatibility
 
 app.get('/docs/manifest.json', requireRead, (req, res) => {
   const manifest = generateManifest()
@@ -122,7 +124,7 @@ app.use('/docs', (req, res, next) => {
   next()
 })
 
-// Serve doc assets: try projects output first, then legacy public/docs
+// Serve doc assets from projects output
 app.use('/docs', (req, res, next) => {
   // Exempt site_libs (Quarto static assets) from auth — loaded by iframes which can't inject Authorization headers
   if (req.path.includes('/site_libs/')) return next()
@@ -346,10 +348,9 @@ const syncWss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
-  // Auth check: token from ?token= query param or Authorization header
+  // Auth check: token from ?token= query param, Authorization header, or cookie
   if (isAuthEnabled()) {
-    const token = url.searchParams.get('token') ||
-      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null)
+    const token = extractToken(req)
     if (!validateToken(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()

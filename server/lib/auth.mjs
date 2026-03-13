@@ -56,12 +56,46 @@ export function validateToken(token) {
   return null
 }
 
-/** Extract token from Authorization header or ?token= query param */
+/** Parse cookies from a request */
+function parseCookies(req) {
+  const header = req.headers?.cookie
+  if (!header) return {}
+  const cookies = {}
+  for (const pair of header.split(';')) {
+    const [k, ...v] = pair.trim().split('=')
+    if (k) cookies[k.trim()] = decodeURIComponent(v.join('='))
+  }
+  return cookies
+}
+
+/** Extract token from Authorization header, ?token= query param, or tlda_token cookie */
 export function extractToken(req) {
   const auth = req.headers?.authorization
   if (auth?.startsWith('Bearer ')) return auth.slice(7)
   const url = new URL(req.url, `http://${req.headers?.host || 'localhost'}`)
-  return url.searchParams.get('token') || null
+  const qp = url.searchParams.get('token')
+  if (qp) return qp
+  const cookies = parseCookies(req)
+  return cookies.tlda_token || null
+}
+
+/** GET /auth/login?token=xxx[&redirect=/path] — set cookie, redirect to viewer */
+export function loginRoute(req, res) {
+  const url = new URL(req.url, `http://${req.headers?.host || 'localhost'}`)
+  const token = url.searchParams.get('token')
+  if (!token) return res.status(400).send('Missing ?token= parameter')
+
+  const level = validateToken(token)
+  if (!level) return res.status(401).send('Invalid token')
+
+  // 30 days, HttpOnly, SameSite=Lax (works for top-level navigation)
+  // Secure only when accessed over HTTPS (Funnel); allow plain HTTP for Tailscale direct
+  const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
+  const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
+  res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
+
+  const redirect = url.searchParams.get('redirect') || '/'
+  res.redirect(302, redirect)
 }
 
 /** Express middleware: require at least read access */
