@@ -29,6 +29,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
+import { appendBuildEntry } from './changelog.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -550,7 +551,7 @@ async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
     signalReload(name, null)
   }
 
-  return { pageCount, newHashes }
+  return { pageCount, newHashes, changedPages: changedPageNums }
 }
 
 /** Phase 3: Extract macros from preamble. */
@@ -744,6 +745,14 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       lastBuild: new Date().toISOString(),
     })
     saveBuildCache(ctx)
+
+    // Append changelog entry with TeX diff
+    try {
+      const clEntry = appendBuildEntry(name, svgResult.changedPages, Object.values(svgResult.newHashes).join(''))
+      if (clEntry) ctx.addLog(`Changelog: ${svgResult.changedPages.length} page(s), diff ${clEntry.texDiff.length} chars`)
+    } catch (e) {
+      ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
+    }
 
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
