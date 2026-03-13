@@ -1,0 +1,43 @@
+/* PlaybackPill — shown when fleet playback is active */
+
+.playback-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(139, 92, 246, 0.6);
+  pointer-events: all;
+  transition: color 0.3s;
+  white-space: nowrap;
+}
+
+.playback-pill:hover {
+  color: rgba(139, 92, 246, 0.9);
+}
+
+.playback-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(139, 92, 246, 0.6);
+  animation: playback-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes playback-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* Dark mode */
+html[data-theme="dark"] .playback-pill {
+  color: rgba(167, 139, 250, 0.6);
+}
+
+html[data-theme="dark"] .playback-pill:hover {
+  color: rgba(167, 139, 250, 0.9);
+}
+
+html[data-theme="dark"] .playback-dot {
+  background: rgba(167, 139, 250, 0.6);
+}

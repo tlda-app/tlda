@@ -12,18 +12,22 @@ import {
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode, setReplyContext } from './shapes/MathNoteShape'
+import { TocDropTargetShapeUtil, TocDropTargetManager } from './shapes/TocDropTargetShape'
 import { switchTab, addTab } from './noteThreading'
 import { HtmlPageShapeUtil } from './shapes/HtmlPageShape'
 import { SvgPageShapeUtil } from './shapes/SvgPageShape'
 import { SvgFigureShapeUtil } from './shapes/SvgFigureShape'
+import { ReadingAssistBarShapeUtil } from './shapes/ReadingAssistBarShape'
+import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
+import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, AgentPill } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, AgentPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -57,6 +61,8 @@ import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
+import { useSyncedPlayback } from './hooks/useSyncedPlayback'
+import { PlaybackPill } from './pills/PlaybackPill'
 
 // Sync server URL - use env var, or derive from window.location
 // Dev mode (Vite on 5173): connect to sync server on 5176
@@ -114,10 +120,11 @@ interface SvgDocumentEditorProps {
   document: SvgDocument
   roomId: string
   diffConfig?: { basePath: string }
+  initialCamera?: { x: number; y: number; z: number; page?: string }
 }
 
 
-export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -253,6 +260,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   const [reloadErrors, setReloadErrors] = useState<ReloadResult | null>(null)
   // Remap warnings from reload (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
+
+  // Fleet playback — listen for BroadcastChannel and swap annotation shapes
+  const playbackState = useSyncedPlayback(editorRef, docName)
 
   useYjsSignals({
     editorRef, document,
@@ -498,7 +508,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
     }),
     [document, roomId]
   )
@@ -572,10 +582,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const tools = useMemo(() => [BrowseTool, MathNoteTool, TextSelectTool], [])
+  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+  const tools = useMemo(() => [
+    BrowseTool, MathNoteTool, TextSelectTool,
+    ...(isPhone ? [PhoneHandTool] : []),
+  ], [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -697,6 +711,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       )}
       <div className="build-pills-row">
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
+        <PlaybackPill state={playbackState} />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
@@ -878,10 +893,62 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                   editor.setCurrentPage(session.pageId as any)
                 }
               }
-              if (session?.camera) {
+              if (initialCamera) {
+                // URL camera params override session restore
+                if (initialCamera.page) {
+                  const pages = editor.getPages()
+                  const target = pages.find(p => p.name === initialCamera.page || p.id === initialCamera.page)
+                  if (target) editor.setCurrentPage(target.id as any)
+                }
+                editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
+              } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-              if (session?.tool) {
+              if (isPhone) {
+                // Phone: fit text column width on load (unless URL camera was specified)
+                // Defer slightly so SVG content is injected and we can measure text bounds
+                if (!initialCamera && !session?.camera) {
+                  const fitToContent = () => {
+                    const pageShapes = editor.getCurrentPageShapes().filter(s => s.type === 'svg-page')
+                    if (pageShapes.length === 0) return
+                    const first = pageShapes.sort((a, b) => a.y - b.y)[0]
+                    const b = editor.getShapePageBounds(first.id)
+                    if (!b) return
+                    // Try to find text column bounds from DOM
+                    const el = document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
+                    const svg = el?.querySelector('svg')
+                    const vp = editor.getViewportScreenBounds()
+                    if (svg?.viewBox?.baseVal?.width) {
+                      const vb = svg.viewBox.baseVal
+                      const texts = svg.querySelectorAll('text')
+                      let minX = Infinity, maxX = -Infinity
+                      for (const t of texts) {
+                        if (t.closest('defs')) continue
+                        const x = parseFloat(t.getAttribute('x') || '0')
+                        const len = (t as SVGTextContentElement).getComputedTextLength?.() || 0
+                        if (x < minX) minX = x
+                        if (x + len > maxX) maxX = x + len
+                      }
+                      if (minX < maxX) {
+                        const sx = b.width / vb.width
+                        const colMinX = b.minX + minX * sx
+                        const colW = (maxX - minX) * sx
+                        const z = vp.width / colW
+                        editor.setCamera({ x: -colMinX, y: -b.minY, z })
+                        return
+                      }
+                    }
+                    // Fallback: full page width
+                    const z = vp.width / b.width
+                    editor.setCamera({ x: -b.minX, y: -b.minY, z })
+                  }
+                  // Try immediately, retry after SVG injection
+                  fitToContent()
+                  setTimeout(fitToContent, 500)
+                }
+                // Phone: always start in phone-hand tool for axis-locked scroll
+                editor.setCurrentTool('phone-hand')
+              } else if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
               } else {
                 const home = getHomeTool(getFormatConfig(document.format))
@@ -1014,6 +1081,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     >
       <DarkModeSync />
       <NoteDropHandler />
+      <TocDropTargetManager />
     </Tldraw>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
@@ -1021,3 +1089,4 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     </DocContext.Provider>
   )
 }
+
