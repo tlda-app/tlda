@@ -1080,6 +1080,8 @@ async function addAnnotation(doc, line, text, { color = 'orange', width = 200, h
         column: -1,
         content: linePos.content,
       },
+      ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+      ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
     },
     parentId: 'page:page',
     index: noteIndex,
@@ -1856,6 +1858,58 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'mark_highlight_addressed',
+      description: 'Mark a highlight shape as addressed (desaturated). Sets meta.addressed=true and reduces opacity to 0.3. The user can tap the highlight to re-saturate and signal the agent to retry.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          id: { type: 'string', description: 'Highlight shape ID (e.g. "shape:abc123")' },
+        },
+        required: ['doc', 'id'],
+      },
+    },
+    {
+      name: 'place_response_bar',
+      description: 'Place a reading-assist margin bar next to a highlight, indicating an agent response exists. The bar is a thin colored strip in the right margin spanning the highlight height. Tap the bar to see the response popover.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          highlightId: { type: 'string', description: 'ID of the highlight shape this bar responds to' },
+          responseId: { type: 'string', description: 'ID of the response math-note annotation' },
+        },
+        required: ['doc', 'highlightId', 'responseId'],
+      },
+    },
+    {
+      name: 'set_understanding',
+      description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          startLine: { type: 'number', description: 'First source line' },
+          endLine: { type: 'number', description: 'Last source line' },
+          status: { type: 'string', enum: ['approved', 'understood', 'unchecked'], description: 'Understanding status' },
+          userId: { type: 'string', description: 'User ID (defaults to FLEET_ID env)' },
+          displayName: { type: 'string', description: 'Display name (defaults to FLEET_NAME env)' },
+        },
+        required: ['doc', 'startLine', 'endLine', 'status'],
+      },
+    },
+    {
+      name: 'get_understanding',
+      description: 'Get the understanding map for a document — all users\' line-level statuses.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
       name: 'scroll_to_line',
       description: 'Scroll the viewer to a source line. Looks up the line position and broadcasts a scroll command to all connected viewers.',
       inputSchema: {
@@ -2044,6 +2098,8 @@ const TOOLS_NEEDING_BUILD = new Set([
   'highlight_location', 'add_annotation', 'send_note',
   'scroll_to_line', 'read_pen_annotations',
   'draw_highlight', 'draw_arrow',
+  'mark_highlight_addressed', 'place_response_bar',
+  'set_understanding', 'get_understanding',
 ]);
 
 // Handle tool calls
@@ -2067,6 +2123,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     }
+
+    // Warn if agent has a delegated task — they should probably be working, not blocking
+    try {
+      const stateFile = `${os.homedir()}/.claude/agent-tasks.json`;
+      const agentWin = process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID;
+      if (agentWin && fs.existsSync(stateFile)) {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        const winId = parseInt(agentWin);
+        const task = (state.tasks || []).find(t => t.agent === winId && t.status !== 'done');
+        if (task) {
+          return {
+            content: [{
+              type: 'text',
+              text: `WARNING: You have an active task [${task.id}]: "${task.description}". ` +
+                `wait_for_feedback blocks for up to ${Math.round(timeout/1000)}s and is only for dedicated iPad review sessions. ` +
+                `If your task is to write/edit/analyze, use \`tlda monitor add ${docName}\` for background notifications instead, and do your actual work.`,
+            }],
+          };
+        }
+      }
+    } catch { /* best effort — don't block on check failure */ }
 
     let heartbeatInterval;
     let shapeStream;
@@ -2832,7 +2909,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }
-    return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
+    const tok = resolveToken();
+    const tokParam = tok ? `&token=${tok}` : '';
+    const viewUrl = `http://localhost:5176/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
+    return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 
   if (name === 'send_note') {
@@ -2946,6 +3026,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           createdAt: Date.now(),
           createdBy: 'claude',
           sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
         },
         parentId: 'page:page',
         typeName: 'shape',
@@ -3032,6 +3114,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           createdAt: Date.now(),
           createdBy: 'claude',
           sourceAnchor: { file: file || './' + (fromPos.texFile || 'main.tex'), line: fromLine },
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
         },
         parentId: 'page:page',
         typeName: 'shape',
@@ -3042,6 +3126,206 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? `Arrow drawn: line ${fromLine} → ${toLine}, page ${fromPos.page}`
         : `Arrow drawn: line ${fromLine} (p${fromPos.page}) → ${toLine} (p${toPos.page})`;
       return { content: [{ type: 'text', text: `${desc}, ${color} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'set_understanding') {
+    const { doc, startLine, endLine, status, userId, displayName } = args;
+    if (!doc || startLine == null || endLine == null || !status) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
+    }
+    try {
+      const uid = userId || process.env.FLEET_ID || 'unknown';
+      const uname = displayName || process.env.FLEET_NAME || uid;
+      const uidSafe = uid.replace(/[^a-zA-Z0-9]/g, '');
+
+      // If status is 'unchecked', delete existing understanding-line shapes for this range
+      if (status === 'unchecked') {
+        const allShapes = await fetchShapes(doc, 'understanding-line');
+        const toDelete = allShapes.filter(s =>
+          s.props?.userId === uid &&
+          s.props?.startLine >= startLine &&
+          s.props?.endLine <= endLine
+        );
+        for (const s of toDelete) {
+          await deleteShapeRest(doc, s.id);
+        }
+        return { content: [{ type: 'text', text: `Understanding: cleared lines ${startLine}–${endLine} for ${uname}` }] };
+      }
+
+      // Look up canvas positions for start and end lines
+      const startPos = lookupLine(doc, startLine);
+      const endPos = lookupLine(doc, endLine);
+      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
+      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
+
+      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
+      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
+
+      // Determine user index (how many other users already have understanding lines)
+      let userIndex = 0;
+      try {
+        const existing = await fetchShapes(doc, 'understanding-line');
+        const otherUsers = new Set(existing.filter(s => s.props?.userId !== uid).map(s => s.props?.userId));
+        userIndex = otherUsers.size;
+      } catch {}
+
+      // Position in left margin, stacked per user
+      const MARGIN_X = -12;
+      const USER_GAP = 4;
+      const BAR_WIDTH = 3;
+      const x = MARGIN_X - (userIndex * USER_GAP);
+      const y = Math.min(startCanvas.y, endCanvas.y) - 5;
+      const h = Math.max(20, Math.abs(endCanvas.y - startCanvas.y) + 10);
+
+      // Deterministic shape ID for upsert
+      const shapeId = `shape:umap-${uidSafe}-${startLine}-${endLine}`;
+      const shapeIndex = await getNextShapeIndex(doc);
+
+      const shape = {
+        id: shapeId,
+        type: 'understanding-line',
+        typeName: 'shape',
+        x, y,
+        rotation: 0,
+        isLocked: true,
+        opacity: 1,
+        index: shapeIndex,
+        props: {
+          w: BAR_WIDTH,
+          h,
+          userId: uid,
+          displayName: uname,
+          startLine,
+          endLine,
+          status,
+          userIndex,
+        },
+        meta: { createdAt: Date.now() },
+        parentId: 'page:page',
+      };
+
+      // Try update first, fall back to create
+      try {
+        await updateShapeRest(doc, shapeId, { props: shape.props, y: shape.y });
+      } catch {
+        await createShapeRest(doc, shape);
+      }
+
+      const lineCount = endLine - startLine + 1;
+      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}" for ${uname} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'get_understanding') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const shapes = await fetchShapes(doc, 'understanding-line');
+      if (shapes.length === 0) {
+        return { content: [{ type: 'text', text: 'No understanding map data.' }] };
+      }
+      // Group by user
+      const byUser = {};
+      for (const s of shapes) {
+        const uid = s.props?.userId || 'unknown';
+        if (!byUser[uid]) byUser[uid] = { displayName: s.props?.displayName || uid, ranges: [] };
+        byUser[uid].ranges.push({ start: s.props?.startLine, end: s.props?.endLine, status: s.props?.status });
+      }
+      let summary = '';
+      for (const [uid, data] of Object.entries(byUser)) {
+        const approved = data.ranges.filter(r => r.status === 'approved').length;
+        const understood = data.ranges.filter(r => r.status === 'understood').length;
+        summary += `${data.displayName}: ${approved} approved range(s), ${understood} understood-not-satisfied range(s)\n`;
+        for (const r of data.ranges.sort((a, b) => a.start - b.start)) {
+          summary += `  lines ${r.start}–${r.end}: ${r.status}\n`;
+        }
+      }
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+  }
+
+  if (name === 'mark_highlight_addressed') {
+    const { doc, id } = args;
+    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
+    try {
+      const shapeId = id.startsWith('shape:') ? id : `shape:${id}`;
+      await updateShapeRest(doc, shapeId, {
+        opacity: 0.3,
+        meta: { addressed: true },
+      });
+      return { content: [{ type: 'text', text: `Marked addressed: ${shapeId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'place_response_bar') {
+    const { doc, highlightId, responseId } = args;
+    if (!doc || !highlightId || !responseId) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, highlightId, responseId' }], isError: true };
+    }
+    try {
+      const hlId = highlightId.startsWith('shape:') ? highlightId : `shape:${highlightId}`;
+      const highlight = await fetchShape(doc, hlId);
+      if (!highlight) return { content: [{ type: 'text', text: `Highlight ${hlId} not found` }], isError: true };
+
+      // Get highlight bounds from its segments
+      const bounds = highlight.props?.segments?.[0]?.path
+        ? { x: highlight.x, y: highlight.y, w: 6, h: 60 }
+        : { x: highlight.x, y: highlight.y, w: 6, h: 60 };
+
+      // Compute bar position: right margin, spanning highlight height
+      // Use page width to position in right margin
+      const pageW = getPageWidth(doc);
+      const barX = pageW + 5;
+      const barY = highlight.y;
+      // Estimate height from segments or use a default
+      let barH = 60;
+      if (highlight.props?.segments) {
+        const ys = [];
+        for (const seg of highlight.props.segments) {
+          // Segments are base64 encoded paths — just use shape bounds estimation
+          ys.push(0);
+        }
+        // Rough height from number of segments × line height
+        barH = Math.max(20, highlight.props.segments.length * 16);
+      }
+
+      const shapeId = generateShapeId();
+      const shapeIndex = await getNextShapeIndex(doc);
+      const shape = {
+        id: shapeId,
+        type: 'reading-assist-bar',
+        typeName: 'shape',
+        x: barX,
+        y: barY,
+        rotation: 0,
+        isLocked: false,
+        opacity: 1,
+        index: shapeIndex,
+        props: {
+          w: 6,
+          h: barH,
+          highlightId: hlId,
+          responseId: responseId.startsWith('shape:') ? responseId : `shape:${responseId}`,
+          color: highlight.props?.color || 'yellow',
+        },
+        meta: {
+          createdAt: Date.now(),
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
+        },
+        parentId: 'page:page',
+      };
+
+      await createShapeRest(doc, shape);
+      return { content: [{ type: 'text', text: `Response bar placed: ${shapeId} for highlight ${hlId}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
