@@ -1,8 +1,8 @@
 /**
- * NoteDropHandler — handles dropping notes from the panel onto the TLDraw canvas.
+ * NoteDropHandler — handles dropping notes from the panel or cross-window onto the TLDraw canvas.
  *
- * Renders nothing; attaches native dragover/drop handlers to the TLDraw container.
- * Creates a math-note shape at the drop position with provenance metadata.
+ * Attaches handlers to `document` in capture phase because TLDraw's pointer
+ * system intercepts native drag events on the canvas container.
  */
 import { useEffect } from 'react'
 import { useEditor, createShapeId } from 'tldraw'
@@ -11,20 +11,34 @@ export function NoteDropHandler() {
   const editor = useEditor()
 
   useEffect(() => {
-    const container = editor.getContainer()
-    if (!container) return
+    function isNoteDrag(e: DragEvent): boolean {
+      const types = e.dataTransfer?.types
+      if (!types) return false
+      return types.includes('application/x-tlda-note') ||
+             types.includes('application/x-tlda-drop') ||
+             types.includes('application/x-chat-attachment') ||
+             // Cross-window: only accept text/plain if it's likely our JSON payload
+             // (can't read data during dragover, so accept text/plain broadly)
+             types.includes('text/plain')
+    }
+
+    function isOverOpenPanel(e: DragEvent): boolean {
+      const panel = document.querySelector('.doc-panel-open')
+      if (!panel) return false
+      const rect = panel.getBoundingClientRect()
+      return e.clientX >= rect.left && e.clientX <= rect.right &&
+             e.clientY >= rect.top && e.clientY <= rect.bottom
+    }
 
     function handleDragOver(e: DragEvent) {
-      if (e.dataTransfer?.types.includes('application/x-tlda-note') ||
-          e.dataTransfer?.types.includes('application/x-chat-attachment') ||
-          e.dataTransfer?.types.includes('text/plain')) {
-        e.preventDefault()
-        e.dataTransfer.dropEffect = 'copy'
-      }
+      if (!isNoteDrag(e)) return
+      // Don't intercept dragover on the document panel
+      if (isOverOpenPanel(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
 
     function parseFleetDrop(e: DragEvent): Record<string, any> | null {
-      // Try custom MIME first, fall back to text/plain with _fleet marker
       const custom = e.dataTransfer?.getData('application/x-chat-attachment')
       if (custom) try { return JSON.parse(custom) } catch {}
       const plain = e.dataTransfer?.getData('text/plain')
@@ -33,31 +47,90 @@ export function NoteDropHandler() {
     }
 
     function handleDrop(e: DragEvent) {
+      // Don't intercept drops on the document panel (TOC drop-to-book)
+      if (isOverOpenPanel(e)) return
+
+      // Fleet scratch card drop — full content as MathNote
+      const tldaDrop = e.dataTransfer?.getData('application/x-tlda-drop')
+      if (tldaDrop) {
+        try {
+          const dropData = JSON.parse(tldaDrop)
+          if (dropData.type === 'scratch-doc' && dropData.content) {
+            e.preventDefault()
+            const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+            const shapeId = createShapeId()
+            const lineCount = dropData.content.split('\n').length
+            const h = Math.min(600, Math.max(200, lineCount * 16 + 40))
+            editor.createShape({
+              id: shapeId,
+              type: 'math-note',
+              x: point.x,
+              y: point.y,
+              props: {
+                text: dropData.content,
+                color: 'violet',
+                w: 300,
+                h,
+              },
+              meta: {
+                createdAt: Date.now(),
+                copiedFrom: { doc: 'fleet', shapeId: '', timestamp: Date.now() },
+                fleetSource: { type: 'scratch-doc', name: dropData.name, path: dropData.path },
+                docName: dropData.name,
+                docPath: dropData.path,
+              },
+            })
+            return
+          }
+        } catch {}
+      }
+
       // Accept fleet chat attachments — convert to tlda note format
       const item = parseFleetDrop(e)
       if (item && !e.dataTransfer?.getData('application/x-tlda-note')) {
         e.preventDefault()
+        try {
           const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
           const shapeId = createShapeId()
+
+          // Shared docs: shift+drop = open as full tlda doc, default = note on canvas
+          const isDoc = item.type === 'shared-doc'
+          if (isDoc && e.shiftKey && item.path) {
+            // Open as a full tlda document via fleet's share endpoint
+            fetch(`http://localhost:5199/api/tlda/share`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: item.path })
+            }).then(r => r.json()).then(data => {
+              if (data.openUrl) window.location.href = data.openUrl
+            }).catch(() => {})
+            return
+          }
+
+          const text = isDoc ? (item.text || item.snippet || '') : (item.snippet || '')
+          const w = isDoc ? 400 : 250
+          const h = isDoc ? Math.min(600, Math.max(150, (text.split('\n').length * 16) + 40)) : 150
+
           editor.createShape({
             id: shapeId,
             type: 'math-note',
             x: point.x,
             y: point.y,
             props: {
-              text: item.snippet || '',
-              color: 'blue',
-              w: 250,
-              h: 150,
+              text,
+              color: isDoc ? 'violet' : 'blue',
+              w,
+              h,
             },
             meta: {
               createdAt: Date.now(),
               copiedFrom: {
                 doc: 'fleet',
-                shapeId: item.source || '',
+                shapeId: item.source || item.shareId || '',
                 timestamp: Date.now(),
               },
               fleetSource: item,
+              ...(isDoc ? { docName: item.name, docPath: item.path } : {}),
             },
           })
         } catch {}
@@ -66,9 +139,12 @@ export function NoteDropHandler() {
 
       let json = e.dataTransfer?.getData('application/x-tlda-note')
       if (!json) {
-        // Cross-window fallback: check text/plain for _tlda marker
         const plain = e.dataTransfer?.getData('text/plain')
-        if (plain) try { const p = JSON.parse(plain); if (p._tlda) json = plain } catch {}
+        if (plain) try {
+          const p = JSON.parse(plain)
+          // Accept _tlda note payloads, but skip chapter-note (those are for TOC drop)
+          if (p._tlda && p.type !== 'chapter-note') json = plain
+        } catch {}
       }
       if (!json) return
       e.preventDefault()
@@ -87,9 +163,7 @@ export function NoteDropHandler() {
         return
       }
 
-      // Convert screen coords to page coords
       const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
-
       const shapeId = createShapeId()
       const text = data.text || ''
       const tabs = data.tabs && data.tabs.length > 0 ? data.tabs : [text]
@@ -118,11 +192,12 @@ export function NoteDropHandler() {
       })
     }
 
-    container.addEventListener('dragover', handleDragOver)
-    container.addEventListener('drop', handleDrop)
+    // Capture phase so we get events before TLDraw's pointer system
+    document.addEventListener('dragover', handleDragOver, true)
+    document.addEventListener('drop', handleDrop, true)
     return () => {
-      container.removeEventListener('dragover', handleDragOver)
-      container.removeEventListener('drop', handleDrop)
+      document.removeEventListener('dragover', handleDragOver, true)
+      document.removeEventListener('drop', handleDrop, true)
     }
   }, [editor])
 
