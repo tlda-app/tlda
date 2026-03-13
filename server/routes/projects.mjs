@@ -26,7 +26,7 @@ import {
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import historyRoutes from './history.mjs'
-import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt } from '../lib/sync-rooms.mjs'
 
 const router = Router()
 
@@ -289,6 +289,16 @@ router.get('/:name/shapes', requireRead, (req, res) => {
   res.json(records)
 })
 
+// GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
+router.get('/:name/shapes/at/:timestamp', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const ts = parseInt(req.params.timestamp, 10)
+  if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
+  const result = getShapesAt(req.params.name, ts)
+  res.json(result)
+})
+
 // POST /:name/shapes — create a shape
 router.post('/:name/shapes', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
@@ -418,7 +428,16 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   getOrCreateRoom(syncRoomName(req.params.name))
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff
+    const slim = { ...event }
+    if (slim.changes) {
+      slim.changes = slim.changes.map(c => {
+        const entry = { action: c.action, id: c.id, shapeType: c.shapeType }
+        if (c.state?.meta) entry.meta = c.state.meta
+        return entry
+      })
+    }
+    res.write(`data: ${JSON.stringify(slim)}\n\n`)
   })
 
   req.on('close', () => { clearInterval(keepalive); unsub() })

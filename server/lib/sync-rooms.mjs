@@ -55,6 +55,45 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'toc-drop-target': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.toc-drop-target',
+      sequence: [],
+    }),
+  },
+  'understanding-line': {
+    props: {
+      w: T.number,
+      h: T.number,
+      userId: T.string,
+      displayName: T.string,
+      startLine: T.number,
+      endLine: T.number,
+      status: T.string,
+      userIndex: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.understanding-line',
+      sequence: [],
+    }),
+  },
+  'reading-assist-bar': {
+    props: {
+      w: T.number,
+      h: T.number,
+      highlightId: T.string,
+      responseId: T.string,
+      color: DefaultColorStyle,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.reading-assist-bar',
+      sequence: [],
+    }),
+  },
   'svg-figure': {
     props: {
       w: T.number,
@@ -158,12 +197,16 @@ function scheduleSave(docName, room) {
 
 /**
  * Notify change listeners for a document.
+ * @param {string} docName
+ * @param {object[]} [changes] - Optional array of change entries from recordChanges
  */
-function notifyChangeListeners(docName) {
+function notifyChangeListeners(docName, changes) {
   const listeners = changeListeners.get(docName)
   if (!listeners) return
+  const event = { docName, timestamp: Date.now() }
+  if (changes && changes.length > 0) event.changes = changes
   for (const cb of listeners) {
-    try { cb({ docName, timestamp: Date.now() }) } catch {}
+    try { cb(event) } catch {}
   }
 }
 
@@ -195,6 +238,8 @@ function buildDocMap(docs) {
 
 /**
  * Diff current snapshot against previous, append changes to JSONL log.
+ * Returns the interesting changes (shape creates/updates/deletes) for real-time notification.
+ * @returns {object[]|null}
  */
 function recordChanges(docName, room) {
   const snapshot = room.getCurrentSnapshot()
@@ -204,7 +249,7 @@ function recordChanges(docName, room) {
   // First call for this room: just record baseline, no diff
   if (!prev) {
     prevSnapshots.set(docName, current)
-    return
+    return null
   }
 
   const entries = []
@@ -233,13 +278,13 @@ function recordChanges(docName, room) {
 
   prevSnapshots.set(docName, current)
 
-  if (entries.length === 0) return
+  if (entries.length === 0) return null
 
   // Filter to interesting records (shapes, not camera/pointer/instance state)
   const interesting = entries.filter(e =>
     e.type === 'shape' || e.action === 'delete'
   )
-  if (interesting.length === 0) return
+  if (interesting.length === 0) return null
 
   const path = changelogPath(docName)
   const lines = interesting.map(e => JSON.stringify(e)).join('\n') + '\n'
@@ -248,6 +293,8 @@ function recordChanges(docName, room) {
   } catch (e) {
     console.error(`[changelog] Failed to write ${path}:`, e.message)
   }
+
+  return interesting
 }
 
 /**
@@ -282,8 +329,8 @@ export function getOrCreateRoom(docName) {
     schema,
     onDataChange: () => {
       scheduleSave(docName, room)
-      recordChanges(docName, room)
-      notifyChangeListeners(docName)
+      const changes = recordChanges(docName, room)
+      notifyChangeListeners(docName, changes)
     },
   }
   if (snapshot) {
@@ -517,6 +564,121 @@ export function replaceRoomSnapshot(docName, snapshot) {
   writeFileSync(tmp, JSON.stringify(snapshot))
   renameSync(tmp, path)
   console.log(`[sync] Snapshot replaced: ${docName}`)
+}
+
+// --- Shape history replay ---
+
+/** @type {Map<string, { shapes: object[], ts: number }>} LRU cache for shape-at queries */
+const shapeAtCache = new Map()
+const SHAPE_AT_CACHE_MAX = 50
+
+/**
+ * Reconstruct the set of shapes that existed at a given timestamp.
+ * Reads the shape changelog JSONL, replays create/update/delete ops forward,
+ * stops at timestamp T.
+ *
+ * Pre-changelog shapes (in current snapshot but never mentioned in changelog)
+ * are included — they existed before the changelog started.
+ *
+ * @param {string} projectName
+ * @param {number} timestamp - Unix ms timestamp
+ * @returns {{ shapes: object[], changelogRange: { first: number, last: number } | null }}
+ */
+export function getShapesAt(projectName, timestamp) {
+  const cacheKey = `${projectName}:${timestamp}`
+  if (shapeAtCache.has(cacheKey)) {
+    // Move to end (most recently used)
+    const cached = shapeAtCache.get(cacheKey)
+    shapeAtCache.delete(cacheKey)
+    shapeAtCache.set(cacheKey, cached)
+    return cached
+  }
+
+  const docName = `doc-${projectName}`
+  const logPath = changelogPath(docName)
+
+  // Read changelog entries (sorted ascending by ts)
+  let entries = []
+  if (existsSync(logPath)) {
+    const lines = readFileSync(logPath, 'utf-8').trim().split('\n').filter(Boolean)
+    entries = lines
+      .map(line => { try { return JSON.parse(line) } catch { return null } })
+      .filter(Boolean)
+      .sort((a, b) => a.ts - b.ts)
+  }
+
+  const changelogRange = entries.length > 0
+    ? { first: entries[0].ts, last: entries[entries.length - 1].ts }
+    : null
+
+  // Replay: apply all ops up to timestamp
+  const shapes = new Map() // id → state
+
+  for (const entry of entries) {
+    if (entry.ts > timestamp) break
+
+    switch (entry.action) {
+      case 'create':
+        if (entry.state) shapes.set(entry.id, { ...entry.state })
+        break
+      case 'update': {
+        const existing = shapes.get(entry.id)
+        if (existing && entry.diff) {
+          for (const [key, change] of Object.entries(entry.diff)) {
+            if (typeof change === 'object' && change !== null && 'to' in change) {
+              existing[key] = change.to
+            }
+          }
+        }
+        break
+      }
+      case 'delete':
+        shapes.delete(entry.id)
+        break
+    }
+  }
+
+  // Include pre-changelog shapes: shapes in the current snapshot that
+  // never appeared in the changelog at all (existed before logging started)
+  const mentionedIds = new Set(entries.map(e => e.id))
+  const snapPath = snapshotPath(docName)
+  if (existsSync(snapPath)) {
+    try {
+      const snapshot = JSON.parse(readFileSync(snapPath, 'utf-8'))
+      for (const doc of (snapshot.documents || [])) {
+        const state = doc.state
+        if (!state?.id) continue
+        // Only include shapes (not camera, page, instance records)
+        if (state.typeName !== 'shape') continue
+        // Skip shapes that appear in the changelog — they're handled by replay
+        if (mentionedIds.has(state.id)) continue
+        // Pre-changelog shape: include it (it existed before logging)
+        shapes.set(state.id, state)
+      }
+    } catch {}
+  }
+
+  // For build entries: include page metadata from the project
+  // Filter to shape data only (type, props, meta, position)
+  const result = {
+    shapes: [...shapes.values()].map(s => {
+      // For svg-page/html-page shapes, return metadata only (no SVG content)
+      if (s.type === 'svg-page' || s.type === 'html-page') {
+        return { id: s.id, type: s.type, typeName: s.typeName, x: s.x, y: s.y, props: s.props, meta: s.meta }
+      }
+      return s
+    }),
+    changelogRange,
+  }
+
+  // Cache with LRU eviction
+  shapeAtCache.set(cacheKey, result)
+  if (shapeAtCache.size > SHAPE_AT_CACHE_MAX) {
+    const oldest = shapeAtCache.keys().next().value
+    shapeAtCache.delete(oldest)
+  }
+
+  return result
 }
 
 /**
