@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext } from 'react'
 import { createPortal } from 'react-dom'
-import { useEditor, stopEventPropagation } from 'tldraw'
+import { useEditor, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { DocContext, PanelContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
@@ -101,7 +101,9 @@ export function DocumentPanel() {
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
+  const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+  const dragLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Close on outside touch (touch devices only — desktop uses CSS :hover)
   useEffect(() => {
@@ -116,10 +118,48 @@ export function DocumentPanel() {
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
   }, [open])
 
+  // Auto-open panel when a fleet drag enters the window — close when drag stops
+  const dragTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    function onDragOver(e: DragEvent) {
+      const types = e.dataTransfer?.types
+      if (!types?.includes('text/plain') && !types?.includes('application/x-chat-attachment')) return
+      if (!dragOpen) { setDragOpen(true); setTab('toc') }
+      // Reset close timer on every dragover — if no dragover for 500ms, drag ended
+      if (dragTimeout.current) clearTimeout(dragTimeout.current)
+      dragTimeout.current = setTimeout(() => setDragOpen(false), 500)
+    }
+    function onDrop() { setDragOpen(false) }
+    // Use window (not document) — TLDraw's capture-phase handlers on document
+    // call stopImmediatePropagation, preventing same-target capture listeners
+    window.addEventListener('dragover', onDragOver, true)
+    window.addEventListener('drop', onDrop, true)
+    return () => {
+      window.removeEventListener('dragover', onDragOver, true)
+      window.removeEventListener('drop', onDrop, true)
+      if (dragTimeout.current) clearTimeout(dragTimeout.current)
+    }
+  }, [dragOpen])
+
+  // TLDraw-native drop target: open panel when shapes are dragged to right edge
+  useEffect(() => {
+    function onTocHover(e: Event) {
+      const active = (e as CustomEvent).detail?.active
+      if (active) {
+        setDragOpen(true)
+        setTab('toc')
+      } else {
+        setDragOpen(false)
+      }
+    }
+    window.addEventListener('toc-drop-hover', onTocHover)
+    return () => window.removeEventListener('toc-drop-hover', onTocHover)
+  }, [])
+
   return (
     <div
       ref={panelRef}
-      className={`doc-panel${open ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
+      className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
       onPointerDown={(e) => {
         stopEventPropagation(e)
         // Touch tap on collapsed strip → open
@@ -149,6 +189,304 @@ export function DocumentPanel() {
       {tab === 'history' && !isHtml && <HistoryTab />}
       {tab === 'notes' && <NotesTab />}
     </div>
+  )
+}
+
+// ======================
+// Phone overlay (small screens)
+// ======================
+
+const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+
+// Color slots for the highlighter slider. Severity-ordered (red = most severe).
+// Violet is reserved for the user's personal notes — not a reading-assist color.
+const HL_SLOTS: { id: string; color: string; label: string }[] = [
+  { id: 'eraser', color: '#888', label: 'Eraser' },
+  { id: 'light-red', color: '#dc2626', label: 'wrong' },
+  { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
+  { id: 'yellow', color: '#ffc940', label: 'explain' },
+  { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
+  { id: 'light-green', color: '#65c365', label: 'approve' },
+]
+
+function PhoneHighlighterButton() {
+  const editor = useEditor()
+  const [mode, setMode] = useState<'hand' | 'highlight' | 'eraser'>('hand')
+  const [colorIdx, setColorIdx] = useState(1) // default yellow
+  const [dragging, setDragging] = useState(false)
+  const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const lastTapRef = useRef(0)
+
+  // Sync with editor tool changes (e.g. if toolbar changes tool)
+  useEffect(() => {
+    const update = () => {
+      const tool = editor.getCurrentToolId()
+      if (tool === 'highlight') setMode('highlight')
+      else if (tool === 'eraser') setMode('eraser')
+      else setMode('hand')
+    }
+    editor.on('change', update)
+    return () => { editor.off('change', update) }
+  }, [editor])
+
+  const activateSlot = useCallback((idx: number) => {
+    const slot = HL_SLOTS[idx]
+    if (slot.id === 'eraser') {
+      editor.setCurrentTool('eraser')
+      setMode('eraser')
+    } else {
+      editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
+      editor.setCurrentTool('highlight')
+      setMode('highlight')
+    }
+    setColorIdx(idx)
+  }, [editor])
+
+  // Undo last highlight: find most recent highlight shape and delete it
+  const undoLastHighlight = useCallback(() => {
+    const allShapes = editor.getCurrentPageShapes()
+    const highlights = allShapes
+      .filter((s: any) => s.type === 'highlight')
+      .sort((a: any, b: any) => {
+        // Sort by index descending — highest index = most recently created
+        return (b.index || '').localeCompare(a.index || '')
+      })
+    if (highlights.length > 0) {
+      editor.deleteShape(highlights[0].id)
+    }
+  }, [editor])
+
+  const handleTap = useCallback(() => {
+    const now = Date.now()
+    const elapsed = now - lastTapRef.current
+    lastTapRef.current = now
+
+    // Double-tap: undo last highlight
+    if (elapsed < 400) {
+      lastTapRef.current = 0 // reset so triple-tap doesn't re-trigger
+      undoLastHighlight()
+      return
+    }
+
+    if (mode === 'hand') {
+      // Switch to highlight with current color
+      activateSlot(colorIdx)
+    } else {
+      // Switch back to phone-hand (axis-locked scroll)
+      editor.setCurrentTool('phone-hand')
+      setMode('hand')
+    }
+  }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
+
+  // Drag handling for color slider — horizontal L/R
+  const dragStartX = useRef(0)
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    dragStartX.current = e.clientX
+    setDragging(false)
+    setDragSlot(null)
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  }, [])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    const dx = e.clientX - dragStartX.current
+    if (Math.abs(dx) < 10 && !dragging) return
+    if (!dragging) setDragging(true)
+    // Slots laid out L→R: [eraser, yellow, green, blue, violet, orange]
+    // Button is to the right. Drag left a little = orange (idx 5), a lot = eraser (idx 0)
+    const slotWidth = 40
+    const steps = Math.round((-dx) / slotWidth) // positive = dragged left
+    const idx = Math.max(0, Math.min(HL_SLOTS.length - 1, HL_SLOTS.length - steps))
+    setDragSlot(idx)
+  }, [dragging])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+    if (dragging && dragSlot !== null) {
+      activateSlot(dragSlot)
+    } else if (!dragging) {
+      handleTap()
+    }
+    setDragging(false)
+    setDragSlot(null)
+  }, [dragging, dragSlot, activateSlot, handleTap])
+
+  const activeSlot = dragSlot ?? colorIdx
+  const activeColor = HL_SLOTS[activeSlot]?.color || HL_SLOTS[1].color
+  const isActive = mode !== 'hand'
+
+  return (
+    <>
+      {/* Color slider popup — shown during drag */}
+      {dragging && (
+        <div className="phone-hl-slider" onPointerDown={stopEventPropagation} onTouchStart={stopEventPropagation}>
+          {HL_SLOTS.map((slot, i) => (
+            <div
+              key={slot.id}
+              className={`phone-hl-slot${i === dragSlot ? ' active' : ''}`}
+              style={{ '--slot-color': slot.color } as React.CSSProperties}
+            >
+              {slot.id === 'eraser' ? (
+                <span className="phone-hl-slot-eraser">✕</span>
+              ) : (
+                <span className="phone-hl-slot-dot" />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Label rendered outside slot hierarchy — position:fixed breaks inside transformed parents */}
+      {dragging && dragSlot != null && (
+        <span className="phone-hl-slot-label" style={{ '--slot-color': HL_SLOTS[dragSlot]?.color || '#666' } as React.CSSProperties}>
+          {HL_SLOTS[dragSlot]?.id === 'eraser' ? 'Eraser' : HL_SLOTS[dragSlot]?.label}
+        </span>
+      )}
+      <button
+        ref={btnRef}
+        className={`phone-hl-btn${isActive ? ' active' : ''}`}
+        style={isActive ? { '--hl-color': activeColor } as React.CSSProperties : undefined}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
+      >
+        {mode === 'eraser' ? (
+          <span style={{ fontSize: 16 }}>✕</span>
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 20 20">
+            <rect x="4" y="2" width="12" height="16" rx="2"
+              fill={isActive ? activeColor : 'none'}
+              stroke={isActive ? activeColor : 'currentColor'}
+              strokeWidth="1.5"
+              opacity={isActive ? 0.9 : 0.5}
+            />
+            <rect x="4" y="12" width="12" height="6" rx="0"
+              fill={isActive ? 'rgba(0,0,0,0.15)' : 'currentColor'}
+              opacity={isActive ? 1 : 0.2}
+            />
+          </svg>
+        )}
+      </button>
+    </>
+  )
+}
+
+function PhonePageIndicator() {
+  const editor = useEditor()
+  const [pageInfo, setPageInfo] = useState<{ current: number; total: number } | null>(null)
+  const [visible, setVisible] = useState(false)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastCamY = useRef<number>(0)
+
+  useEffect(() => {
+    const update = () => {
+      const cam = editor.getCamera()
+      // Only show on meaningful vertical movement
+      if (Math.abs(cam.y - lastCamY.current) < 0.5) return
+      lastCamY.current = cam.y
+
+      const pages = editor.getCurrentPageShapes()
+        .filter(s => s.type === 'svg-page')
+        .sort((a, b) => a.y - b.y)
+      if (pages.length === 0) return
+
+      const vp = editor.getViewportPageBounds()
+      const vpMidY = vp.minY + vp.height / 2
+      let closest = 0
+      let minDist = Infinity
+      for (let i = 0; i < pages.length; i++) {
+        const py = pages[i].y + (pages[i].props as any).h / 2
+        const d = Math.abs(py - vpMidY)
+        if (d < minDist) { minDist = d; closest = i }
+      }
+
+      setPageInfo({ current: closest + 1, total: pages.length })
+      setVisible(true)
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+      hideTimer.current = setTimeout(() => setVisible(false), 1200)
+    }
+    editor.on('change', update)
+    return () => {
+      editor.off('change', update)
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+    }
+  }, [editor])
+
+  if (!pageInfo) return null
+
+  return (
+    <div className={`phone-page-indicator${visible ? ' visible' : ''}`}>
+      {pageInfo.current} / {pageInfo.total}
+    </div>
+  )
+}
+
+export function PhoneOverlay() {
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (!IS_PHONE) return
+    // Show toolbar when menu is open
+    document.body.classList.toggle('phone-bar-visible', menuOpen)
+  }, [menuOpen])
+
+  useEffect(() => {
+    if (!IS_PHONE) return
+    document.body.classList.add('phone-mode')
+    return () => { document.body.classList.remove('phone-mode') }
+  }, [])
+
+  if (!IS_PHONE) return null
+
+  return (
+    <>
+      {/* Menu toggle — top right: opens TOC + shows toolbar */}
+      <button
+        className="phone-toc-btn"
+        onClick={() => setMenuOpen(!menuOpen)}
+        onPointerDown={stopEventPropagation}
+        onPointerUp={stopEventPropagation}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
+      >
+        {menuOpen ? '✕' : '☰'}
+      </button>
+
+      {/* Highlighter toggle — bottom right, drag for color slider */}
+      <PhoneHighlighterButton />
+
+      {/* Page number indicator — shows during scroll, fades out */}
+      <PhonePageIndicator />
+
+      {/* TOC modal */}
+      {menuOpen && (
+        <div
+          className="phone-toc-backdrop"
+          onClick={() => setMenuOpen(false)}
+          onPointerDown={stopEventPropagation}
+          onTouchStart={stopEventPropagation}
+        >
+          <div
+            className="phone-toc-modal"
+            onClick={(e) => {
+              // Close modal when a TOC item is tapped (navigates to section)
+              if ((e.target as HTMLElement).closest('.toc-item')) {
+                setTimeout(() => setMenuOpen(false), 150)
+              } else {
+                e.stopPropagation()
+              }
+            }}
+            onPointerDown={stopEventPropagation}
+            onTouchStart={stopEventPropagation}
+          >
+            <TocTab />
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

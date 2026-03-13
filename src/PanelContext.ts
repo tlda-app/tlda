@@ -45,6 +45,9 @@ export interface PanelContextValue {
   onSelectChange?: (id: string | null) => void
   buildErrors?: BuildError[]
   buildWarnings?: BuildWarning[]
+  // Spatial timeline overlay
+  timelineActive?: boolean
+  onToggleTimeline?: () => void
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

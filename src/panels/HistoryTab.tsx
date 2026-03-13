@@ -80,6 +80,13 @@ export function HistoryTab() {
                     &#9703;
                   </button>
                 )}
+                <button
+                  className={`history-compare-btn${ctx?.timelineActive ? ' active' : ''}`}
+                  onClick={() => ctx?.onToggleTimeline?.()}
+                  title="Spatial timeline overlay"
+                >
+                  &#9201;
+                </button>
               </div>
               <span className="snapshot-label">
                 <span className="snapshot-position">{idx + 1}/{entries.length}</span>

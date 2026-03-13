@@ -417,6 +417,28 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   font-size: 10px;
 }
 
+.toc-drop-hint {
+  color: #0284c7;
+  border: 1px dashed #38bdf8;
+  border-radius: 4px;
+  margin: 4px 8px;
+  padding: 4px 8px;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.toc-adding {
+  color: #64748b;
+  font-style: italic;
+  margin: 4px 8px;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .toc-drop-hint {
+  color: #38bdf8;
+  border-color: #0284c7;
+}
+
 .toc-fold {
   display: block;
   flex-shrink: 0;
@@ -1343,5 +1365,304 @@ html[data-theme="dark"] .snapshot-label {
   html[data-theme="dark"] .doc-panel-open .doc-panel-tab {
     color: rgba(255, 255, 255, 0.5);
   }
+}
+
+/* ========================
+   Phone mode (max-width 600px)
+   ======================== */
+
+/* Hide panel and toolbar on phone */
+body.phone-mode .doc-panel {
+  display: none;
+}
+
+body.phone-mode .tlui-layout__bottom {
+  display: none !important;
+}
+
+body.phone-mode.phone-bar-visible .tlui-layout__bottom {
+  display: flex !important;
+}
+
+/* Also hide watermark and agent pill on phone — save space */
+body.phone-mode [class*="watermark"] {
+  display: none !important;
+}
+
+/* TOC toggle button — top right, small */
+.phone-toc-btn {
+  display: none;
+}
+
+body.phone-mode .phone-toc-btn {
+  display: flex;
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
+  z-index: 10001;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.5;
+}
+
+/* phone-bar-btn removed — merged into single ☰ menu button */
+
+/* TOC modal backdrop */
+.phone-toc-backdrop {
+  display: none;
+}
+
+body.phone-mode .phone-toc-backdrop {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.3);
+  justify-content: flex-end;
+  pointer-events: all;
+}
+
+.phone-toc-modal {
+  width: min(300px, 80vw);
+  height: 100%;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Override ghost opacity — modal content should be fully visible */
+.phone-toc-modal .doc-panel-content,
+.phone-toc-modal .search-input-wrap {
+  opacity: 1;
+}
+
+.phone-toc-modal .toc-item {
+  padding: 8px 12px;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .toc-item.section {
+  padding-top: 6px;
+  color: rgba(0, 0, 0, 0.65);
+  font-weight: 500;
+}
+
+.phone-toc-modal .toc-item.subsection {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .search-input {
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .phone-toc-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .phone-toc-modal {
+  background: rgba(0, 0, 0, 0.75);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.section {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Phone highlighter button — bottom right */
+.phone-hl-btn {
+  display: none;
+}
+
+body.phone-mode .phone-hl-btn {
+  display: flex;
+  position: fixed;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  right: calc(16px + env(safe-area-inset-right));
+  z-index: 10001;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  transition: background 0.15s, opacity 0.15s;
+  touch-action: none;
+  opacity: 0.5;
+}
+
+body.phone-mode .phone-hl-btn.active {
+  background: var(--hl-color, #ffc940);
+  color: white;
+  opacity: 0.85;
+}
+
+/* Phone highlighter color slider — appears above button during drag */
+.phone-hl-slider {
+  display: none;
+}
+
+body.phone-mode .phone-hl-slider {
+  display: flex;
+  flex-direction: row;
+  position: fixed;
+  bottom: calc(28px + env(safe-area-inset-bottom));
+  right: calc(68px + env(safe-area-inset-right));
+  z-index: 10002;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 22px;
+  padding: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  gap: 2px;
+}
+
+.phone-hl-slot {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s;
+}
+
+.phone-hl-slot.active {
+  transform: scale(1.25);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.phone-hl-slot-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--slot-color);
+}
+
+.phone-hl-slot-eraser {
+  font-size: 16px;
+  color: #888;
+  font-weight: bold;
+}
+
+.phone-hl-slot-label {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #fff;
+  background: var(--slot-color);
+  padding: 4px 14px;
+  border-radius: 16px;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+/* Dark mode highlighter */
+html[data-theme="dark"] .phone-hl-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .phone-hl-btn.active {
+  background: var(--hl-color, #ffc940);
+  color: white;
+}
+
+html[data-theme="dark"] .phone-hl-slider {
+  background: rgba(30, 30, 40, 0.92);
+}
+
+html[data-theme="dark"] .phone-hl-slot.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Phone page number indicator — bottom center, shows during scroll */
+.phone-page-indicator {
+  display: none;
+}
+
+body.phone-mode .phone-page-indicator {
+  display: block;
+  position: fixed;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  font-family: system-ui, sans-serif;
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+}
+
+body.phone-mode .phone-page-indicator.visible {
+  opacity: 1;
+  transition: opacity 0.1s ease-in;
+}
+
+/* Warm / sepia reading mode */
+body.warm-mode .tl-container {
+  background: #f5f0e8 !important;
+}
+
+body.warm-mode [data-shape-id] svg {
+  filter: sepia(0.15) saturate(0.9) brightness(0.97);
+}
+
+body.warm-mode .tl-background {
+  background: #f5f0e8 !important;
+}
+
+/* Warm mode on dark: low-blue warm dark */
+body.warm-mode .tl-theme__dark .tl-container,
+body.warm-mode .tl-theme__dark .tl-background {
+  background: #1a1814 !important;
+}
+
+body.warm-mode .tl-theme__dark [data-shape-id] svg {
+  filter: sepia(0.1) saturate(0.85) brightness(0.95) invert(0.88) hue-rotate(180deg);
 }
 
