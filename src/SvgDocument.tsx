@@ -35,6 +35,7 @@ import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
+import { SlidesNavigator } from './SlidesNavigator'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
@@ -703,6 +704,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
+      )}
+      {document.format === 'slides' && editorMounted && editorRef.current && (
+        <SlidesNavigator editor={editorRef.current} document={document} />
       )}
       {selectedChangeId && editorRef.current && (
         <ChangePreviewPanel

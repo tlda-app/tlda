@@ -641,23 +641,32 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // (fires only on drop, not mid-drag)
 
   // Constrain the camera to the bounds of the pages
+  const isSlides = document.format === 'slides'
   let targetBounds = document.pages.reduce(
     (acc, page) => acc.union(page.bounds),
     document.pages[0].bounds.clone()
   )
 
   function applyCameraBounds() {
-    editor.setCameraOptions({
-      constraints: {
-        bounds: targetBounds,
-        padding: { x: 100, y: 50 },
-        origin: { x: 0.5, y: 0 },
-        initialZoom: 'fit-x-100',
-        baseZoom: 'default',
-        behavior: 'free',
-      },
-    })
-    editor.setCamera(editor.getCamera(), { reset: true })
+    if (isSlides) {
+      // Slides: no camera constraints — navigation is managed by SlidesNavigator.
+      // Pan sensitivity is controlled by not setting constraints that fight the user.
+      editor.setCameraOptions({})
+    } else {
+      editor.setCameraOptions({
+        constraints: {
+          bounds: targetBounds,
+          padding: { x: 100, y: 50 },
+          origin: { x: 0.5, y: 0 },
+          initialZoom: 'fit-x-100',
+          baseZoom: 'default',
+          behavior: 'free',
+        },
+      })
+    }
+    if (!isSlides) {
+      editor.setCamera(editor.getCamera(), { reset: true })
+    }
   }
 
   let isMobile = editor.getViewportScreenBounds().width < 840
@@ -670,6 +679,18 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   })
 
   applyCameraBounds()
+
+  // Slides: center camera on first slide
+  if (isSlides && document.pages.length > 0) {
+    const firstSlide = document.pages[0]
+    const vp = editor.getViewportScreenBounds()
+    const z = Math.min(1, vp.width / firstSlide.width, vp.height / firstSlide.height)
+    editor.setCamera({
+      x: -firstSlide.bounds.x + (vp.width / z - firstSlide.width) / 2,
+      y: -firstSlide.bounds.y + (vp.height / z - firstSlide.height) / 2,
+      z,
+    })
+  }
 
   const result = {
     shapeIdSet,

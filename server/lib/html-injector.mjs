@@ -615,6 +615,46 @@ const SLIDES_BRIDGE_SCRIPT = `
     ].join('\\n');
     document.head.appendChild(style);
 
+    // Report fragment state to parent (for SlidesNavigator)
+    function reportFragmentState() {
+      if (window.parent === window) return;
+      var slide = Reveal.getCurrentSlide();
+      if (!slide) return;
+      var fragments = slide.querySelectorAll('.fragment');
+      var total = 0;
+      var current = 0;
+      // Count unique fragment indices
+      var indices = new Set();
+      for (var i = 0; i < fragments.length; i++) {
+        var idx = fragments[i].getAttribute('data-fragment-index');
+        if (idx !== null) indices.add(idx);
+        else indices.add('auto-' + i);
+      }
+      total = indices.size;
+      // Count visible fragments
+      for (var i = 0; i < fragments.length; i++) {
+        if (fragments[i].classList.contains('visible')) {
+          var idx = fragments[i].getAttribute('data-fragment-index');
+          if (idx !== null) indices.delete(idx);
+          else indices.delete('auto-' + i);
+        }
+      }
+      current = total - indices.size;
+      window.parent.postMessage({
+        type: 'tlda-fragment-state',
+        shapeId: shapeId,
+        current: current,
+        total: total,
+      }, '*');
+    }
+
+    // Report initial fragment state
+    setTimeout(reportFragmentState, 200);
+
+    // Report on every fragment change
+    Reveal.on('fragmentshown', reportFragmentState);
+    Reveal.on('fragmenthidden', reportFragmentState);
+
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type) return;
@@ -623,8 +663,6 @@ const SLIDES_BRIDGE_SCRIPT = `
         if (avail && avail.next) {
           Reveal.next();
         }
-        // If no more fragments, do nothing — the tap zone in the parent
-        // can handle "advance past last fragment" if needed later
       }
       if (e.data.type === 'tlda-fragment-prev') {
         var avail = Reveal.availableFragments();
