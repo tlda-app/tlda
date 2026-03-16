@@ -130,14 +130,15 @@ export function ToolToggleZones({ format }: { format?: string }) {
   )
 }
 
-/** Semantic highlight color slots (shared with PhoneHighlighterButton in DocumentPanel) */
-const HL_SLOTS = [
-  { id: 'eraser', color: '#888', label: 'eraser' },
+/** Slider slots: eraser at top, colors in middle, pointer at bottom */
+const HL_SLOTS: { id: string; color: string; label: string; icon?: string }[] = [
+  { id: 'eraser', color: '#888', label: 'eraser', icon: '✕' },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
   { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
   { id: 'yellow', color: '#ffc940', label: 'explain' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
+  { id: 'select', color: '#666', label: 'browse', icon: '↖' },
 ]
 
 /**
@@ -166,6 +167,8 @@ export function DesktopHighlighterZone() {
     const slot = HL_SLOTS[idx]
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
+    } else if (slot.id === 'select') {
+      editor.setCurrentTool('select')
     } else {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
@@ -268,12 +271,16 @@ export function DesktopHighlighterZone() {
               width: dragging && i === dragIdx ? DOT_SIZE + 6 : DOT_SIZE,
               height: dragging && i === dragIdx ? DOT_SIZE + 6 : DOT_SIZE,
               borderRadius: '50%',
-              background: slot.color,
+              background: slot.icon ? 'transparent' : slot.color,
               opacity: dragging ? (i === dragIdx ? 0.9 : 0.25) : 0.12,
               transition: 'all 0.08s',
               border: i === activeIdx ? `2px solid ${slot.color}` : '2px solid transparent',
               boxSizing: 'border-box',
-            }} />
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, color: slot.color, fontWeight: 700,
+            }}>
+              {slot.icon || ''}
+            </div>
           ))}
         </div>
       )}
