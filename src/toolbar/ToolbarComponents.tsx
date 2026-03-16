@@ -235,10 +235,10 @@ export function DesktopHighlighterZone() {
     if (!dragging) { setMouseY(null); setMouseX(null) }
   }, [dragging])
 
-  const cursorY = mouseY
-  const showSlider = cursorY !== null
-  const centerIdx = dragging ? activeIdx : activeIdx
-  const top = cursorY ? sliderTop(cursorY, centerIdx) : 0
+  // When dragging, lock slider at the position where drag started
+  const cursorY = dragging ? dragStartY : mouseY
+  const showSlider = cursorY !== null || dragging
+  const top = cursorY ? sliderTop(cursorY, activeIdx) : 0
   const displayIdx = dragIdx ?? activeIdx
 
   return createPortal(
