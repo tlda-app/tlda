@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import {
   useEditor,
   useValue,
   TldrawUiMenuToolItem,
   useTools,
   useIsToolSelected,
+  DefaultColorStyle,
 } from 'tldraw'
 import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
 
@@ -128,11 +130,156 @@ export function ToolToggleZones({ format }: { format?: string }) {
   )
 }
 
+/** Semantic highlight color slots (shared with PhoneHighlighterButton in DocumentPanel) */
+const HL_SLOTS = [
+  { id: 'eraser', color: '#888', label: 'eraser' },
+  { id: 'light-red', color: '#dc2626', label: 'wrong' },
+  { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
+  { id: 'yellow', color: '#ffc940', label: 'explain' },
+  { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
+  { id: 'light-green', color: '#65c365', label: 'approve' },
+]
+
+/**
+ * DesktopHighlighterZone — invisible zone on the right edge of the screen.
+ * Mouse hover shows a ghost slider. Drag to pick a color. Desktop only.
+ */
+export function DesktopHighlighterZone() {
+  const editor = useEditor()
+  const [activeIdx, setActiveIdx] = useState(3) // default: yellow
+  const [hovering, setHovering] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const [dragOriginY, setDragOriginY] = useState(0)
+  const zoneRef = useRef<HTMLDivElement>(null)
+  const lastTapTime = useRef(0)
+
+  // Don't render on touch devices
+  if (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches) return null
+
+  const activateSlot = useCallback((idx: number) => {
+    const slot = HL_SLOTS[idx]
+    if (slot.id === 'eraser') {
+      editor.setCurrentTool('eraser')
+    } else {
+      editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
+      editor.setCurrentTool('highlight')
+    }
+    setActiveIdx(idx)
+  }, [editor])
+
+  const undoLastHighlight = useCallback(() => {
+    const shapes = editor.getCurrentPageShapes()
+    const highlights = shapes
+      .filter((s: any) => s.type === 'highlight')
+      .sort((a: any, b: any) => (b.index || '').localeCompare(a.index || ''))
+    if (highlights.length > 0) editor.deleteShape(highlights[0].id)
+  }, [editor])
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    const now = Date.now()
+    if (now - lastTapTime.current < 400) {
+      // Double-tap: undo
+      undoLastHighlight()
+      lastTapTime.current = 0
+      return
+    }
+    lastTapTime.current = now
+    setDragOriginY(e.clientY)
+    setDragging(false)
+    setDragIdx(null)
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  }, [undoLastHighlight])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    const dy = e.clientY - dragOriginY
+    if (Math.abs(dy) < 8 && !dragging) return
+    if (!dragging) setDragging(true)
+    // Map vertical position to slot index
+    const zone = zoneRef.current
+    if (!zone) return
+    const rect = zone.getBoundingClientRect()
+    const relY = (e.clientY - rect.top) / rect.height
+    const idx = Math.max(0, Math.min(HL_SLOTS.length - 1, Math.floor(relY * HL_SLOTS.length)))
+    setDragIdx(idx)
+  }, [dragging, dragOriginY])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+    if (dragging && dragIdx !== null) {
+      activateSlot(dragIdx)
+    } else if (!dragging) {
+      // Single tap: toggle highlighter
+      const cur = editor.getCurrentToolId()
+      if (cur === 'highlight' || cur === 'eraser') {
+        editor.setCurrentTool('select')
+      } else {
+        activateSlot(activeIdx)
+      }
+    }
+    setDragging(false)
+    setDragIdx(null)
+  }, [dragging, dragIdx, activeIdx, activateSlot, editor])
+
+  const displayIdx = dragIdx ?? activeIdx
+  const displayColor = HL_SLOTS[displayIdx]?.color || '#ffc940'
+
+  return createPortal(
+    <div
+      ref={zoneRef}
+      className="desktop-hl-zone"
+      onPointerEnter={() => setHovering(true)}
+      onPointerLeave={() => { if (!dragging) setHovering(false) }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      style={{
+        position: 'fixed', right: 0, top: '20%', bottom: '20%', width: 48,
+        zIndex: 999, cursor: 'pointer',
+      }}
+    >
+      {/* Ghost slider — faded dots on hover */}
+      {(hovering || dragging) && (
+        <div style={{
+          position: 'absolute', right: 10, top: 0, bottom: 0,
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly',
+          alignItems: 'center', pointerEvents: 'none',
+        }}>
+          {HL_SLOTS.map((slot, i) => (
+            <div key={slot.id} style={{
+              width: dragging && i === dragIdx ? 20 : 12,
+              height: dragging && i === dragIdx ? 20 : 12,
+              borderRadius: '50%',
+              background: slot.color,
+              opacity: dragging ? (i === dragIdx ? 0.9 : 0.3) : 0.15,
+              transition: 'all 0.1s',
+              border: i === activeIdx && !dragging ? `2px solid ${slot.color}` : 'none',
+            }} />
+          ))}
+        </div>
+      )}
+      {/* HUD label at top-center during drag */}
+      {dragging && dragIdx !== null && (
+        <div style={{
+          position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
+          background: displayColor, color: '#fff', padding: '4px 12px',
+          borderRadius: 12, fontSize: 12, fontWeight: 500, opacity: 0.85,
+          pointerEvents: 'none', zIndex: 9999,
+        }}>
+          {HL_SLOTS[dragIdx]?.label}
+        </div>
+      )}
+    </div>,
+    document.body
+  )
+}
+
 export function PenHelperButtons({ format }: { format?: string }) {
   return (
     <>
       <ExitPenModeButton />
       <ToolToggleZones format={format} />
+      <DesktopHighlighterZone />
     </>
   )
 }
