@@ -26,7 +26,7 @@ import {
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import historyRoutes from './history.mjs'
-import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt } from '../lib/sync-rooms.mjs'
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
 
@@ -55,6 +55,27 @@ router.get('/meta', requireRead, (req, res) => {
     }
   }
   res.json(meta)
+})
+
+// GET /events/stream — Global SSE stream of project-level events (doc-arrived, etc.)
+router.get('/events/stream', requireRead, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  })
+  res.write('data: {"type":"connected"}\n\n')
+
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000)
+
+  const unsub = onGlobalEvent((event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  })
+
+  req.on('close', () => {
+    clearInterval(keepalive)
+    unsub()
+  })
 })
 
 // List archived projects
@@ -198,7 +219,15 @@ router.post('/:name/push', requireRw, async (req, res) => {
   if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
     res.json({ ok: true, filesWritten: files?.length || 0, building: true })
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
-    builder(req.params.name).catch(e => {
+    builder(req.params.name).then(() => {
+      const updated = readProject(req.params.name)
+      if (updated?.buildStatus === 'success') {
+        emitGlobalEvent('doc-arrived', {
+          name: req.params.name, title: updated.title || req.params.name,
+          format: updated.format, pages: updated.pages || 0,
+        })
+      }
+    }).catch(e => {
       console.error(`[${project.format}] Build failed for ${req.params.name}: ${e.message}`)
       updateProject(req.params.name, { buildStatus: 'error' })
     })
@@ -210,6 +239,13 @@ router.post('/:name/push', requireRw, async (req, res) => {
 
   try {
     await runBuild(req.params.name, { priorityPages })
+    const updated = readProject(req.params.name)
+    if (updated?.buildStatus === 'success') {
+      emitGlobalEvent('doc-arrived', {
+        name: req.params.name, title: updated.title || req.params.name,
+        format: updated.format, pages: updated.pages || 0,
+      })
+    }
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }
@@ -407,6 +443,48 @@ router.get('/:name/signal/:key', requireRead, (req, res) => {
   const signal = getLastSignal(syncRoomName(req.params.name), req.params.key)
   if (!signal) return res.status(404).json({ error: 'No cached signal' })
   res.json(signal)
+})
+
+// GET /:name/highlight-feedback — structured feedback from highlight shapes
+// Maps highlight colors to semantic types (approve/reject/question/expand/comment/info)
+const HIGHLIGHT_THEMES = {
+  'light-green': { type: 'approve', label: 'Good, keep this' },
+  'green':       { type: 'approve', label: 'Good, keep this' },
+  'light-red':   { type: 'reject', label: 'Fix this' },
+  'red':         { type: 'reject', label: 'Fix this' },
+  'yellow':      { type: 'question', label: 'Question / unsure' },
+  'light-violet': { type: 'expand', label: 'Develop further' },
+  'violet':      { type: 'expand', label: 'Develop further' },
+  'orange':      { type: 'comment', label: 'General comment' },
+  'light-blue':  { type: 'info', label: 'Note / reference' },
+  'blue':        { type: 'info', label: 'Note / reference' },
+}
+router.get('/:name/highlight-feedback', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  const records = getRoomRecords(syncRoomName(req.params.name), 'highlight')
+  const feedback = records
+    .filter(shape => shape.meta?.highlightText)
+    .map(shape => {
+      const color = shape.props?.color || 'yellow'
+      const theme = HIGHLIGHT_THEMES[color] || { type: 'comment', label: 'General comment' }
+      return {
+        type: theme.type,
+        label: theme.label,
+        color,
+        shapeId: shape.id,
+        text: shape.meta.highlightText || '',
+        highlightLines: shape.meta.highlightLines || [],
+        sourceLine: shape.meta.sourceLine ?? null,
+        addressed: shape.meta.addressed === true,
+        createdAt: shape.meta.createdAt ?? null,
+        opacity: shape.opacity ?? 1,
+      }
+    })
+    .sort((a, b) => (a.sourceLine || 0) - (b.sourceLine || 0))
+
+  res.json({ doc: req.params.name, feedback })
 })
 
 // GET /:name/shapes/stream — SSE stream of shape changes (must be before :id route)

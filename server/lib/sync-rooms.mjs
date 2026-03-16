@@ -121,6 +121,34 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'zoomable-image': {
+    props: {
+      w: T.number,
+      h: T.number,
+      src: T.string,
+      imageW: T.number,
+      imageH: T.number,
+      cameraGroup: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.zoomable-image',
+      sequence: [],
+    }),
+  },
+  'dot-annotation': {
+    props: {
+      w: T.number,
+      h: T.number,
+      highlightColor: T.string,
+      text: T.string,
+      collapsed: T.boolean,
+      highlightId: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.dot-annotation',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
@@ -528,6 +556,33 @@ export function replayCachedSignals(docName, sessionId) {
       } catch {}
     }
   }
+}
+
+// ─── Global events (cross-document) ─────────────────────────────
+
+/** @type {Set<(event: object) => void>} */
+const globalEventListeners = new Set()
+
+/**
+ * Emit a global event to all SSE subscribers (cross-document).
+ * @param {string} type - Event type (e.g., 'doc-arrived')
+ * @param {object} data - Event payload
+ */
+export function emitGlobalEvent(type, data) {
+  const event = { type, ...data, timestamp: Date.now() }
+  for (const cb of globalEventListeners) {
+    try { cb(event) } catch {}
+  }
+}
+
+/**
+ * Subscribe to global events. Returns unsubscribe function.
+ * @param {(event: object) => void} callback
+ * @returns {() => void}
+ */
+export function onGlobalEvent(callback) {
+  globalEventListeners.add(callback)
+  return () => globalEventListeners.delete(callback)
 }
 
 /**

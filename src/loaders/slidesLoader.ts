@@ -21,7 +21,7 @@ export const SLIDE_GAP = 120
 /**
  * Load a slides document (Quarto reveal.js deck).
  * All slides laid out left-to-right on a SINGLE TLDraw canvas.
- * Camera navigation moves between slides; fragments advance within each slide.
+ * Camera navigation moves between slides; RevealJS fragments advance within each slide.
  */
 export async function loadSlidesDocument(
   name: string,

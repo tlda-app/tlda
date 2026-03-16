@@ -13,10 +13,12 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { b64Vecs } from 'tldraw'
 import type { Editor, TLRecord, TLShapeId } from 'tldraw'
 
 interface PlaybackMessage {
   ts: number
+  absTs?: number  // absolute timestamp for shapes/at endpoint
   playing: boolean
   speed: number
   sessionId: string
@@ -46,6 +48,18 @@ export interface PlaybackState {
 const ANNOTATION_TYPES = new Set([
   'math-note', 'draw', 'highlight', 'arrow', 'geo', 'text', 'note',
 ])
+
+// Convert old-format segments ({type, points[]}) to new format ({type, path: b64string})
+function migrateSegments(segments: any[]): any[] {
+  if (!segments?.length) return segments
+  return segments.map((seg: any) => {
+    if (seg.path !== undefined) return seg // already new format
+    if (seg.points && Array.isArray(seg.points)) {
+      return { type: seg.type, path: b64Vecs.encodePoints(seg.points) }
+    }
+    return seg
+  })
+}
 
 export function useSyncedPlayback(
   editorRef: React.RefObject<Editor | null>,
@@ -96,22 +110,32 @@ export function useSyncedPlayback(
         editor.store.remove(currentAnnotations)
       }
 
-      // Add historical shapes (only annotation types)
-      const historicalShapes = data.shapes
+      // Add historical shapes (only annotation types) via createShape for proper validation
+      const toCreate = data.shapes
         .filter(s => ANNOTATION_TYPES.has(s.type))
-        .map(s => ({
-          ...s,
-          id: s.id as TLShapeId,
-          typeName: 'shape' as const,
-          parentId: editor.getCurrentPageId(),
-          index: 'a1' as any,
-          isLocked: true, // prevent editing historical shapes
-          rotation: 0,
-          opacity: 0.7, // subtle visual hint that these are historical
-        }))
+        .map(s => {
+          // Migrate old-format segments (points[]) to new format (path string)
+          const props = s.props && s.props.segments
+            ? { ...s.props, segments: migrateSegments(s.props.segments) }
+            : s.props
+          return {
+            id: s.id as TLShapeId,
+            type: s.type,
+            x: s.x,
+            y: s.y,
+            rotation: s.rotation ?? 0,
+            opacity: 0.7,
+            isLocked: true,
+            props,
+          }
+        })
 
-      if (historicalShapes.length > 0) {
-        editor.store.put(historicalShapes as any[])
+      if (toCreate.length > 0) {
+        try {
+          editor.createShapes(toCreate as any[])
+        } catch (e) {
+          console.warn('[playback] createShapes error:', e)
+        }
       }
     } catch (e) {
       console.warn('[playback] fetch error:', e)
@@ -139,46 +163,77 @@ export function useSyncedPlayback(
     lastFetchedTs.current = 0
   }, [editorRef])
 
-  // Listen for BroadcastChannel messages
+  // Handle incoming playback message (shared by BroadcastChannel and SSE)
+  const handlePlaybackMessage = useCallback((msg: PlaybackMessage) => {
+    if (!msg || typeof msg.ts !== 'number') return
+
+    if (msg.playing) {
+      setPlaybackState({
+        active: true,
+        ts: msg.ts,
+        speed: msg.speed || 1,
+        sessionId: msg.sessionId || null,
+      })
+      // Use absolute timestamp for shapes/at endpoint (falls back to relative ts)
+      applyPlaybackShapes(msg.absTs || msg.ts)
+    } else {
+      setPlaybackState({
+        active: false,
+        ts: null,
+        speed: 1,
+        sessionId: null,
+      })
+      restoreLive()
+    }
+  }, [applyPlaybackShapes, restoreLive])
+
+  // Primary: SSE from fleet server (cross-origin)
+  useEffect(() => {
+    const FLEET_URL = 'http://localhost:5199/api/playback/stream'
+    let es: EventSource | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    function connect() {
+      es = new EventSource(FLEET_URL)
+      es.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'connected') return
+          handlePlaybackMessage(msg as PlaybackMessage)
+        } catch {}
+      }
+      es.onerror = () => {
+        es?.close()
+        retryTimer = setTimeout(connect, 5000)
+      }
+    }
+
+    connect()
+
+    return () => {
+      es?.close()
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  }, [handlePlaybackMessage])
+
+  // Fallback: BroadcastChannel (same-origin only)
   useEffect(() => {
     let channel: BroadcastChannel
     try {
       channel = new BroadcastChannel('fleet-playback')
     } catch {
-      // BroadcastChannel not supported (e.g. some WebKit versions)
       return
     }
 
     channel.onmessage = (event: MessageEvent<PlaybackMessage>) => {
-      const msg = event.data
-      if (!msg || typeof msg.ts !== 'number') return
-
-      if (msg.playing) {
-        setPlaybackState({
-          active: true,
-          ts: msg.ts,
-          speed: msg.speed || 1,
-          sessionId: msg.sessionId || null,
-        })
-        applyPlaybackShapes(msg.ts)
-      } else {
-        // Playback stopped
-        setPlaybackState({
-          active: false,
-          ts: null,
-          speed: 1,
-          sessionId: null,
-        })
-        restoreLive()
-      }
+      handlePlaybackMessage(event.data)
     }
 
     return () => {
       channel.close()
-      // Restore live shapes if we unmount during playback
       restoreLive()
     }
-  }, [applyPlaybackShapes, restoreLive])
+  }, [handlePlaybackMessage, restoreLive])
 
   return playbackState
 }

@@ -20,6 +20,9 @@ const MATHJAX_CONFIG = `
   var prevMacros = prevTex.macros || {};
   window.MathJax = Object.assign({}, prev, {
     tex: Object.assign({}, prevTex, {
+      inlineMath: [['\\\\(', '\\\\)'], ['$', '$']],
+      displayMath: [['\\\\[', '\\\\]'], ['$$', '$$']],
+      processEscapes: true,
       macros: Object.assign({}, prevMacros, {
         qqtext: ['\\\\qquad\\\\text{#1}\\\\qquad', 1],
         qty: ['\\\\left(#1\\\\right)', 1],
@@ -727,6 +730,26 @@ export function injectSlidesBridge(html) {
       str.lastIndexOf('</body>') === offset ? match : '<\\/body>')
     .replace(/<\/html>/gi, (match, offset, str) =>
       str.lastIndexOf('</html>') === offset ? match : '<\\/html>')
+
+  // Fix MathJax v2/v3 mismatch: Quarto configures RevealMath (MathJax2 plugin) with a
+  // mathjax@3 URL. The v2 plugin calls MathJax.Hub.Config() which doesn't exist in v3.
+  // Replace RevealMath with RevealMath.MathJax3() and move config to mathjax3 key.
+  if (html.includes('mathjax@3') && html.includes('RevealMath')) {
+    // Switch plugin from default (MathJax2) to MathJax3
+    html = html.replace(/(\bplugins\s*:\s*\[[\s\S]*?)RevealMath(\s*[,\]])/,
+      '$1RevealMath.MathJax3()$2')
+    // Move math: config to mathjax3: so the MathJax3 plugin picks it up
+    html = html.replace(/\bmath\s*:\s*\{/, 'mathjax3: {')
+  }
+
+  // Inject MathJax config (custom macros) before MathJax loads
+  const mathjaxScriptIdx = html.indexOf('mathjax@3')
+  if (mathjaxScriptIdx !== -1) {
+    const scriptStart = html.lastIndexOf('<script', mathjaxScriptIdx)
+    if (scriptStart !== -1) {
+      html = html.slice(0, scriptStart) + MATHJAX_CONFIG + html.slice(scriptStart)
+    }
+  }
 
   // Inject head script before the structural </head> tag.
   // Quarto reveal.js files have multiple </head> occurrences inside JS template literals

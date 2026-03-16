@@ -614,3 +614,9 @@ export function AgentPill({ editor }: { editor: Editor }) {
     </span>
   )
 }
+
+
+// Stub exports for SvgDocument compatibility — phone mode uses PhoneHighlighterButton inside PhoneOverlay
+export function HighlighterButton() { return null }
+export function SemanticHighlightPill() { return null }
+

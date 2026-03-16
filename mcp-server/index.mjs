@@ -1883,6 +1883,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'get_highlight_feedback',
+      description: 'Get structured feedback from highlight annotations on a document. Returns semantic feedback objects mapping highlight colors to intent: approve (green), reject (red), question (yellow), expand (violet), comment (orange), info (blue). Each entry includes the highlighted text, source line, and addressed status.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          unaddressed_only: { type: 'boolean', description: 'Only return unaddressed highlights (default: false)' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
       name: 'set_understanding',
       description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
       inputSchema: {
@@ -2099,6 +2111,7 @@ const TOOLS_NEEDING_BUILD = new Set([
   'scroll_to_line', 'read_pen_annotations',
   'draw_highlight', 'draw_arrow',
   'mark_highlight_addressed', 'place_response_bar',
+  'get_highlight_feedback',
   'set_understanding', 'get_understanding',
 ]);
 
@@ -3248,6 +3261,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+  }
+
+  if (name === 'get_highlight_feedback') {
+    const { doc, unaddressed_only } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
+      let feedback = data.feedback || [];
+      if (unaddressed_only) {
+        feedback = feedback.filter(f => !f.addressed);
+      }
+      if (feedback.length === 0) {
+        return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
+      }
+      // Format feedback for agent consumption
+      const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
+      const lines = feedback.map(f => {
+        const icon = ICONS[f.type] || '📌';
+        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
+        const status = f.addressed ? ' [addressed]' : '';
+        const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
+        return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
+      });
+      const summary = `**${feedback.length} highlight feedback item(s) on ${doc}:**\n\n${lines.join('\n')}`;
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
   }
 
   if (name === 'mark_highlight_addressed') {

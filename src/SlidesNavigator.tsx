@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from 'tldraw'
 import type { SvgDocument } from './svgDocumentLoader'
-import { SLIDE_GAP } from './loaders/slidesLoader'
+// SLIDE_GAP used by slidesLoader for layout; navigator reads positions from document.pages
 
 interface SlidesNavigatorProps {
   editor: Editor
@@ -63,7 +63,7 @@ function getCurrentSlideIndex(editor: Editor, document: SvgDocument): number {
 }
 
 /** Send fragment step message to the slide's iframe */
-function stepFragment(editor: Editor, shapeId: string, direction: 'next' | 'prev'): boolean {
+function stepFragment(_editor: Editor, shapeId: string, direction: 'next' | 'prev'): boolean {
   const el = window.document.querySelector(`[data-shape-id="${shapeId}"] iframe`) as HTMLIFrameElement
   if (!el?.contentWindow) return false
   el.contentWindow.postMessage({

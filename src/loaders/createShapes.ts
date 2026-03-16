@@ -6,7 +6,7 @@
 import {
   createShapeId,
 } from 'tldraw'
-import type { TLImageShape, TLShapePartial, Editor, TLShapeId, TLPageId } from 'tldraw'
+import type { TLShapePartial, Editor, TLShapeId, TLPageId } from 'tldraw'
 import type { SvgDocument } from './types'
 
 /**
@@ -145,8 +145,9 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 
 /**
  * Create slides shapes (reveal.js decks).
- * All slides on a single TLDraw page, stacked vertically like SVG pages.
- * Each slide is an html-page shape with a URL containing _tldaSlide param.
+ * All slides on a single TLDraw page, laid out horizontally.
+ * Each slide is an html-page shape with a URL containing _tldaH/_tldaV params.
+ * Camera navigation moves between slides; RevealJS handles fragment stepping.
  */
 export function createSlidesShapes(editor: Editor, document: SvgDocument): boolean {
   const existingShapes = editor.getCurrentPageShapes()
@@ -171,42 +172,33 @@ export function createSlidesShapes(editor: Editor, document: SvgDocument): boole
 }
 
 /**
- * Create PNG image page shapes (vestigial format).
+ * Create zoomable image page shapes (PNG format).
+ * Uses ZoomableImageShape — a chromeless mini-editor with independent
+ * pan/zoom so the user can pinch-zoom into screenshots without moving
+ * the outer canvas.
  */
 export function createImageShapes(editor: Editor, document: SvgDocument): boolean {
-  const hasPages = editor.getAssets().some(a => a.props && 'name' in a.props && a.props.name === 'svg-page')
-  if (hasPages) return true
-
-  editor.createAssets(
-    document.pages.map((page) => ({
-      id: page.assetId,
-      typeName: 'asset' as const,
-      type: 'image' as const,
-      meta: {},
-      props: {
-        w: page.width,
-        h: page.height,
-        mimeType: 'image/png' as const,
-        src: page.src,
-        name: 'svg-page',
-        isAnimated: false,
-      },
-    }))
+  // Check for existing zoomable-image shapes (from sync snapshot)
+  const hasPages = editor.getCurrentPageShapes().some(
+    s => (s.type as string) === 'zoomable-image' || s.type === 'image'
   )
+  if (hasPages) return true
 
   editor.createShapes(
     document.pages.map(
-      (page, i): TLShapePartial<TLImageShape> => ({
+      (page, i) => ({
         id: page.shapeId,
-        type: 'image',
+        type: 'zoomable-image' as any,
         x: page.bounds.x,
         y: page.bounds.y,
         isLocked: true,
         opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
         props: {
-          assetId: page.assetId,
           w: page.bounds.w,
           h: page.bounds.h,
+          src: page.src,
+          imageW: page.width,
+          imageH: page.height,
         },
       })
     )

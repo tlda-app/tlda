@@ -9,6 +9,7 @@ import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
+import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
 const CHILDREN: Record<string, string[]> = {
@@ -375,6 +376,7 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <SemanticHighlightToggle />
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
@@ -402,6 +404,7 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <SemanticHighlightToggle />
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
@@ -598,10 +601,23 @@ export function VimModeToggle() {
   )
 }
 
+export function SemanticHighlightToggle() {
+  const enabled = useSyncExternalStore(subscribeSemanticHighlight, getSemanticHighlight)
+  return (
+    <div className="toc-diff-hint" onClick={toggleSemanticHighlight}>
+      <span className="toc-toggle-icon">{'\u2B22'}</span> {enabled ? 'Semantic HL' : 'Semantic HL off'}
+    </div>
+  )
+}
+
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [warm, setWarm] = useState(() => document.body.classList.contains('warm-mode'))
+  const [warm, setWarm] = useState(() => {
+    const saved = localStorage.getItem('tlda-warm-mode') === 'true'
+    if (saved) document.body.classList.add('warm-mode')
+    return saved || document.body.classList.contains('warm-mode')
+  })
 
   const label = warm ? 'Warm' : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
   const icon = warm ? '\u2600\uFE0E' : scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'
@@ -610,6 +626,7 @@ export function DarkModeToggle() {
     if (warm) {
       // Warm → System (exit warm mode)
       document.body.classList.remove('warm-mode')
+      localStorage.setItem('tlda-warm-mode', 'false')
       setWarm(false)
       editor.user.updateUserPreferences({ colorScheme: 'system' })
     } else if (scheme === 'system') {
@@ -619,6 +636,7 @@ export function DarkModeToggle() {
     } else {
       // Light → Warm
       document.body.classList.add('warm-mode')
+      localStorage.setItem('tlda-warm-mode', 'true')
       setWarm(true)
     }
   }, [editor, scheme, warm])

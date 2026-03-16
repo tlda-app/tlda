@@ -20,6 +20,8 @@ import { SvgFigureShapeUtil } from './shapes/SvgFigureShape'
 import { ReadingAssistBarShapeUtil } from './shapes/ReadingAssistBarShape'
 import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
 import { TimelineOverlayShapeUtil } from './shapes/TimelineOverlayShape'
+import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
+import { DotAnnotationShapeUtil } from './shapes/DotAnnotationShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
@@ -28,14 +30,13 @@ import { TextSelectTool } from './tools/TextSelectTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, AgentPill } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
-import { SlidesNavigator } from './SlidesNavigator'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
@@ -64,8 +65,11 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
+import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
+import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { PlaybackPill } from './pills/PlaybackPill'
+import { SlidesNavigator } from './SlidesNavigator'
 
 // Sync server URL - use env var, or derive from window.location
 // Dev mode (Vite on 5173): connect to sync server on 5176
@@ -126,6 +130,12 @@ interface SvgDocumentEditorProps {
   initialCamera?: { x: number; y: number; z: number; page?: string }
 }
 
+
+/** Slide navigation wrapper — uses SlidesNavigator for spatial canvas navigation */
+function SlideNavWrapper({ document }: { document: SvgDocument }) {
+  const editor = useEditor()
+  return <SlidesNavigator editor={editor} document={document} />
+}
 
 export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
@@ -269,6 +279,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Spatial timeline overlay — activity scatter plot
   const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
+
+  // Sync theme from fleet dashboard (cross-origin SSE)
+  useFleetTheme()
+
+  // Auto-open shared docs pushed via fleet
+  useDocAutoOpen(editorRef, document, docName)
 
   useYjsSignals({
     editorRef, document,
@@ -514,7 +530,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
     }),
     [document, roomId]
   )
@@ -590,7 +606,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
@@ -704,9 +720,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
-      )}
-      {document.format === 'slides' && editorMounted && editorRef.current && (
-        <SlidesNavigator editor={editorRef.current} document={document} />
       )}
       {selectedChangeId && editorRef.current && (
         <ChangePreviewPanel
@@ -1060,14 +1073,17 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             if (e.key === 'm') {
               editor.setCurrentTool('math-note')
             }
+            // Slides keyboard/swipe nav handled by SlidesNavigator component
           }
           window.addEventListener('keydown', handleKeyDown)
 
           // Dismiss reload-sourced change highlights on canvas click
-          const container = editor.getContainer()
-          container.addEventListener('pointerdown', () => {
-            if (changedPages.size > 0) dismissAllChanges()
-          })
+          {
+            const c = editor.getContainer()
+            c.addEventListener('pointerdown', () => {
+              if (changedPages.size > 0) dismissAllChanges()
+            })
+          }
 
           // Axis-lock two-finger scroll: snap to vertical or horizontal
           // when the gesture is approximately aligned (3:1 ratio).
@@ -1093,6 +1109,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <DarkModeSync />
       <NoteDropHandler />
       <TocDropTargetManager />
+      {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>

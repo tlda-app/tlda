@@ -4,7 +4,7 @@
 const FLEET_WEBHOOK_URL = process.env.FLEET_WEBHOOK_URL || 'http://localhost:5199/api/webhook/tlda';
 
 // Annotation shape types — shapes that represent user feedback
-const ANNOTATION_TYPES = new Set(['math-note', 'understanding-line', 'reading-assist-bar']);
+const ANNOTATION_TYPES = new Set(['math-note', 'understanding-line', 'reading-assist-bar', 'highlight']);
 
 export async function emitWebhook(eventType, data) {
   try {

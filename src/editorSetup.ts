@@ -12,6 +12,7 @@ import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
+import { processHighlightFeedback } from './highlightFeedback'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -613,6 +614,8 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             return
           }
           snapHighlighterToText(editor, shape.id)
+          // Process highlight for feedback integration (understanding-line updates + signal)
+          processHighlightFeedback(editor, shape.id, document.name)
         }
         setTimeout(checkSnap, 300)
       }
@@ -641,17 +644,37 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   // (fires only on drop, not mid-drag)
 
   // Constrain the camera to the bounds of the pages
-  const isSlides = document.format === 'slides'
   let targetBounds = document.pages.reduce(
     (acc, page) => acc.union(page.bounds),
     document.pages[0].bounds.clone()
   )
 
+  const isSlides = document.format === 'slides'
+
   function applyCameraBounds() {
     if (isSlides) {
-      // Slides: no camera constraints — navigation is managed by SlidesNavigator.
-      // Pan sensitivity is controlled by not setting constraints that fight the user.
-      editor.setCameraOptions({})
+      // Spatial slides: free camera within canvas bounds, initial zoom fits first slide
+      editor.setCameraOptions({
+        constraints: {
+          bounds: targetBounds,
+          padding: { x: 16, y: 16 },
+          origin: { x: 0, y: 0.5 },
+          initialZoom: 'default',
+          baseZoom: 'default',
+          behavior: 'free',
+        },
+      })
+      // Center camera on first slide
+      const first = document.pages[0]
+      if (first) {
+        const vp = editor.getViewportScreenBounds()
+        const z = Math.min(1, vp.width / first.width, vp.height / first.height)
+        editor.setCamera({
+          x: -first.bounds.x + (vp.width / z - first.width) / 2,
+          y: -first.bounds.y + (vp.height / z - first.height) / 2,
+          z,
+        })
+      }
     } else {
       editor.setCameraOptions({
         constraints: {
@@ -663,8 +686,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           behavior: 'free',
         },
       })
-    }
-    if (!isSlides) {
       editor.setCamera(editor.getCamera(), { reset: true })
     }
   }
@@ -680,18 +701,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
 
   applyCameraBounds()
 
-  // Slides: center camera on first slide
-  if (isSlides && document.pages.length > 0) {
-    const firstSlide = document.pages[0]
-    const vp = editor.getViewportScreenBounds()
-    const z = Math.min(1, vp.width / firstSlide.width, vp.height / firstSlide.height)
-    editor.setCamera({
-      x: -firstSlide.bounds.x + (vp.width / z - firstSlide.width) / 2,
-      y: -firstSlide.bounds.y + (vp.height / z - firstSlide.height) / 2,
-      z,
-    })
-  }
-
   const result = {
     shapeIdSet,
     shapeIds,
@@ -702,18 +711,16 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       editor.setCameraOptions({
         constraints: {
           bounds: targetBounds,
-          padding: { x: 100, y: 50 },
-          origin: { x: 0.5, y: 0 },
-          initialZoom: 'fit-x-100',
+          padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
+          origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+          initialZoom: isSlides ? 'default' : 'fit-x-100',
           baseZoom: 'default',
           behavior: 'free',
         },
       })
-      if (newBounds.w > prevW * 1.2) {
-        // Bounds expanded significantly (overlay added) — refit to show both columns
+      if (newBounds.w > prevW * 1.2 && !isSlides) {
         editor.setCamera(editor.getCamera(), { reset: true })
       } else {
-        // Bounds narrowed or unchanged — preserve camera position
         editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
       }
     },
