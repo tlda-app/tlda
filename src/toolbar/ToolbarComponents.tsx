@@ -131,14 +131,15 @@ export function ToolToggleZones({ format }: { format?: string }) {
 }
 
 /** Slider slots: eraser at top, colors in middle, pointer at bottom */
-const HL_SLOTS: { id: string; color: string; label: string; icon?: string }[] = [
-  { id: 'eraser', color: '#888', label: 'eraser', icon: '✕' },
+const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
+const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
+  { id: 'eraser', color: '#888', label: 'eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
   { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
   { id: 'yellow', color: '#ffc940', label: 'explain' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
-  { id: 'select', color: '#666', label: 'browse', icon: '↖' },
+  { id: 'select', color: '#666', label: 'browse', svgIcon: `${TLDRAW_ICON_BASE}#tool-pointer` },
 ]
 
 /**
@@ -271,16 +272,20 @@ export function DesktopHighlighterZone() {
               width: dragging && i === dragIdx ? DOT_SIZE + 6 : DOT_SIZE,
               height: dragging && i === dragIdx ? DOT_SIZE + 6 : DOT_SIZE,
               borderRadius: '50%',
-              background: slot.icon ? 'transparent' : slot.color,
+              background: slot.svgIcon ? 'transparent' : slot.color,
               opacity: dragging ? (i === dragIdx ? 0.9 : 0.25) : 0.12,
               transition: 'all 0.08s',
               border: i === activeIdx ? `2px solid ${slot.color}` : '2px solid transparent',
               boxSizing: 'border-box',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 10, color: slot.color, fontWeight: 700,
-            }}>
-              {slot.icon || ''}
-            </div>
+              ...(slot.svgIcon ? {
+                WebkitMaskImage: `url("${slot.svgIcon}")`,
+                maskImage: `url("${slot.svgIcon}")`,
+                WebkitMaskSize: '70%', maskSize: '70%',
+                WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+                WebkitMaskPosition: 'center', maskPosition: 'center',
+                backgroundColor: slot.color,
+              } : {}),
+            }} />
           ))}
         </div>
       )}
