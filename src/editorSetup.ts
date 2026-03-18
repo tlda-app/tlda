@@ -622,6 +622,22 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   })
 
+  // Slider zone guard: cancel highlight/draw tool when pointer_down is in the slider zone.
+  // This prevents strokes from starting when the user interacts with the ghost slider.
+  const SLIDER_ZONE_WIDTH = 250
+  editor.on('event', (event: any) => {
+    if (event.name !== 'pointer_down' || event.type !== 'pointer') return
+    if (!event.point) return
+    const w = window.innerWidth
+    const h = window.innerHeight
+    const inZone = event.point.x >= w - SLIDER_ZONE_WIDTH && event.point.y >= h * 0.1 && event.point.y <= h * 0.9
+    if (!inZone) return
+    const tool = editor.getCurrentToolId()
+    if (tool === 'highlight' || tool === 'draw' || tool === 'eraser') {
+      editor.cancel()
+    }
+  })
+
   // Re-saturate addressed highlights on tap/click.
   // When a highlight has meta.addressed = true, clicking it re-activates it
   // (sets addressed = false, restores opacity) so the agent retries.

@@ -161,8 +161,8 @@ export function DesktopHighlighterZone() {
   const DOT_GAP = 6
   const SLIDER_HEIGHT = HL_SLOTS.length * (DOT_SIZE + DOT_GAP) - DOT_GAP
 
-  // Don't render on touch devices
-  if (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches) return null
+  // Replaced by HighlighterSlider in InFrontOfTheCanvas
+  return null
 
   const activateSlot = useCallback((idx: number) => {
     const slot = HL_SLOTS[idx]

@@ -22,6 +22,7 @@ import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
 import { TimelineOverlayShapeUtil } from './shapes/TimelineOverlayShape'
 import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 import { DotAnnotationShapeUtil } from './shapes/DotAnnotationShape'
+import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
@@ -530,7 +531,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
