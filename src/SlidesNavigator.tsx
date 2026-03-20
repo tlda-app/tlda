@@ -23,8 +23,22 @@ interface SlidesNavigatorProps {
 // Fragment state per slide, keyed by shape ID
 const fragmentState = new Map<string, { total: number; current: number }>()
 
+/** Hide all slides except the current one (and optionally a second "from" slide during transitions) */
+function updateSlideVisibility(editor: Editor, document: SvgDocument, visibleIndex: number, alsoVisible?: number) {
+  for (let i = 0; i < document.pages.length; i++) {
+    const page = document.pages[i]
+    const shape = editor.store.get(page.shapeId)
+    if (!shape) continue
+    const shouldShow = i === visibleIndex || i === alsoVisible
+    const targetOpacity = shouldShow ? 1 : 0
+    if (shape.opacity !== targetOpacity) {
+      editor.store.update(page.shapeId, (s) => ({ ...s, opacity: targetOpacity }))
+    }
+  }
+}
+
 /** Navigate camera to center on a specific slide */
-function navigateToSlide(editor: Editor, document: SvgDocument, index: number, animate = true) {
+function navigateToSlide(editor: Editor, document: SvgDocument, index: number, fromIndex?: number, animate = true) {
   const page = document.pages[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
@@ -34,8 +48,14 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number, a
     y: -page.bounds.y + (vp.height / z - page.height) / 2,
     z,
   }
+  // Show both source and target slides during animated transition
+  updateSlideVisibility(editor, document, index, animate ? fromIndex : undefined)
   if (animate) {
     editor.setCamera(target, { animation: { duration: 350 } })
+    // After animation completes, hide the old slide
+    if (fromIndex !== undefined && fromIndex !== index) {
+      setTimeout(() => updateSlideVisibility(editor, document, index), 380)
+    }
   } else {
     editor.setCamera(target)
   }
@@ -118,11 +138,17 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     return () => { unsub(); cancelAnimationFrame(rafId) }
   }, [editor, document, currentSlide])
 
+  // Hide non-current slides on initial mount
+  useEffect(() => {
+    updateSlideVisibility(editor, document, 0)
+  }, [editor, document])
+
   const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
+    const fromIndex = currentSlide
     navigatingRef.current = true
     setCurrentSlide(clamped)
-    navigateToSlide(editor, document, clamped, animate)
+    navigateToSlide(editor, document, clamped, fromIndex, animate)
     // Update fragment info for new slide
     const page = document.pages[clamped]
     if (page) {
@@ -130,7 +156,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       setFragmentInfo(fs || null)
     }
     setTimeout(() => { navigatingRef.current = false }, 400)
-  }, [editor, document, totalSlides])
+  }, [editor, document, totalSlides, currentSlide])
 
   const handleNext = useCallback(() => {
     const page = document.pages[currentSlide]
