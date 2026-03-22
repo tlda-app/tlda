@@ -105,6 +105,13 @@ export function requireRead(req, res, next) {
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
   req.authLevel = level
+  // Auto-set cookie when ?token= is valid (so sub-requests like images get auth)
+  const cookies = parseCookies(req)
+  if (!cookies.tlda_token && token) {
+    const secure = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https'
+    const flags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`
+    res.setHeader('Set-Cookie', `tlda_token=${encodeURIComponent(token)}; ${flags}`)
+  }
   next()
 }
 
