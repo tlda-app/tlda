@@ -41,6 +41,8 @@ const DOT_SIZE = 14
 const DOT_GAP = 6
 
 export function HighlighterSlider() {
+  // Hide in embed mode (fleet shared doc iframe)
+  const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
   const penColor = useValue('pen color', () => {
@@ -72,6 +74,7 @@ export function HighlighterSlider() {
   }, [])
 
   // On touch devices, only show in pen mode
+  if (isEmbed) return null
   if (isTouch && !isPenMode) return null
 
   const activateSlot = (idx: number) => {
