@@ -409,7 +409,7 @@ function generateManifest() {
 
 // ---------- Triage agent management ----------
 
-const AGENT_ENABLED = process.argv.includes('--agent')
+const AGENT_ENABLED = false // Disabled — fleet agents handle annotations now
 let agentProc = null
 let agentRespawnTimer = null
 

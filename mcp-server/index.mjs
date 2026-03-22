@@ -3261,6 +3261,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
   }
 
   if (name === 'get_highlight_feedback') {
