@@ -11,9 +11,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Editor } from 'tldraw'
+import { type Editor, Box } from 'tldraw'
 import type { SvgDocument } from './svgDocumentLoader'
-// SLIDE_GAP used by slidesLoader for layout; navigator reads positions from document.pages
+import { SLIDE_GAP } from './loaders/slidesLoader'
 
 interface SlidesNavigatorProps {
   editor: Editor
@@ -23,39 +23,20 @@ interface SlidesNavigatorProps {
 // Fragment state per slide, keyed by shape ID
 const fragmentState = new Map<string, { total: number; current: number }>()
 
-/** Hide all slides except the current one (and optionally a second "from" slide during transitions) */
-function updateSlideVisibility(editor: Editor, document: SvgDocument, visibleIndex: number, alsoVisible?: number) {
-  for (let i = 0; i < document.pages.length; i++) {
-    const page = document.pages[i]
-    const shape = editor.store.get(page.shapeId)
-    if (!shape) continue
-    const shouldShow = i === visibleIndex || i === alsoVisible
-    const targetOpacity = shouldShow ? 1 : 0
-    if (shape.opacity !== targetOpacity) {
-      editor.store.update(page.shapeId, (s) => ({ ...s, opacity: targetOpacity }))
-    }
-  }
-}
-
 /** Navigate camera to center on a specific slide */
-function navigateToSlide(editor: Editor, document: SvgDocument, index: number, fromIndex?: number, animate = true) {
+function navigateToSlide(editor: Editor, document: SvgDocument, index: number, animate = true) {
   const page = document.pages[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
-  const z = Math.min(1, vp.width / page.width, vp.height / page.height)
+  // Contain: fit whole slide in viewport. Gap is large enough to hide neighbors.
+  const z = Math.min(vp.width / page.width, vp.height / page.height)
   const target = {
     x: -page.bounds.x + (vp.width / z - page.width) / 2,
     y: -page.bounds.y + (vp.height / z - page.height) / 2,
     z,
   }
-  // Show both source and target slides during animated transition
-  updateSlideVisibility(editor, document, index, animate ? fromIndex : undefined)
   if (animate) {
     editor.setCamera(target, { animation: { duration: 350 } })
-    // After animation completes, hide the old slide
-    if (fromIndex !== undefined && fromIndex !== index) {
-      setTimeout(() => updateSlideVisibility(editor, document, index), 380)
-    }
   } else {
     editor.setCamera(target)
   }
@@ -116,6 +97,47 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     return () => window.removeEventListener('message', handler)
   }, [currentSlide, document.pages])
 
+  // On mount: fix stale opacity, reposition slides with correct gap, navigate to slide 0
+  useEffect(() => {
+    for (let i = 0; i < document.pages.length; i++) {
+      const page = document.pages[i]
+      const shape = editor.store.get(page.shapeId)
+      if (!shape) continue
+      const targetX = i * (page.width + SLIDE_GAP)
+      const updates: Record<string, unknown> = {}
+      if (shape.opacity !== 1) updates.opacity = 1
+      if (shape.x !== targetX) updates.x = targetX
+      if (Object.keys(updates).length > 0) {
+        editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
+      }
+      // Update document.pages bounds to match new positions
+      page.bounds = new Box(targetX, 0, page.width, page.height)
+    }
+    navigateToSlide(editor, document, 0, false)
+    window.document.body.classList.add('slides-mode')
+    // Make slide iframe backgrounds transparent
+    const makeTransparent = () => {
+      const iframes = window.document.querySelectorAll('[data-shape-id] iframe') as NodeListOf<HTMLIFrameElement>
+      for (const iframe of iframes) {
+        try {
+          const doc = iframe.contentDocument
+          if (!doc) continue
+          if (!doc.getElementById('tlda-slide-bg')) {
+            const style = doc.createElement('style')
+            style.id = 'tlda-slide-bg'
+            style.textContent = '.reveal, .reveal .slide-background, .reveal .slide-background-content, body { background: transparent !important; }'
+            doc.head.appendChild(style)
+          }
+        } catch {}
+      }
+    }
+    // Retry since iframes load async
+    makeTransparent()
+    const timer = setInterval(makeTransparent, 1000)
+    setTimeout(() => clearInterval(timer), 10000)
+    return () => { clearInterval(timer); window.document.body.classList.remove('slides-mode') }
+  }, [editor, document])
+
   // Track camera position to update current slide indicator
   useEffect(() => {
     let rafId: number
@@ -138,17 +160,11 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     return () => { unsub(); cancelAnimationFrame(rafId) }
   }, [editor, document, currentSlide])
 
-  // Hide non-current slides on initial mount
-  useEffect(() => {
-    updateSlideVisibility(editor, document, 0)
-  }, [editor, document])
-
   const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
-    const fromIndex = currentSlide
     navigatingRef.current = true
     setCurrentSlide(clamped)
-    navigateToSlide(editor, document, clamped, fromIndex, animate)
+    navigateToSlide(editor, document, clamped, animate)
     // Update fragment info for new slide
     const page = document.pages[clamped]
     if (page) {
@@ -156,7 +172,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       setFragmentInfo(fs || null)
     }
     setTimeout(() => { navigatingRef.current = false }, 400)
-  }, [editor, document, totalSlides, currentSlide])
+  }, [editor, document, totalSlides])
 
   const handleNext = useCallback(() => {
     const page = document.pages[currentSlide]
@@ -325,6 +341,10 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         }
         .tl-theme__dark .slides-navigator button:active {
           background: rgba(255,255,255,0.1) !important;
+        }
+        body.slides-mode .tl-background,
+        body.slides-mode .tl-container {
+          background: rgba(245, 240, 232, 0.1) !important;
         }
       `}</style>
     </>,

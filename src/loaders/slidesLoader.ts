@@ -15,8 +15,9 @@ export interface SlidePageEntry {
   indexv?: number
 }
 
-/** Gap between slides on the spatial canvas (px) */
-export const SLIDE_GAP = 120
+/** Gap between slides on the spatial canvas (px) — large enough that adjacent
+ *  slides stay off-screen at any viewport aspect ratio when zoomed to contain */
+export const SLIDE_GAP = 500
 
 /**
  * Load a slides document (Quarto reveal.js deck).

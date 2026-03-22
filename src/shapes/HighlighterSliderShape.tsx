@@ -9,7 +9,7 @@
  * On iPad: only responds to pen (isPen), only shows in pen mode.
  * On desktop: responds to mouse.
  */
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
 import {
   useEditor,
   useValue,
@@ -55,6 +55,21 @@ export function HighlighterSlider() {
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [dragStartY, setDragStartY] = useState(0)
   const lastTapTime = useRef(0)
+
+  // Dynamically measure TOC panel height so slider starts below it
+  const [tocBottom, setTocBottom] = useState(0)
+  useLayoutEffect(() => {
+    const tocEl = document.querySelector('.doc-panel') as HTMLElement | null
+    if (!tocEl) return
+    const update = () => {
+      const rect = tocEl.getBoundingClientRect()
+      setTocBottom(rect.bottom)
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(tocEl)
+    return () => ro.disconnect()
+  }, [])
 
   // On touch devices, only show in pen mode
   if (isTouch && !isPenMode) return null
@@ -162,7 +177,7 @@ export function HighlighterSlider() {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       style={{
-        position: 'absolute', right: 0, top: '10%', bottom: '10%', width: 250,
+        position: 'absolute', right: 0, top: tocBottom || '10%', bottom: '10%', width: 250,
         zIndex: 999, cursor: 'pointer', touchAction: 'none',
         pointerEvents: 'all',
       }}
