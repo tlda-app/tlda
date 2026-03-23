@@ -407,50 +407,6 @@ function generateManifest() {
   return { documents }
 }
 
-// ---------- Triage agent management ----------
-
-const AGENT_ENABLED = false // Disabled — fleet agents handle annotations now
-let agentProc = null
-let agentRespawnTimer = null
-
-function spawnTriageAgent() {
-  const agentPath = resolve(__dirname, '../cli/lib/triage-agent.mjs')
-  const logDir = join(homedir(), '.config', 'tlda')
-  mkdirSync(logDir, { recursive: true })
-  const logFd = openSync(join(logDir, 'agent.log'), 'a')
-
-  const token = process.env.TLDA_TOKEN || ''
-  const env = { ...process.env, TLDA_SERVER: `http://localhost:${PORT}` }
-  if (token) env.TLDA_TOKEN = token
-
-  agentProc = spawn('node', [agentPath], {
-    env,
-    stdio: ['ignore', logFd, logFd],
-    detached: false,
-  })
-
-  console.log(`[agent] Triage agent started (PID ${agentProc.pid})`)
-
-  agentProc.on('exit', (code, signal) => {
-    console.log(`[agent] Triage agent exited (code=${code}, signal=${signal})`)
-    agentProc = null
-    if (!shuttingDown) {
-      console.log('[agent] Respawning in 5s...')
-      agentRespawnTimer = setTimeout(spawnTriageAgent, 5000)
-    }
-  })
-}
-
-function stopTriageAgent() {
-  if (agentRespawnTimer) {
-    clearTimeout(agentRespawnTimer)
-    agentRespawnTimer = null
-  }
-  if (agentProc) {
-    agentProc.kill('SIGTERM')
-    agentProc = null
-  }
-}
 
 // ---------- Graceful shutdown ----------
 
@@ -460,10 +416,7 @@ function shutdown() {
   shuttingDown = true
   console.log('\nShutting down...')
 
-  // 1. Kill triage agent if running
-  stopTriageAgent()
-
-  // 2. Kill all active build child processes (latexmk, dvisvgm, etc.)
+  // 1. Kill all active build child processes (latexmk, dvisvgm, etc.)
   killAllBuilds()
 
   // 3. Flush and close @tldraw/sync rooms
@@ -512,8 +465,4 @@ server.listen(PORT, HOST, () => {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
 
-  if (AGENT_ENABLED) {
-    // Brief delay to let server fully initialize before agent connects
-    setTimeout(spawnTriageAgent, 2000)
-  }
 })
