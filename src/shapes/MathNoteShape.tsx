@@ -7,14 +7,12 @@ import {
   stopEventPropagation,
   DefaultColorStyle,
 } from 'tldraw'
-import type { TLShapeId } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
 import {
   switchTab,
   addTab,
   detachTab,
-  mergeTabs,
   checkMergeOverlap,
 } from '../noteThreading'
 import katex from 'katex'
@@ -199,11 +197,6 @@ function hasMarkdown(text: string): boolean {
 // Chapter-capable: starts with # (h1)
 function isChapterCapable(text: string): boolean {
   return /^#\s+/.test(text.trim())
-}
-
-function getChapterTitle(text: string): string {
-  const match = text.trim().match(/^#\s+(.+)/)
-  return match ? match[1].trim() : ''
 }
 
 export const NOTE_COLORS: Record<string, string> = {
@@ -1078,8 +1071,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               })
               if (newDone) {
                 const pages = editor.getCurrentPageShapes()
-                  .filter(s => s.type === 'svg-page')
-                let bestPage: typeof pages[0] | null = null
+                  .filter(s => (s.type as string) === 'svg-page')
+                let bestPage: any = null
                 let bestDist = Infinity
                 for (const p of pages) {
                   const pb = editor.getShapePageBounds(p.id)

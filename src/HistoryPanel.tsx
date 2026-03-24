@@ -6,7 +6,7 @@
  * no TLDraw copy-store.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { react } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { snapshotPageUrl } from './historyStore'

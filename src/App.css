@@ -75,6 +75,12 @@
   left: max(52px, env(safe-area-inset-left)) !important;
   right: auto !important;
 }
+/* Move the unlicensed "get a license" button to top-left so it doesn't overlap build pill */
+[class*="watermark"][data-unlicensed] {
+  top: max(6px, env(safe-area-inset-top)) !important;
+  left: max(6px, env(safe-area-inset-left)) !important;
+  bottom: auto !important;
+}
 
 
 

@@ -183,7 +183,7 @@ export function useDocAutoOpen(
 
 /** Fetch a single SVG page for a foreign document and inject it into the svgText store. */
 async function fetchForeignPage(
-  docName: string,
+  _docName: string,
   pageIndex: number,
   shapeId: TLShapeId,
   basePath: string,

@@ -3,10 +3,7 @@
  * Each function checks if shapes already exist (from Yjs sync),
  * creates them if not, and returns the set of page shape IDs.
  */
-import {
-  createShapeId,
-} from 'tldraw'
-import type { TLShapePartial, Editor, TLShapeId, TLPageId } from 'tldraw'
+import type { Editor, TLShapeId, TLPageId } from 'tldraw'
 import type { SvgDocument } from './types'
 
 /**

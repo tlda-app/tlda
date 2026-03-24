@@ -124,7 +124,7 @@ export function HistoryChanges() {
     setReviews(readReviewState())
     setSummaries(readSummaries())
     const unsub1 = onDiffReview((signal) => {
-      setReviews(signal.reviews || {})
+      setReviews((signal.reviews || {}) as ReviewMap)
     })
     const unsub2 = onDiffSummaries((signal) => {
       setSummaries(signal.summaries || {})

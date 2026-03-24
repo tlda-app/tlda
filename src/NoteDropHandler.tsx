@@ -79,7 +79,7 @@ export function NoteDropHandler() {
                 docName: dropData.name,
                 docPath: dropData.path,
               },
-            })
+            } as any)
             return
           }
         } catch {}
@@ -132,7 +132,7 @@ export function NoteDropHandler() {
               fleetSource: item,
               ...(isDoc ? { docName: item.name, docPath: item.path } : {}),
             },
-          })
+          } as any)
         } catch {}
         return
       }
@@ -189,7 +189,7 @@ export function NoteDropHandler() {
             timestamp: Date.now(),
           },
         },
-      })
+      } as any)
     }
 
     // Capture phase so we get events before TLDraw's pointer system

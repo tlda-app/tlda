@@ -201,7 +201,7 @@ function App() {
             format: memberConfig.format,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
-            ...(memberConfig.sessionAt && { sessionAt: memberConfig.sessionAt }),
+            ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
           }
         })
         .filter((m): m is BookMember => m !== null)
@@ -291,7 +291,7 @@ function App() {
           const diffBasePath = diffEntry.basePath.startsWith('/')
             ? diffEntry.basePath.slice(1)
             : diffEntry.basePath
-          diffConfig = { basePath: `${base}${diffBasePath}` }
+          diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
         }
       }
 

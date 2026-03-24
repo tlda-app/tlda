@@ -22,7 +22,7 @@ import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
 } from './annotationVisibility'
-import { getRole } from './viewerRole'
+// getRole import removed (unused)
 import { cleanupHtmlShapeData } from './shapes/HtmlPageShape'
 
 export type ReloadResult = {
@@ -306,7 +306,7 @@ export async function reloadPages(
     ? pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
     : pages.map((_, i) => i)
 
-  if (indices.length === 0) return
+  if (indices.length === 0) return { failedPages: [] }
 
   console.log(`[Reload] Fetching ${indices.length} page(s): ${indices.map(i => i + 1).join(', ')}`)
 
@@ -807,18 +807,17 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       styleEl.textContent = css
     }
 
-    const unsubMode = subscribeVisibility(rebuildVisibilityCSS)
-    const unsubDrafts = subscribeDrafts(rebuildVisibilityCSS)
-    const unsubHover = subscribeDraftHovering(rebuildVisibilityCSS)
+    void subscribeVisibility(rebuildVisibilityCSS)
+    void subscribeDrafts(rebuildVisibilityCSS)
+    void subscribeDraftHovering(rebuildVisibilityCSS)
     let rebuildTimer: ReturnType<typeof setTimeout>
     const debouncedRebuild = () => {
       clearTimeout(rebuildTimer)
       rebuildTimer = setTimeout(rebuildVisibilityCSS, 100)
     }
-    const unsubStore = editor.store.listen(debouncedRebuild, { scope: 'document' })
+    void editor.store.listen(debouncedRebuild, { scope: 'document' })
     rebuildVisibilityCSS()
-    // Note: cleanup not strictly needed (editor outlives this setup), but
-    // if needed: styleEl.remove(); unsubMode(); unsubDrafts(); unsubStore();
+    // Note: cleanup not strictly needed (editor outlives this setup)
   }
 
   // Restore magic highlights from persisted metadata shapes

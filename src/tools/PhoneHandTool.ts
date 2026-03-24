@@ -61,7 +61,7 @@ export class PhoneHandTool extends StateNode {
       const pagePt = this.editor.screenToPage(pt)
       // Smart zoom: find the svg-page at tap point and zoom to fit its width
       const pageShape = this.editor.getCurrentPageShapes().find(s => {
-        if (s.type !== 'svg-page') return false
+        if ((s as any).type !== 'svg-page') return false
         const b = this.editor.getShapePageBounds(s.id)
         return b && pagePt.x >= b.minX && pagePt.x <= b.maxX && pagePt.y >= b.minY && pagePt.y <= b.maxY
       })

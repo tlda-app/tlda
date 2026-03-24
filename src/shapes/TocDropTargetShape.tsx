@@ -6,7 +6,7 @@
  *
  * Uses TLDraw's onDragShapesOver/onDropShapesOver callbacks — no HTML5 drag needed.
  */
-import { BaseBoxShapeUtil, HTMLContainer, T, useEditor, useValue, react, createShapeId } from 'tldraw'
+import { BaseBoxShapeUtil, HTMLContainer, T, useEditor, react } from 'tldraw'
 import type { TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef } from 'react'
 
@@ -14,7 +14,7 @@ const TOC_DROP_TARGET_ID = 'shape:toc-drop-target' as TLShapeId
 
 // Check if a shape is a chapter-capable math-note (starts with # heading)
 function isChapterCapable(shape: TLShape): boolean {
-  if (shape.type !== 'math-note') return false
+  if ((shape.type as string) !== 'math-note') return false
   const text = (shape.props as any)?.text || ''
   return /^#\s+/.test(text.trim())
 }
@@ -128,7 +128,7 @@ export function TocDropTargetManager() {
 
       editor.createShape({
         id: TOC_DROP_TARGET_ID,
-        type: 'toc-drop-target',
+        type: 'toc-drop-target' as any,
         x: topRight.x,
         y: topRight.y,
         isLocked: false,
@@ -136,7 +136,7 @@ export function TocDropTargetManager() {
           w: 80 / editor.getCamera().z,
           h: (bottomRight.y - topRight.y),
         },
-      })
+      } as any)
     }
   }, [editor])
 
@@ -161,11 +161,11 @@ export function TocDropTargetManager() {
           Math.abs(ex.props.w - w) > 1 || Math.abs(ex.props.h - h) > 1) {
         editor.updateShape({
           id: TOC_DROP_TARGET_ID,
-          type: 'toc-drop-target',
+          type: 'toc-drop-target' as any,
           x: topRight.x,
           y: topRight.y,
           props: { w, h },
-        })
+        } as any)
       }
     })
   }, [editor])

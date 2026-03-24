@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditor } from 'tldraw'
-import type { TLShape, TLShapeId, TLPageId } from 'tldraw'
+import type { TLShape, TLPageId } from 'tldraw'
 import { navigateTo, getShapeText, COLOR_HEX } from './helpers'
 import { getTabCount } from '../noteThreading'
 import { useBook } from '../BookContext'

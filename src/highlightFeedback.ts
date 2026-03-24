@@ -81,7 +81,7 @@ export function updateOverlappingUnderstandingLines(editor: Editor, shapeId: str
   // Find overlapping understanding-line shapes
   const allShapes = editor.getCurrentPageShapes()
   const overlapping = allShapes.filter(s => {
-    if (s.type !== 'understanding-line') return false
+    if ((s.type as string) !== 'understanding-line') return false
     const ulBounds = editor.getShapePageBounds(s.id)
     if (!ulBounds) return false
     // Check vertical overlap (understanding lines are thin vertical bars)

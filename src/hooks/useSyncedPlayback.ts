@@ -123,7 +123,7 @@ export function useSyncedPlayback(
             type: s.type,
             x: s.x,
             y: s.y,
-            rotation: s.rotation ?? 0,
+            rotation: (s as any).rotation ?? 0,
             opacity: 0.7,
             isLocked: true,
             props,

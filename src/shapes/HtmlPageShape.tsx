@@ -79,7 +79,7 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-function HtmlPageBackground({ shape }: { shape: any }) {
+function HtmlPageBackground({ shape: _shape }: { shape: any }) {
   return null
 }
 

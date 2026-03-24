@@ -9,7 +9,7 @@
  * On iPad: only responds to pen (isPen), only shows in pen mode.
  * On desktop: responds to mouse.
  */
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect } from 'react'
 import {
   useEditor,
   useValue,
@@ -162,7 +162,7 @@ export function HighlighterSlider() {
     setCursorX(e.clientX)
   }
 
-  const handlePointerLeave = (e: React.PointerEvent) => {
+  const handlePointerLeave = (_e: React.PointerEvent) => {
     if (!dragging) { setCursorY(null); setCursorX(null) }
   }
 

@@ -177,7 +177,7 @@ function TimelineOverlayComponent({ shape }: { shape: any }) {
     const sorted = [...pageShapes].sort((a, b) => a.y - b.y)
     const targetPage = sorted[ev.page - 1]
     if (targetPage) {
-      editor.zoomToShape(targetPage.id, { animation: { duration: 300 } })
+      ;(editor as any).zoomToShape(targetPage.id, { animation: { duration: 300 } })
     }
 
     // Scrub fleet playback to this timestamp

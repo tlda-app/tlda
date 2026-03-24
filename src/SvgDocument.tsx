@@ -934,13 +934,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 // Defer slightly so SVG content is injected and we can measure text bounds
                 if (!initialCamera && !session?.camera) {
                   const fitToContent = () => {
-                    const pageShapes = editor.getCurrentPageShapes().filter(s => s.type === 'svg-page')
+                    const pageShapes = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'svg-page')
                     if (pageShapes.length === 0) return
-                    const first = pageShapes.sort((a, b) => a.y - b.y)[0]
+                    const first = pageShapes.sort((a, b) => (a as any).y - (b as any).y)[0]
                     const b = editor.getShapePageBounds(first.id)
                     if (!b) return
                     // Try to find text column bounds from DOM
-                    const el = document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
+                    const el = window.document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
                     const svg = el?.querySelector('svg')
                     const vp = editor.getViewportScreenBounds()
                     if (svg?.viewBox?.baseVal?.width) {

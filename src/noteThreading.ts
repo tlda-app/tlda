@@ -65,7 +65,7 @@ export function switchTab(editor: Editor, shapeId: TLShapeId, index: number) {
       activeTab: index,
       text: updatedTabs[index],
     },
-  })
+  } as any)
 }
 
 /** Add a new tab with the given text. Switches to the new tab. Returns new tab index. */
@@ -91,7 +91,7 @@ export function addTab(editor: Editor, shapeId: TLShapeId, text = ''): number {
       activeTab: newIndex,
       text: text,
     },
-  })
+  } as any)
 
   return newIndex
 }
@@ -136,7 +136,7 @@ export function removeTab(editor: Editor, shapeId: TLShapeId, index: number) {
       tabs: updatedTabs,
       text: updatedTabs[newActive],
     },
-  })
+  } as any)
 }
 
 /** Detach a tab into a new standalone shape. Returns new shape ID, or null. */
@@ -172,7 +172,7 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?:
       activeTab: newActive,
       text: updatedTabs[newActive],
     },
-  })
+  } as any)
 
   // Create detached shape at given position or offset from original
   const newId = `shape:detached-${Date.now()}` as TLShapeId
@@ -191,7 +191,7 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?:
     meta: (shape.meta as any).sourceAnchor
       ? { sourceAnchor: (shape.meta as any).sourceAnchor }
       : {},
-  })
+  } as any)
 
   return newId
 }
@@ -199,17 +199,17 @@ export function detachTab(editor: Editor, shapeId: TLShapeId, index: number, x?:
 /** Check if a math-note overlaps another and merge if so. */
 export function checkMergeOverlap(editor: Editor, shapeId: TLShapeId) {
   const shape = editor.getShape(shapeId)
-  if (!shape || shape.type !== 'math-note') return
+  if (!shape || (shape.type as string) !== 'math-note') return
   const allShapes = editor.getCurrentPageShapes()
   for (const other of allShapes) {
     if (other.id === shape.id) continue
-    if (other.type !== 'math-note') continue
+    if ((other.type as string) !== 'math-note') continue
     const ow = (other.props as any).w || 200
     const oh = (other.props as any).h || 50
     const nw = (shape.props as any).w || 200
     const nh = (shape.props as any).h || 50
-    const overlapX = shape.x < other.x + ow && shape.x + nw > other.x
-    const overlapY = shape.y < other.y + oh && shape.y + nh > other.y
+    const overlapX = (shape as any).x < (other as any).x + ow && (shape as any).x + nw > (other as any).x
+    const overlapY = (shape as any).y < (other as any).y + oh && (shape as any).y + nh > (other as any).y
     if (overlapX && overlapY) {
       setTimeout(() => mergeTabs(editor, shape.id, other.id), 0)
       return
@@ -237,7 +237,7 @@ export function mergeTabs(editor: Editor, sourceId: TLShapeId, targetId: TLShape
       activeTab: newActive,
       text: merged[newActive],
     },
-  })
+  } as any)
 
   editor.deleteShape(sourceId)
 }

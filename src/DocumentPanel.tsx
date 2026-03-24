@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext } from 'react'
 import { createPortal } from 'react-dom'
 import { useEditor, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { DocContext, PanelContext } from './PanelContext'
+import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
@@ -96,15 +96,12 @@ export function PingButton() {
 type Tab = 'history' | 'toc' | 'notes'
 
 export function DocumentPanel() {
-  const ctx = useContext(PanelContext)
   const doc = useContext(DocContext)
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
-  const dragLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
   // Close on outside touch (touch devices only — desktop uses CSS :hover)
   useEffect(() => {
     if (!open) return
@@ -389,8 +386,8 @@ function PhonePageIndicator() {
       lastCamY.current = cam.y
 
       const pages = editor.getCurrentPageShapes()
-        .filter(s => s.type === 'svg-page')
-        .sort((a, b) => a.y - b.y)
+        .filter(s => (s.type as string) === 'svg-page')
+        .sort((a, b) => (a as any).y - (b as any).y)
       if (pages.length === 0) return
 
       const vp = editor.getViewportPageBounds()
@@ -398,7 +395,7 @@ function PhonePageIndicator() {
       let closest = 0
       let minDist = Infinity
       for (let i = 0; i < pages.length; i++) {
-        const py = pages[i].y + (pages[i].props as any).h / 2
+        const py = (pages[i] as any).y + (pages[i].props as any).h / 2
         const d = Math.abs(py - vpMidY)
         if (d < minDist) { minDist = d; closest = i }
       }
@@ -527,7 +524,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
   useEffect(() => {
     function resetTimers(signal: AgentHeartbeatSignal) {
       lastHeartbeatRef.current = signal.timestamp
-      setAgentState(signal.state)
+      setAgentState(signal.state as AgentState)
       if (signal.agent) setAgentName(signal.agent)
 
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current)

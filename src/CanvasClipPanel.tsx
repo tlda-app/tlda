@@ -9,7 +9,7 @@
  * Label bar content is passed as children — each consumer renders its own
  * buttons and title.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import './CanvasClipPanel.css'
@@ -90,11 +90,11 @@ export function CanvasClipPanel({
     let minY = bounds.y
     let maxY = bounds.y + bounds.h
     for (const shape of editor.getCurrentPageShapes()) {
-      if (shape.type === 'svg-page') {
+      if ((shape.type as string) === 'svg-page') {
         const geo = editor.getShapeGeometry(shape)
         if (geo) {
-          minY = Math.min(minY, shape.y)
-          maxY = Math.max(maxY, shape.y + geo.bounds.h)
+          minY = Math.min(minY, (shape as any).y)
+          maxY = Math.max(maxY, (shape as any).y + geo.bounds.h)
         }
       }
     }

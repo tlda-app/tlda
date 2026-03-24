@@ -14,7 +14,7 @@ import { createShapeId } from 'tldraw'
 import type { TLShapeId, Editor } from 'tldraw'
 import type { SvgDocument } from '../svgDocumentLoader'
 import type { TimelineData, TimelineEvent, TimelineSection } from '../shapes/TimelineOverlayShape'
-import { TARGET_WIDTH } from '../layoutConstants'
+// TARGET_WIDTH import removed (unused)
 
 const TIMELINE_GAP = 64  // gap between doc right edge and timeline
 
@@ -142,7 +142,7 @@ export function useTimelineOverlay(
           h: Math.min(500, Math.max(300, totalPages * 30 + 80)),
         },
         meta: {
-          timelineData,
+          timelineData: timelineData as any,
         },
       }])
     })
