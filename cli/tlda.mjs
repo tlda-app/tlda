@@ -507,7 +507,8 @@ async function cmdWatch() {
   console.log(dim(`  Debounce: ${debounceMs}ms`))
   console.log()
 
-  const { startWatcher } = await import('./lib/watcher.mjs')
+  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
+  installProcessHandlers()
   await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
@@ -608,7 +609,8 @@ async function watchAllRun() {
 
   const debounceMs = parseInt(getFlag('debounce') || '200', 10)
   const pollInterval = 30_000 // check for new projects every 30s
-  const { startWatcher } = await import('./lib/watcher.mjs')
+  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
+  installProcessHandlers()
 
   const watchers = new Map()
 

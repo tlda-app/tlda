@@ -178,8 +178,16 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
     pushTimeout = setTimeout(pushChanges, debounceMs)
   })
 
-  // Keep process alive, don't die on errors or signals
-  process.on('SIGINT', () => { console.log('\n[watch] Stopped.'); process.exit(0) })
+  // Note: process-level signal handlers (SIGINT, uncaughtException, etc.)
+  // are installed once by installProcessHandlers(), not per-watcher.
+}
+
+// Install process-level handlers once. Call from the entry point (watch-all or single watch),
+// not from startWatcher — otherwise each project adds duplicate listeners.
+let _handlersInstalled = false
+export function installProcessHandlers() {
+  if (_handlersInstalled) return
+  _handlersInstalled = true
   process.on('SIGTERM', () => { console.log('\n[watch] Got SIGTERM, ignoring (use SIGINT to stop).') })
   process.on('SIGHUP', () => { console.log('[watch] Got SIGHUP, ignoring.') })
   process.on('SIGPIPE', () => {}) // silently ignore broken pipes
@@ -189,10 +197,6 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   process.on('unhandledRejection', (e) => {
     console.error(`[watch] Unhandled rejection (continuing): ${e?.stack || e?.message || e}`)
   })
-
-  // Safety net: keep the event loop alive even if all handles close.
-  // fs.watch should keep it alive, but this ensures it during reconnection gaps.
-  setInterval(() => {}, 30000)
 }
 
 /**
