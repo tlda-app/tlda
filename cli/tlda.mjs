@@ -626,6 +626,7 @@ async function watchAllRun() {
 
     for (const p of projects) {
       if (watchers.has(p.name)) continue
+      if (p.archived) continue
       if (!p.sourceDir || !p.mainFile) continue
       if (!existsSync(p.sourceDir)) {
         console.log(`[watch-all] Skipping ${p.name}: ${p.sourceDir} not found`)
