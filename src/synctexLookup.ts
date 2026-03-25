@@ -80,33 +80,47 @@ export async function getSourceAnchorStatic(
   const lookup = await loadLookup(docName)
   if (!lookup) return null
 
-  // Find lines on this page, sorted by y position
+  // Find lines on this page AND adjacent pages (synctex page boundaries
+  // don't always match rendered page boundaries — content near the bottom
+  // of rendered page N may be mapped to synctex page N+1).
   // Keys may be "42" (main file) or "appendix.tex:42" (input file)
-  const linesOnPage: Array<{ line: number; file: string; entry: LookupEntry }> = []
+  const candidates: Array<{ line: number; file: string; entry: LookupEntry; pageOffset: number }> = []
   for (const [key, entry] of Object.entries(lookup.lines)) {
-    if (entry.page === page) {
-      const colonIdx = key.indexOf(':')
-      if (colonIdx >= 0) {
-        linesOnPage.push({ line: parseInt(key.slice(colonIdx + 1)), file: `./${key.slice(0, colonIdx)}`, entry })
-      } else {
-        linesOnPage.push({ line: parseInt(key), file: `./${lookup.meta.texFile}`, entry })
-      }
-    }
+    const pageOffset = entry.page - page
+    if (pageOffset < -1 || pageOffset > 1) continue // only this page ± 1
+    const colonIdx = key.indexOf(':')
+    const file = colonIdx >= 0 ? `./${key.slice(0, colonIdx)}` : `./${lookup.meta.texFile}`
+    const line = colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key)
+    candidates.push({ line, file, entry, pageOffset })
   }
 
-  if (linesOnPage.length === 0) return null
+  if (candidates.length === 0) return null
 
-  // Sort by y, then by line number
-  linesOnPage.sort((a, b) => a.entry.y - b.entry.y || a.line - b.line)
+  // For lines on this page: match by y distance.
+  // For lines on adjacent pages: they're candidates only if nothing on
+  // this page is close (within 50 PDF points). Adjacent page lines use
+  // a penalty to prefer same-page matches.
+  const thisPage = candidates.filter(c => c.pageOffset === 0)
+  const ADJACENT_PENALTY = 100 // PDF points — prefer same-page
 
-  // Find closest line to click position
-  let closest = linesOnPage[0]
-  let minDist = Math.abs(_y - closest.entry.y)
-  for (const item of linesOnPage) {
-    const dist = Math.abs(_y - item.entry.y)
+  let closest = candidates[0]
+  let minDist = Infinity
+  for (const item of candidates) {
+    const dist = Math.abs(_y - item.entry.y) + (item.pageOffset !== 0 ? ADJACENT_PENALTY : 0)
     if (dist < minDist) {
       minDist = dist
       closest = item
+    }
+  }
+
+  // If we picked an adjacent page line, check if the y position is near
+  // the page edge (top 50pt for prev page, bottom 50pt for next page)
+  if (closest.pageOffset !== 0 && thisPage.length > 0) {
+    const bestThisPage = thisPage.reduce((a, b) =>
+      Math.abs(_y - a.entry.y) < Math.abs(_y - b.entry.y) ? a : b)
+    // Only use adjacent if the this-page match is very far (>200pt)
+    if (Math.abs(_y - bestThisPage.entry.y) < 200) {
+      closest = bestThisPage
     }
   }
 
