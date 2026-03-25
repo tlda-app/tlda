@@ -8,11 +8,6 @@ import {
 } from './synctexLookup'
 import { PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
 
-const SYNCTEX_SERVER = import.meta.env.VITE_SYNCTEX_SERVER || 'http://localhost:5177'
-
-// On HTTPS pages, skip server (browser blocks mixed content http://localhost from https://)
-const USE_SERVER = typeof window === 'undefined' || window.location.protocol !== 'https:'
-
 // Note: synctex y coords are measured from page top (0 = top of physical page).
 // The SVG viewBox starts at -72, but the page image shape maps the full viewBox
 // to canvas pixels, so canvas_y = page.y + synctex_y * scale (no offset needed).
@@ -40,37 +35,7 @@ export async function getSourceAnchor(
   x: number,
   y: number
 ): Promise<SourceAnchor | null> {
-  // Try server first (only on HTTP, not HTTPS)
-  if (USE_SERVER) try {
-    const url = `${SYNCTEX_SERVER}/edit?doc=${docName}&page=${page}&x=${x}&y=${y}`
-    const resp = await fetch(url, { signal: AbortSignal.timeout(2000) })
-    const data = await resp.json()
-    if (!data.error) {
-      const anchor: SourceAnchor = { file: data.file, line: data.line, column: data.column }
-
-      // Fetch content fingerprint for this line
-      try {
-        const contentUrl = `${SYNCTEX_SERVER}/content?doc=${encodeURIComponent(docName)}&file=${encodeURIComponent(data.file)}&line=${data.line}`
-        const contentResp = await fetch(contentUrl)
-        const contentData = await contentResp.json()
-        if (contentData.content) {
-          const trimmed = contentData.content.trim()
-          if (trimmed.length > 0) {
-            anchor.content = trimmed.slice(0, 80)
-          }
-        }
-      } catch {
-        // Content fingerprint is optional
-      }
-
-      return anchor
-    }
-  } catch {
-    // Server not available, try static
-  }
-
-  // Fall back to static lookup
-  console.log('[SyncTeX] Using static lookup')
+  // Static lookup — uses lookup.json generated at build time
   return getSourceAnchorStatic(docName, page, x, y)
 }
 
