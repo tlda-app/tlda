@@ -103,11 +103,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         style={{
           width: shape.props.w,
           height: shape.props.h,
-          pointerEvents: 'all',
+          pointerEvents: 'none', // let tldraw handle selection/drag
         }}
       >
         <div
-          onPointerDown={stopEventPropagation}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
