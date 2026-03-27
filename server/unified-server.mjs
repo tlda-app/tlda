@@ -322,6 +322,8 @@ function fleetProxy(req, res) {
     method: req.method,
     headers: { ...req.headers, host: url.host },
   }
+  // Remove content-length since we may re-serialize the body
+  delete opts.headers['content-length']
   const proxyReq = httpRequest(opts, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers)
     proxyRes.pipe(res)
@@ -329,7 +331,15 @@ function fleetProxy(req, res) {
   proxyReq.on('error', () => {
     if (!res.headersSent) res.status(502).json({ error: 'Fleet server unavailable' })
   })
-  req.pipe(proxyReq)
+  // Express may have consumed the body — re-send it
+  if (req.body && Object.keys(req.body).length > 0) {
+    const bodyStr = JSON.stringify(req.body)
+    proxyReq.setHeader('Content-Type', 'application/json')
+    proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyStr))
+    proxyReq.end(bodyStr)
+  } else {
+    req.pipe(proxyReq)
+  }
 }
 app.use('/events', fleetProxy)
 app.use('/api', fleetProxy)

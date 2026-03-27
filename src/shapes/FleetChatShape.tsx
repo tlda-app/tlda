@@ -200,6 +200,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [inputText, filter])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Stop ALL propagation so tldraw doesn't intercept keys
+    e.stopPropagation()
+    ;(e.nativeEvent as any).stopImmediatePropagation?.()
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -283,6 +286,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             padding: '4px 0',
           }}
           onScroll={handleScroll}
+          onWheel={(e) => e.stopPropagation()}
         >
           {chatMessages.length === 0 ? (
             <div style={{
@@ -309,11 +313,22 @@ function FleetChatComponent({ shape }: { shape: any }) {
               ref={inputRef}
               type="text"
               placeholder={`Message ${agentNames[filter] || 'agent'}...`}
-              value={inputText}
-              onChange={e => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
+              defaultValue=""
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                ;(e.nativeEvent as any).stopImmediatePropagation?.()
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  const input = e.currentTarget
+                  const text = input.value.trim()
+                  if (text && filter) {
+                    sendMessage(filter, text)
+                    input.value = ''
+                  }
+                }
+              }}
               onPointerDown={stopEventPropagation}
-              onFocus={stopEventPropagation}
+              onFocus={(e) => { stopEventPropagation(e); e.stopPropagation() }}
               style={{
                 width: '100%',
                 background: 'rgba(128, 128, 128, 0.08)',
