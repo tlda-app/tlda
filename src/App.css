@@ -11,6 +11,11 @@
   background-color: #0f0f1a !important;
 }
 
+/* Move toolbar to right edge (fleet HUD uses left side) */
+.tlui-layout {
+  flex-direction: row-reverse !important;
+}
+
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
   z-index: 1000 !important;
