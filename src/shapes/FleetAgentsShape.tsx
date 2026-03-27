@@ -134,7 +134,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const pillSyncRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     const existingPills = editor.getCurrentPageShapes()
-      .filter((s: any) => s.type === 'fleet-pill' && s.meta?.parentId === shape.id)
+      .filter((s: any) => s.type === 'fleet-pill' && s.parentId === shape.id)
 
     const existingByKey = new Map<string, any>()
     for (const p of existingPills) {
@@ -148,29 +148,30 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     for (const agent of aliveAgents) {
       const key = `agent:${agent.id}`
       wantedKeys.add(key)
-      const homeX = shape.x + 6
-      const homeY = shape.y + yOffset
+      const homeX = 6  // relative to parent
+      const homeY = yOffset
 
       if (!existingByKey.has(key)) {
         const color = getNickColor(agent.id, agent.is_manager)
         toCreate.push({
           id: createShapeId(),
           type: 'fleet-pill',
+          parentId: shape.id,  // child of agents shape
           x: homeX,
           y: homeY,
           props: {
-            w: 120,
-            h: 24,
+            w: 70,
+            h: 18,
             pillType: 'agent',
             value: agent.id,
             displayName: agentDisplayName(agent),
             color,
           },
           meta: {
-            parentId: shape.id,
             pillKey: key,
             homeX,
             homeY,
+            originalParentId: shape.id,
           },
         })
       } else {
@@ -194,17 +195,18 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         const lKey = `label:${label}`
         if (!wantedKeys.has(lKey)) {
           wantedKeys.add(lKey)
-          const lHomeX = shape.x + w - 80
-          const lHomeY = shape.y + yOffset - 26 // align with agent row
+          const lHomeX = w - 80  // relative to parent
+          const lHomeY = yOffset - 26
           if (!existingByKey.has(lKey)) {
             toCreate.push({
               id: createShapeId(),
               type: 'fleet-pill',
+              parentId: shape.id,
               x: lHomeX,
               y: lHomeY,
               props: {
                 w: 70,
-                h: 20,
+                h: 18,
                 pillType: 'label',
                 value: label,
                 displayName: label,

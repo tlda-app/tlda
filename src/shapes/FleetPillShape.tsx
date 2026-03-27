@@ -55,9 +55,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const homeX = pill.meta?.homeX ?? initial.x
     const homeY = pill.meta?.homeY ?? initial.y
 
-    // Check what's under the pill's center
-    const centerX = pill.x + pill.props.w / 2
-    const centerY = pill.y + pill.props.h / 2
+    // Check what's under the pill's center (use page coordinates)
+    const bounds = editor.getShapePageBounds(pill.id)
+    const centerX = bounds ? bounds.x + bounds.w / 2 : pill.x + pill.props.w / 2
+    const centerY = bounds ? bounds.y + bounds.h / 2 : pill.y + pill.props.h / 2
     const hitShape = editor.getShapeAtPoint({ x: centerX, y: centerY }, {
       hitInside: true,
       margin: 0,
@@ -87,10 +88,12 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       })
     }
 
-    // Snap back to home position
+    // Snap back to home position (reparent if dragged out)
+    const parentId = pill.meta?.originalParentId || initial.parentId
     editor.updateShape({
       id: pill.id,
       type: 'fleet-pill',
+      parentId,
       x: homeX,
       y: homeY,
     })
@@ -151,6 +154,6 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   indicator(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} rx={12} ry={12} />
+    return <rect width={shape.props.w} height={shape.props.h} rx={3} ry={3} />
   }
 }
