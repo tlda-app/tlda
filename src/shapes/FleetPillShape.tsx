@@ -46,8 +46,6 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
-  override hideSelectionBoundsBg = () => true
-  override hideSelectionBoundsFg = () => true
 
   override onTranslateEnd = (initial: TLShape, current: TLShape) => {
     const editor = this.editor
@@ -113,38 +111,18 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            padding: '0 4px',
-            borderRadius: 3,
-            border: `1px solid ${color}40`,
-            background: 'transparent',
-            color: color,
+            padding: '1px 6px',
+            borderRadius: 2,
+            background: color,
+            color: '#fff',
             fontSize: 9,
-            fontWeight: 400,
+            fontWeight: 500,
             cursor: 'grab',
             whiteSpace: 'nowrap',
             userSelect: 'none',
-            lineHeight: '16px',
+            lineHeight: '14px',
           }}
         >
-          {/* Small avatar circle for agents */}
-          {shape.props.pillType === 'agent' && (
-            <div style={{
-              width: 16,
-              height: 16,
-              borderRadius: '50%',
-              background: `${color}25`,
-              border: `1px solid ${color}50`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 9,
-              fontWeight: 700,
-              flexShrink: 0,
-              textTransform: 'uppercase',
-            }}>
-              {displayName.charAt(0)}
-            </div>
-          )}
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {displayName}
           </span>

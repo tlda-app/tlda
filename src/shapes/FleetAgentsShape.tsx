@@ -149,25 +149,25 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
 
     const wantedKeys = new Set<string>()
     const toCreate: any[] = []
-    let yOffset = 36 // below header
+    let yOffset = 32 // below header
 
     for (const agent of aliveAgents) {
       const key = `agent:${agent.id}`
       wantedKeys.add(key)
-      const homeX = 6  // relative to parent
-      const homeY = yOffset
+      const homeX = 22  // after status dot
+      const homeY = yOffset + 3  // vertically centered in row
 
       if (!existingByKey.has(key)) {
         const color = getNickColor(agent.id, agent.is_manager)
         toCreate.push({
           id: createShapeId(),
           type: 'fleet-pill',
-          parentId: shape.id,  // child of agents shape
+          parentId: shape.id,
           x: homeX,
           y: homeY,
           props: {
-            w: 70,
-            h: 18,
+            w: 78,
+            h: 16,
             pillType: 'agent',
             value: agent.id,
             displayName: agentDisplayName(agent),
@@ -181,7 +181,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           },
         })
       } else {
-        // Update home position if container moved
         const existing = existingByKey.get(key)!
         if (existing.meta?.homeX !== homeX || existing.meta?.homeY !== homeY) {
           editor.updateShape({
@@ -193,16 +192,16 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           })
         }
       }
-      yOffset += 52 // row height
 
-      // Label pills for this agent
+      // Label pills inline after agent name pill
       const labels: string[] = agent.labels || []
+      let labelX = homeX + 82 // after agent name pill
       for (const label of labels) {
         const lKey = `label:${label}`
         if (!wantedKeys.has(lKey)) {
           wantedKeys.add(lKey)
-          const lHomeX = w - 80  // relative to parent
-          const lHomeY = yOffset - 26
+          const lHomeX = labelX
+          const lHomeY = homeY
           if (!existingByKey.has(lKey)) {
             toCreate.push({
               id: createShapeId(),
@@ -211,8 +210,8 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
               x: lHomeX,
               y: lHomeY,
               props: {
-                w: 70,
-                h: 18,
+                w: 50,
+                h: 16,
                 pillType: 'label',
                 value: label,
                 displayName: label,
@@ -226,8 +225,11 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
               },
             })
           }
+          labelX += 54 // next label position
         }
       }
+
+      yOffset += 30 // row height
     }
 
     // Create new pills
@@ -332,10 +334,7 @@ function AgentRow({
   isSelected: boolean
   onClick: (id: string) => void
 }) {
-  const name = agentDisplayName(agent)
-  const nickColor = getNickColor(agent.id, agent.is_manager)
   const ago = formatRelativeTime(agent._ts)
-  const labels: string[] = agent.labels || []
   const taskDesc = task?.title || task?.description || ''
 
   // Status dot: green if seen < 2min, yellow < 10min, dim otherwise
@@ -348,13 +347,13 @@ function AgentRow({
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        padding: '4px 8px',
+        padding: '3px 8px',
         cursor: 'pointer',
         borderRadius: 3,
         margin: '0 2px',
         background: isSelected ? 'rgba(100, 140, 255, 0.15)' : 'transparent',
         transition: 'background 0.1s',
-        height: 44,
+        height: 24,
       }}
       onPointerDown={(e) => {
         stopEventPropagation(e)
@@ -364,64 +363,29 @@ function AgentRow({
         onClick(agent.id)
       }}
     >
-      {/* Avatar circle with nick color */}
+      {/* Status dot */}
       <div style={{
-        width: 22,
-        height: 22,
+        width: 6,
+        height: 6,
         borderRadius: '50%',
-        background: `${nickColor}25`,
-        border: `1.5px solid ${nickColor}50`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: 10,
-        fontWeight: 700,
-        color: nickColor,
+        background: dotColor,
         flexShrink: 0,
-        textTransform: 'uppercase',
-        position: 'relative',
-      }}>
-        {name.charAt(0)}
-        {/* Status dot */}
-        <div style={{
-          position: 'absolute',
-          bottom: -1,
-          right: -1,
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: dotColor,
-          border: '1.5px solid #0f0f1a',
-        }} />
-      </div>
+      }} />
 
-      {/* Name + task column */}
+      {/* Pill space — pills render here as child shapes */}
+      <div style={{ width: 80 + (agent.labels?.length || 0) * 54, flexShrink: 0 }} />
+
+      {/* Task description */}
       <div style={{
         flex: 1,
         minWidth: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 1,
+        fontSize: 9,
+        opacity: 0.5,
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
       }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-        }}>
-          {/* Name and labels rendered by pill shapes — space reserved here */}
-          <span style={{ height: 18 }} />
-        </div>
-        {taskDesc && (
-          <span style={{
-            fontSize: 9,
-            opacity: 0.5,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}>
-            {taskDesc.substring(0, 50)}
-          </span>
-        )}
+        {taskDesc ? taskDesc.substring(0, 50) : ''}
       </div>
 
       {/* Last seen */}
