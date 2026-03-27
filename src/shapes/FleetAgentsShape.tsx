@@ -270,11 +270,8 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          backgroundColor: '#0f0f1a',
-          border: '1px solid rgba(128, 128, 128, 0.2)',
           borderRadius: 8,
           fontSize: 11,
-          color: '#c8d0e0',
           overflow: 'hidden',
         }}
         onPointerDown={stopEventPropagation}

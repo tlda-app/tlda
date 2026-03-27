@@ -26,6 +26,36 @@
   --shadow-lg: rgba(0,0,0,0.4);
 }
 
+/* Apply theme colors to fleet shapes */
+.fleet-chat-shape,
+.fleet-agents-shape {
+  background-color: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.fleet-chat-shape[data-editing="true"] {
+  background-color: var(--surface);
+  border-color: var(--accent);
+}
+
+/* Light theme overrides */
+.tl-theme__light .fleet-chat-shape,
+.tl-theme__light .fleet-agents-shape {
+  --bg: #fafafa;
+  --surface: #f0f0f5;
+  --text: #444;
+  --text-dim: #888;
+  --text-bright: #222;
+  --border: #ddd;
+  --accent: #7c8aff;
+  --glass-1: rgba(0,0,0,0.02);
+  --glass-2: rgba(0,0,0,0.03);
+  --glass-3: rgba(0,0,0,0.04);
+  --glass-4: rgba(0,0,0,0.05);
+  --glass-5: rgba(0,0,0,0.06);
+  --glass-6: rgba(0,0,0,0.08);
+}
+
 .fleet-chat-shape strong { color: var(--text-bright); font-weight: 500; }
 
 /* --- Chat log container --- */
