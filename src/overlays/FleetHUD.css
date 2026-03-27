@@ -12,6 +12,12 @@
 
 .fleet-hud-wrap > .clip-panel {
   pointer-events: auto;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.fleet-hud-wrap .clip-panel-canvas {
+  background: transparent !important;
 }
 
 .fleet-hud-label {

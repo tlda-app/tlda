@@ -309,25 +309,44 @@ function FleetChatComponent({ shape }: { shape: any }) {
             padding: 4,
             flexShrink: 0,
           }}>
-            <input
-              ref={inputRef}
-              type="text"
+            <textarea
+              ref={inputRef as any}
               placeholder={`Message ${agentNames[filter] || 'agent'}...`}
-              defaultValue=""
+              rows={1}
               onKeyDown={(e) => {
                 e.stopPropagation()
                 ;(e.nativeEvent as any).stopImmediatePropagation?.()
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  const input = e.currentTarget
-                  const text = input.value.trim()
-                  if (text && filter) {
-                    sendMessage(filter, text)
-                    input.value = ''
+                const ta = e.currentTarget
+                // Double-Enter = send, trailing space + Enter = newline
+                if (e.key === 'Enter') {
+                  const val = ta.value
+                  if (val.endsWith(' ') || e.shiftKey) {
+                    // newline — let default happen
+                    return
                   }
+                  if (val.endsWith('\n')) {
+                    // double-enter = send
+                    e.preventDefault()
+                    const text = val.trim()
+                    if (text && filter) {
+                      sendMessage(filter, text)
+                      ta.value = ''
+                      ta.style.height = 'auto'
+                    }
+                    return
+                  }
+                  // single enter — insert newline, wait for double
+                  return
                 }
               }}
+              onInput={(e) => {
+                // Auto-resize
+                const ta = e.currentTarget
+                ta.style.height = 'auto'
+                ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+              }}
               onPointerDown={stopEventPropagation}
+              onWheel={(e) => e.stopPropagation()}
               onFocus={(e) => { stopEventPropagation(e); e.stopPropagation() }}
               style={{
                 width: '100%',
