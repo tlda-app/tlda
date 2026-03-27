@@ -242,26 +242,16 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
 
   // Click handler — set filter on ALL fleet-chat shapes
   const handleClick = useCallback((agentId: string) => {
-    const newId = selectedId === agentId ? null : agentId
-    setSelectedId(newId)
-    const allShapes = editor.getCurrentPageShapes()
-    for (const s of allShapes) {
-      if (s.type === 'fleet-chat') {
-        editor.updateShape({
-          id: s.id,
-          type: 'fleet-chat',
-          props: { ...(s as any).props, filter: newId || '' },
-        })
-      }
-    }
-  }, [editor, selectedId])
+    // Click only selects/highlights — drag sets filter
+    setSelectedId(selectedId === agentId ? null : agentId)
+  }, [selectedId])
 
   return (
     <HTMLContainer
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: 'none', // let child pill shapes receive events
         overflow: 'hidden',
       }}
     >
