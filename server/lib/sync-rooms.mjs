@@ -149,6 +149,27 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-chat': {
+    props: {
+      w: T.number,
+      h: T.number,
+      filter: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-chat',
+      sequence: [],
+    }),
+  },
+  'fleet-agents': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-agents',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
