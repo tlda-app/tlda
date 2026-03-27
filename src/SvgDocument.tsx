@@ -38,12 +38,13 @@ import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
-import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
+import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext, FleetHUDContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
+import { FleetHUD } from './overlays/FleetHUD'
 import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
@@ -99,6 +100,11 @@ function BottomPanelsSlot() {
 
 function AgentPillSlot() {
   const content = useContext(AgentPillContext)
+  return <>{content}</>
+}
+
+function FleetHUDSlot() {
+  const content = useContext(FleetHUDContext)
   return <>{content}</>
 }
 
@@ -533,7 +539,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetHUDSlot /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -757,11 +763,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
+  const fleetHUDContent = editorRef.current ? (
+    <FleetHUD
+      mainEditor={editorRef.current}
+      shapeUtils={shapeUtils}
+      tools={tools}
+      licenseKey={LICENSE_KEY}
+    />
+  ) : null
+
   return (
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
+    <FleetHUDContext.Provider value={fleetHUDContent}>
     <Tldraw
         store={storeWithStatus}
         licenseKey={LICENSE_KEY}
@@ -1114,6 +1130,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <TocDropTargetManager />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
+    </FleetHUDContext.Provider>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>

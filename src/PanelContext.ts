@@ -56,3 +56,4 @@ export const PanelContext = createContext<PanelContextValue | null>(null)
 /** Bottom-left panels + agent pill — rendered inside InFrontOfTheCanvas for TLDraw event handling */
 export const BottomPanelsContext = createContext<ReactNode>(null)
 export const AgentPillContext = createContext<ReactNode>(null)
+export const FleetHUDContext = createContext<ReactNode>(null)

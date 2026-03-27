@@ -176,7 +176,7 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
     const m = entry.content.match(sectionRe)
     if (!m) continue
     let level: TocLevel = m[1] ? 'subsection' : 'section'
-    if (entry.page >= appendixPage) level = DEMOTE[level]
+    // No demotion — appendix \sections stay at section level
     // Clean title: preserve $...$ math, strip other TeX
     let title = m[2]
       .replace(/~}/g, '}')                         // trailing ~ before }
@@ -195,7 +195,7 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
     const insertIdx = headings.findIndex(h => h.entry.page >= appendixEntry!.page)
     if (insertIdx >= 0) {
       headings.splice(insertIdx, 0, {
-        level: 'section',
+        level: 'part',
         title: 'Appendix',
         line: headings[insertIdx].line - 1,
         entry: appendixEntry,
