@@ -19,7 +19,7 @@
  */
 
 import express from 'express'
-import { createServer } from 'http'
+import { createServer, request as httpRequest } from 'http'
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
@@ -309,6 +309,30 @@ app.use('/api/projects', projectRoutes)
 // Handwriting recognition (MyScript proxy)
 import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
+
+// ---------- Fleet API proxy ----------
+// Proxy unhandled /api/* and /events to fleet server (for fleet shapes in the SPA)
+const FLEET_SERVER = process.env.FLEET_SERVER || 'http://localhost:5199'
+function fleetProxy(req, res) {
+  const url = new URL(FLEET_SERVER)
+  const opts = {
+    hostname: url.hostname,
+    port: url.port,
+    path: req.originalUrl,
+    method: req.method,
+    headers: { ...req.headers, host: url.host },
+  }
+  const proxyReq = httpRequest(opts, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers)
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', () => {
+    if (!res.headersSent) res.status(502).json({ error: 'Fleet server unavailable' })
+  })
+  req.pipe(proxyReq)
+}
+app.use('/events', fleetProxy)
+app.use('/api', fleetProxy)
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math

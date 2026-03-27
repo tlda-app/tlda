@@ -1666,3 +1666,191 @@ body.warm-mode .tl-theme__dark [data-shape-id] svg {
   filter: sepia(0.1) saturate(0.85) brightness(0.95) invert(0.88) hue-rotate(180deg);
 }
 
+/* ==================== Fleet Tab ==================== */
+
+.fleet-tab {
+  font-size: 11px;
+}
+
+.fleet-agents {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+  padding: 4px 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.fleet-no-agents,
+.fleet-no-messages {
+  padding: 12px 8px;
+  opacity: 0.4;
+  text-align: center;
+  font-size: 10px;
+}
+
+.fleet-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-radius: 3px;
+  margin: 0 2px;
+}
+
+.fleet-agent-row:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.fleet-agent-row.selected {
+  background: rgba(100, 140, 255, 0.15);
+}
+
+.fleet-agent-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.fleet-agent-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fleet-agent-name {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.fleet-agent-task {
+  font-size: 9px;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-agent-seen {
+  font-size: 9px;
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+
+/* Chat area */
+
+.fleet-chat-area {
+  padding: 4px 0;
+}
+
+.fleet-message {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+}
+
+.fleet-message--skip {
+  background: rgba(100, 140, 255, 0.04);
+}
+
+.fleet-message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.fleet-message-sender {
+  font-weight: 600;
+  font-size: 10px;
+}
+
+.fleet-message-time {
+  font-size: 9px;
+  opacity: 0.35;
+}
+
+.fleet-message-text {
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.fleet-message-text code {
+  background: rgba(128, 128, 128, 0.12);
+  padding: 1px 3px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+.fleet-message-text pre {
+  background: rgba(128, 128, 128, 0.1);
+  padding: 4px 6px;
+  border-radius: 3px;
+  overflow-x: auto;
+  margin: 4px 0;
+  font-size: 10px;
+}
+
+.fleet-message-text pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Chat input */
+
+.fleet-chat-input {
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
+  padding: 4px;
+}
+
+.fleet-chat-input input {
+  width: 100%;
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: inherit;
+  outline: none;
+  font-family: inherit;
+}
+
+.fleet-chat-input input:focus {
+  border-color: rgba(100, 140, 255, 0.4);
+  background: rgba(128, 128, 128, 0.04);
+}
+
+.fleet-chat-input input::placeholder {
+  opacity: 0.35;
+}
+
+/* Dark theme overrides */
+
+html[data-theme="dark"] .fleet-agent-row.selected {
+  background: rgba(100, 140, 255, 0.12);
+}
+
+html[data-theme="dark"] .fleet-message--skip {
+  background: rgba(100, 140, 255, 0.06);
+}
+
+html[data-theme="dark"] .fleet-chat-input input {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .fleet-chat-input input:focus {
+  border-color: rgba(100, 140, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+}
+

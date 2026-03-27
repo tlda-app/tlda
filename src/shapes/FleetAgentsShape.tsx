@@ -1,8 +1,8 @@
 /**
  * FleetAgentsShape — tldraw canvas shape showing alive fleet agents.
  *
- * Fetches from fleet API /api/state, shows agent name + status + task.
- * Click on an agent logs the ID (future: update filter on nearby fleet-chat shapes).
+ * Uses fleet-data.mjs (via adapter) for live SSE updates — no polling.
+ * Click an agent to update filter on nearby fleet-chat shapes.
  */
 import {
   BaseBoxShapeUtil,
@@ -11,40 +11,20 @@ import {
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
+import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 
-const FLEET_API = 'http://localhost:5199'
 const DEFAULT_W = 300
 const DEFAULT_H = 400
 
-// --- Types ---
-
-interface FleetAgent {
-  id: string
-  friendly_name: string | null
-  labels: string[] | null
-  last_seen: string | null
-  dead: boolean
-  human: boolean
-  is_manager: boolean
-  cwd: string | null
-}
-
-interface FleetTask {
-  id: string
-  title: string | null
-  status: string | null
-  assignee: string | null
-}
-
-function isAlive(agent: FleetAgent): boolean {
+function isAlive(agent: any): boolean {
   if (agent.dead) return false
   if (!agent.last_seen) return false
   const seen = new Date(agent.last_seen).getTime()
   return Date.now() - seen < 120_000
 }
 
-function agentDisplayName(agent: FleetAgent): string {
+function agentDisplayName(agent: any): string {
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
@@ -88,38 +68,20 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
 
-  const [agents, setAgents] = useState<FleetAgent[]>([])
-  const [tasks, setTasks] = useState<FleetTask[]>([])
-  const [error, setError] = useState<string | null>(null)
+  // Live data from fleet-data.mjs via SSE
+  const agents = useFleetAgents()
+  const tasks = useFleetTasks()
+
   const [selectedId, setSelectedId] = useState<string | null>(null)
-
-  const fetchData = useCallback(async () => {
-    try {
-      const resp = await fetch(`${FLEET_API}/api/state`)
-      if (!resp.ok) throw new Error(`${resp.status}`)
-      const state = await resp.json()
-      setAgents(state.agents || [])
-      setTasks(state.tasks || [])
-      setError(null)
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }, [])
-
-  useEffect(() => {
-    fetchData()
-    const timer = setInterval(fetchData, 5000)
-    return () => clearInterval(timer)
-  }, [fetchData])
 
   const aliveAgents = useMemo(() => {
     return agents
-      .filter(a => isAlive(a) && !a.human)
-      .sort((a, b) => agentDisplayName(a).localeCompare(agentDisplayName(b)))
+      .filter((a: any) => isAlive(a) && !a.human)
+      .sort((a: any, b: any) => agentDisplayName(a).localeCompare(agentDisplayName(b)))
   }, [agents])
 
   const taskByAgent = useMemo(() => {
-    const map: Record<string, FleetTask> = {}
+    const map: Record<string, any> = {}
     for (const t of tasks) {
       if (t.assignee && (t.status === 'pending' || t.status === 'in_progress')) {
         map[t.assignee] = t
@@ -185,7 +147,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           <span style={{ marginLeft: 'auto', fontWeight: 400, opacity: 0.5 }}>
             {aliveAgents.length} online
           </span>
-          {error && <span style={{ color: '#ef4444', fontWeight: 400 }}>· {error}</span>}
         </div>
 
         {/* Agent list */}
@@ -197,10 +158,10 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
               textAlign: 'center',
               fontSize: 10,
             }}>
-              {error ? 'Fleet offline' : 'No agents online'}
+              No agents online
             </div>
           ) : (
-            aliveAgents.map(agent => {
+            aliveAgents.map((agent: any) => {
               const name = agentDisplayName(agent)
               const task = taskByAgent[agent.id]
               const isSelected = selectedId === agent.id

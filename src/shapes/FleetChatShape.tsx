@@ -1,9 +1,8 @@
 /**
  * FleetChatShape — tldraw canvas shape that renders fleet chat messages.
  *
- * Uses chat-render.mjs from the fleet dashboard for consistent rendering.
- * Fetches from fleet API, renders with markdown + KaTeX, has text input.
- * Polls every 5s.
+ * Uses fleet-data.mjs (via adapter) for live SSE updates — no polling.
+ * Renders with chat-render.mjs from the fleet dashboard.
  */
 import {
   BaseBoxShapeUtil,
@@ -16,9 +15,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
 import { renderChatLine, esc, timeShort } from 'fleet-dashboard/js/chat-render.mjs'
+import { useFleetAgents, useFleetEvents, useFleetTasks, sendMessage, loadBefore } from '../fleet-data-adapter'
 import './fleet-chat.css'
 
-const FLEET_API = 'http://localhost:5199'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 
@@ -66,75 +65,6 @@ function tldaRenderMarkdown(escapedHtml: string): string {
   return result
 }
 
-// --- Types ---
-
-interface ChatEvent {
-  id: number
-  event_type?: string
-  type: string | null
-  timestamp: string | null
-  from_id: string | null
-  to_id: string | null
-  text: string | null
-  metadata: Record<string, unknown> | string | null
-}
-
-interface FleetAgent {
-  id: string
-  friendly_name: string | null
-  labels: string[] | null
-  last_seen: string | null
-  dead: boolean
-  human?: boolean
-}
-
-interface FleetTask {
-  id: string
-  status: string
-  agent: string | null
-  delegated_by: string | null
-}
-
-// --- Convert DB event to message format expected by renderChatLine ---
-
-function eventToMessage(e: ChatEvent) {
-  let metadata = e.metadata
-  if (typeof metadata === 'string') {
-    try { metadata = JSON.parse(metadata) } catch { metadata = null }
-  }
-  const type = (e as any).event_type || e.type
-  const msg: any = {
-    type,
-    from: e.from_id || (e as any).from,
-    to: e.to_id || (e as any).to,
-    text: e.text,
-    timestamp: e.timestamp,
-    read: true,
-  }
-  if (type === 'delegate') {
-    msg._evType = 'delegate'
-    msg._description = e.text || ''
-    msg._taskId = (metadata as any)?.taskId || ''
-    msg._fromLabel = (metadata as any)?.fromLabel || ''
-    msg._toLabel = (metadata as any)?.toLabel || ''
-    msg._criteria = (metadata as any)?.criteria || []
-  } else if (type === 'task_done') {
-    msg._evType = 'task_done'
-    msg._description = e.text || ''
-    msg._taskId = (metadata as any)?.taskId || ''
-    msg._agent = (e as any).agent_id || e.from_id || ''
-  } else if (type === 'terminal_user' || type === 'terminal_assistant') {
-    msg._evType = type
-  }
-  if ((metadata as any)?.inline_attachments) {
-    msg._inlineAttachments = (metadata as any).inline_attachments
-  }
-  if ((metadata as any)?.timer) {
-    msg._timer = true
-  }
-  return msg
-}
-
 // --- Shape definition ---
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
@@ -169,17 +99,17 @@ const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3',
 const nickMap = new Map<string, string>()
 let nickIdx = 0
 
-function makeCtx(agents: FleetAgent[], tasks: FleetTask[]) {
+function makeCtx(agents: any[], tasks: any[]) {
   return {
     agentLabel: (id: string) => {
       if (!id) return '[unknown]'
-      const a = agents.find(a => a.id === id)
+      const a = agents.find((a: any) => a.id === id)
       if (a) return a.friendly_name || a.id
       return typeof id === 'string' ? id : String(id)
     },
     getNickClass: (id: string) => {
       if (!id) return 'nick-agent-0'
-      const a = agents.find(a => a.id === id)
+      const a = agents.find((a: any) => a.id === id)
       if (a?.human) return 'nick-human'
       if (id === 'keepalive') return 'nick-keepalive'
       if (!nickMap.has(id)) {
@@ -189,7 +119,7 @@ function makeCtx(agents: FleetAgent[], tasks: FleetTask[]) {
       return nickMap.get(id)!
     },
     isHumanId: (id: string) => {
-      const a = agents.find(a => a.id === id)
+      const a = agents.find((a: any) => a.id === id)
       return !!(a?.human)
     },
     getAgents: () => agents,
@@ -203,64 +133,47 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h, filter } = shape.props
 
-  const [events, setEvents] = useState<ChatEvent[]>([])
-  const [agents, setAgents] = useState<FleetAgent[]>([])
-  const [tasks, setTasks] = useState<FleetTask[]>([])
+  // Live data from fleet-data.mjs via SSE
+  const agents = useFleetAgents()
+  const liveEvents = useFleetEvents(filter || undefined)
+  const tasks = useFleetTasks()
+  const [olderEvents, setOlderEvents] = useState<any[]>([])
+
+  // Merge older (scrollback) events with live events
+  const events = useMemo(() => {
+    if (olderEvents.length === 0) return liveEvents
+    // Deduplicate by _dbId or timestamp+from
+    const seen = new Set(liveEvents.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
+    const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
+    return [...unique, ...liveEvents]
+  }, [liveEvents, olderEvents])
+
+  // Reset older events when filter changes
+  useEffect(() => { setOlderEvents([]) }, [filter])
+
   const [inputText, setInputText] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const chatLogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-
-  const fetchData = useCallback(async () => {
-    try {
-      const eventsUrl = filter
-        ? `${FLEET_API}/api/store/events?agent=${encodeURIComponent(filter)}&limit=50&before=999999999`
-        : `${FLEET_API}/api/store/events?limit=50&before=999999999`
-      const [eventsResp, stateResp] = await Promise.all([
-        fetch(eventsUrl),
-        fetch(`${FLEET_API}/api/state`),
-      ])
-      if (eventsResp.ok) {
-        const data = await eventsResp.json()
-        setEvents(data.events || [])
-      }
-      if (stateResp.ok) {
-        const state = await stateResp.json()
-        setAgents(state.agents || [])
-        setTasks(state.tasks || [])
-      }
-      setError(null)
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }, [filter])
-
-  useEffect(() => {
-    fetchData()
-    const timer = setInterval(fetchData, 5000)
-    return () => clearInterval(timer)
-  }, [fetchData])
 
   // Build context and render messages
   const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
 
   const chatMessages = useMemo(() => {
     return events
-      .filter(e => {
-        const t = (e as any).event_type || e.type
+      .filter((m: any) => {
+        const t = m.type
         return t === 'chat' || t === 'delegate' || t === 'task_done'
       })
-      .sort((a, b) => {
+      .filter((m: any) => !m._timer) // skip timer-fired messages
+      .sort((a: any, b: any) => {
         const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
         return ta - tb
       })
-      .map(e => eventToMessage(e))
-      .filter(m => !m._timer) // skip timer-fired messages
   }, [events])
 
   const renderedHtml = useMemo(() => {
-    return chatMessages.map(m => renderChatLine(m, ctx)).filter(Boolean).join('')
+    return chatMessages.map((m: any) => renderChatLine(m, ctx)).filter(Boolean).join('')
   }, [chatMessages, ctx])
 
   // Auto-scroll to bottom on new messages
@@ -279,28 +192,40 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return map
   }, [agents])
 
-  const sendMessage = useCallback(async () => {
+  const handleSend = useCallback(async () => {
     const text = inputText.trim()
     if (!text || !filter) return
-    try {
-      await fetch(`${FLEET_API}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, from: 'fleet:skip', to: filter }),
-      })
-      setInputText('')
-      fetchData()
-    } catch (e) {
-      setError(`Send failed: ${(e as Error).message}`)
-    }
-  }, [inputText, filter, fetchData])
+    await sendMessage(filter, text)
+    setInputText('')
+  }, [inputText, filter])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendMessage()
+      handleSend()
     }
-  }, [sendMessage])
+  }, [handleSend])
+
+  // Infinite scroll — load older messages
+  const loadingMore = useRef(false)
+  const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
+    loadingMore.current = true
+    const oldestTs = chatMessages[0]?.timestamp
+    if (oldestTs) {
+      const prevHeight = el.scrollHeight
+      const older = await loadBefore(filter || undefined, oldestTs, 50)
+      if (older.length > 0) {
+        setOlderEvents(prev => [...older, ...prev])
+      }
+      // Maintain scroll position
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight - prevHeight
+      })
+    }
+    loadingMore.current = false
+  }, [chatMessages, filter])
 
   return (
     <HTMLContainer
@@ -346,7 +271,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
           {filter && <span style={{ opacity: 0.5, fontWeight: 400 }}>
             {agentNames[filter] || filter.replace('fleet:', '')}
           </span>}
-          {error && <span style={{ color: '#ef4444', marginLeft: 'auto', fontWeight: 400 }}>{error}</span>}
         </div>
 
         {/* Messages — rendered via chat-render.mjs */}
@@ -358,6 +282,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             overflowY: 'auto',
             padding: '4px 0',
           }}
+          onScroll={handleScroll}
         >
           {chatMessages.length === 0 ? (
             <div style={{
