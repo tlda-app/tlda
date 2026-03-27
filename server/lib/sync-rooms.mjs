@@ -170,6 +170,20 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-pill': {
+    props: {
+      w: T.number,
+      h: T.number,
+      pillType: T.string,
+      value: T.string,
+      displayName: T.string,
+      color: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-pill',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({

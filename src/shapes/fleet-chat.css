@@ -26,16 +26,12 @@
   --shadow-lg: rgba(0,0,0,0.4);
 }
 
-/* Apply theme colors to fleet shapes */
+/* Fleet shapes blend with canvas — no visible container */
 .fleet-chat-shape,
 .fleet-agents-shape {
-  background-color: var(--bg);
+  background-color: transparent;
   color: var(--text);
-  border: 1px solid var(--border);
-}
-.fleet-chat-shape[data-editing="true"] {
-  background-color: var(--surface);
-  border-color: var(--accent);
+  border: none;
 }
 
 /* Light theme overrides */
