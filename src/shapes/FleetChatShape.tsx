@@ -10,6 +10,7 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  useValue,
 } from 'tldraw'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import katex from 'katex'
@@ -132,6 +133,7 @@ function makeCtx(agents: any[], tasks: any[]) {
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h, filter } = shape.props
+  const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
 
   // Live data from fleet-data.mjs via SSE
   const agents = useFleetAgents()
@@ -236,7 +238,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
         width: w,
         height: h,
         pointerEvents: 'all',
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       <div
@@ -246,12 +248,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          backgroundColor: '#0f0f1a',
-          border: '1px solid rgba(128, 128, 128, 0.2)',
+          backgroundColor: isEditing ? '#12122a' : '#0f0f1a',
+          border: isEditing ? '1px solid rgba(120, 140, 255, 0.3)' : '1px solid rgba(128, 128, 128, 0.2)',
           borderRadius: 8,
           fontSize: 11,
           color: '#8888a0',
-          overflow: 'hidden',
+          overflow: 'visible',
           fontFamily: "'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
           fontWeight: 300,
           lineHeight: 1.4,
@@ -286,7 +288,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
             padding: '4px 0',
           }}
           onScroll={handleScroll}
-          onWheel={(e) => e.stopPropagation()}
         >
           {chatMessages.length === 0 ? (
             <div style={{
@@ -315,8 +316,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
               placeholder={`Message ${agentNames[filter] || 'agent'}...`}
               rows={1}
               onKeyDown={(e) => {
-                e.stopPropagation()
-                ;(e.nativeEvent as any).stopImmediatePropagation?.()
+                stopEventPropagation(e)
                 const ta = e.currentTarget
                 if (e.key === 'Enter' && !e.shiftKey) {
                   const val = ta.value
@@ -360,8 +360,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
               }}
               onPointerDown={stopEventPropagation}
-              onWheel={(e) => e.stopPropagation()}
-              onFocus={(e) => { stopEventPropagation(e); e.stopPropagation() }}
+              onFocus={stopEventPropagation}
               style={{
                 width: '100%',
                 background: 'rgba(128, 128, 128, 0.08)',

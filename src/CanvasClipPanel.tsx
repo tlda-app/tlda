@@ -141,9 +141,10 @@ export function CanvasClipPanel({
     }
   }, [editor, bounds, panelWidth, lockCamera])
 
-  // Wheel to pan vertically
+  // Wheel to pan vertically (disabled when camera is locked — let shapes handle scroll)
   const canvasRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    if (lockCamera) return // fleet shapes handle their own scroll
     const el = canvasRef.current
     if (!el || !editor) return
     const onWheel = (e: WheelEvent) => {
@@ -155,7 +156,7 @@ export function CanvasClipPanel({
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [editor])
+  }, [editor, lockCamera])
 
   // Panel height: at least 5 lines, at most maxHeightFraction of viewport
   const canvasHeight = useMemo(() => {
