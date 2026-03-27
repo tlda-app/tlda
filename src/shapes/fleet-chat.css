@@ -444,3 +444,151 @@
 .fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
 .fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: 0.7; }
 .fleet-chat-shape .tool-count { color: var(--text-dim); font-size: 9px; }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
+.fleet-chat-shape .tool-copy { display: none; }
+.fleet-chat-shape .tool-detail { color: var(--text-dim); opacity: 0.5; font-size: 9px; }
+
+/* --- Activity cards --- */
+.fleet-chat-shape .chat-activity-inline-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+.fleet-chat-shape .chat-activity-inline-wrap > .chat-activity-card:not(.collapsed) {
+  width: 100%;
+}
+.fleet-chat-shape .chat-activity-card {
+  position: relative;
+  margin: 3px 0;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
+.fleet-chat-shape .chat-activity-card .activity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+.fleet-chat-shape .chat-activity-card .activity-agent { font-weight: 500; }
+.fleet-chat-shape .chat-activity-card .activity-ctx {
+  font-size: 10px;
+  color: var(--text-dim, #666);
+  opacity: 0.7;
+}
+.fleet-chat-shape .chat-activity-card .activity-signal {
+  font-size: 10px;
+  opacity: 0.4;
+  line-height: 1;
+}
+.fleet-chat-shape .chat-activity-card .activity-header .activity-signal { margin-left: auto; }
+.fleet-chat-shape .chat-activity-card.will-fold .activity-signal::after { content: '\25BD'; }
+.fleet-chat-shape .chat-activity-card .activity-detail {
+  padding: 2px 8px 4px;
+  line-height: 1.5;
+}
+.fleet-chat-shape .chat-activity-card .activity-badge {
+  float: right;
+  font-size: 11px;
+  color: var(--text-dim, #666);
+  opacity: 0.6;
+  margin-left: 8px;
+}
+.fleet-chat-shape .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
+.fleet-chat-shape .chat-activity-card .activity-count {
+  font-size: 10px;
+  color: var(--text-dim, #666);
+  opacity: 0.5;
+  margin-left: 2px;
+}
+.fleet-chat-shape .chat-activity-card .activity-text-block {
+  color: var(--text, #8888a0);
+  opacity: 0.85;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0;
+}
+.fleet-chat-shape .chat-activity-card .activity-text-block.scrollable {
+  max-height: calc(12 * 1.5em);
+  overflow-y: auto;
+}
+.fleet-chat-shape .chat-activity-card:not(.collapsed) .activity-header { display: none; }
+.fleet-chat-shape .activity-more { color: var(--text-dim, #666); font-size: 10px; font-weight: 300; }
+.fleet-chat-shape .activity-last-tool { color: var(--blue, #6c8aff); margin-left: 2px; font-weight: 400; }
+.fleet-chat-shape .activity-status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.fleet-chat-shape .interrupt-badge { color: var(--orange, #e88); }
+
+/* --- Tool run cards (inside activity) --- */
+.fleet-chat-shape .tool-run-card {
+  margin: 4px 0;
+  border: 1px solid rgba(128, 128, 128, 0.08);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
+}
+.fleet-chat-shape .tool-run-card .tool-run-body { padding: 3px 0; }
+.fleet-chat-shape .tool-run-card .tool-line {
+  padding: 0 6px;
+  line-height: 1.6;
+}
+
+/* --- Edit diffs --- */
+.fleet-chat-shape .edit-diff {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0;
+  font-size: 10px;
+}
+.fleet-chat-shape .diff-side {
+  flex: 1;
+  overflow-x: auto;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.fleet-chat-shape .diff-old { background: rgba(255, 80, 80, 0.08); }
+.fleet-chat-shape .diff-new { background: rgba(80, 255, 80, 0.08); }
+.fleet-chat-shape .diff-label {
+  font-weight: 600;
+  opacity: 0.5;
+  margin-right: 4px;
+}
+.fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
+.fleet-chat-shape .diff-side code { font-size: 10px; }
+
+/* --- Code cards (inside activity) --- */
+.fleet-chat-shape .code-block-wrap {
+  margin: 4px 0;
+  border: 1px solid rgba(128, 128, 128, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.fleet-chat-shape .code-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  font-size: 9px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .code-block-wrap pre {
+  margin: 0;
+  padding: 4px 8px;
+  overflow-x: auto;
+  font-size: 10px;
+}
+.fleet-chat-shape .code-block-wrap pre.code-collapsed {
+  max-height: calc(10 * 1.4em);
+  overflow: hidden;
+}
+.fleet-chat-shape .code-block-copy { display: none; }

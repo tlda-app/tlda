@@ -16,7 +16,10 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
 import { renderChatLine, esc, timeShort } from 'fleet-dashboard/js/chat-render.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
+// @ts-ignore — vanilla JS module
+import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, sendMessage, loadBefore } from '../fleet-data-adapter'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -101,24 +104,26 @@ const nickMap = new Map<string, string>()
 let nickIdx = 0
 
 function makeCtx(agents: any[], tasks: any[]) {
+  const agentLabel = (id: string) => {
+    if (!id) return '[unknown]'
+    const a = agents.find((a: any) => a.id === id)
+    if (a) return a.friendly_name || a.id
+    return typeof id === 'string' ? id : String(id)
+  }
+  const getNickClass = (id: string) => {
+    if (!id) return 'nick-agent-0'
+    const a = agents.find((a: any) => a.id === id)
+    if (a?.human) return 'nick-human'
+    if (id === 'keepalive') return 'nick-keepalive'
+    if (!nickMap.has(id)) {
+      nickMap.set(id, nickColors[nickIdx % nickColors.length])
+      nickIdx++
+    }
+    return nickMap.get(id)!
+  }
   return {
-    agentLabel: (id: string) => {
-      if (!id) return '[unknown]'
-      const a = agents.find((a: any) => a.id === id)
-      if (a) return a.friendly_name || a.id
-      return typeof id === 'string' ? id : String(id)
-    },
-    getNickClass: (id: string) => {
-      if (!id) return 'nick-agent-0'
-      const a = agents.find((a: any) => a.id === id)
-      if (a?.human) return 'nick-human'
-      if (id === 'keepalive') return 'nick-keepalive'
-      if (!nickMap.has(id)) {
-        nickMap.set(id, nickColors[nickIdx % nickColors.length])
-        nickIdx++
-      }
-      return nickMap.get(id)!
-    },
+    agentLabel,
+    getNickClass,
     isHumanId: (id: string) => {
       const a = agents.find((a: any) => a.id === id)
       return !!(a?.human)
@@ -127,6 +132,8 @@ function makeCtx(agents: any[], tasks: any[]) {
     getTasks: () => tasks,
     tldaToken: null as string | null,
     renderMarkdown: tldaRenderMarkdown,
+    highlightSyntax,
+    langFromFilePath,
   }
 }
 
@@ -138,17 +145,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Live data from fleet-data.mjs via SSE
   const agents = useFleetAgents()
   const liveEvents = useFleetEvents(filter || undefined)
+  const activityEvents = useFleetActivity(filter || undefined)
   const tasks = useFleetTasks()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
-  // Merge older (scrollback) events with live events
+  // Merge older (scrollback) events with live events + activity events
   const events = useMemo(() => {
-    if (olderEvents.length === 0) return liveEvents
+    const all = [...liveEvents, ...activityEvents]
+    if (olderEvents.length === 0) return all
     // Deduplicate by _dbId or timestamp+from
-    const seen = new Set(liveEvents.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
+    const seen = new Set(all.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
     const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
-    return [...unique, ...liveEvents]
-  }, [liveEvents, olderEvents])
+    return [...unique, ...all]
+  }, [liveEvents, activityEvents, olderEvents])
 
   // Reset older events when filter changes
   useEffect(() => { setOlderEvents([]) }, [filter])
@@ -164,7 +173,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -175,7 +184,34 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [events])
 
   const renderedHtml = useMemo(() => {
-    return chatMessages.map((m: any) => renderChatLine(m, ctx)).filter(Boolean).join('')
+    // Group consecutive activity events from the same agent into cards
+    const parts: string[] = []
+    let activityGroup: any[] = []
+
+    function flushActivity() {
+      if (activityGroup.length === 0) return
+      parts.push(
+        `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`
+      )
+      activityGroup = []
+    }
+
+    for (const m of chatMessages) {
+      if (m._activity) {
+        // Continue grouping if same agent, otherwise flush and start new group
+        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) {
+          flushActivity()
+        }
+        activityGroup.push(m)
+      } else {
+        flushActivity()
+        const line = renderChatLine(m, ctx)
+        if (line) parts.push(line)
+      }
+    }
+    flushActivity()
+
+    return parts.join('')
   }, [chatMessages, ctx])
 
   // Auto-scroll to bottom on new messages

@@ -117,6 +117,37 @@ export function useFleetEvents(agentFilter?: string): any[] {
   return events
 }
 
+/**
+ * Subscribe to fleet activity events, optionally filtered by agent ID.
+ * Activity events are tool calls / text blocks from agent sessions.
+ */
+export function useFleetActivity(agentFilter?: string): any[] {
+  const [events, setEvents] = useState<any[]>([])
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    const dnfFilter = agentFilter ? [[agentFilter]] : null
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      // No initial seed — activity events are live-only (same as dashboard chat.mjs)
+      if (!dnfFilter) return // activity requires a filter
+
+      unsub = subscribe('activity', dnfFilter, (event: any) => {
+        setEvents(prev => [...prev, event])
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [agentFilter])
+
+  return events
+}
+
 // --- Write API (re-exported) ---
 
 export const sendMessage = _sendMessage
