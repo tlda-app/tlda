@@ -1,0 +1,446 @@
+/* fleet-chat.css — Chat styles for FleetChatShape (extracted from fleet dashboard) */
+
+/* --- Theme variables (default dark theme) --- */
+.fleet-chat-shape {
+  --bg: #0f0f1a;
+  --surface: #161625;
+  --text: #8888a0;
+  --text-dim: #6b6b88;
+  --text-bright: #9494aa;
+  --accent: #9370db;
+  --green: #7ab8a0;
+  --yellow: #c8b060;
+  --blue: #7a9ec8;
+  --purple: #9370db;
+  --orange: #c8956a;
+  --cyan: #6aafb0;
+  --red: #e55;
+  --border: #1e1e32;
+  --nick-pink: #b87a95;
+  --glass-1: rgba(255,255,255,0.02);
+  --glass-2: rgba(255,255,255,0.03);
+  --glass-3: rgba(255,255,255,0.04);
+  --glass-4: rgba(255,255,255,0.05);
+  --glass-5: rgba(255,255,255,0.06);
+  --glass-6: rgba(255,255,255,0.08);
+  --shadow-lg: rgba(0,0,0,0.4);
+}
+
+.fleet-chat-shape strong { color: var(--text-bright); font-weight: 500; }
+
+/* --- Chat log container --- */
+.fleet-chat-log {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+/* --- Chat line base --- */
+.fleet-chat-shape .chat-line {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.fleet-chat-shape .chat-line.from-user {
+  background: rgba(100, 140, 255, 0.04);
+}
+
+/* --- Timestamp --- */
+.fleet-chat-shape .chat-ts {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+/* --- Nick --- */
+.fleet-chat-shape .chat-nick {
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+/* --- Nick colors --- */
+.fleet-chat-shape .nick-human { color: #9370db; }
+.fleet-chat-shape .nick-manager { color: var(--green); }
+.fleet-chat-shape .nick-keepalive { color: var(--text-dim); }
+.fleet-chat-shape .nick-agent-0 { color: var(--blue); }
+.fleet-chat-shape .nick-agent-1 { color: var(--purple); }
+.fleet-chat-shape .nick-agent-2 { color: var(--orange); }
+.fleet-chat-shape .nick-agent-3 { color: var(--cyan); }
+.fleet-chat-shape .nick-agent-4 { color: var(--nick-pink); }
+.fleet-chat-shape .nick-agent-5 { color: var(--yellow); }
+
+/* --- Chat arrow --- */
+.fleet-chat-shape .chat-arrow {
+  margin: 0 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* --- Age-based opacity --- */
+.fleet-chat-shape .chat-line-recent { opacity: 1; }
+.fleet-chat-shape .chat-line-mid { opacity: 0.65; }
+.fleet-chat-shape .chat-line-old { opacity: 0.4; }
+
+/* --- Receipt --- */
+.fleet-chat-shape .chat-receipt {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.4;
+}
+
+/* --- CC separator --- */
+.fleet-chat-shape .cc-separator { color: var(--text-dim); }
+
+/* --- Code in chat --- */
+.fleet-chat-shape .chat-line pre {
+  background: var(--glass-4);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 4px 0;
+  overflow-x: auto;
+  font-size: 12px;
+  font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line code {
+  background: var(--glass-6);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
+
+/* --- Lists in chat --- */
+.fleet-chat-shape .chat-line ol,
+.fleet-chat-shape .chat-line ul {
+  padding-left: 1.5em;
+  margin: 2px 0;
+}
+.fleet-chat-shape .chat-line ol { list-style-type: decimal; }
+.fleet-chat-shape .chat-line ul { list-style-type: disc; }
+.fleet-chat-shape .chat-line li { margin: 1px 0; }
+
+/* --- Terminal messages --- */
+.fleet-chat-shape .terminal-msg {
+  border-left: 2px solid var(--text-dim);
+  padding-left: 6px;
+  opacity: 0.85;
+}
+.fleet-chat-shape .terminal-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--text-dim);
+  color: var(--bg);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+/* --- Lifecycle cards --- */
+.fleet-chat-shape .lifecycle-card {
+  display: inline-block;
+  border: 1px solid var(--glass-5);
+  border-radius: 4px;
+  padding: 4px 10px;
+  margin: 2px 0;
+  font-size: 12px;
+  max-width: 90%;
+  vertical-align: top;
+}
+.fleet-chat-shape .lifecycle-card .lc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.fleet-chat-shape .lifecycle-card .lc-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-title {
+  font-weight: 500;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-chat-shape .lifecycle-card .lc-routing {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-arrow {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.fleet-chat-shape .lifecycle-card .lc-criteria {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--glass-3);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.fleet-chat-shape .lifecycle-card .lc-criterion { padding: 1px 0; }
+.fleet-chat-shape .lifecycle-card .lc-chain {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* --- Timer messages --- */
+.fleet-chat-shape .chat-timer-countdown {
+  font-size: 11px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .chat-timer-msg {
+  font-size: 11px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .timer-msg {
+  color: var(--text-dim);
+}
+
+/* --- Compacting / unreachable --- */
+.fleet-chat-shape .compacting {
+  color: var(--orange);
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+}
+.fleet-chat-shape .unreachable {
+  color: var(--red);
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* --- Tool refs --- */
+.fleet-chat-shape .tool-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(200,176,96,0.1);
+  border: 1px solid rgba(200,176,96,0.25);
+  color: var(--yellow);
+  cursor: pointer;
+  position: relative;
+  vertical-align: middle;
+  margin: 0 2px;
+}
+.fleet-chat-shape .tool-ref:hover {
+  background: rgba(200,176,96,0.2);
+  border-color: rgba(200,176,96,0.4);
+}
+.fleet-chat-shape .tool-ref-type { font-weight: 600; }
+.fleet-chat-shape .tool-ref-preview {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: var(--glass-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px 4px;
+  font-family: 'SF Mono','Menlo',monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: normal;
+  max-width: 400px;
+  max-height: 200px;
+  overflow: auto;
+  z-index: 100;
+  box-shadow: 0 4px 12px var(--shadow-lg);
+  line-height: 1.5;
+}
+.fleet-chat-shape .tool-ref:hover .tool-ref-preview { display: block; }
+
+/* --- Warnings / voicemail / retracted --- */
+.fleet-chat-shape .chat-warning {
+  color: var(--orange);
+  font-size: 10px;
+}
+.fleet-chat-shape .chat-voicemail {
+  opacity: 0.5;
+  border-left: 2px solid var(--orange);
+  padding-left: 8px;
+  margin-left: 4px;
+}
+.fleet-chat-shape .chat-voicemail-label {
+  color: var(--orange);
+  font-size: 10px;
+  font-style: italic;
+}
+.fleet-chat-shape .chat-retracted {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
+/* --- Chat interrupt line --- */
+.fleet-chat-shape .chat-interrupt-line {
+  border: none;
+  border-top: 1px solid var(--text-dim);
+  margin: 8px 0;
+  opacity: 0.18;
+}
+
+/* --- Chat images --- */
+.fleet-chat-shape .chat-image {
+  max-width: 80%;
+  max-height: 300px;
+  border-radius: 4px;
+  margin: 8px auto;
+  display: block;
+  cursor: pointer;
+}
+
+/* --- Long messages --- */
+.fleet-chat-shape .message-long {
+  display: block;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* --- File cards --- */
+.fleet-chat-shape .md-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(122,158,200,0.1);
+  border: 1px solid rgba(122,158,200,0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--blue);
+  cursor: pointer;
+}
+.fleet-chat-shape .md-file-chip {
+  font-weight: 500;
+}
+
+/* --- TLDA card --- */
+.fleet-chat-shape .tlda-card {
+  margin: 8px auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  width: 80%;
+}
+.fleet-chat-shape .tlda-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  background: rgba(147, 112, 219, 0.08);
+  border-bottom: 1px solid var(--border);
+}
+.fleet-chat-shape .doc-name {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.fleet-chat-shape .doc-open-link {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+/* --- Ambient messages --- */
+.fleet-chat-shape .ambient {
+  opacity: 0.6;
+}
+
+/* --- Syntax highlighting tokens --- */
+.fleet-chat-shape .sh-keyword { color: var(--purple); }
+.fleet-chat-shape .sh-string { color: var(--green); }
+.fleet-chat-shape .sh-number { color: var(--orange); }
+.fleet-chat-shape .sh-comment { color: var(--text-dim); font-style: italic; }
+.fleet-chat-shape .sh-builtin { color: var(--cyan); }
+.fleet-chat-shape .sh-operator { color: var(--text-dim); }
+.fleet-chat-shape .sh-property { color: var(--blue); }
+.fleet-chat-shape .sh-function { color: var(--yellow); }
+.fleet-chat-shape .sh-tag { color: var(--orange); }
+.fleet-chat-shape .sh-attr { color: var(--purple); }
+.fleet-chat-shape .sh-value { color: var(--green); }
+.fleet-chat-shape .sh-bool { color: var(--orange); }
+.fleet-chat-shape .sh-key { color: var(--blue); }
+
+/* --- Code block header + folding --- */
+.fleet-chat-shape .code-block-wrap { margin: 4px 0; }
+.fleet-chat-shape .code-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--glass-2);
+  border-radius: 4px 4px 0 0;
+  border-bottom: 1px solid var(--glass-5);
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-chat-shape .code-block-lang { font-weight: 500; color: var(--cyan); }
+.fleet-chat-shape .code-block-toggle { font-size: 10px; color: var(--text-dim); }
+.fleet-chat-shape .code-block-copy {
+  margin-left: auto;
+  cursor: pointer;
+  opacity: 0.4;
+  font-size: 13px;
+  user-select: none;
+}
+.fleet-chat-shape .code-block-wrap pre {
+  margin-top: 0;
+  border-radius: 0 0 4px 4px;
+}
+.fleet-chat-shape .code-block-wrap pre.code-collapsed {
+  max-height: calc(10 * 1.4em + 12px);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+}
+
+/* --- Markdown tables --- */
+.fleet-chat-shape .md-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 4px 0;
+}
+.fleet-chat-shape .md-table th,
+.fleet-chat-shape .md-table td {
+  border: 1px solid var(--glass-5);
+  padding: 2px 6px;
+}
+.fleet-chat-shape .md-table th {
+  background: var(--glass-2);
+  font-weight: 500;
+}
+
+/* --- Retract button (hidden in tlda context) --- */
+.fleet-chat-shape .chat-retract { display: none; }
+
+/* --- Tool lines --- */
+.fleet-chat-shape .tool-line {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+}
+.fleet-chat-shape .tool-linenum {
+  color: var(--text-dim);
+  opacity: 0.5;
+  min-width: 16px;
+}
+.fleet-chat-shape .tool-name { color: var(--text); }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
+.fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: 0.7; }
+.fleet-chat-shape .tool-count { color: var(--text-dim); font-size: 9px; }
