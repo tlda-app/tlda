@@ -235,13 +235,15 @@ function AgentRow({
   task,
   isSelected,
   onClick,
-  onDragStart,
+  onDragDrop,
+  editor,
 }: {
   agent: any
   task: any
   isSelected: boolean
   onClick: (id: string) => void
-  onDragStart: (e: React.DragEvent, agent: any) => void
+  onDragDrop: (agentId: string, targetShapeId: string) => void
+  editor: any
 }) {
   const name = agentDisplayName(agent)
   const nickColor = getNickColor(agent.id, agent.is_manager)
@@ -253,9 +255,10 @@ function AgentRow({
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const dotColor = secsAgo < 120 ? '#4ade80' : secsAgo < 600 ? '#c8b060' : '#555'
 
+  const dragState = useRef<{ started: boolean; ghost: HTMLElement | null; startX: number; startY: number }>({ started: false, ghost: null, startX: 0, startY: 0 })
+
   return (
     <div
-      draggable
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -269,11 +272,44 @@ function AgentRow({
       }}
       onPointerDown={(e) => {
         stopEventPropagation(e)
-        onClick(agent.id)
+        // Track for potential drag
+        dragState.current = { started: false, ghost: null, startX: e.clientX, startY: e.clientY }
+        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
       }}
-      onDragStart={(e) => {
-        stopEventPropagation(e as any)
-        onDragStart(e, agent)
+      onPointerMove={(e) => {
+        stopEventPropagation(e)
+        const ds = dragState.current
+        if (!ds.startX && !ds.startY) return
+        const dx = e.clientX - ds.startX
+        const dy = e.clientY - ds.startY
+        if (!ds.started && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+          ds.started = true
+          ds.ghost = document.createElement('div')
+          ds.ghost.textContent = name
+          ds.ghost.style.cssText = `position:fixed;z-index:10000;pointer-events:none;font-size:11px;padding:2px 8px;border-radius:4px;color:${nickColor};border:1px solid ${nickColor};background:${nickColor}20;opacity:0.9;white-space:nowrap;`
+          document.body.appendChild(ds.ghost)
+        }
+        if (ds.ghost) {
+          ds.ghost.style.left = e.clientX + 8 + 'px'
+          ds.ghost.style.top = e.clientY - 10 + 'px'
+        }
+      }}
+      onPointerUp={(e) => {
+        stopEventPropagation(e)
+        const ds = dragState.current
+        if (ds.ghost) {
+          ds.ghost.remove()
+          // Find fleet-chat shape under the pointer
+          const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+          const hitShape = editor.getShapeAtPoint(point, { hitInside: true, margin: 0 })
+          if (hitShape && hitShape.type === 'fleet-chat') {
+            onDragDrop(agent.id, hitShape.id)
+          }
+        } else if (!ds.started) {
+          // Simple click — no drag happened
+          onClick(agent.id)
+        }
+        dragState.current = { started: false, ghost: null, startX: 0, startY: 0 }
       }}
     >
       {/* Avatar circle with nick color */}
