@@ -23,7 +23,7 @@ const DEFAULT_H = 600
 
 // --- Markdown renderer using markdown-it + KaTeX ---
 
-const md = new MarkdownIt({ html: false, breaks: true, linkify: true })
+const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 
 function tldaRenderMarkdown(escapedHtml: string): string {
   // Input is esc()'d — unescape for markdown-it
