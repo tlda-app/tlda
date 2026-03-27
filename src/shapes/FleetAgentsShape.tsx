@@ -3,7 +3,7 @@
  *
  * Uses fleet-data.mjs (via adapter) for live SSE updates — no polling.
  * Click an agent to update filter on all fleet-chat shapes.
- * Drag an agent to set a specific chat shape's filter.
+ * Spawns fleet-pill child shapes for agent names and labels (drag-to-filter).
  */
 import {
   BaseBoxShapeUtil,
@@ -11,8 +11,9 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 
 const DEFAULT_W = 300
@@ -95,25 +96,20 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Build task lookup: agent id → active task
-  // Task.agent uses short IDs (fleet:96bd8018), agents use full IDs (fleet:96bd-mn9dedp4)
-  // Match by extracting the hex prefix after "fleet:" (before the dash)
   const activeTasks = useMemo(() => {
     return tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
   }, [tasks])
 
   const getTaskForAgent = useCallback((agentId: string) => {
-    // Try exact match first
     let task = activeTasks.find((t: any) => (t.agent || t.assignee) === agentId && !t.synthetic)
     if (!task) {
-      // Try prefix match: fleet:96bd8018 matches fleet:96bd-mn9dedp4
-      const shortId = agentId.replace(/-.*$/, '') // fleet:96bd-mn9dedp4 → fleet:96bd
+      const shortId = agentId.replace(/-.*$/, '')
       task = activeTasks.find((t: any) => {
         const tid = (t.agent || t.assignee || '').replace(/-.*$/, '')
         return tid === shortId && !t.synthetic
       })
     }
     if (!task) {
-      // Try synthetic
       const shortId = agentId.replace(/-.*$/, '')
       task = activeTasks.find((t: any) => {
         const tid = (t.agent || t.assignee || '').replace(/-.*$/, '')
@@ -131,8 +127,116 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
         return { ...a, _ts: ts }
       })
-      .sort((a: any, b: any) => b._ts - a._ts) // most recent first
+      .sort((a: any, b: any) => b._ts - a._ts)
   }, [agents])
+
+  // Sync pill shapes as children of this shape
+  const pillSyncRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const existingPills = editor.getCurrentPageShapes()
+      .filter((s: any) => s.type === 'fleet-pill' && s.meta?.parentId === shape.id)
+
+    const existingByKey = new Map<string, any>()
+    for (const p of existingPills) {
+      existingByKey.set(p.meta?.pillKey as string, p)
+    }
+
+    const wantedKeys = new Set<string>()
+    const toCreate: any[] = []
+    let yOffset = 36 // below header
+
+    for (const agent of aliveAgents) {
+      const key = `agent:${agent.id}`
+      wantedKeys.add(key)
+      const homeX = shape.x + 6
+      const homeY = shape.y + yOffset
+
+      if (!existingByKey.has(key)) {
+        const color = getNickColor(agent.id, agent.is_manager)
+        toCreate.push({
+          id: createShapeId(),
+          type: 'fleet-pill',
+          x: homeX,
+          y: homeY,
+          props: {
+            w: 120,
+            h: 24,
+            pillType: 'agent',
+            value: agent.id,
+            displayName: agentDisplayName(agent),
+            color,
+          },
+          meta: {
+            parentId: shape.id,
+            pillKey: key,
+            homeX,
+            homeY,
+          },
+        })
+      } else {
+        // Update home position if container moved
+        const existing = existingByKey.get(key)!
+        if (existing.meta?.homeX !== homeX || existing.meta?.homeY !== homeY) {
+          editor.updateShape({
+            id: existing.id,
+            type: 'fleet-pill',
+            x: homeX,
+            y: homeY,
+            meta: { ...existing.meta, homeX, homeY },
+          })
+        }
+      }
+      yOffset += 52 // row height
+
+      // Label pills for this agent
+      const labels: string[] = agent.labels || []
+      for (const label of labels) {
+        const lKey = `label:${label}`
+        if (!wantedKeys.has(lKey)) {
+          wantedKeys.add(lKey)
+          const lHomeX = shape.x + w - 80
+          const lHomeY = shape.y + yOffset - 26 // align with agent row
+          if (!existingByKey.has(lKey)) {
+            toCreate.push({
+              id: createShapeId(),
+              type: 'fleet-pill',
+              x: lHomeX,
+              y: lHomeY,
+              props: {
+                w: 70,
+                h: 20,
+                pillType: 'label',
+                value: label,
+                displayName: label,
+                color: labelColor(label),
+              },
+              meta: {
+                parentId: shape.id,
+                pillKey: lKey,
+                homeX: lHomeX,
+                homeY: lHomeY,
+              },
+            })
+          }
+        }
+      }
+    }
+
+    // Create new pills
+    if (toCreate.length > 0) {
+      editor.createShapes(toCreate)
+    }
+
+    // Remove pills for dead agents
+    const toDelete = existingPills
+      .filter((p: any) => !wantedKeys.has(p.meta?.pillKey as string))
+      .map((p: any) => p.id)
+    if (toDelete.length > 0) {
+      editor.deleteShapes(toDelete)
+    }
+
+    pillSyncRef.current = wantedKeys
+  }, [aliveAgents, shape.id, shape.x, shape.y, w, editor])
 
   // Click handler — set filter on ALL fleet-chat shapes
   const handleClick = useCallback((agentId: string) => {
@@ -149,13 +253,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       }
     }
   }, [editor, selectedId])
-
-  // Drag handler — set dataTransfer for drop on specific chat shapes
-  const handleDragStart = useCallback((e: React.DragEvent, agent: any) => {
-    e.dataTransfer.setData('application/x-chat-attachment', agent.id)
-    e.dataTransfer.setData('text/plain', agentDisplayName(agent))
-    e.dataTransfer.effectAllowed = 'link'
-  }, [])
 
   return (
     <HTMLContainer
@@ -201,7 +298,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           </span>
         </div>
 
-        {/* Agent table */}
+        {/* Agent rows (info only — pills handle drag) */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '2px 0' }}>
           {aliveAgents.length === 0 ? (
             <div style={{
@@ -220,7 +317,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                 task={getTaskForAgent(agent.id)}
                 isSelected={selectedId === agent.id}
                 onClick={handleClick}
-                onDragStart={handleDragStart}
               />
             ))
           )}
@@ -235,15 +331,11 @@ function AgentRow({
   task,
   isSelected,
   onClick,
-  onDragDrop,
-  editor,
 }: {
   agent: any
   task: any
   isSelected: boolean
   onClick: (id: string) => void
-  onDragDrop: (agentId: string, targetShapeId: string) => void
-  editor: any
 }) {
   const name = agentDisplayName(agent)
   const nickColor = getNickColor(agent.id, agent.is_manager)
@@ -254,8 +346,6 @@ function AgentRow({
   // Status dot: green if seen < 2min, yellow < 10min, dim otherwise
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const dotColor = secsAgo < 120 ? '#4ade80' : secsAgo < 600 ? '#c8b060' : '#555'
-
-  const dragState = useRef<{ started: boolean; ghost: HTMLElement | null; startX: number; startY: number }>({ started: false, ghost: null, startX: 0, startY: 0 })
 
   return (
     <div
@@ -269,47 +359,14 @@ function AgentRow({
         margin: '0 2px',
         background: isSelected ? 'rgba(100, 140, 255, 0.15)' : 'transparent',
         transition: 'background 0.1s',
+        height: 44,
       }}
       onPointerDown={(e) => {
         stopEventPropagation(e)
-        // Track for potential drag
-        dragState.current = { started: false, ghost: null, startX: e.clientX, startY: e.clientY }
-        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-      }}
-      onPointerMove={(e) => {
-        stopEventPropagation(e)
-        const ds = dragState.current
-        if (!ds.startX && !ds.startY) return
-        const dx = e.clientX - ds.startX
-        const dy = e.clientY - ds.startY
-        if (!ds.started && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
-          ds.started = true
-          ds.ghost = document.createElement('div')
-          ds.ghost.textContent = name
-          ds.ghost.style.cssText = `position:fixed;z-index:10000;pointer-events:none;font-size:11px;padding:2px 8px;border-radius:4px;color:${nickColor};border:1px solid ${nickColor};background:${nickColor}20;opacity:0.9;white-space:nowrap;`
-          document.body.appendChild(ds.ghost)
-        }
-        if (ds.ghost) {
-          ds.ghost.style.left = e.clientX + 8 + 'px'
-          ds.ghost.style.top = e.clientY - 10 + 'px'
-        }
       }}
       onPointerUp={(e) => {
         stopEventPropagation(e)
-        const ds = dragState.current
-        if (ds.ghost) {
-          ds.ghost.remove()
-          // Find fleet-chat shape under the pointer
-          const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
-          const hitShape = editor.getShapeAtPoint(point, { hitInside: true, margin: 0 })
-          if (hitShape && hitShape.type === 'fleet-chat') {
-            onDragDrop(agent.id, hitShape.id)
-          }
-        } else if (!ds.started) {
-          // Simple click — no drag happened
-          onClick(agent.id)
-        }
-        dragState.current = { started: false, ghost: null, startX: 0, startY: 0 }
+        onClick(agent.id)
       }}
     >
       {/* Avatar circle with nick color */}
@@ -366,7 +423,7 @@ function AgentRow({
               color: '#7ab8a0',
             }}>mgr</span>
           )}
-          {/* Label pills */}
+          {/* Label badges (non-draggable — pills handle drag) */}
           {labels.map((l: string) => (
             <span key={l} style={{
               fontSize: 8,

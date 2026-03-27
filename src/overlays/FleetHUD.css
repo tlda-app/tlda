@@ -11,17 +11,20 @@
 }
 
 .fleet-hud-wrap > .clip-panel {
-  pointer-events: auto;
+  pointer-events: none;
   background: transparent !important;
   box-shadow: none !important;
   border-radius: 0 !important;
-  transition: background 0.2s ease;
-}
-.fleet-hud-wrap:hover > .clip-panel {
-  background: rgba(15, 15, 26, 0.05) !important;
 }
 .fleet-hud-wrap .clip-panel-canvas {
   background: transparent !important;
+  pointer-events: none;
+}
+/* Only the actual fleet shape content captures events — everything else passes through */
+.fleet-hud-wrap .fleet-shape,
+.fleet-hud-wrap .fleet-chat-shape,
+.fleet-hud-wrap .fleet-agents-shape {
+  pointer-events: auto;
 }
 
 .fleet-hud-label {
