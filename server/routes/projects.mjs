@@ -344,6 +344,9 @@ router.post('/:name/shapes', requireRw, async (req, res) => {
   // Stamp creation time for temporal clustering
   if (!shape.meta) shape.meta = {}
   if (!shape.meta.createdAt) shape.meta.createdAt = Date.now()
+  // Default required TLDraw fields if not provided
+  if (!shape.parentId) shape.parentId = 'page:page'
+  if (!shape.index) shape.index = 'a1'
   try {
     await putShape(syncRoomName(req.params.name), shape)
     res.json({ ok: true, id: shape.id })
