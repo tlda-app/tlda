@@ -308,6 +308,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
             flexShrink: 0,
+            overflow: 'visible',
           }}>
             <textarea
               ref={inputRef as any}
@@ -356,7 +357,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 // Auto-resize
                 const ta = e.currentTarget
                 ta.style.height = 'auto'
-                ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+                ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
               }}
               onPointerDown={stopEventPropagation}
               onWheel={(e) => e.stopPropagation()}
@@ -370,6 +371,27 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
+                resize: 'none',
+                lineHeight: 1.4,
+                fontFamily: 'inherit',
+              }}
+              onDrop={(e) => {
+                // Handle tldraw drag attachments
+                const types = e.dataTransfer?.types || []
+                if (types.includes('application/x-chat-attachment') || types.includes('text/plain')) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  const text = e.dataTransfer?.getData('text/plain') || ''
+                  if (text) {
+                    const ta = e.currentTarget
+                    const pos = ta.selectionStart || ta.value.length
+                    ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
+                  }
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
               }}
             />
           </div>
