@@ -305,7 +305,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }
   }
 
-  override canEdit = () => true
+  override canEdit = (shape: MathNoteShape) => !shape.props.collapsed
   override canResize = () => true
   override canBind = () => false
   override isAspectRatioLocked = () => false
@@ -1299,23 +1299,24 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         >
           <div
             onMouseEnter={() => setDotHovered(true)}
-            onMouseLeave={() => { setDotHovered(false); setDotClicked(false) }}
+            onMouseLeave={() => setDotHovered(false)}
             style={{ position: 'relative' }}
           >
             {/* The dot */}
             <div
               onPointerDown={(e) => {
                 stopEventPropagation(e)
-                if (dotClicked) {
-                  // Second click: permanently expand
-                  editor.updateShape({
-                    id: shape.id,
-                    type: 'math-note' as any,
-                    props: { collapsed: false, w: 220, h: 50, autoSize: true },
-                  })
-                } else {
-                  setDotClicked(true)
-                }
+                setDotClicked(!dotClicked)
+              }}
+              onDoubleClick={(e) => {
+                // Prevent tldraw from entering edit mode
+                stopEventPropagation(e)
+                // Permanently expand on double-click
+                editor.updateShape({
+                  id: shape.id,
+                  type: 'math-note' as any,
+                  props: { collapsed: false, w: 220, h: 50, autoSize: true },
+                })
               }}
               style={{
                 width: 10,
