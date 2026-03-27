@@ -110,8 +110,8 @@ export function FleetHUD({
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
 
-  // Don't render if no fleet shapes, dismissed, or fleet is directly visible
-  if (!fleetBounds || dismissed || cameraVisible) return null
+  // Don't render if no fleet shapes or dismissed
+  if (!fleetBounds || dismissed) return null
 
   return (
     <div className="fleet-hud-wrap">
@@ -121,8 +121,8 @@ export function FleetHUD({
         shapeUtils={shapeUtils}
         tools={tools}
         licenseKey={licenseKey}
-        panelWidth={HUD_WIDTH}
-        maxHeightFraction={0.35}
+        panelWidth={800}
+        maxHeightFraction={1.0}
         className="fleet-hud"
       >
         <div className="fleet-hud-label">

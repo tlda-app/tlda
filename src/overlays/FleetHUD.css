@@ -2,8 +2,10 @@
 
 .fleet-hud-wrap {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 1000;
   pointer-events: none;
 }
@@ -13,22 +15,7 @@
 }
 
 .fleet-hud-label {
-  height: 20px;
-  line-height: 20px;
-  padding: 0 8px;
-  font-size: 9px;
-  font-weight: 400;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(100, 100, 100, 0.6);
-  background: rgba(245, 245, 245, 0.8);
-  border-bottom: 1px solid rgba(220, 220, 220, 0.4);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  pointer-events: all;
+  display: none;
 }
 
 .fleet-hud-title {
