@@ -291,9 +291,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
           fontWeight: 300,
           lineHeight: 1.4,
         }}
-        onPointerDown={stopEventPropagation}
       >
-        {/* Header */}
+        {/* Header — no stopEventPropagation so tldraw can select/drag from here */}
         <div style={{
           padding: '6px 10px',
           borderBottom: '1px solid rgba(128, 128, 128, 0.15)',
