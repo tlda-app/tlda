@@ -15,8 +15,8 @@ import {
   createShapeId,
 } from 'tldraw'
 
-const PILL_W = 120
-const PILL_H = 24
+const PILL_W = 70
+const PILL_H = 18
 
 export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-pill' as const
@@ -44,6 +44,8 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => false
   override canBind = () => false
   override hideRotateHandle = () => true
+  override hideSelectionBoundsBg = () => true
+  override hideSelectionBoundsFg = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
 
@@ -107,23 +109,19 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         <div
           onPointerDown={stopEventPropagation}
           style={{
-            width: '100%',
-            height: '100%',
-            display: 'flex',
+            display: 'inline-flex',
             alignItems: 'center',
-            gap: 4,
-            padding: '0 8px',
-            borderRadius: 12,
-            border: `1.5px solid ${color}60`,
-            background: `${color}15`,
+            padding: '0 4px',
+            borderRadius: 3,
+            border: `1px solid ${color}40`,
+            background: 'transparent',
             color: color,
-            fontSize: 11,
-            fontWeight: 600,
+            fontSize: 9,
+            fontWeight: 400,
             cursor: 'grab',
             whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
             userSelect: 'none',
+            lineHeight: '16px',
           }}
         >
           {/* Small avatar circle for agents */}
