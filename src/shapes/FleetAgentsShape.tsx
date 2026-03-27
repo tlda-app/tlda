@@ -18,10 +18,7 @@ const DEFAULT_W = 300
 const DEFAULT_H = 400
 
 function isAlive(agent: any): boolean {
-  if (agent.dead) return false
-  if (!agent.last_seen) return false
-  const seen = new Date(agent.last_seen).getTime()
-  return Date.now() - seen < 120_000
+  return !agent.dead && !agent.human
 }
 
 function agentDisplayName(agent: any): string {
@@ -121,11 +118,11 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          backgroundColor: 'var(--color-background, #1e1e1e)',
+          backgroundColor: '#0f0f1a',
           border: '1px solid rgba(128, 128, 128, 0.2)',
           borderRadius: 8,
           fontSize: 11,
-          color: 'var(--color-text, #e0e0e0)',
+          color: '#c8d0e0',
           overflow: 'hidden',
         }}
         onPointerDown={stopEventPropagation}
