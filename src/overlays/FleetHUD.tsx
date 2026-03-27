@@ -29,12 +29,12 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const s of shapes) {
-    const geo = editor.getShapeGeometry(s)
-    if (!geo) continue
-    minX = Math.min(minX, s.x)
-    minY = Math.min(minY, s.y)
-    maxX = Math.max(maxX, s.x + geo.bounds.w)
-    maxY = Math.max(maxY, s.y + geo.bounds.h)
+    const bounds = editor.getShapePageBounds(s.id)
+    if (!bounds) continue
+    minX = Math.min(minX, bounds.x)
+    minY = Math.min(minY, bounds.y)
+    maxX = Math.max(maxX, bounds.x + bounds.w)
+    maxY = Math.max(maxY, bounds.y + bounds.h)
   }
   if (!isFinite(minX)) return null
 

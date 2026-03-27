@@ -131,8 +131,14 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   }, [agents])
 
   // Sync pill shapes as children of this shape
+  // Guard: only sync pills when the agent ID set actually changes
   const pillSyncRef = useRef<Set<string>>(new Set())
+  const agentIdSet = useMemo(() => aliveAgents.map((a: any) => a.id).sort().join(','), [aliveAgents])
+  const prevAgentIdSet = useRef('')
   useEffect(() => {
+    // Skip if agent set hasn't changed (prevents create→render→create loop)
+    if (agentIdSet === prevAgentIdSet.current) return
+    prevAgentIdSet.current = agentIdSet
     const existingPills = editor.getCurrentPageShapes()
       .filter((s: any) => s.type === 'fleet-pill' && s.parentId === shape.id)
 
@@ -238,7 +244,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     }
 
     pillSyncRef.current = wantedKeys
-  }, [aliveAgents, shape.id, shape.x, shape.y, w, editor])
+  }, [agentIdSet, shape.id, editor])
 
   // Click handler — set filter on ALL fleet-chat shapes
   const handleClick = useCallback((agentId: string) => {
@@ -402,27 +408,8 @@ function AgentRow({
           alignItems: 'center',
           gap: 4,
         }}>
-          <span style={{ fontWeight: 600, fontSize: 11, color: nickColor }}>{name}</span>
-          {agent.is_manager && (
-            <span style={{
-              fontSize: 8,
-              padding: '0 3px',
-              borderRadius: 2,
-              background: 'rgba(122, 184, 160, 0.2)',
-              color: '#7ab8a0',
-            }}>mgr</span>
-          )}
-          {/* Label badges (non-draggable — pills handle drag) */}
-          {labels.map((l: string) => (
-            <span key={l} style={{
-              fontSize: 8,
-              padding: '0 4px',
-              borderRadius: 3,
-              background: `${labelColor(l)}20`,
-              color: labelColor(l),
-              whiteSpace: 'nowrap',
-            }}>{l}</span>
-          ))}
+          {/* Name and labels rendered by pill shapes — space reserved here */}
+          <span style={{ height: 18 }} />
         </div>
         {taskDesc && (
           <span style={{
