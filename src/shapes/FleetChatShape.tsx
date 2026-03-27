@@ -317,18 +317,38 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 e.stopPropagation()
                 ;(e.nativeEvent as any).stopImmediatePropagation?.()
                 const ta = e.currentTarget
-                if (e.key === 'Enter') {
-                  if (e.shiftKey || ta.value.endsWith(' ')) {
-                    // Trailing space + Enter or Shift+Enter = newline
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  const val = ta.value
+                  if (val.trim() === '') {
+                    e.preventDefault() // suppress on empty
                     return
                   }
-                  // Plain Enter = send
-                  e.preventDefault()
-                  const text = ta.value.trim()
-                  if (text && filter) {
-                    sendMessage(filter, text)
-                    ta.value = ''
-                    ta.style.height = 'auto'
+                  // Get text before cursor on current line
+                  const before = val.substring(0, ta.selectionStart || val.length)
+                  const lastNewline = before.lastIndexOf('\n')
+                  const lineText = before.substring(lastNewline + 1)
+
+                  if (lineText.trim() === '') {
+                    // Blank line (double-enter) = send
+                    e.preventDefault()
+                    const text = val.trim()
+                    if (text && filter) {
+                      sendMessage(filter, text)
+                      ta.value = ''
+                      ta.style.height = 'auto'
+                    }
+                  } else if (lineText.endsWith(' ')) {
+                    // Trailing space = newline (let default happen)
+                    return
+                  } else {
+                    // Non-blank, no trailing space = send
+                    e.preventDefault()
+                    const text = val.trim()
+                    if (text && filter) {
+                      sendMessage(filter, text)
+                      ta.value = ''
+                      ta.style.height = 'auto'
+                    }
                   }
                 }
               }}
