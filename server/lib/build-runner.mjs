@@ -616,6 +616,68 @@ async function computeProofPairing(ctx) {
   }
 }
 
+/** Phase 6: Generate theorem-map.json from .aux file. */
+async function generateTheoremMap(ctx) {
+  const { texBase, texDir, srcDir, buildDir, outDir, addLog } = ctx
+  const auxFile = join(buildDir, `${texBase}.aux`)
+  if (!existsSync(auxFile)) {
+    addLog('No .aux file, skipping theorem map')
+    return
+  }
+
+  const PREFIXES = ['thm:', 'lem:', 'prop:', 'cor:', 'def:', 'ass:']
+  const auxText = readFileSync(auxFile, 'utf8')
+
+  // Parse \newlabel{LABEL}{{NUMBER}{PAGE}{TITLE}{...}} — skip @cref variants
+  const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
+  const entries = []
+  let m
+  while ((m = re.exec(auxText)) !== null) {
+    const [, label, number, page, title] = m
+    if (!PREFIXES.some(p => label.startsWith(p))) continue
+    const pageNum = parseInt(page, 10)
+    if (isNaN(pageNum)) continue
+    entries.push({ label, type: label.split(':')[0], number: number.trim(), page: pageNum, title: title.trim() })
+  }
+
+  if (entries.length === 0) {
+    addLog('Theorem map: no entries found')
+    return
+  }
+
+  // Find source line by searching .tex files in texDir (non-recursive)
+  const texFilesInDir = (dir) => {
+    try { return readdirSync(dir).filter(f => f.endsWith('.tex')).map(f => join(dir, f)) }
+    catch { return [] }
+  }
+  const texFiles = [...new Set([...texFilesInDir(texDir), ...(texDir !== srcDir ? texFilesInDir(srcDir) : [])])]
+
+  for (const entry of entries) {
+    const pattern = `\\label{${entry.label}}`
+    for (const texFile of texFiles) {
+      try {
+        const lines = readFileSync(texFile, 'utf8').split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(pattern)) {
+            entry.file = basename(texFile)
+            entry.line = i + 1
+            break
+          }
+        }
+        if (entry.line != null) break
+      } catch {}
+    }
+  }
+
+  const map = {}
+  for (const entry of entries) map[entry.label] = entry
+
+  const tmpPath = join(buildDir, 'theorem-map.json')
+  writeFileSync(tmpPath, JSON.stringify(map, null, 2))
+  publishFile(tmpPath, join(outDir, 'theorem-map.json'))
+  addLog(`Theorem map: ${entries.length} entries`)
+}
+
 /** Cache build state (.aux, .bbl, etc.) for next incremental build. */
 function saveBuildCache(ctx) {
   const { buildDir, projDir, addLog } = ctx
@@ -738,6 +800,9 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     status.phase = 'extracting'
     const hasSynctex = await extractSynctex(ctx)
     if (hasSynctex) await computeProofPairing(ctx)
+
+    // Phase 6: Theorem map
+    await generateTheoremMap(ctx)
 
     // Finalize
     updateProject(name, {
