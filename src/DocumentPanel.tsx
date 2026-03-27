@@ -8,6 +8,7 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
 import { HistoryTab } from './panels/HistoryTab'
 import { NotesTab } from './panels/NotesTab'
+import { FleetTab } from './panels/FleetTab'
 import './DocumentPanel.css'
 
 // ======================
@@ -93,7 +94,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'history' | 'toc' | 'notes'
+type Tab = 'history' | 'toc' | 'notes' | 'fleet'
 
 export function DocumentPanel() {
   const doc = useContext(DocContext)
@@ -181,10 +182,14 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           Notes
         </button>
+        <button className={`doc-panel-tab ${tab === 'fleet' ? 'active' : ''}`} onClick={() => setTab('fleet')}>
+          Fleet
+        </button>
       </div>
       {tab === 'toc' && <TocTab />}
       {tab === 'history' && !isHtml && <HistoryTab />}
       {tab === 'notes' && <NotesTab />}
+      {tab === 'fleet' && <FleetTab />}
     </div>
   )
 }
