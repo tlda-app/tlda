@@ -35,6 +35,7 @@ interface CanvasClipPanelProps {
   panelWidth?: number
   maxHeightFraction?: number
   className?: string
+  lockCamera?: boolean
   children?: React.ReactNode
 }
 
@@ -47,6 +48,7 @@ export function CanvasClipPanel({
   panelWidth = DEFAULT_WIDTH,
   maxHeightFraction = DEFAULT_MAX_HEIGHT_FRACTION,
   className,
+  lockCamera = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -121,7 +123,15 @@ export function CanvasClipPanel({
       ? (viewportH - contentScreenH) / (2 * zoom)
       : 0
     editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
-  }, [editor, bounds, panelWidth])
+
+    // Lock camera if requested (fleet HUD — no pan/zoom in refviewer)
+    if (lockCamera) {
+      editor.setCameraOptions({
+        ...editor.getCameraOptions(),
+        isLocked: true,
+      })
+    }
+  }, [editor, bounds, panelWidth, lockCamera])
 
   // Wheel to pan vertically
   const canvasRef = useRef<HTMLDivElement>(null)

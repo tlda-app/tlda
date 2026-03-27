@@ -317,26 +317,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 e.stopPropagation()
                 ;(e.nativeEvent as any).stopImmediatePropagation?.()
                 const ta = e.currentTarget
-                // Double-Enter = send, trailing space + Enter = newline
                 if (e.key === 'Enter') {
-                  const val = ta.value
-                  if (val.endsWith(' ') || e.shiftKey) {
-                    // newline — let default happen
+                  if (e.shiftKey || ta.value.endsWith(' ')) {
+                    // Trailing space + Enter or Shift+Enter = newline
                     return
                   }
-                  if (val.endsWith('\n')) {
-                    // double-enter = send
-                    e.preventDefault()
-                    const text = val.trim()
-                    if (text && filter) {
-                      sendMessage(filter, text)
-                      ta.value = ''
-                      ta.style.height = 'auto'
-                    }
-                    return
+                  // Plain Enter = send
+                  e.preventDefault()
+                  const text = ta.value.trim()
+                  if (text && filter) {
+                    sendMessage(filter, text)
+                    ta.value = ''
+                    ta.style.height = 'auto'
                   }
-                  // single enter — insert newline, wait for double
-                  return
                 }
               }}
               onInput={(e) => {

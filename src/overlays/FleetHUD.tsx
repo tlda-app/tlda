@@ -114,7 +114,7 @@ export function FleetHUD({
   if (!fleetBounds || dismissed) return null
 
   return (
-    <div className="fleet-hud-wrap">
+    <div className="fleet-hud-wrap" onWheel={(e) => e.stopPropagation()}>
       <CanvasClipPanel
         mainEditor={mainEditor}
         bounds={fleetBounds}
@@ -123,6 +123,7 @@ export function FleetHUD({
         licenseKey={licenseKey}
         panelWidth={800}
         maxHeightFraction={1.0}
+        lockCamera={true}
         className="fleet-hud"
       >
         <div className="fleet-hud-label">
