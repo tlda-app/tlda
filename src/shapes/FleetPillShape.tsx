@@ -64,22 +64,23 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     })
 
     if (hitShape && hitShape.type === 'fleet-chat') {
-      // Drop on existing chat → AND with last clause (or start new clause)
-      const existingFilter: string[][] = (hitShape as any).props.filter || []
-      let newFilter: string[][]
+      // Determine role from drop position: top half = "to", bottom half = "from"
+      const chatBounds = editor.getShapePageBounds(hitShape.id)
+      const role = chatBounds && centerY > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
+
+      const existingFilter: [string, string][][] = (hitShape as any).props.filter || []
+      const newTerm: [string, string] = [role, pill.props.value]
+      let newFilter: [string, string][][]
       if (existingFilter.length === 0) {
-        // No filter yet — start fresh clause
-        newFilter = [[pill.props.value]]
+        newFilter = [[newTerm]]
       } else {
-        // AND with the last clause (add term to it)
         const lastClause = existingFilter[existingFilter.length - 1]
-        if (lastClause.includes(pill.props.value)) {
-          // Already in the clause — no-op
-          newFilter = existingFilter
+        if (lastClause.some(([r, l]) => r === role && l === pill.props.value)) {
+          newFilter = existingFilter  // already in clause — no-op
         } else {
           newFilter = [
             ...existingFilter.slice(0, -1),
-            [...lastClause, pill.props.value],
+            [...lastClause, newTerm],
           ]
         }
       }
@@ -89,7 +90,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         props: { ...(hitShape as any).props, filter: newFilter },
       })
     } else if (hitShape === undefined || hitShape === null || hitShape.type !== 'fleet-agents') {
-      // Drop on empty canvas → create new fleet-chat with [[value]]
+      // Drop on empty canvas → create new fleet-chat showing messages to/from this agent
       const newId = createShapeId()
       editor.createShape({
         id: newId,
@@ -99,7 +100,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         props: {
           w: 400,
           h: 600,
-          filter: [[pill.props.value]],
+          filter: [[['to', pill.props.value]], [['from', pill.props.value]]],
         },
       })
     }

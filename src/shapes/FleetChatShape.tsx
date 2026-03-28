@@ -12,7 +12,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, useContext } from 'react'
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
 import { renderChatLine, esc, timeShort } from 'fleet-dashboard/js/chat-render.mjs'
@@ -20,6 +20,10 @@ import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { DocContext } from '../PanelContext'
+import { loadLookup, type LookupData } from '../synctexLookup'
+import { linkifyDocRefs, buildRefResolver, refToCanvas, type DocRef } from '../docLinks'
+import { PDF_HEIGHT } from '../layoutConstants'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -76,11 +80,11 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = {
     w: T.number,
     h: T.number,
-    filter: T.arrayOf(T.arrayOf(T.string)),
+    filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: [] as string[][] }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [] }
   }
 
   override canEdit = () => true
@@ -139,11 +143,21 @@ function makeCtx(agents: any[], tasks: any[]) {
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const { w, h, filter } = shape.props as { w: number; h: number; filter: string[][] }
+  const doc = useContext(DocContext)
+  const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
 
   // DNF filter: [[a,b],[c]] means (a AND b) OR c
   const dnfFilter = filter.length > 0 ? filter : null
+
+  // Load lookup data for doc reference resolution
+  const [lookup, setLookup] = useState<LookupData | null>(null)
+  useEffect(() => {
+    if (!doc?.docName) return
+    loadLookup(doc.docName).then(setLookup)
+  }, [doc?.docName])
+
+  const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
 
   // Live data from fleet-data.mjs via SSE
   const agents = useFleetAgents()
@@ -218,12 +232,38 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return parts.join('')
   }, [chatMessages, ctx])
 
+  // Post-process HTML to add clickable doc links
+  const linkedHtml = useMemo(() => {
+    if (!doc) return renderedHtml
+    return linkifyDocRefs(renderedHtml)
+  }, [renderedHtml, doc])
+
+  // Handle clicks on doc-link spans
+  const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+    const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
+    if (!target || !doc || !refResolver) return
+
+    const refType = target.dataset.refType as DocRef['type']
+    const refValue = target.dataset.refValue || ''
+    const envType = target.dataset.envType
+
+    const ref: DocRef = { type: refType, value: refValue, text: target.textContent || '', envType }
+    const resolved = refResolver(ref)
+    if (!resolved) return
+
+    const canvasPos = refToCanvas(resolved, doc.pages, PDF_HEIGHT)
+    if (!canvasPos) return
+
+    e.stopPropagation()
+    editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
+  }, [doc, refResolver, editor])
+
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (chatLogRef.current) {
       chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
     }
-  }, [renderedHtml])
+  }, [linkedHtml])
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -234,15 +274,20 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return map
   }, [agents])
 
-  // Derive a single send target: only when filter is exactly [[agentId]]
+  // Derive a single send target: only when filter is exactly [[["to", agentId]]]
   const sendTarget = useMemo(() => {
-    if (filter.length === 1 && filter[0].length === 1) return filter[0][0]
+    if (filter.length === 1 && filter[0].length === 1) {
+      const [role, label] = filter[0][0]
+      if (role === 'to') return label
+    }
     return null
   }, [filterKey])
 
-  // Derive a loadBefore agent: use first term of first clause
+  // Derive a loadBefore agent: use first "to" or "from" label
   const loadBeforeAgent = useMemo(() => {
-    if (filter.length > 0 && filter[0].length > 0) return filter[0][0]
+    for (const clause of filter) {
+      for (const [, label] of clause) return label
+    }
     return undefined
   }, [filterKey])
 
@@ -355,14 +400,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
             {filter.map((clause, ci) => (
               <span key={ci} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                 {ci > 0 && <span style={{ fontSize: 8, opacity: 0.3, margin: '0 1px' }}>or</span>}
-                {clause.map((term, ti) => (
+                {clause.map(([role, label], ti) => (
                   <span key={ti} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                     {ti > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>+</span>}
                     <span
                       onPointerDown={stopEventPropagation}
                       onPointerUp={(e) => {
                         stopEventPropagation(e)
-                        // Remove this term from its clause
                         const newFilter = filter
                           .map((c, i) => i === ci ? c.filter((_, j) => j !== ti) : c)
                           .filter(c => c.length > 0)
@@ -383,7 +427,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                         lineHeight: '14px',
                       }}
                     >
-                      {agentNames[term] || term.replace('fleet:', '')}
+                      <span style={{ opacity: 0.4, marginRight: 2 }}>{role}:</span>
+                      {agentNames[label] || label.replace('fleet:', '')}
                       <span style={{ marginLeft: 3, opacity: 0.4, fontSize: 8 }}>×</span>
                     </span>
                   </span>
@@ -403,6 +448,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             padding: '4px 0',
           }}
           onScroll={handleScroll}
+          onClick={handleDocLinkClick}
         >
           {chatMessages.length === 0 ? (
             <div style={{
@@ -414,7 +460,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
               {filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
-            <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+            <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
           )}
         </div>
 
