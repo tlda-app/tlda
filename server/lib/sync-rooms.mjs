@@ -153,7 +153,7 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      filter: T.string,
+      filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-chat',
@@ -181,6 +181,27 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-pill',
+      sequence: [],
+    }),
+  },
+  'fleet-container': {
+    props: {
+      w: T.number,
+      h: T.number,
+      label: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-container',
+      sequence: [],
+    }),
+  },
+  'fleet-search': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-search',
       sequence: [],
     }),
   },
