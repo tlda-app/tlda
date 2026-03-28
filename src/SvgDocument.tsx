@@ -27,6 +27,7 @@ import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetContainerShapeUtil } from './shapes/FleetContainerShape'
+import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
@@ -560,24 +561,42 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         return
       }
 
-      // Create fleet-container at viewport center
-      const vb = editor.getViewportScreenBounds()
-      const cam = editor.getCamera()
-      const centerX = -cam.x + (vb.x + vb.w / 2) / cam.z
-      const centerY = -cam.y + (vb.y + vb.h / 2) / cam.z
+      // Create fleet-container to the right of the document
+      const pageShapes = editor.getCurrentPageShapes().filter(s => s.type === 'html-page')
+      let anchorX = 0, anchorY = 0
+      if (pageShapes.length > 0) {
+        // Find rightmost edge of all pages
+        let maxRight = -Infinity, minTop = Infinity
+        for (const ps of pageShapes) {
+          const b = editor.getShapePageBounds(ps.id)
+          if (b) {
+            if (b.x + b.w > maxRight) maxRight = b.x + b.w
+            if (b.y < minTop) minTop = b.y
+          }
+        }
+        anchorX = maxRight + 60 // 60px gap to the right of document
+        anchorY = minTop
+      } else {
+        // No pages — fall back to viewport center
+        const vb = editor.getViewportScreenBounds()
+        const cam = editor.getCamera()
+        anchorX = -cam.x + (vb.x + vb.w / 2) / cam.z
+        anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
+      }
 
-      const containerW = 860
+      const containerW = 1130
       const containerH = 640
       const containerId = createShapeId()
       const agentsId = createShapeId()
       const chatId = createShapeId()
+      const searchId = createShapeId()
 
       editor.createShapes([
         {
           id: containerId,
           type: 'fleet-container',
-          x: centerX - containerW / 2,
-          y: centerY - containerH / 2,
+          x: anchorX,
+          y: anchorY,
           props: { w: containerW, h: containerH, label: 'fleet' },
         },
         {
@@ -595,6 +614,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           x: 360,
           y: 10,
           props: { w: 400, h: 600, filter: [] },
+        },
+        {
+          id: searchId,
+          type: 'fleet-search',
+          parentId: containerId,
+          x: 770,
+          y: 10,
+          props: { w: 350, h: 500 },
         },
       ])
     }
@@ -686,7 +713,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetContainerShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetContainerShapeUtil, FleetSearchShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
