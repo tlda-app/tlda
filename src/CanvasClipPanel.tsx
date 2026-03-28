@@ -88,7 +88,7 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!editor || !bounds) return
 
-    // Find the vertical extent of all page shapes for scroll range
+    // Find the vertical extent for scroll range
     let minY = bounds.y
     let maxY = bounds.y + bounds.h
     for (const shape of editor.getCurrentPageShapes()) {
@@ -136,7 +136,7 @@ export function CanvasClipPanel({
           initialZoom: 'fit-x',
           baseZoom: 'fit-x',
         },
-        zoomSteps: [zoom, zoom], // lock zoom to current level
+        zoomSteps: [1, 1], // lock zoom to 1× baseZoom (which is fit-x)
       })
     }
   }, [editor, bounds, panelWidth, lockCamera])

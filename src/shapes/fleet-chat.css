@@ -4,9 +4,9 @@
 .fleet-chat-shape {
   --bg: #0f0f1a;
   --surface: #161625;
-  --text: #8888a0;
-  --text-dim: #6b6b88;
-  --text-bright: #9494aa;
+  --text: #a8a8c0;
+  --text-dim: #8888a0;
+  --text-bright: #c0c0d4;
   --accent: #9370db;
   --green: #7ab8a0;
   --yellow: #c8b060;
@@ -26,12 +26,29 @@
   --shadow-lg: rgba(0,0,0,0.4);
 }
 
-/* Fleet shapes blend with canvas — no visible container */
+/* Fleet shapes — thin borders for visibility */
 .fleet-chat-shape,
-.fleet-agents-shape {
+.fleet-agents-shape,
+.fleet-search-shape {
   background-color: transparent;
   color: var(--text);
-  border: none;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+
+/* --- Send hint (target + enter indicator) --- */
+.fleet-chat-send-hint {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9px;
+  opacity: 0.25;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+  transition: opacity 0.15s;
+  font-family: inherit;
 }
 
 /* --- Close button --- */
@@ -91,6 +108,16 @@
   scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
 
+/* --- Draggable elements in chat --- */
+.fleet-chat-shape .chat-nick span[class*="nick-"],
+.fleet-chat-shape .chat-ts,
+.fleet-chat-shape .chat-activity-card,
+.fleet-chat-shape .code-block-header,
+.fleet-chat-shape .tool-ref {
+  cursor: grab;
+  touch-action: none;
+}
+
 /* --- Chat line base --- */
 .fleet-chat-shape .chat-line {
   padding: 2px 8px;
@@ -136,8 +163,8 @@
 
 /* --- Age-based opacity --- */
 .fleet-chat-shape .chat-line-recent { opacity: 1; }
-.fleet-chat-shape .chat-line-mid { opacity: 0.65; }
-.fleet-chat-shape .chat-line-old { opacity: 0.4; }
+.fleet-chat-shape .chat-line-mid { opacity: 0.8; }
+.fleet-chat-shape .chat-line-old { opacity: 0.6; }
 
 /* --- Receipt --- */
 .fleet-chat-shape .chat-receipt {
@@ -649,3 +676,269 @@
   overflow: hidden;
 }
 .fleet-chat-shape .code-block-copy { display: none; }
+
+/* --- Document reference links --- */
+.fleet-chat-shape .doc-link {
+  color: var(--accent);
+  cursor: pointer;
+  border-bottom: 1px dotted var(--accent);
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .doc-link:hover {
+  opacity: 0.8;
+}
+
+/* --- Fleet Agents Table --- */
+
+.fleet-agents-shape .fleet-agents-header {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  font-size: 8px;
+  font-weight: 500;
+  opacity: 0.35;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.fleet-agents-shape .fleet-agents-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+.fleet-agents-shape .fleet-agents-empty {
+  padding: 20px 8px;
+  opacity: 0.4;
+  text-align: center;
+  font-size: 9px;
+}
+
+.fleet-agents-shape .fleet-agents-footer {
+  height: 20px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
+  font-size: 9px;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+
+/* --- Agent row --- */
+
+.fleet-agents-shape .fleet-agents-row {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  transition: background 0.1s;
+}
+.fleet-agents-shape .fleet-agents-row:hover {
+  background: rgba(100, 140, 255, 0.05);
+}
+.fleet-agents-shape .fleet-agents-row.dimmed {
+  opacity: 0.4;
+}
+
+/* --- Column widths --- */
+
+.fleet-agents-shape .fleet-agents-col-dot {
+  width: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.fleet-agents-shape .fleet-agents-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: block;
+}
+
+.fleet-agents-shape .fleet-agents-col-name {
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+}
+
+.fleet-agents-shape .fleet-agents-col-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 9px;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-agents-shape .fleet-agents-col-labels {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 120px;
+  overflow: hidden;
+}
+
+.fleet-agents-shape .fleet-agents-col-seen {
+  width: 24px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  opacity: 0.4;
+}
+
+/* --- Draggable pills in table --- */
+
+.fleet-agents-shape .fleet-agents-pill {
+  touch-action: none;
+}
+
+.fleet-agents-shape .fleet-agents-label-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 2px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+}
+
+/* --- Section headers (stale) --- */
+
+.fleet-agents-shape .fleet-agents-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 8px;
+  font-weight: 600;
+  opacity: 0.3;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-top: 1px solid rgba(128, 128, 128, 0.06);
+  margin-top: 2px;
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-agents-shape .fleet-agents-section-toggle {
+  font-size: 7px;
+}
+.fleet-agents-shape .fleet-agents-section-count {
+  opacity: 0.6;
+}
+
+/* --- Respawn button --- */
+
+.fleet-agents-shape .fleet-agents-respawn-btn {
+  background: none;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  color: rgba(128,128,128,0.5);
+  font-size: 10px;
+  padding: 0 4px;
+  cursor: pointer;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  border-color: rgba(128,128,128,0.4);
+  color: rgba(128,128,128,0.7);
+}
+
+/* --- Reference chips (dropped from drag) --- */
+
+.fleet-chat-shape .ref-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(147, 112, 219, 0.15);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: default;
+  border: 1px solid rgba(147, 112, 219, 0.2);
+}
+.fleet-chat-shape .ref-chip {
+  position: relative;
+}
+.fleet-chat-shape .ref-chip:hover {
+  background: rgba(147, 112, 219, 0.25);
+  border-color: rgba(147, 112, 219, 0.4);
+}
+.fleet-chat-shape .ref-chip .ref-chip-preview {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  max-width: 360px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface, #161625);
+  border: 1px solid var(--border, #1e1e32);
+  color: var(--text, #a8a8c0);
+  font-size: 10px;
+  font-weight: 300;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  z-index: 100;
+  pointer-events: none;
+}
+.fleet-chat-shape .ref-chip:hover .ref-chip-preview {
+  display: block;
+}
+
+/* --- Input highlight underlay (mirrors textarea, highlights <<ref>> tokens) --- */
+
+.fleet-chat-shape .fleet-chat-input-underlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Must exactly match textarea: same padding, border, font */
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-family: inherit;
+  font-weight: 300;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  background: rgba(128, 128, 128, 0.08);
+  box-sizing: border-box;
+}
+.fleet-chat-shape .ref-chip-underlay {
+  background: rgba(147, 112, 219, 0.18);
+  border-radius: 3px;
+  padding: 0 0.6em 0 0.2em;
+  margin: 0 -0.6em 0 -0.2em;
+  color: transparent;
+}

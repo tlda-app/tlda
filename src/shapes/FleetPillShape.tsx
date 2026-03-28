@@ -1,32 +1,123 @@
 /**
- * FleetPillShape — small draggable pill representing an agent or label.
+ * FleetPillShape — small draggable pill for drag-to-filter.
  *
- * Drag is tldraw-native (shape translation). On drop:
- * - Over a fleet-chat → sets that chat's filter prop
- * - Over empty canvas → creates a new fleet-chat filtered to this value
- * - Always snaps back to home position (stored in meta)
+ * Pills are ephemeral — created on drag start, deleted after drop.
+ * The drop logic lives in dropPillOnTarget() (shared with FleetAgentsShape).
  */
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
-  stopEventPropagation,
   createShapeId,
 } from 'tldraw'
-import type { TLShape } from 'tldraw'
+import type { Editor, TLShape, TLShapeId } from 'tldraw'
 
 const PILL_W = 70
 const PILL_H = 18
+
+/** Event bus for content drops (msg references, code) → target chat textarea */
+export const chatInsertBus = new EventTarget()
+
+/** Stash for reference chip content — keyed by token string, value is hover content */
+export const refStore = new Map<string, { type: string; label: string; content: string }>()
+
+/**
+ * Drop a pill value on whatever is under the given page position.
+ * - Agent/label pills over fleet-chat → update filter
+ * - Content pills over fleet-chat → insert text into that chat's input
+ * - Over empty canvas → create new fleet-chat filtered to this value
+ */
+export function dropPillOnTarget(
+  editor: Editor,
+  pillId: TLShapeId,
+  value: string,
+  pagePoint: { x: number; y: number },
+  content?: string,
+) {
+  // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
+  const allChats = editor.getCurrentPageShapes().filter(s => s.type === 'fleet-chat')
+  let hitShape: TLShape | undefined
+  for (const chat of allChats) {
+    const bounds = editor.getShapePageBounds(chat.id)
+    if (bounds &&
+      pagePoint.x >= bounds.x && pagePoint.x <= bounds.x + bounds.w &&
+      pagePoint.y >= bounds.y && pagePoint.y <= bounds.y + bounds.h) {
+      hitShape = chat
+      break
+    }
+  }
+
+  if (hitShape && hitShape.type === 'fleet-chat') {
+    // Content pill → insert reference chip token into target chat's input
+    if (content) {
+      // Build a short token: <<type:label>>
+      // Extract a short label from the value (e.g. "msg:fleet:skip:2026-03-28T09:43:00Z" → "skip 9:43 AM")
+      const pill = editor.getShape(pillId) as any
+      const displayName = pill?.props?.displayName || value
+      const pillType = pill?.props?.pillType || 'ref'
+      const token = `«${pillType}:${displayName}»`
+      refStore.set(token, { type: pillType, label: displayName, content })
+      chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+        detail: { chatId: hitShape.id, text: token },
+      }))
+      return
+    }
+
+    // Agent/label pill → modify filter
+    const chatBounds = editor.getShapePageBounds(hitShape.id)
+    const role = chatBounds && pagePoint.y > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
+
+    const existingFilter: [string, string][][] = (hitShape as any).props.filter || []
+    const newTerm: [string, string] = [role, value]
+    let newFilter: [string, string][][]
+    if (existingFilter.length === 0) {
+      newFilter = [[newTerm]]
+    } else {
+      const lastClause = existingFilter[existingFilter.length - 1]
+      if (lastClause.some(([r, l]) => r === role && l === value)) {
+        newFilter = existingFilter
+      } else {
+        newFilter = [
+          ...existingFilter.slice(0, -1),
+          [...lastClause, newTerm],
+        ]
+      }
+    }
+    editor.updateShape({
+      id: hitShape.id,
+      type: 'fleet-chat',
+      props: { ...(hitShape as any).props, filter: newFilter },
+    })
+  } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
+    // Drop on empty canvas → create new fleet-chat matching current lock state
+    const fleetShapes = editor.getCurrentPageShapes().filter(s =>
+      s.type === 'fleet-chat' || s.type === 'fleet-agents' || s.type === 'fleet-search'
+    )
+    const locked = fleetShapes.length > 0 ? (fleetShapes[0].isLocked ?? false) : false
+    editor.createShape({
+      id: createShapeId(),
+      type: 'fleet-chat',
+      x: pagePoint.x,
+      y: pagePoint.y,
+      isLocked: locked,
+      props: {
+        w: 400,
+        h: 600,
+        filter: [[['to', value]], [['from', value]]],
+      },
+    })
+  }
+}
 
 export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-pill' as const
   static override props = {
     w: T.number,
     h: T.number,
-    pillType: T.string,   // 'agent' | 'label'
-    value: T.string,       // agent ID or label name
-    displayName: T.string, // rendered text
-    color: T.string,       // nick color or label color
+    pillType: T.string,
+    value: T.string,
+    displayName: T.string,
+    color: T.string,
   }
 
   getDefaultProps() {
@@ -47,86 +138,34 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
 
-  override onTranslateEnd = (initial: TLShape, current: TLShape) => {
+  override onTranslateEnd = (_initial: TLShape, current: TLShape) => {
     const editor = this.editor
     const pill = current as any
-    const homeX = pill.meta?.homeX ?? initial.x
-    const homeY = pill.meta?.homeY ?? initial.y
 
-    // Check what's under the pill's center (use page coordinates)
     const bounds = editor.getShapePageBounds(pill.id)
     const centerX = bounds ? bounds.x + bounds.w / 2 : pill.x + pill.props.w / 2
     const centerY = bounds ? bounds.y + bounds.h / 2 : pill.y + pill.props.h / 2
-    const hitShape = editor.getShapeAtPoint({ x: centerX, y: centerY }, {
-      hitInside: true,
-      margin: 0,
-      filter: (s: TLShape) => s.id !== pill.id && s.type !== 'fleet-pill' && s.type !== 'fleet-agents' && s.type !== 'fleet-container',
-    })
 
-    if (hitShape && hitShape.type === 'fleet-chat') {
-      // Determine role from drop position: top half = "to", bottom half = "from"
-      const chatBounds = editor.getShapePageBounds(hitShape.id)
-      const role = chatBounds && centerY > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
+    dropPillOnTarget(editor, pill.id, pill.props.value, { x: centerX, y: centerY })
 
-      const existingFilter: [string, string][][] = (hitShape as any).props.filter || []
-      const newTerm: [string, string] = [role, pill.props.value]
-      let newFilter: [string, string][][]
-      if (existingFilter.length === 0) {
-        newFilter = [[newTerm]]
-      } else {
-        const lastClause = existingFilter[existingFilter.length - 1]
-        if (lastClause.some(([r, l]) => r === role && l === pill.props.value)) {
-          newFilter = existingFilter  // already in clause — no-op
-        } else {
-          newFilter = [
-            ...existingFilter.slice(0, -1),
-            [...lastClause, newTerm],
-          ]
-        }
-      }
-      editor.updateShape({
-        id: hitShape.id,
-        type: 'fleet-chat',
-        props: { ...(hitShape as any).props, filter: newFilter },
-      })
-    } else if (hitShape === undefined || hitShape === null || hitShape.type !== 'fleet-agents') {
-      // Drop on empty canvas → create new fleet-chat showing messages to/from this agent
-      const newId = createShapeId()
-      editor.createShape({
-        id: newId,
-        type: 'fleet-chat',
-        x: pill.x,
-        y: pill.y,
-        props: {
-          w: 400,
-          h: 600,
-          filter: [[['to', pill.props.value]], [['from', pill.props.value]]],
-        },
-      })
-    }
-
-    // Snap back to home position (reparent if dragged out)
-    const parentId = pill.meta?.originalParentId || initial.parentId
-    editor.updateShape({
-      id: pill.id,
-      type: 'fleet-pill',
-      parentId,
-      x: homeX,
-      y: homeY,
-    })
+    // Ephemeral: delete after drop
+    editor.deleteShapes([pill.id])
   }
 
   component(shape: any) {
-    const { displayName, color } = shape.props
+    const { displayName, color, pillType } = shape.props
+    const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     return (
       <HTMLContainer
         style={{
           width: shape.props.w,
           height: shape.props.h,
-          pointerEvents: 'none', // let tldraw handle selection/drag
+          pointerEvents: 'none',
+          overflow: 'visible',
         }}
       >
         <div
+          className="fleet-pill-ghost"
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -140,10 +179,11 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             whiteSpace: 'nowrap',
             userSelect: 'none',
             lineHeight: '14px',
+            position: 'relative',
           }}
         >
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {displayName}
+            {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
       </HTMLContainer>

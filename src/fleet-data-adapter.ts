@@ -82,28 +82,29 @@ export function useFleetTasks(): any[] {
 }
 
 /**
- * Subscribe to fleet chat events, optionally filtered by agent ID.
- * Returns events sorted by timestamp.
+ * Subscribe to fleet chat events, optionally filtered.
+ * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
-export function useFleetEvents(agentFilter?: string): any[] {
+export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
   const [events, setEvents] = useState<any[]>([])
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
   useEffect(() => {
     let unsub: (() => void) | null = null
     let cancelled = false
-    const dnfFilter = agentFilter ? [[agentFilter]] : null
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
     ensureInit().then(() => {
       if (cancelled) return
       // Seed with initial events from the store
       const all = getEvents()
-      const filtered = dnfFilter
-        ? all.filter((e: any) => matchesFilter(dnfFilter, e))
+      const filtered = filter
+        ? all.filter((e: any) => matchesFilter(filter, e))
         : [...all]
       setEvents(filtered)
 
       // Subscribe for live updates
-      unsub = subscribe('messages', dnfFilter, (event: any) => {
+      unsub = subscribe('messages', filter, (event: any) => {
         setEvents(prev => [...prev, event])
       })
     })
@@ -112,29 +113,30 @@ export function useFleetEvents(agentFilter?: string): any[] {
       cancelled = true
       unsub?.()
     }
-  }, [agentFilter])
+  }, [filterKey])
 
   return events
 }
 
 /**
- * Subscribe to fleet activity events, optionally filtered by agent ID.
- * Activity events are tool calls / text blocks from agent sessions.
+ * Subscribe to fleet activity events, optionally filtered.
+ * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
-export function useFleetActivity(agentFilter?: string): any[] {
+export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
   const [events, setEvents] = useState<any[]>([])
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
   useEffect(() => {
     let unsub: (() => void) | null = null
     let cancelled = false
-    const dnfFilter = agentFilter ? [[agentFilter]] : null
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
     ensureInit().then(() => {
       if (cancelled) return
       // No initial seed — activity events are live-only (same as dashboard chat.mjs)
-      if (!dnfFilter) return // activity requires a filter
+      if (!filter) return // activity requires a filter
 
-      unsub = subscribe('activity', dnfFilter, (event: any) => {
+      unsub = subscribe('activity', filter, (event: any) => {
         setEvents(prev => [...prev, event])
       })
     })
@@ -143,9 +145,21 @@ export function useFleetActivity(agentFilter?: string): any[] {
       cancelled = true
       unsub?.()
     }
-  }, [agentFilter])
+  }, [filterKey])
 
   return events
+}
+
+// --- Search API ---
+
+const DASHBOARD_URL = 'http://localhost:5199'
+
+export async function searchFleet(query: string, limit = 50): Promise<any[]> {
+  await ensureInit()
+  const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+  if (!res.ok) return []
+  const data = await res.json()
+  return data.results || data || []
 }
 
 // --- Write API (re-exported) ---

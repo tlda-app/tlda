@@ -5,13 +5,13 @@
  * Uses CanvasClipPanel (same primitive as RefViewer / ProofStatementOverlay)
  * to render a copy-store view of the fleet region.
  */
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
 import './FleetHUD.css'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-container']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
 const HUD_WIDTH = 360
 const VISIBILITY_MARGIN = 200 // px of screen overlap before hiding
 
@@ -23,23 +23,6 @@ interface FleetHUDProps {
 }
 
 function getFleetBounds(editor: Editor): ClipBounds | null {
-  // Prefer container shape bounds if one exists
-  const container = editor.getCurrentPageShapes()
-    .find(s => s.type === 'fleet-container')
-  if (container) {
-    const bounds = editor.getShapePageBounds(container.id)
-    if (bounds) {
-      const PAD = 20
-      return {
-        x: bounds.x - PAD,
-        y: bounds.y - PAD,
-        w: bounds.w + PAD * 2,
-        h: bounds.h + PAD * 2,
-      }
-    }
-  }
-
-  // Fallback: compute from individual fleet shapes
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   if (shapes.length === 0) return null
@@ -94,11 +77,29 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const [dismissed, setDismissed] = useState(false)
   const [cameraVisible, setCameraVisible] = useState(true)
+  const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   const agents = useFleetAgents()
 
-  // Compute fleet shape bounds
-  const fleetBounds = useMemo(() => {
-    return getFleetBounds(mainEditor)
+  // Reactively update fleet bounds when shapes change
+  useEffect(() => {
+    // Initial compute
+    setFleetBounds(getFleetBounds(mainEditor))
+
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      const isFleetChange = (record: any) =>
+        record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
+
+      const hasFleetChange =
+        Object.values(changes.added).some(isFleetChange) ||
+        Object.values(changes.removed).some(isFleetChange) ||
+        Object.values(changes.updated).some(([from, to]) => isFleetChange(from) || isFleetChange(to))
+
+      if (hasFleetChange) {
+        setFleetBounds(getFleetBounds(mainEditor))
+      }
+    }, { source: 'all', scope: 'document' })
+
+    return unsub
   }, [mainEditor])
 
   // Track camera position to show/hide HUD
@@ -127,18 +128,47 @@ export function FleetHUD({
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
 
+  // Lock state — check if fleet shapes are locked
+  const [isLocked, setIsLocked] = useState(true)
+  useEffect(() => {
+    const check = () => {
+      const shapes = mainEditor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
+      setIsLocked(shapes.length === 0 || (shapes[0].isLocked ?? true))
+    }
+    check()
+    const unsub = mainEditor.store.listen(() => check(), { source: 'all', scope: 'document' })
+    return unsub
+  }, [mainEditor])
+
+  const toggleLock = useCallback(() => {
+    const shapes = mainEditor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
+    if (shapes.length === 0) return
+    const newLocked = !(shapes[0].isLocked ?? true)
+    for (const s of shapes) {
+      mainEditor.updateShape({ id: s.id, type: s.type, isLocked: newLocked })
+    }
+    mainEditor.user.updateUserPreferences({ isSnapMode: !newLocked })
+  }, [mainEditor])
+
   // Don't render if no fleet shapes, dismissed, or fleet is directly visible
   if (!fleetBounds || dismissed || cameraVisible) return null
 
   return (
-    <div className="fleet-hud-wrap" onWheel={(e) => e.stopPropagation()}>
+    <div className="fleet-hud-wrap">
+      <button
+        className="fleet-hud-lock"
+        onClick={toggleLock}
+        title={isLocked ? 'Unlock fleet layout' : 'Lock fleet layout'}
+      >
+        {isLocked ? '🔒' : '🔓'}
+      </button>
       <CanvasClipPanel
         mainEditor={mainEditor}
         bounds={fleetBounds}
         shapeUtils={shapeUtils}
         tools={tools}
         licenseKey={licenseKey}
-        panelWidth={800}
+        panelWidth={fleetBounds.w}
         maxHeightFraction={1.0}
         lockCamera={true}
         className="fleet-hud"
