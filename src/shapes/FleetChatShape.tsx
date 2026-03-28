@@ -76,11 +76,11 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = {
     w: T.number,
     h: T.number,
-    filter: T.string,
+    filter: T.arrayOf(T.arrayOf(T.string)),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [] as string[][] }
   }
 
   override canEdit = () => true
@@ -139,13 +139,16 @@ function makeCtx(agents: any[], tasks: any[]) {
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const { w, h, filter } = shape.props
+  const { w, h, filter } = shape.props as { w: number; h: number; filter: string[][] }
   const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+
+  // DNF filter: [[a,b],[c]] means (a AND b) OR c
+  const dnfFilter = filter.length > 0 ? filter : null
 
   // Live data from fleet-data.mjs via SSE
   const agents = useFleetAgents()
-  const liveEvents = useFleetEvents(filter || undefined)
-  const activityEvents = useFleetActivity(filter || undefined)
+  const liveEvents = useFleetEvents(dnfFilter)
+  const activityEvents = useFleetActivity(dnfFilter)
   const tasks = useFleetTasks()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
@@ -160,7 +163,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [liveEvents, activityEvents, olderEvents])
 
   // Reset older events when filter changes
-  useEffect(() => { setOlderEvents([]) }, [filter])
+  const filterKey = JSON.stringify(filter)
+  useEffect(() => { setOlderEvents([]) }, [filterKey])
 
   const [inputText, setInputText] = useState('')
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -230,12 +234,24 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return map
   }, [agents])
 
+  // Derive a single send target: only when filter is exactly [[agentId]]
+  const sendTarget = useMemo(() => {
+    if (filter.length === 1 && filter[0].length === 1) return filter[0][0]
+    return null
+  }, [filterKey])
+
+  // Derive a loadBefore agent: use first term of first clause
+  const loadBeforeAgent = useMemo(() => {
+    if (filter.length > 0 && filter[0].length > 0) return filter[0][0]
+    return undefined
+  }, [filterKey])
+
   const handleSend = useCallback(async () => {
     const text = inputText.trim()
-    if (!text || !filter) return
-    await sendMessage(filter, text)
+    if (!text || !sendTarget) return
+    await sendMessage(sendTarget, text)
     setInputText('')
-  }, [inputText, filter])
+  }, [inputText, sendTarget])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Stop ALL propagation so tldraw doesn't intercept keys
@@ -256,7 +272,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
       const prevHeight = el.scrollHeight
-      const older = await loadBefore(filter || undefined, oldestTs, 50)
+      const older = await loadBefore(loadBeforeAgent, oldestTs, 50)
       if (older.length > 0) {
         setOlderEvents(prev => [...older, ...prev])
       }
@@ -266,7 +282,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       })
     }
     loadingMore.current = false
-  }, [chatMessages, filter])
+  }, [chatMessages, loadBeforeAgent])
 
   return (
     <HTMLContainer
@@ -318,10 +334,64 @@ function FleetChatComponent({ shape }: { shape: any }) {
           flexShrink: 0,
         }}>
           <span>fleet chat</span>
-          {filter && <span style={{ opacity: 0.5, fontWeight: 400 }}>
-            {agentNames[filter] || filter.replace('fleet:', '')}
+          {sendTarget && <span style={{ opacity: 0.5, fontWeight: 400 }}>
+            {agentNames[sendTarget] || sendTarget.replace('fleet:', '')}
           </span>}
         </div>
+
+        {/* Filter chips */}
+        {filter.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 3,
+              padding: '3px 10px',
+              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+              flexShrink: 0,
+              alignItems: 'center',
+            }}
+          >
+            {filter.map((clause, ci) => (
+              <span key={ci} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                {ci > 0 && <span style={{ fontSize: 8, opacity: 0.3, margin: '0 1px' }}>or</span>}
+                {clause.map((term, ti) => (
+                  <span key={ti} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    {ti > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>+</span>}
+                    <span
+                      onPointerDown={stopEventPropagation}
+                      onPointerUp={(e) => {
+                        stopEventPropagation(e)
+                        // Remove this term from its clause
+                        const newFilter = filter
+                          .map((c, i) => i === ci ? c.filter((_, j) => j !== ti) : c)
+                          .filter(c => c.length > 0)
+                        editor.updateShape({
+                          id: shape.id,
+                          type: 'fleet-chat',
+                          props: { filter: newFilter },
+                        })
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '0 4px',
+                        borderRadius: 2,
+                        background: 'rgba(128, 128, 128, 0.12)',
+                        fontSize: 9,
+                        cursor: 'pointer',
+                        lineHeight: '14px',
+                      }}
+                    >
+                      {agentNames[term] || term.replace('fleet:', '')}
+                      <span style={{ marginLeft: 3, opacity: 0.4, fontSize: 8 }}>×</span>
+                    </span>
+                  </span>
+                ))}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Messages — rendered via chat-render.mjs */}
         <div
@@ -341,15 +411,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
               textAlign: 'center',
               fontSize: 10,
             }}>
-              {filter ? 'No messages' : 'No filter set'}
+              {filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
             <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
           )}
         </div>
 
-        {/* Input */}
-        {filter && (
+        {/* Input — only when filter resolves to a single agent */}
+        {sendTarget && (
           <div style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
@@ -358,7 +428,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           }}>
             <textarea
               ref={inputRef as any}
-              placeholder={`Message ${agentNames[filter] || 'agent'}...`}
+              placeholder={`Message ${agentNames[sendTarget] || 'agent'}...`}
               rows={1}
               onKeyDown={(e) => {
                 stopEventPropagation(e)
@@ -378,8 +448,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     // Blank line (double-enter) = send
                     e.preventDefault()
                     const text = val.trim()
-                    if (text && filter) {
-                      sendMessage(filter, text)
+                    if (text && sendTarget) {
+                      sendMessage(sendTarget, text)
                       ta.value = ''
                       ta.style.height = 'auto'
                     }
@@ -390,8 +460,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     // Non-blank, no trailing space = send
                     e.preventDefault()
                     const text = val.trim()
-                    if (text && filter) {
-                      sendMessage(filter, text)
+                    if (text && sendTarget) {
+                      sendMessage(sendTarget, text)
                       ta.value = ''
                       ta.style.height = 'auto'
                     }

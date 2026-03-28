@@ -3,6 +3,7 @@ import {
   Tldraw,
   react,
   useEditor,
+  createShapeId,
   DefaultColorStyle,
   DefaultSizeStyle,
   defaultShapeUtils,
@@ -533,6 +534,74 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, hasDiffBuiltin, diffMode])
+
+  // Shift+F: create fleet container with agents+chat children, or zoom to existing
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'F' || !e.shiftKey) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isInputFocused()) return
+      const editor = editorRef.current
+      if (!editor) return
+      if (editor.getEditingShapeId()) return
+
+      e.preventDefault()
+
+      // Check if a fleet-container already exists
+      const existing = editor.getCurrentPageShapes().find(s => s.type === 'fleet-container')
+      if (existing) {
+        const bounds = editor.getShapePageBounds(existing.id)
+        if (bounds) {
+          editor.centerOnPoint(
+            { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
+            { animation: { duration: 300 } }
+          )
+        }
+        return
+      }
+
+      // Create fleet-container at viewport center
+      const vb = editor.getViewportScreenBounds()
+      const cam = editor.getCamera()
+      const centerX = -cam.x + (vb.x + vb.w / 2) / cam.z
+      const centerY = -cam.y + (vb.y + vb.h / 2) / cam.z
+
+      const containerW = 860
+      const containerH = 640
+      const containerId = createShapeId()
+      const agentsId = createShapeId()
+      const chatId = createShapeId()
+
+      editor.createShapes([
+        {
+          id: containerId,
+          type: 'fleet-container',
+          x: centerX - containerW / 2,
+          y: centerY - containerH / 2,
+          props: { w: containerW, h: containerH, label: 'fleet' },
+        },
+        {
+          id: agentsId,
+          type: 'fleet-agents',
+          parentId: containerId,
+          x: 10,
+          y: 10,
+          props: { w: 340, h: 400 },
+        },
+        {
+          id: chatId,
+          type: 'fleet-chat',
+          parentId: containerId,
+          x: 360,
+          y: 10,
+          props: { w: 400, h: 600, filter: [] },
+        },
+      ])
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const components = useMemo<TLComponents>(
     () => ({

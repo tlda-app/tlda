@@ -64,14 +64,32 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     })
 
     if (hitShape && hitShape.type === 'fleet-chat') {
-      // Drop on existing chat → set filter
+      // Drop on existing chat → AND with last clause (or start new clause)
+      const existingFilter: string[][] = (hitShape as any).props.filter || []
+      let newFilter: string[][]
+      if (existingFilter.length === 0) {
+        // No filter yet — start fresh clause
+        newFilter = [[pill.props.value]]
+      } else {
+        // AND with the last clause (add term to it)
+        const lastClause = existingFilter[existingFilter.length - 1]
+        if (lastClause.includes(pill.props.value)) {
+          // Already in the clause — no-op
+          newFilter = existingFilter
+        } else {
+          newFilter = [
+            ...existingFilter.slice(0, -1),
+            [...lastClause, pill.props.value],
+          ]
+        }
+      }
       editor.updateShape({
         id: hitShape.id,
         type: 'fleet-chat',
-        props: { ...(hitShape as any).props, filter: pill.props.value },
+        props: { ...(hitShape as any).props, filter: newFilter },
       })
     } else if (hitShape === undefined || hitShape === null || hitShape.type !== 'fleet-agents') {
-      // Drop on empty canvas → create new fleet-chat
+      // Drop on empty canvas → create new fleet-chat with [[value]]
       const newId = createShapeId()
       editor.createShape({
         id: newId,
@@ -81,7 +99,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         props: {
           w: 400,
           h: 600,
-          filter: pill.props.value,
+          filter: [[pill.props.value]],
         },
       })
     }
