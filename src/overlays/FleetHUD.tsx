@@ -11,7 +11,7 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
 import './FleetHUD.css'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-container']
 const HUD_WIDTH = 360
 const VISIBILITY_MARGIN = 200 // px of screen overlap before hiding
 
@@ -23,6 +23,23 @@ interface FleetHUDProps {
 }
 
 function getFleetBounds(editor: Editor): ClipBounds | null {
+  // Prefer container shape bounds if one exists
+  const container = editor.getCurrentPageShapes()
+    .find(s => s.type === 'fleet-container')
+  if (container) {
+    const bounds = editor.getShapePageBounds(container.id)
+    if (bounds) {
+      const PAD = 20
+      return {
+        x: bounds.x - PAD,
+        y: bounds.y - PAD,
+        w: bounds.w + PAD * 2,
+        h: bounds.h + PAD * 2,
+      }
+    }
+  }
+
+  // Fallback: compute from individual fleet shapes
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   if (shapes.length === 0) return null

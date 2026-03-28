@@ -45,3 +45,6 @@ scratch/
 # manifest.json is kept; everything inside doc directories is generated
 public/docs/*/
 !public/docs/spinoff3/
+
+# Built assets (KaTeX fonts, etc.) — don't commit
+public/assets/

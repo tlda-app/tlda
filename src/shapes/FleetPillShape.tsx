@@ -10,10 +10,10 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
-  TLShape,
   stopEventPropagation,
   createShapeId,
 } from 'tldraw'
+import type { TLShape } from 'tldraw'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -60,7 +60,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const hitShape = editor.getShapeAtPoint({ x: centerX, y: centerY }, {
       hitInside: true,
       margin: 0,
-      filter: (s: TLShape) => s.id !== pill.id && s.type !== 'fleet-pill' && s.type !== 'fleet-agents',
+      filter: (s: TLShape) => s.id !== pill.id && s.type !== 'fleet-pill' && s.type !== 'fleet-agents' && s.type !== 'fleet-container',
     })
 
     if (hitShape && hitShape.type === 'fleet-chat') {

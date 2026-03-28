@@ -34,6 +34,37 @@
   border: none;
 }
 
+/* --- Close button --- */
+.fleet-shape .fleet-close-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.15;
+  transition: opacity 0.2s, background 0.2s;
+  z-index: 10;
+  padding: 0;
+  font-family: inherit;
+}
+.fleet-shape .fleet-close-btn:hover {
+  opacity: 0.6;
+  background: rgba(128, 128, 128, 0.15);
+}
+.fleet-shape:hover .fleet-close-btn {
+  opacity: 0.35;
+}
+
 /* Light theme overrides */
 .tl-theme__light .fleet-chat-shape,
 .tl-theme__light .fleet-agents-shape {

@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+/**
+ * screenshot-fleet — open tlda in playwright with auth, screenshot fleet shapes.
+ *
+ * Usage: bin/screenshot-fleet [doc] [output.png]
+ *   doc defaults to "bregman"
+ *   output defaults to /tmp/fleet-screenshot.png
+ */
+import { chromium } from 'playwright'
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
+
+const doc = process.argv[2] || 'bregman'
+const output = process.argv[3] || '/tmp/fleet-screenshot.png'
+
+// Read token from config
+function getToken() {
+  const configPath = join(homedir(), '.config', 'tlda', 'config.json')
+  try {
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf8'))
+      return config.tokenRead || config.tokenRw || ''
+    }
+  } catch {}
+  return process.env.TLDA_TOKEN_READ || process.env.TLDA_TOKEN_RW || ''
+}
+
+const token = getToken()
+const baseUrl = process.env.TLDA_URL || 'http://localhost:5176'
+
+;(async () => {
+  const browser = await chromium.launch({ headless: false })
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
+
+  // Navigate with doc + token as query params
+  const url = `${baseUrl}/?doc=${doc}&token=${token}`
+  await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+
+  // Wait for tldraw canvas to render
+  const editorFound = await page.waitForSelector('.tl-editor, .tl-canvas, [class*="tl-"]', { timeout: 45000 })
+    .then(() => true).catch(() => false)
+
+  // Give shapes time to render regardless
+  await page.waitForTimeout(5000)
+
+  // Try to find and zoom to fleet shapes
+  const zoomed = await page.evaluate(() => {
+    const editor = (window).__tldraw_editor
+    if (!editor) return false
+    const fleetShapes = editor.getCurrentPageShapes()
+      .filter(s => ['fleet-chat', 'fleet-agents', 'fleet-container'].includes(s.type))
+    if (fleetShapes.length === 0) return false
+
+    // Compute bounds of fleet shapes
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const s of fleetShapes) {
+      const b = editor.getShapePageBounds(s.id)
+      if (!b) continue
+      minX = Math.min(minX, b.x)
+      minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.w)
+      maxY = Math.max(maxY, b.y + b.h)
+    }
+    if (!isFinite(minX)) return false
+
+    const PAD = 50
+    editor.zoomToBounds({ x: minX - PAD, y: minY - PAD, w: maxX - minX + PAD * 2, h: maxY - minY + PAD * 2 })
+    return true
+  })
+
+  await page.waitForTimeout(1000)
+  await page.screenshot({ path: output })
+  console.log(`Screenshot saved: ${output} (fleet shapes ${zoomed ? 'found, zoomed' : 'not found, full page'})`)
+  await browser.close()
+})()

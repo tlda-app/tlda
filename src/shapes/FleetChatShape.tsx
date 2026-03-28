@@ -290,8 +290,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
           fontFamily: "'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
           fontWeight: 300,
           lineHeight: 1.4,
+          position: 'relative',
         }}
       >
+        {/* Close button */}
+        <button
+          className="fleet-close-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.deleteShapes([shape.id])
+          }}
+        >
+          ×
+        </button>
+
         {/* Header — no stopEventPropagation so tldraw can select/drag from here */}
         <div style={{
           padding: '6px 10px',

@@ -16,8 +16,16 @@ import {
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 
-const DEFAULT_W = 300
+const DEFAULT_W = 340
 const DEFAULT_H = 400
+
+const ROW_H = 24
+const HEADER_H = 28
+const PILL_H = 16
+const PILL_AGENT_W = 78
+const PILL_LABEL_W = 50
+const PILL_X_START = 22  // after status dot column
+const PILL_GAP = 4
 
 // --- Nick color system (shared with FleetChatShape) ---
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
@@ -42,8 +50,23 @@ function labelColor(name: string): string {
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
 }
 
+const STALE_THRESHOLD = 600_000  // 10 minutes
+
 function isAlive(agent: any): boolean {
   return !agent.dead && !agent.human
+}
+
+function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
+  if (agent.dead) return 'dead'
+  if (agent.human) return 'dead'  // skip humans
+  const ts = agent.last_seen ? new Date(agent.last_seen).getTime() : 0
+  if (Date.now() - ts > STALE_THRESHOLD) return 'stale'
+  return 'alive'
+}
+
+function respawnAgent(agentId: string) {
+  fetch(`http://localhost:5199/api/respawn/${encodeURIComponent(agentId)}`, { method: 'POST' })
+    .catch(() => {})  // fire-and-forget
 }
 
 function agentDisplayName(agent: any): string {
@@ -82,7 +105,7 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   indicator(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} rx={8} ry={8} />
+    return <rect width={shape.props.w} height={shape.props.h} rx={4} ry={4} />
   }
 }
 
@@ -119,26 +142,40 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     return task
   }, [activeTasks])
 
-  // Filter and sort agents
-  const aliveAgents = useMemo(() => {
-    return agents
-      .filter((a: any) => isAlive(a))
-      .map((a: any) => {
-        const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
-        return { ...a, _ts: ts }
-      })
-      .sort((a: any, b: any) => b._ts - a._ts)
+  // Categorize and sort agents
+  const { aliveAgents, staleAgents, deadAgents } = useMemo(() => {
+    const alive: any[] = []
+    const stale: any[] = []
+    const dead: any[] = []
+    for (const a of agents) {
+      if (a.human) continue
+      const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
+      const enriched = { ...a, _ts: ts }
+      const cat = agentCategory(a)
+      if (cat === 'alive') alive.push(enriched)
+      else if (cat === 'stale') stale.push(enriched)
+      else dead.push(enriched)
+    }
+    alive.sort((a: any, b: any) => b._ts - a._ts)
+    stale.sort((a: any, b: any) => b._ts - a._ts)
+    dead.sort((a: any, b: any) => b._ts - a._ts)
+    return { aliveAgents: alive, staleAgents: stale, deadAgents: dead.slice(0, 20) }
   }, [agents])
 
+  const [showDead, setShowDead] = useState(false)
+
   // Sync pill shapes as children of this shape
-  // Guard: only sync pills when the agent ID set actually changes
+  // Guards: agentIdSet change triggers create/delete, width change (>10px) triggers reposition
   const pillSyncRef = useRef<Set<string>>(new Set())
   const agentIdSet = useMemo(() => aliveAgents.map((a: any) => a.id).sort().join(','), [aliveAgents])
   const prevAgentIdSet = useRef('')
+  const prevW = useRef(w)
   useEffect(() => {
-    // Skip if agent set hasn't changed (prevents create→render→create loop)
-    if (agentIdSet === prevAgentIdSet.current) return
+    const wChanged = Math.abs(w - prevW.current) > 10
+    if (agentIdSet === prevAgentIdSet.current && !wChanged) return
     prevAgentIdSet.current = agentIdSet
+    prevW.current = w
+
     const existingPills = editor.getCurrentPageShapes()
       .filter((s: any) => s.type === 'fleet-pill' && s.parentId === shape.id)
 
@@ -149,13 +186,13 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
 
     const wantedKeys = new Set<string>()
     const toCreate: any[] = []
-    let yOffset = 32 // below header
+    let yOffset = HEADER_H
 
     for (const agent of aliveAgents) {
       const key = `agent:${agent.id}`
       wantedKeys.add(key)
-      const homeX = 22  // after status dot
-      const homeY = yOffset + 3  // vertically centered in row
+      const homeX = PILL_X_START
+      const homeY = yOffset + (ROW_H - PILL_H) / 2
 
       if (!existingByKey.has(key)) {
         const color = getNickColor(agent.id, agent.is_manager)
@@ -166,8 +203,8 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           x: homeX,
           y: homeY,
           props: {
-            w: 78,
-            h: 16,
+            w: PILL_AGENT_W,
+            h: PILL_H,
             pillType: 'agent',
             value: agent.id,
             displayName: agentDisplayName(agent),
@@ -193,51 +230,62 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         }
       }
 
-      // Label pills inline after agent name pill
+      // Label pills after task description area
       const labels: string[] = agent.labels || []
-      let labelX = homeX + 82 // after agent name pill
+      let labelX = Math.max(PILL_X_START + PILL_AGENT_W + PILL_GAP + 120, w * 0.65)
+      const maxLabelX = w - PILL_LABEL_W - 30
       for (const label of labels) {
-        const lKey = `label:${label}`
-        if (!wantedKeys.has(lKey)) {
-          wantedKeys.add(lKey)
-          const lHomeX = labelX
-          const lHomeY = homeY
-          if (!existingByKey.has(lKey)) {
-            toCreate.push({
-              id: createShapeId(),
-              type: 'fleet-pill',
+        if (labelX > maxLabelX) break
+        const lKey = `label:${agent.id}:${label}`
+        wantedKeys.add(lKey)
+        const lHomeX = labelX
+        const lHomeY = homeY
+        if (!existingByKey.has(lKey)) {
+          toCreate.push({
+            id: createShapeId(),
+            type: 'fleet-pill',
+            parentId: shape.id,
+            x: lHomeX,
+            y: lHomeY,
+            props: {
+              w: PILL_LABEL_W,
+              h: PILL_H,
+              pillType: 'label',
+              value: label,
+              displayName: label,
+              color: labelColor(label),
+            },
+            meta: {
               parentId: shape.id,
+              pillKey: lKey,
+              homeX: lHomeX,
+              homeY: lHomeY,
+              originalParentId: shape.id,
+            },
+          })
+        } else {
+          // Reposition existing label pill on width change
+          const existing = existingByKey.get(lKey)!
+          if (existing.meta?.homeX !== lHomeX) {
+            editor.updateShape({
+              id: existing.id,
+              type: 'fleet-pill',
               x: lHomeX,
               y: lHomeY,
-              props: {
-                w: 50,
-                h: 16,
-                pillType: 'label',
-                value: label,
-                displayName: label,
-                color: labelColor(label),
-              },
-              meta: {
-                parentId: shape.id,
-                pillKey: lKey,
-                homeX: lHomeX,
-                homeY: lHomeY,
-              },
+              meta: { ...existing.meta, homeX: lHomeX, homeY: lHomeY },
             })
           }
-          labelX += 54 // next label position
         }
+        labelX += PILL_LABEL_W + PILL_GAP
       }
 
-      yOffset += 30 // row height
+      yOffset += ROW_H
     }
 
-    // Create new pills
     if (toCreate.length > 0) {
       editor.createShapes(toCreate)
     }
 
-    // Remove pills for dead agents
     const toDelete = existingPills
       .filter((p: any) => !wantedKeys.has(p.meta?.pillKey as string))
       .map((p: any) => p.id)
@@ -246,11 +294,10 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     }
 
     pillSyncRef.current = wantedKeys
-  }, [agentIdSet, shape.id, editor])
+  }, [agentIdSet, w, shape.id, editor])
 
-  // Click handler — set filter on ALL fleet-chat shapes
+  // Click handler
   const handleClick = useCallback((agentId: string) => {
-    // Click only selects/highlights — drag sets filter
     setSelectedId(selectedId === agentId ? null : agentId)
   }, [selectedId])
 
@@ -259,7 +306,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'none', // let child pill shapes receive events
+        pointerEvents: 'none',
         overflow: 'hidden',
       }}
     >
@@ -270,56 +317,172 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 8,
-          fontSize: 11,
+          borderRadius: 4,
+          fontSize: 9,
           overflow: 'hidden',
+          fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
+          position: 'relative',
         }}
         onPointerDown={stopEventPropagation}
       >
-        {/* Header */}
-        <div style={{
-          padding: '6px 10px',
-          borderBottom: '1px solid rgba(128, 128, 128, 0.15)',
-          fontSize: 10,
-          fontWeight: 600,
-          opacity: 0.6,
+        {/* Close button */}
+        <button
+          className="fleet-close-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.deleteShapes([shape.id])
+          }}
+        >
+          ×
+        </button>
+
+        {/* Header row */}
+        <div className="fleet-agents-header" style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
+          height: HEADER_H,
+          padding: '0 8px',
+          borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+          fontSize: 9,
+          fontWeight: 600,
+          opacity: 0.4,
+          letterSpacing: '0.5px',
+          textTransform: 'uppercase',
           flexShrink: 0,
         }}>
-          <span style={{ fontSize: 12 }}>🤖</span>
-          <span>agents</span>
-          <span style={{ marginLeft: 'auto', fontWeight: 400, opacity: 0.5 }}>
-            {aliveAgents.length} online
-          </span>
+          <span style={{ width: 14 }} />
+          <span style={{ width: PILL_AGENT_W + PILL_GAP }}>Agent</span>
+          <span style={{ flex: 1 }}>Task</span>
+          <span style={{ width: 50, textAlign: 'right' }}>Labels</span>
+          <span style={{ width: 30, textAlign: 'right' }}>Seen</span>
         </div>
 
-        {/* Agent rows (info only — pills handle drag) */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '2px 0' }}>
-          {aliveAgents.length === 0 ? (
+        {/* Agent rows — scrollable */}
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+          {/* Alive section */}
+          {aliveAgents.length === 0 && staleAgents.length === 0 && deadAgents.length === 0 ? (
             <div style={{
               padding: '20px 8px',
-              opacity: 0.3,
+              opacity: 0.2,
               textAlign: 'center',
-              fontSize: 10,
+              fontSize: 9,
             }}>
-              No agents online
+              No agents
             </div>
           ) : (
-            aliveAgents.map((agent: any) => (
-              <AgentRow
-                key={agent.id}
-                agent={agent}
-                task={getTaskForAgent(agent.id)}
-                isSelected={selectedId === agent.id}
-                onClick={handleClick}
-              />
-            ))
+            <>
+              {aliveAgents.map((agent: any) => (
+                <AgentRow
+                  key={agent.id}
+                  agent={agent}
+                  task={getTaskForAgent(agent.id)}
+                  isSelected={selectedId === agent.id}
+                  onClick={handleClick}
+                />
+              ))}
+
+              {/* Stale section */}
+              {staleAgents.length > 0 && (
+                <>
+                  <SectionHeader label="stale" count={staleAgents.length} />
+                  {staleAgents.map((agent: any) => (
+                    <AgentRow
+                      key={agent.id}
+                      agent={agent}
+                      task={getTaskForAgent(agent.id)}
+                      isSelected={selectedId === agent.id}
+                      onClick={handleClick}
+                      dimmed
+                      showRespawn
+                    />
+                  ))}
+                </>
+              )}
+
+              {/* Dead section — collapsed by default */}
+              {deadAgents.length > 0 && (
+                <>
+                  <SectionHeader
+                    label="dead"
+                    count={deadAgents.length}
+                    collapsed={!showDead}
+                    onToggle={() => setShowDead(!showDead)}
+                  />
+                  {showDead && deadAgents.map((agent: any) => (
+                    <AgentRow
+                      key={agent.id}
+                      agent={agent}
+                      task={getTaskForAgent(agent.id)}
+                      isSelected={selectedId === agent.id}
+                      onClick={handleClick}
+                      dimmed
+                      showRespawn
+                    />
+                  ))}
+                </>
+              )}
+            </>
           )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          height: 20,
+          padding: '0 8px',
+          display: 'flex',
+          alignItems: 'center',
+          borderTop: '1px solid rgba(128, 128, 128, 0.08)',
+          fontSize: 9,
+          opacity: 0.25,
+          flexShrink: 0,
+        }}>
+          {aliveAgents.length} online
+          {staleAgents.length > 0 && <span style={{ marginLeft: 6 }}>· {staleAgents.length} stale</span>}
         </div>
       </div>
     </HTMLContainer>
+  )
+}
+
+function SectionHeader({
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  label: string
+  count: number
+  collapsed?: boolean
+  onToggle?: () => void
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '2px 8px',
+        fontSize: 8,
+        fontWeight: 600,
+        opacity: 0.3,
+        letterSpacing: '0.5px',
+        textTransform: 'uppercase',
+        borderTop: '1px solid rgba(128, 128, 128, 0.06)',
+        marginTop: 2,
+        cursor: onToggle ? 'pointer' : 'default',
+        userSelect: 'none',
+      }}
+      onPointerDown={(e) => stopEventPropagation(e)}
+      onPointerUp={(e) => {
+        stopEventPropagation(e)
+        onToggle?.()
+      }}
+    >
+      {onToggle && <span style={{ fontSize: 7 }}>{collapsed ? '▸' : '▾'}</span>}
+      <span>{label}</span>
+      <span style={{ opacity: 0.6 }}>({count})</span>
+    </div>
   )
 }
 
@@ -328,32 +491,39 @@ function AgentRow({
   task,
   isSelected,
   onClick,
+  dimmed,
+  showRespawn,
 }: {
   agent: any
   task: any
   isSelected: boolean
   onClick: (id: string) => void
+  dimmed?: boolean
+  showRespawn?: boolean
 }) {
   const ago = formatRelativeTime(agent._ts)
   const taskDesc = task?.title || task?.description || ''
+  const name = agentDisplayName(agent)
+  const color = getNickColor(agent.id, agent.is_manager)
 
   // Status dot: green if seen < 2min, yellow < 10min, dim otherwise
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const dotColor = secsAgo < 120 ? '#4ade80' : secsAgo < 600 ? '#c8b060' : '#555'
+  const dotColor = agent.dead
+    ? 'rgba(128,128,128,0.15)'
+    : secsAgo < 120 ? '#4ade80' : secsAgo < 600 ? '#c8b060' : 'rgba(128,128,128,0.3)'
 
   return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 6,
-        padding: '3px 8px',
+        gap: 4,
+        padding: '0 8px',
         cursor: 'pointer',
-        borderRadius: 3,
-        margin: '0 2px',
-        background: isSelected ? 'rgba(100, 140, 255, 0.15)' : 'transparent',
+        height: ROW_H,
+        background: isSelected ? 'rgba(100, 140, 255, 0.08)' : 'transparent',
         transition: 'background 0.1s',
-        height: 24,
+        opacity: dimmed ? 0.4 : 1,
       }}
       onPointerDown={(e) => {
         stopEventPropagation(e)
@@ -372,27 +542,75 @@ function AgentRow({
         flexShrink: 0,
       }} />
 
-      {/* Pill space — pills render here as child shapes */}
-      <div style={{ width: 80 + (agent.labels?.length || 0) * 54, flexShrink: 0 }} />
+      {/* Agent name — for alive agents, pills render here as child shapes.
+          For stale/dead, render inline text since they don't get pills. */}
+      {dimmed ? (
+        <div style={{
+          width: PILL_AGENT_W + PILL_GAP,
+          flexShrink: 0,
+          fontSize: 9,
+          fontWeight: 500,
+          color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          {name}
+        </div>
+      ) : (
+        <div style={{ width: PILL_AGENT_W + PILL_GAP, flexShrink: 0 }} />
+      )}
 
       {/* Task description */}
       <div style={{
         flex: 1,
         minWidth: 0,
         fontSize: 9,
-        opacity: 0.5,
+        opacity: 0.4,
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
       }}>
-        {taskDesc ? taskDesc.substring(0, 50) : ''}
+        {taskDesc ? taskDesc.substring(0, 40) : ''}
       </div>
+
+      {/* Respawn button or label pill space */}
+      {showRespawn ? (
+        <button
+          style={{
+            background: 'none',
+            border: '1px solid rgba(128,128,128,0.2)',
+            borderRadius: 3,
+            color: 'rgba(128,128,128,0.5)',
+            fontSize: 10,
+            padding: '0 4px',
+            cursor: 'pointer',
+            lineHeight: '16px',
+            flexShrink: 0,
+          }}
+          title="Respawn agent"
+          onPointerDown={(e) => stopEventPropagation(e)}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            respawnAgent(agent.id)
+          }}
+        >
+          ↻
+        </button>
+      ) : (
+        <div style={{
+          width: (agent.labels?.length || 0) * (PILL_LABEL_W + PILL_GAP),
+          flexShrink: 0,
+        }} />
+      )}
 
       {/* Last seen */}
       <span style={{
         fontSize: 9,
-        opacity: 0.35,
+        opacity: 0.25,
         flexShrink: 0,
+        width: 24,
+        textAlign: 'right',
       }}>
         {ago}
       </span>
