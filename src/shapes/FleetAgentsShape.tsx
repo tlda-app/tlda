@@ -325,9 +325,9 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           className="fleet-agents-header"
         >
           <span className="fleet-agents-col-name">Agent</span>
+          <span className="fleet-agents-col-seen">Seen</span>
           <span className="fleet-agents-col-task">Task</span>
           <span className="fleet-agents-col-labels">Labels</span>
-          <span className="fleet-agents-col-seen">Seen</span>
         </div>
 
         {/* Agent rows — scrollable; stopEventPropagation so pill drag works here */}
@@ -422,6 +422,9 @@ function AgentRow({
         {name}
       </span>
 
+      {/* Seen */}
+      <span className="fleet-agents-col-seen">{ago}</span>
+
       {/* Task */}
       <span className="fleet-agents-col-task" title={taskDesc}>
         {taskDesc ? taskDesc.substring(0, 50) : ''}
@@ -453,9 +456,6 @@ function AgentRow({
           </button>
         )}
       </span>
-
-      {/* Seen */}
-      <span className="fleet-agents-col-seen">{ago}</span>
     </div>
   )
 }

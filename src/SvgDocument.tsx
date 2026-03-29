@@ -858,15 +858,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             licenseKey={LICENSE_KEY}
           />
         )}
-        {editorRef.current && (
-          <FleetHUD
-            mainEditor={editorRef.current}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-          />
-        )}
       </div>
+      {editorRef.current && (
+        <FleetHUD
+          mainEditor={editorRef.current}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+        />
+      )}
     </div>
   )
 

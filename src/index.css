@@ -19,9 +19,10 @@ body {
 }
 
 /* Bottom-left panels (rendered inside InFrontOfTheCanvas for proper TLDraw event handling) */
+/* Stacks above tldraw watermark — column grows upward from bottom */
 .bottom-panels {
   position: fixed;
-  bottom: 16px;
+  bottom: 44px;
   left: 16px;
   z-index: 1000;
   display: flex;

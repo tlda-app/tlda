@@ -68,11 +68,11 @@
   zoom: 0.6;
 }
 
-/* Tone down tldraw watermark to match our subtle UI style */
+/* Tone down tldraw watermark to match fleet pills visual salience */
 [class*="watermark"] {
-  opacity: 0.35 !important;
+  opacity: 0.12 !important;
   bottom: max(6px, env(safe-area-inset-bottom)) !important;
-  left: max(52px, env(safe-area-inset-left)) !important;
+  left: max(16px, env(safe-area-inset-left)) !important;
   right: auto !important;
 }
 /* Move the unlicensed "get a license" button to top-left so it doesn't overlap build pill */
