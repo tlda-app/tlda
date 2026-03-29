@@ -598,7 +598,7 @@
   overflow-y: auto;
 }
 
-/* --- File cards --- */
+/* --- File cards (draggable → doc pill on canvas) --- */
 .fleet-chat-shape .md-file-card {
   display: inline-flex;
   align-items: center;
@@ -609,19 +609,22 @@
   padding: 1px 6px;
   font-size: 10px;
   color: var(--blue);
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
 }
 .fleet-chat-shape .md-file-chip {
   font-weight: 500;
 }
 
-/* --- TLDA card --- */
+/* --- TLDA card (draggable → doc pill on canvas) --- */
 .fleet-chat-shape .tlda-card {
   margin: 8px auto;
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
   width: 80%;
+  cursor: grab;
+  touch-action: none;
 }
 .fleet-chat-shape .tlda-card-header {
   display: flex;
