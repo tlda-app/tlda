@@ -1497,16 +1497,12 @@ html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
   color: rgba(255, 255, 255, 0.4);
 }
 
-/* Phone highlighter button — bottom right */
+/* Highlighter button — bottom right, desktop + mobile */
 .phone-hl-btn {
-  display: none;
-}
-
-body.phone-mode .phone-hl-btn {
   display: flex;
   position: fixed;
-  bottom: calc(24px + env(safe-area-inset-bottom));
-  right: calc(16px + env(safe-area-inset-right));
+  bottom: 16px;
+  right: 16px;
   z-index: 10001;
   width: 44px;
   height: 44px;
@@ -1521,10 +1517,19 @@ body.phone-mode .phone-hl-btn {
   padding: 0;
   transition: background 0.15s, opacity 0.15s;
   touch-action: none;
+  opacity: 0.15;
+}
+.phone-hl-btn:hover {
   opacity: 0.5;
 }
 
-body.phone-mode .phone-hl-btn.active {
+body.phone-mode .phone-hl-btn {
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  right: calc(16px + env(safe-area-inset-right));
+  opacity: 0.5;
+}
+
+.phone-hl-btn.active {
   background: var(--hl-color, #ffc940);
   color: white;
   opacity: 0.85;
