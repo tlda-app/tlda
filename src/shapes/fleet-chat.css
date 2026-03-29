@@ -1021,11 +1021,12 @@
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
-  width: 24px;
+  width: 28px;
   flex-shrink: 0;
   text-align: right;
   font-size: 9px;
   opacity: 0.4;
+  margin-right: 8px;
 }
 
 /* --- Draggable pills in table --- */
@@ -1171,4 +1172,15 @@
   padding: 0 0.6em 0 0.2em;
   margin: 0 -0.6em 0 -0.2em;
   color: transparent;
+}
+
+/* Thinking indicator */
+.chat-thinking {
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.chat-thinking .thinking-text {
+  color: var(--text-dim, #888);
 }

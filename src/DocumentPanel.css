@@ -1529,10 +1529,15 @@ body.phone-mode .phone-hl-btn {
   opacity: 0.5;
 }
 
+/* Show selected color as subtle ring when inactive */
+.phone-hl-btn {
+  box-shadow: inset 0 0 0 2px var(--hl-color, transparent);
+}
 .phone-hl-btn.active {
   background: var(--hl-color, #ffc940);
   color: white;
   opacity: 0.85;
+  box-shadow: none;
 }
 
 /* Phone highlighter color slider — appears above button during drag */

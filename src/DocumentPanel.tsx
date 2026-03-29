@@ -369,7 +369,7 @@ function PhoneHighlighterButton() {
       <button
         ref={btnRef}
         className={`phone-hl-btn${isActive ? ' active' : ''}`}
-        style={isActive ? { '--hl-color': activeColor } as React.CSSProperties : undefined}
+        style={{ '--hl-color': activeColor } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
