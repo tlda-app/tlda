@@ -77,6 +77,26 @@ export function FleetHUD({
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
 
+  // Track fleet shapes' screen-space horizontal position when expanded
+  // When the user pans the main editor, the HUD shifts to stay aligned with the document margin
+  const [hudLeft, setHudLeft] = useState(0)
+  useEffect(() => {
+    if (!expanded || !fleetBounds) return
+    let rafId: number
+    let lastCamX = mainEditor.getCamera().x
+    const poll = () => {
+      const cam = mainEditor.getCamera()
+      if (cam.x !== lastCamX || hudLeft === 0) {
+        lastCamX = cam.x
+        const screenX = (fleetBounds.x + cam.x) * cam.z
+        setHudLeft(screenX)
+      }
+      rafId = requestAnimationFrame(poll)
+    }
+    rafId = requestAnimationFrame(poll)
+    return () => cancelAnimationFrame(rafId)
+  }, [mainEditor, expanded, fleetBounds])
+
   // Lock state — check if fleet shapes are locked
   const [isLocked, setIsLocked] = useState(true)
   useEffect(() => {
@@ -119,7 +139,7 @@ export function FleetHUD({
 
   // Expanded: CanvasClipPanel with fleet region
   return (
-    <div className="fleet-hud-wrap">
+    <div className="fleet-hud-wrap" style={{ left: hudLeft }}>
       <div className="fleet-hud-controls">
         <button
           className="fleet-hud-lock"

@@ -116,7 +116,7 @@ function FleetContainerComponent({ shape }: { shape: any }) {
         style={{
           width: '100%',
           height: '100%',
-          borderRadius: 6,
+          borderRadius: 0,
           border: '1px solid rgba(128, 128, 128, 0.1)',
           position: 'relative',
         }}

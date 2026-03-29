@@ -45,6 +45,7 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
+  scratch: 'tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -68,7 +69,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -267,6 +268,72 @@ async function cmdBook() {
 
   const server = getServer()
   console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+}
+
+async function cmdScratch() {
+  const filePath = getPositional(0)
+  if (!filePath) {
+    console.error('Usage: tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]')
+    process.exit(1)
+  }
+
+  const absPath = resolve(filePath)
+  if (!existsSync(absPath)) {
+    console.error(red(`File not found: ${absPath}`))
+    process.exit(1)
+  }
+
+  const fileName = basename(absPath)
+  if (!fileName.endsWith('.md')) {
+    console.error(red('File must be a .md markdown file.'))
+    process.exit(1)
+  }
+
+  const dir = dirname(absPath)
+  const stem = fileName.replace(/\.md$/, '')
+  const name = `scratch-${stem}`
+  const bookName = getFlag('book') || 'fleet-workspace'
+
+  // Extract title from first heading if not provided
+  let title = getFlag('title')
+  if (!title) {
+    const content = readFileSync(absPath, 'utf8')
+    const headingMatch = content.match(/^#\s+(.+)$/m)
+    title = headingMatch ? headingMatch[1].trim() : stem
+  }
+
+  console.log(dim(`  File: ${absPath}`))
+  console.log(dim(`  Project: ${name}`))
+  console.log(dim(`  Title: ${title}`))
+
+  // Create or update markdown project
+  try {
+    await api('POST', '/api/projects', { name, title, mainFile: fileName, format: 'markdown', sourceDir: dir })
+    console.log(green(`Created scratch project "${name}".`))
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      console.log(`Project "${name}" exists, pushing update.`)
+    } else {
+      throw e
+    }
+  }
+
+  // Push the file
+  const content = readFileSync(absPath)
+  const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
+  await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+  console.log(green('Pushed.'))
+
+  // Auto-join book
+  try {
+    await api('PATCH', `/api/projects/${bookName}/members`, { add: name })
+    console.log(dim(`  Joined book "${bookName}"`))
+  } catch (e) {
+    console.log(dim(`  Book "${bookName}": ${e.message}`))
+  }
+
+  const server = getServer()
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${bookName}`)}`)
 }
 
 async function cmdCreate() {
@@ -1720,6 +1787,7 @@ async function main() {
   try {
     switch (command) {
       case 'server': await cmdServer(); break
+      case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
@@ -1753,6 +1821,7 @@ async function main() {
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server
   create <name>  Create project (or update existing), upload files, build
+  scratch <file> Publish scratch .md to fleet-workspace book
   book <name>    Create a book grouping existing docs (--members doc1,doc2,...)
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server

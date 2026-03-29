@@ -131,16 +131,17 @@ export function linkifyDocRefs(html: string): string {
     parts.push({ text: html.slice(lastIdx), isTag: false })
   }
 
-  // Track nesting to skip inside <a>, <code>, <pre> tags
+  // Track nesting to skip inside <a>, <code>, <pre>, and existing doc-link spans
   let skipDepth = 0
   const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
-  const SKIP_CLOSE = /^<\/(a|code|pre)>/i
+  const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
+  const DOC_LINK_OPEN = /^<span\s[^>]*class="[^"]*doc-link/i
 
   const result: string[] = []
   for (const part of parts) {
     if (part.isTag) {
-      if (SKIP_OPEN.test(part.text)) skipDepth++
-      else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      if (SKIP_OPEN.test(part.text) || DOC_LINK_OPEN.test(part.text)) skipDepth++
+      else if (SKIP_CLOSE.test(part.text) && skipDepth > 0) skipDepth = Math.max(0, skipDepth - 1)
       result.push(part.text)
       continue
     }
@@ -181,6 +182,140 @@ export function linkifyDocRefs(html: string): string {
 
 function escAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+// --- Arrow ref links: [->label] and [->Display Name] ---
+
+export interface LabelRegionInfo {
+  page: number
+  yTop: number
+  yBottom: number
+  type: string
+  displayLabel: string
+}
+
+/**
+ * Post-process rendered HTML to convert [->ref] syntax into clickable doc links.
+ * Supports both LaTeX labels ([->eq:riesz-rep]) and display names ([->Theorem 3.2]).
+ *
+ * In the HTML, the `>` in `->` may be escaped as `&gt;` by markdown-it.
+ */
+export function linkifyArrowRefs(
+  html: string,
+  labelRegions: Record<string, LabelRegionInfo>,
+): string {
+  if (!html.includes('-&gt;') && !html.includes('->')) return html
+
+  // Build reverse index: displayLabel → label (case-insensitive)
+  const displayToLabel = new Map<string, string>()
+  for (const [label, info] of Object.entries(labelRegions)) {
+    if (info.displayLabel && info.displayLabel !== label) {
+      displayToLabel.set(info.displayLabel.toLowerCase(), label)
+    }
+  }
+
+  // Match [->...] where > may be &gt;
+  const ARROW_RE = /\[-(?:&gt;|>)([^\]]+)\]/g
+
+  // Process text segments outside HTML tags (same approach as linkifyDocRefs)
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) {
+      parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    }
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) {
+    parts.push({ text: html.slice(lastIdx), isTag: false })
+  }
+
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre)>/i
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (SKIP_OPEN.test(part.text)) skipDepth++
+      else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      result.push(part.text)
+      continue
+    }
+
+    if (skipDepth > 0) {
+      result.push(part.text)
+      continue
+    }
+
+    // Replace arrow refs in text
+    ARROW_RE.lastIndex = 0
+    let cursor = 0
+    let m: RegExpExecArray | null
+    let modified = false
+
+    while ((m = ARROW_RE.exec(part.text)) !== null) {
+      modified = true
+      if (m.index > cursor) {
+        result.push(part.text.slice(cursor, m.index))
+      }
+
+      const inner = m[1].trim()
+      let label: string | null = null
+      let info: LabelRegionInfo | null = null
+      let displayText: string
+
+      // Try as exact label first
+      if (labelRegions[inner]) {
+        label = inner
+        info = labelRegions[inner]
+        displayText = info.displayLabel !== inner ? info.displayLabel : inner
+      } else {
+        // Try as display name (case-insensitive)
+        const matchedLabel = displayToLabel.get(inner.toLowerCase())
+        if (matchedLabel && labelRegions[matchedLabel]) {
+          label = matchedLabel
+          info = labelRegions[matchedLabel]
+          displayText = inner // Use the user's original text
+        } else {
+          // No match — render as plain text
+          displayText = inner
+        }
+      }
+
+      if (info && label) {
+        const attrs = [
+          `class="doc-link"`,
+          `data-ref-type="label"`,
+          `data-ref-label="${escAttr(label)}"`,
+          `data-ref-page="${info.page}"`,
+          `data-ref-y-top="${info.yTop}"`,
+          `data-ref-y-bottom="${info.yBottom}"`,
+        ]
+        result.push(`<span ${attrs.join(' ')}>${escAttr(displayText)}</span>`)
+      } else {
+        // Unresolved — render as styled but non-clickable
+        result.push(`<span class="doc-link doc-link-unresolved">${escAttr(displayText)}</span>`)
+      }
+
+      cursor = m.index + m[0].length
+    }
+
+    if (modified) {
+      if (cursor < part.text.length) {
+        result.push(part.text.slice(cursor))
+      }
+    } else {
+      result.push(part.text)
+    }
+  }
+
+  return result.join('')
 }
 
 // --- Reference resolution ---

@@ -25,7 +25,7 @@ import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, sendMe
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
-import { linkifyDocRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef } from '../docLinks'
+import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import './fleet-chat.css'
 
@@ -161,9 +161,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)
+  const [labelRegions, setLabelRegions] = useState<Record<string, LabelRegionInfo>>({})
   useEffect(() => {
     if (!doc?.docName) return
     loadLookup(doc.docName).then(setLookup)
+    // Load proof-info.json for label regions (arrow refs)
+    const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
+    const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
+    fetch(`${base}docs/${doc.docName}/proof-info.json?t=${Date.now()}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.labelRegions) setLabelRegions(data.labelRegions)
+      })
+      .catch(() => {})
   }, [doc?.docName])
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
@@ -243,7 +253,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
-    let html = doc ? linkifyDocRefs(renderedHtml) : renderedHtml
+    let html = renderedHtml
+    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
+    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
+    if (doc && Object.keys(labelRegions).length > 0) {
+      html = linkifyArrowRefs(html, labelRegions)
+    }
+    if (doc) html = linkifyDocRefs(html)
     // Turn «type:label» reference tokens into chips with hover preview
     html = html.replace(/«(.+?)»/g, (match, inner) => {
       const token = `«${inner}»`
@@ -258,19 +274,31 @@ function FleetChatComponent({ shape }: { shape: any }) {
       return `<span class="ref-chip">${displayEsc}${preview}</span>`
     })
     return html
-  }, [renderedHtml, doc])
+  }, [renderedHtml, doc, labelRegions])
 
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
     const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
-    if (!target || !doc || !refResolver) return
+    if (!target || !doc) return
 
-    const refType = target.dataset.refType as DocRef['type']
-    const refValue = target.dataset.refValue || ''
-    const envType = target.dataset.envType
+    const refType = target.dataset.refType
 
-    const ref: DocRef = { type: refType, value: refValue, text: target.textContent || '', envType }
-    const resolved = refResolver(ref)
+    let resolved: ResolvedRef | null = null
+
+    if (refType === 'label') {
+      // Label-based ref — page/y are in data attributes
+      const page = parseInt(target.dataset.refPage || '')
+      const yTop = parseFloat(target.dataset.refYTop || '')
+      if (!isNaN(page)) {
+        resolved = { page, pdfY: !isNaN(yTop) ? yTop : undefined }
+      }
+    } else if (refResolver) {
+      const refValue = target.dataset.refValue || ''
+      const envType = target.dataset.envType
+      const ref: DocRef = { type: refType as DocRef['type'], value: refValue, text: target.textContent || '', envType }
+      resolved = refResolver(ref)
+    }
+
     if (!resolved) return
 
     const canvasPos = refToCanvas(resolved, doc.pages, PDF_HEIGHT)
@@ -299,16 +327,29 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     function onMouseOver(e: MouseEvent) {
       const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
-      if (!target || !doc || !refResolver) return
+      if (!target || !doc) return
+      // Skip unresolved arrow refs
+      if (target.classList.contains('doc-link-unresolved')) return
 
       // Debounce slightly to avoid flicker
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = setTimeout(() => {
-        const refType = target.dataset.refType as DocRef['type']
-        const refValue = target.dataset.refValue || ''
-        const envType = target.dataset.envType
-        const ref: DocRef = { type: refType, value: refValue, text: target.textContent || '', envType }
-        const resolved = refResolver(ref)
+        const refType = target.dataset.refType
+
+        let resolved: ResolvedRef | null = null
+
+        if (refType === 'label') {
+          const page = parseInt(target.dataset.refPage || '')
+          const yTop = parseFloat(target.dataset.refYTop || '')
+          if (!isNaN(page)) {
+            resolved = { page, pdfY: !isNaN(yTop) ? yTop : undefined }
+          }
+        } else if (refResolver) {
+          const refValue = target.dataset.refValue || ''
+          const envType = target.dataset.envType
+          const ref: DocRef = { type: refType as DocRef['type'], value: refValue, text: target.textContent || '', envType }
+          resolved = refResolver(ref)
+        }
         if (!resolved) return
 
         // Convert screen coords → shape-local coords
@@ -360,12 +401,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [agents])
 
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
+  // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
   const pillOverKey = useValue('pill-over', () => {
     const pills = editor.getCurrentPageShapes().filter(s => s.type === 'fleet-pill')
     if (pills.length === 0) return ''
     const myBounds = editor.getShapePageBounds(shape.id)
     if (!myBounds) return ''
     for (const pill of pills) {
+      const props = (pill as any).props
+      if (props.pillType !== 'agent' && props.pillType !== 'label') continue
       const pb = editor.getShapePageBounds(pill.id)
       if (!pb) continue
       const cx = pb.x + pb.w / 2
@@ -373,7 +417,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
           cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
         const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
-        return `${role}\0${(pill as any).props.value}\0${(pill as any).props.displayName}`
+        return `${role}\0${props.value}\0${props.displayName}`
       }
     }
     return ''
@@ -699,7 +743,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 8,
+          borderRadius: 0,
           fontSize: 11,
           overflow: 'visible',
           fontFamily: "'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
@@ -795,7 +839,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             <InputHighlightUnderlay inputRef={inputRef} />
             <textarea
               ref={inputRef as any}
-              placeholder={sendTargets.length > 0 ? `Message ${sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(', ')}...` : 'Message...'}
+              placeholder={sendTargets.length > 0 ? `→ ${sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(', ')}` : ''}
               rows={1}
               onKeyDown={(e) => {
                 stopEventPropagation(e)

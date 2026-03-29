@@ -299,7 +299,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 4,
+          borderRadius: 0,
           fontSize: 9,
           overflow: 'hidden',
           fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
@@ -324,7 +324,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         <div
           className="fleet-agents-header"
         >
-          <span className="fleet-agents-col-dot" />
           <span className="fleet-agents-col-name">Agent</span>
           <span className="fleet-agents-col-task">Task</span>
           <span className="fleet-agents-col-labels">Labels</span>
@@ -408,21 +407,16 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const dotColor = agent.dead
-    ? 'rgba(128,128,128,0.15)'
-    : secsAgo < 120 ? '#4ade80' : secsAgo < 600 ? '#c8b060' : 'rgba(128,128,128,0.3)'
+  const nameOpacity = agent.dead ? 0.3 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.5 : 0.3
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}`}>
-      {/* Status dot */}
-      <div className="fleet-agents-col-dot">
-        <span className="fleet-agents-dot" style={{ background: dotColor }} />
-      </div>
+      {/* Status dot — removed, activity shown via name opacity */}
 
-      {/* Agent name — draggable */}
+      {/* Agent name — draggable, opacity reflects activity */}
       <span
         className="fleet-agents-col-name fleet-agents-pill"
-        style={{ color }}
+        style={{ color, opacity: nameOpacity }}
         onPointerDown={(e) => onStartDrag(e, 'agent', agent.id, name, color)}
       >
         {name}

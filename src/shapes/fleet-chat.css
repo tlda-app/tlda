@@ -34,6 +34,10 @@
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
 }
+.fleet-search-shape input::placeholder {
+  color: var(--text-dim, #8888a0);
+  opacity: 0.6;
+}
 
 
 /* --- Send hint (target + enter indicator) --- */
@@ -884,6 +888,12 @@
 .fleet-chat-shape .doc-link:hover {
   opacity: 0.8;
 }
+.fleet-chat-shape .doc-link-unresolved {
+  color: inherit;
+  opacity: 0.5;
+  border-bottom-style: dashed;
+  cursor: default;
+}
 
 /* --- Document link hover preview --- */
 .fleet-chat-shape .doc-link-preview {
@@ -974,19 +984,6 @@
 
 /* --- Column widths --- */
 
-.fleet-agents-shape .fleet-agents-col-dot {
-  width: 14px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-}
-.fleet-agents-shape .fleet-agents-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: block;
-}
-
 .fleet-agents-shape .fleet-agents-col-name {
   width: 80px;
   flex-shrink: 0;
@@ -1043,6 +1040,7 @@
   white-space: nowrap;
   cursor: grab;
   touch-action: none;
+  opacity: 0.75;
 }
 
 /* --- Section headers (stale) --- */

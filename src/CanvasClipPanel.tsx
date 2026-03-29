@@ -144,7 +144,6 @@ export function CanvasClipPanel({
     editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
 
     // Lock camera pan/zoom if requested (fleet HUD)
-    // Use constraints instead of isLocked so shapes can still receive pointer events
     if (lockCamera) {
       editor.setCameraOptions({
         constraints: {
@@ -155,7 +154,7 @@ export function CanvasClipPanel({
           initialZoom: 'fit-x',
           baseZoom: 'fit-x',
         },
-        zoomSteps: [1, 1], // lock zoom to 1× baseZoom (which is fit-x)
+        zoomSteps: [1, 1],
       })
     }
   }, [editor, bounds, panelWidth, lockCamera])

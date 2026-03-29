@@ -136,7 +136,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 8,
+          borderRadius: 0,
           fontSize: 11,
           overflow: 'hidden',
           fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
