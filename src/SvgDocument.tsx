@@ -30,7 +30,7 @@ import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { FleetContainerShapeUtil } from './shapes/FleetContainerShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
-import { BrowseTool } from './tools/BrowseTool'
+import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
@@ -1160,26 +1160,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 saveSession()
               })
 
-              // Browse bounce-back: when the select tool deselects everything
-              // in an interactive doc, return to browse mode. The browse tool delegates
-              // to select for note interaction; this closes the loop.
-              if (getFormatConfig(document.format).browseBounce) {
-                let bounceTimer: ReturnType<typeof setTimeout> | null = null
-                react('browse-bounce', () => {
-                  const tool = editor.getCurrentToolId()
-                  const sel = editor.getSelectedShapeIds()
-                  if (bounceTimer) { clearTimeout(bounceTimer); bounceTimer = null }
-                  if (tool === 'select' && sel.length === 0) {
-                    // Small delay: don't bounce during transient states (mid-click)
-                    bounceTimer = setTimeout(() => {
-                      if (editor.getCurrentToolId() === 'select' &&
-                          editor.getSelectedShapeIds().length === 0) {
-                        editor.setCurrentTool('browse')
-                      }
-                    }, 300)
-                  }
-                })
-              }
+              // Browse bounce-back removed — BrowseTool now subclasses SelectTool
+              // and handles fleet/HTML routing in its own Idle state. No tool switching needed.
             }, 500)
           }
 

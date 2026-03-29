@@ -618,11 +618,12 @@
 
 /* --- TLDA card (draggable → doc pill on canvas) --- */
 .fleet-chat-shape .tlda-card {
-  margin: 8px auto;
+  margin: 4px 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
-  width: 80%;
+  width: 100%;
+  max-height: 150px;
   cursor: grab;
   touch-action: none;
 }
