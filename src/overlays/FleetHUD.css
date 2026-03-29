@@ -37,6 +37,10 @@
   background: transparent !important;
   pointer-events: none;
 }
+/* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
+.fleet-hud-wrap [class*="watermark"] {
+  display: none !important;
+}
 /* Only the actual fleet shape content captures events */
 .fleet-hud-wrap .fleet-shape,
 .fleet-hud-wrap .fleet-chat-shape,
