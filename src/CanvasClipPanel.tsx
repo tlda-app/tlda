@@ -63,9 +63,10 @@ export function CanvasClipPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // One-way sync: main store → copy store
+  // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
-    const unsub = mainEditor.store.listen(({ changes }) => {
+    // main → copy
+    const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isDocRecord(record)) store.put([record])
@@ -80,7 +81,25 @@ export function CanvasClipPanel({
         }
       })
     }, { source: 'all', scope: 'document' })
-    return unsub
+
+    // copy → main (reverse sync for shape edits made in the panel)
+    const unsubCopy = store.listen(({ changes }) => {
+      mainEditor.store.mergeRemoteChanges(() => {
+        for (const record of Object.values(changes.added)) {
+          if (isDocRecord(record)) mainEditor.store.put([record])
+        }
+        for (const [, to] of Object.values(changes.updated)) {
+          if (isDocRecord(to)) mainEditor.store.put([to])
+        }
+        for (const record of Object.values(changes.removed)) {
+          if (isDocRecord(record)) {
+            try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
+          }
+        }
+      })
+    }, { source: 'all', scope: 'document' })
+
+    return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store])
 
   // Apply camera constraints when bounds change
@@ -141,22 +160,37 @@ export function CanvasClipPanel({
     }
   }, [editor, bounds, panelWidth, lockCamera])
 
-  // Wheel to pan vertically (disabled when camera is locked — let shapes handle scroll)
+  // Wheel handling — two modes:
+  // Normal panels: wheel pans the camera vertically
+  // Locked camera (fleet HUD): deltaY scrolls .fleet-chat-log, deltaX pans fleet shapes
+  // Both modes preventDefault to block Safari back-gesture on horizontal swipe
   const canvasRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (lockCamera) return // fleet shapes handle their own scroll
     const el = canvasRef.current
     if (!el || !editor) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      const cam = editor.getCamera()
-      const dy = e.deltaY / cam.z
-      editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
+      if (lockCamera) {
+        // Vertical: scroll the chat log inside the fleet shape
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          const chatLog = el.querySelector('.fleet-chat-log') as HTMLElement | null
+          if (chatLog) chatLog.scrollTop += e.deltaY
+        }
+        // Horizontal: pan main editor camera so HUD viewport shifts
+        if (Math.abs(e.deltaX) > 0) {
+          const cam = mainEditor.getCamera()
+          mainEditor.setCamera({ x: cam.x - e.deltaX / cam.z, y: cam.y, z: cam.z })
+        }
+      } else {
+        const cam = editor.getCamera()
+        const dy = e.deltaY / cam.z
+        editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
+      }
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [editor, lockCamera])
+  }, [editor, lockCamera, mainEditor])
 
   // Panel height: at least 5 lines, at most maxHeightFraction of viewport
   const canvasHeight = useMemo(() => {

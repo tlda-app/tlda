@@ -6,6 +6,7 @@
  * unmounts the current editor and mounts the new one.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -99,6 +100,15 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
+
+  // Empty book (no resolvable members): show blank canvas
+  if (members.length === 0) {
+    return (
+      <div className="book-viewer" style={{ position: 'fixed', inset: 0 }}>
+        <Tldraw />
+      </div>
+    )
+  }
 
   return (
     <BookContext.Provider value={ctx}>

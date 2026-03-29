@@ -22,6 +22,18 @@ export const chatInsertBus = new EventTarget()
 export const refStore = new Map<string, { type: string; label: string; content: string }>()
 
 /**
+ * Module-level state for filter overlay drop preview.
+ * When a pill is hovering over the filter overlay, this stores the computed
+ * preview so dropPillOnTarget can apply the exact previewed filter on release.
+ */
+export const filterDropPreview = {
+  shapeId: null as string | null,
+  toPreview: null as [string, string][][] | null,
+  fromPreview: null as [string, string][][] | null,
+  activePaneRole: null as 'to' | 'from' | null,
+}
+
+/**
  * Drop a pill value on whatever is under the given page position.
  * - Agent/label pills over fleet-chat → update filter
  * - Content pills over fleet-chat → insert text into that chat's input
@@ -48,6 +60,11 @@ export function dropPillOnTarget(
   }
 
   if (hitShape && hitShape.type === 'fleet-chat') {
+    // Locked shapes silently ignore updateShape — temporarily unlock for programmatic updates
+    const wasLocked = hitShape.isLocked
+    if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat', isLocked: false })
+    const relockChat = () => { if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat', isLocked: true }) }
+
     // Content pill → insert reference chip token into target chat's input
     if (content) {
       // Build a short token: <<type:label>>
@@ -64,6 +81,26 @@ export function dropPillOnTarget(
     }
 
     // Agent/label pill → modify filter
+    // If the filter overlay is open and has a preview, use its computed filter
+    if (filterDropPreview.shapeId === hitShape.id && filterDropPreview.activePaneRole) {
+      const preview = filterDropPreview.activePaneRole === 'to'
+        ? filterDropPreview.toPreview
+        : filterDropPreview.fromPreview
+      if (preview) {
+        editor.updateShape({
+          id: hitShape.id,
+          type: 'fleet-chat',
+          props: { filter: preview },
+        })
+        relockChat()
+        chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
+          detail: { chatId: hitShape.id },
+        }))
+        return
+      }
+    }
+
+    // Fallback: no overlay open — use position-based role (top half = to, bottom half = from)
     const chatBounds = editor.getShapePageBounds(hitShape.id)
     const role = chatBounds && pagePoint.y > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
 
@@ -88,6 +125,10 @@ export function dropPillOnTarget(
       type: 'fleet-chat',
       props: { ...(hitShape as any).props, filter: newFilter },
     })
+    relockChat()
+    chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
+      detail: { chatId: hitShape.id },
+    }))
   } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat matching current lock state
     const fleetShapes = editor.getCurrentPageShapes().filter(s =>
@@ -134,6 +175,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => false
   override canBind = () => false
+  override canSnap = () => false
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
@@ -158,10 +200,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     return (
       <HTMLContainer
         style={{
-          width: shape.props.w,
-          height: shape.props.h,
           pointerEvents: 'none',
           overflow: 'visible',
+          width: 0,
+          height: 0,
         }}
       >
         <div
@@ -170,16 +212,17 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             display: 'inline-flex',
             alignItems: 'center',
             padding: '1px 6px',
-            borderRadius: 2,
-            background: color,
-            color: '#fff',
+            borderRadius: 3,
+            border: `1px solid ${color}60`,
+            background: `${color}15`,
+            color: color,
             fontSize: 9,
             fontWeight: 500,
             cursor: 'grab',
             whiteSpace: 'nowrap',
             userSelect: 'none',
             lineHeight: '14px',
-            position: 'relative',
+            fontFamily: "'SF Mono', Menlo, Consolas, monospace",
           }}
         >
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -190,7 +233,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     )
   }
 
-  indicator(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} rx={3} ry={3} />
+  indicator() {
+    return null
   }
 }

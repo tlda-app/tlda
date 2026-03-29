@@ -18,8 +18,11 @@ export default defineConfig({
       allow: ['..'],
     },
     proxy: {
-      // Fleet SSE endpoint
-      '/events': 'http://localhost:5199',
+      // Fleet WebSocket endpoint
+      '/ws/fleet': {
+        target: 'ws://localhost:5199',
+        ws: true,
+      },
       // tlda-specific API routes → tlda server
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',

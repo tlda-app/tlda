@@ -22,15 +22,16 @@ import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, refStore } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
-import { linkifyDocRefs, buildRefResolver, refToCanvas, type DocRef } from '../docLinks'
-import { PDF_HEIGHT } from '../layoutConstants'
+import { linkifyDocRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef } from '../docLinks'
+import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
+
 
 // --- Markdown renderer using markdown-it + KaTeX ---
 
@@ -152,6 +153,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
+  const [filterOpenByPill, setFilterOpenByPill] = useState(false)
 
 
   // DNF filter: [[a,b],[c]] means (a AND b) OR c
@@ -275,8 +277,71 @@ function FleetChatComponent({ shape }: { shape: any }) {
     if (!canvasPos) return
 
     e.stopPropagation()
+    setDocLinkHover(null) // dismiss preview on click
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
   }, [doc, refResolver, editor])
+
+  // Hover preview for doc-link spans
+  const shapeContainerRef = useRef<HTMLDivElement>(null)
+  const [docLinkHover, setDocLinkHover] = useState<{
+    resolved: ResolvedRef
+    /** Anchor position in shape-local coordinates */
+    localX: number
+    localY: number
+    localW: number
+    text: string
+  } | null>(null)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function onMouseOver(e: MouseEvent) {
+      const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
+      if (!target || !doc || !refResolver) return
+
+      // Debounce slightly to avoid flicker
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = setTimeout(() => {
+        const refType = target.dataset.refType as DocRef['type']
+        const refValue = target.dataset.refValue || ''
+        const envType = target.dataset.envType
+        const ref: DocRef = { type: refType, value: refValue, text: target.textContent || '', envType }
+        const resolved = refResolver(ref)
+        if (!resolved) return
+
+        // Convert screen coords → shape-local coords
+        const containerEl = shapeContainerRef.current
+        if (!containerEl) return
+        const containerRect = containerEl.getBoundingClientRect()
+        const anchorRect = target.getBoundingClientRect()
+        const zoom = containerRect.width / w  // screen px per local px
+        const localX = (anchorRect.left - containerRect.left) / zoom
+        const localY = (anchorRect.top - containerRect.top) / zoom
+        const localW = anchorRect.width / zoom
+
+        setDocLinkHover({ resolved, localX, localY, localW, text: target.textContent || '' })
+      }, 150)
+    }
+
+    function onMouseOut(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      if (!target.closest('.doc-link')) return
+      const related = e.relatedTarget as HTMLElement | null
+      if (related?.closest('.doc-link-preview')) return
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+      setDocLinkHover(null)
+    }
+
+    logEl.addEventListener('mouseover', onMouseOver)
+    logEl.addEventListener('mouseout', onMouseOut)
+    return () => {
+      logEl.removeEventListener('mouseover', onMouseOver)
+      logEl.removeEventListener('mouseout', onMouseOut)
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    }
+  }, [doc, refResolver, w])
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -319,15 +384,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return { role, value, displayName }
   }, [pillOverKey])
 
-  // Preview of what filter will look like after drop
-  const dropPreview = useMemo(() => {
-    if (!pillOver) return null
-    const newTerm: [string, string] = [pillOver.role, pillOver.value]
-    if (filter.length === 0) return [[newTerm]]
-    const lastClause = filter[filter.length - 1]
-    if (lastClause.some(([r, l]) => r === pillOver.role && l === pillOver.value)) return filter
-    return [...filter.slice(0, -1), [...lastClause, newTerm]]
-  }, [pillOver, filter])
+  // Auto-open filter overlay when pill hovers over this chat
+  useEffect(() => {
+    if (pillOver && !filterOpen) {
+      setFilterOpenByPill(true)
+      setFilterOpen(true)
+    } else if (!pillOver && filterOpenByPill) {
+      setFilterOpenByPill(false)
+      setFilterOpen(false)
+    }
+  }, [!!pillOver])
 
   // Derive send targets: unique agents in "to" clauses only
   const sendTargets = useMemo(() => {
@@ -602,8 +668,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
       ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
       ta.focus()
     }
+    const filterHandler = (e: Event) => {
+      const { chatId } = (e as CustomEvent).detail
+      if (chatId !== shape.id) return
+      setFilterOpen(false)
+      setFilterOpenByPill(false)
+    }
     chatInsertBus.addEventListener('insert', handler)
-    return () => chatInsertBus.removeEventListener('insert', handler)
+    chatInsertBus.addEventListener('filter-applied', filterHandler)
+    return () => {
+      chatInsertBus.removeEventListener('insert', handler)
+      chatInsertBus.removeEventListener('filter-applied', filterHandler)
+    }
   }, [shape.id])
 
   return (
@@ -616,6 +692,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       }}
     >
       <div
+        ref={shapeContainerRef}
         className="fleet-shape fleet-chat-shape"
         style={{
           width: '100%',
@@ -631,106 +708,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Drop overlay — visible when pill is dragged over this chat */}
-        {pillOver && (
-          <div style={{
-            position: 'absolute',
-            inset: 0,
-            zIndex: 20,
-            display: 'flex',
-            flexDirection: 'column',
-            borderRadius: 8,
-            overflow: 'hidden',
-            pointerEvents: 'none',
-          }}>
-            {/* Top zone: "to" */}
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: pillOver.role === 'to'
-                ? 'rgba(122, 158, 200, 0.15)'
-                : 'rgba(128, 128, 128, 0.04)',
-              borderBottom: '1px solid rgba(128, 128, 128, 0.15)',
-              transition: 'background 0.1s',
-            }}>
-              <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                to
-              </span>
-              {pillOver.role === 'to' && dropPreview && (
-                <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3, justifyContent: 'center', padding: '0 10px' }}>
-                  {dropPreview.map((clause, ci) => (
-                    <span key={ci} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                      {ci > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>or</span>}
-                      {clause.map(([role, label], ti) => (
-                        <span key={ti} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          {ti > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>+</span>}
-                          <span style={{
-                            padding: '0 4px',
-                            borderRadius: 2,
-                            background: role === pillOver.role && label === pillOver.value
-                              ? 'rgba(122, 158, 200, 0.3)'
-                              : 'rgba(128, 128, 128, 0.12)',
-                            fontSize: 9,
-                            lineHeight: '14px',
-                          }}>
-                            <span style={{ opacity: 0.4, marginRight: 2 }}>{role}:</span>
-                            {agentNames[label] || label.replace('fleet:', '')}
-                          </span>
-                        </span>
-                      ))}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* Bottom zone: "from" */}
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: pillOver.role === 'from'
-                ? 'rgba(122, 184, 160, 0.15)'
-                : 'rgba(128, 128, 128, 0.04)',
-              transition: 'background 0.1s',
-            }}>
-              <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                from
-              </span>
-              {pillOver.role === 'from' && dropPreview && (
-                <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3, justifyContent: 'center', padding: '0 10px' }}>
-                  {dropPreview.map((clause, ci) => (
-                    <span key={ci} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                      {ci > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>or</span>}
-                      {clause.map(([role, label], ti) => (
-                        <span key={ti} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          {ti > 0 && <span style={{ fontSize: 8, opacity: 0.3 }}>+</span>}
-                          <span style={{
-                            padding: '0 4px',
-                            borderRadius: 2,
-                            background: role === pillOver.role && label === pillOver.value
-                              ? 'rgba(122, 184, 160, 0.3)'
-                              : 'rgba(128, 128, 128, 0.12)',
-                            fontSize: 9,
-                            lineHeight: '14px',
-                          }}>
-                            <span style={{ opacity: 0.4, marginRight: 2 }}>{role}:</span>
-                            {agentNames[label] || label.replace('fleet:', '')}
-                          </span>
-                        </span>
-                      ))}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* Close + filter edit buttons */}
         <button
           className="fleet-close-btn"
@@ -786,6 +763,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
           )}
         </div>
+
+        {/* Doc-link hover preview — positioned relative to shape container */}
+        {docLinkHover && doc && (
+          <DocLinkPreview
+            resolved={docLinkHover.resolved}
+            localX={docLinkHover.localX}
+            localY={docLinkHover.localY}
+            text={docLinkHover.text}
+            docName={doc.docName}
+            shapeW={w}
+            onDismiss={() => setDocLinkHover(null)}
+          />
+        )}
 
         {/* Input */}
         <div style={{
@@ -929,6 +919,85 @@ function FleetChatComponent({ shape }: { shape: any }) {
   )
 }
 
+/** Floating preview panel — shows a clipped SVG region on doc-link hover */
+function DocLinkPreview({
+  resolved,
+  localX,
+  localY,
+  text,
+  docName,
+  shapeW,
+  onDismiss,
+}: {
+  resolved: ResolvedRef
+  localX: number
+  localY: number
+  text: string
+  docName: string
+  shapeW: number
+  onDismiss: () => void
+}) {
+  // Compute the SVG region to show (in PDF coordinates)
+  const PREVIEW_H_PDF = 150
+  const pdfY = resolved.pdfY ?? PDF_HEIGHT * 0.3
+  const yTop = Math.max(0, pdfY - PREVIEW_H_PDF / 2)
+  const yBottom = Math.min(PDF_HEIGHT, yTop + PREVIEW_H_PDF)
+
+  // SVG URL
+  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
+  const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
+  const svgUrl = `${base}docs/${docName}/page-${resolved.page}.svg`
+
+  // Preview dimensions — fit within the shape width
+  const PREVIEW_W = Math.min(320, shapeW - 16)
+  const scale = PREVIEW_W / PDF_WIDTH
+  const previewH = (yBottom - yTop) * scale
+  const labelH = 20
+
+  // Position above the hovered link, clamped to shape bounds
+  const left = Math.max(4, Math.min(localX, shapeW - PREVIEW_W - 4))
+  const top = localY - previewH - labelH - 6
+
+  return (
+    <div
+      className="doc-link-preview"
+      style={{
+        position: 'absolute',
+        left,
+        top: Math.max(0, top),
+        width: PREVIEW_W,
+        zIndex: 50,
+      }}
+      onMouseLeave={onDismiss}
+    >
+      <div className="doc-link-preview-label">
+        <span>{text}</span>
+        <span className="doc-link-preview-page">p.{resolved.page}</span>
+      </div>
+      <div
+        className="doc-link-preview-clip"
+        style={{
+          width: PREVIEW_W,
+          height: previewH,
+          overflow: 'hidden',
+        }}
+      >
+        <img
+          src={svgUrl}
+          alt=""
+          style={{
+            display: 'block',
+            width: PREVIEW_W,
+            height: PDF_HEIGHT * scale,
+            transform: `translateY(${-yTop * scale}px)`,
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
 function SendHint({
   filter,
   sendTargets,
@@ -998,6 +1067,50 @@ function SendHint({
 }
 
 /** Filter overlay — uses native click listeners to bypass tldraw event interception */
+/** Simplify a DNF expression: dedup within groups, dedup identical groups, absorption */
+function simplifyDnf(dnf: [string, string][][]): [string, string][][] {
+  // Dedup within each AND group
+  let groups = dnf.map(g => {
+    const seen = new Set<string>()
+    return g.filter(([r, l]) => {
+      const key = `${r}\0${l}`
+      if (seen.has(key)) return false
+      seen.add(key); return true
+    })
+  })
+  // Dedup identical OR groups
+  const seenGroups = new Set<string>()
+  groups = groups.filter(g => {
+    const key = g.map(([r, l]) => `${r}\0${l}`).sort().join('\n')
+    if (seenGroups.has(key)) return false
+    seenGroups.add(key); return true
+  })
+  // Absorption: if group A ⊆ group B, drop B (A is less restrictive)
+  return groups.filter((g, i) =>
+    !groups.some((other, j) => i !== j && other.length < g.length &&
+      other.every(([r, l]) => g.some(([gr, gl]) => gr === r && gl === l)))
+  )
+}
+
+/** Build preview DNF: add a new term at andGroupIdx (AND) or as new OR clause (andGroupIdx < 0) */
+function buildFilterPreview(
+  filter: [string, string][][],
+  role: string,
+  value: string,
+  andGroupIdx: number,
+): [string, string][][] {
+  const newTerm: [string, string] = [role, value]
+  if (filter.length === 0) return [[newTerm]]
+  // Already exists in the target group?
+  if (andGroupIdx >= 0 && filter[andGroupIdx]) {
+    if (filter[andGroupIdx].some(([r, l]) => r === role && l === value)) return filter
+    const result = filter.map((cl, i) => i === andGroupIdx ? [...cl, newTerm] : cl)
+    return simplifyDnf(result)
+  }
+  // New OR clause
+  return simplifyDnf([...filter, [newTerm]])
+}
+
 function FilterOverlay({
   filter,
   agentNames,
@@ -1072,55 +1185,191 @@ function FilterOverlay({
     const shapeBounds = editor.getShapePageBounds(shapeId)
     if (!shapeBounds || cx < shapeBounds.x || cx > shapeBounds.x + shapeBounds.w ||
         cy < shapeBounds.y || cy > shapeBounds.y + shapeBounds.h) return ''
-    const role = cy < shapeBounds.y + shapeBounds.h / 2 ? 'to' : 'from'
-    return `${role}\0${pill.props.value}\0${pill.props.displayName}`
+    return `${pill.props.value}\0${pill.props.displayName}`
   }, [editor, shapeId])
 
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
-    const [role, value, displayName] = pillOverKey.split('\0')
-    return { role, value, displayName }
+    const [value, displayName] = pillOverKey.split('\0')
+    return { value, displayName }
   }, [pillOverKey])
 
-  // Compute preview DNF for both roles
+  // AND-group hover detection via pill shape position vs DOM bounding rects.
+  // Pointer events don't work during drag because FleetAgentsShape holds pointer capture.
+  // Instead, poll the pill's screen position each frame and check against clause box rects.
+  const toPaneRef = useRef<HTMLDivElement>(null)
+  const fromPaneRef = useRef<HTMLDivElement>(null)
+
+  // AND-group hover detection with hysteresis to prevent oscillation.
+  // Once hovering a group, stick to it until the pill clearly leaves (EXIT_PAD away).
+  // Enter a group with ENTER_PAD tolerance.
+  const lastGroupRef = useRef<{ pane: string; idx: number; rect: DOMRect } | null>(null)
+
+  const hoveredGroup = useValue('filter-hovered-group', () => {
+    if (!pillOver) { lastGroupRef.current = null; return null }
+    const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
+    if (pills.length === 0) { lastGroupRef.current = null; return null }
+    const pill = pills[0]
+    const pb = editor.getShapePageBounds(pill.id)
+    if (!pb) return null
+    const screenPt = editor.pageToScreen({ x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 })
+
+    const ENTER_PAD = 8
+    const EXIT_PAD = 30
+
+    // If we have a sticky group, check if pill is still near it
+    const last = lastGroupRef.current
+    if (last) {
+      const r = last.rect
+      if (screenPt.x >= r.x - EXIT_PAD && screenPt.x <= r.x + r.width + EXIT_PAD &&
+          screenPt.y >= r.y - EXIT_PAD && screenPt.y <= r.y + r.height + EXIT_PAD) {
+        return { pane: last.pane as 'to' | 'from', idx: last.idx }
+      }
+      lastGroupRef.current = null
+    }
+
+    // Check each pane
+    for (const [pane, ref] of [['to', toPaneRef], ['from', fromPaneRef]] as const) {
+      const paneEl = ref.current
+      if (!paneEl) continue
+      const paneRect = paneEl.getBoundingClientRect()
+      if (screenPt.x < paneRect.x || screenPt.x > paneRect.x + paneRect.width ||
+          screenPt.y < paneRect.y || screenPt.y > paneRect.y + paneRect.height) continue
+      // Inside this pane — check clause boxes
+      const clauseEls = paneEl.querySelectorAll('.fleet-filter-and-group')
+      let foundIdx = -1
+      for (let i = 0; i < clauseEls.length; i++) {
+        const r = clauseEls[i].getBoundingClientRect()
+        if (screenPt.x >= r.x - ENTER_PAD && screenPt.x <= r.x + r.width + ENTER_PAD &&
+            screenPt.y >= r.y - ENTER_PAD && screenPt.y <= r.y + r.height + ENTER_PAD) {
+          foundIdx = i
+          lastGroupRef.current = { pane, idx: i, rect: DOMRect.fromRect(r) }
+          break
+        }
+      }
+      return { pane, idx: foundIdx }
+    }
+    return null
+  }, [editor, pillOver])
+
+  // Compute preview DNF for each pane based on hovered AND group
+  const toGroupIdx = hoveredGroup?.pane === 'to' ? hoveredGroup.idx : -1
+  const fromGroupIdx = hoveredGroup?.pane === 'from' ? hoveredGroup.idx : -1
+
   const toPreview = useMemo(() => {
     if (!pillOver) return null
-    const newTerm: [string, string] = ['to', pillOver.value]
-    const lastClause = filter.length > 0 ? filter[filter.length - 1] : []
-    if (lastClause.some(([r, l]) => r === 'to' && l === pillOver.value)) return filter
-    if (filter.length === 0) return [[newTerm]]
-    return [...filter.slice(0, -1), [...lastClause, newTerm]]
-  }, [pillOver, filter])
+    return buildFilterPreview(filter, 'to', pillOver.value, toGroupIdx)
+  }, [pillOver, filter, toGroupIdx])
 
   const fromPreview = useMemo(() => {
     if (!pillOver) return null
-    const newTerm: [string, string] = ['from', pillOver.value]
-    const lastClause = filter.length > 0 ? filter[filter.length - 1] : []
-    if (lastClause.some(([r, l]) => r === 'from' && l === pillOver.value)) return filter
-    if (filter.length === 0) return [[newTerm]]
-    return [...filter.slice(0, -1), [...lastClause, newTerm]]
-  }, [pillOver, filter])
+    return buildFilterPreview(filter, 'from', pillOver.value, fromGroupIdx)
+  }, [pillOver, filter, fromGroupIdx])
 
-  // Render a DNF expression inline
-  function renderDnf(dnf: [string, string][][], highlight?: { role: string; value: string }) {
-    return dnf.map((clause, ci) => (
-      <span key={ci} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-        {ci > 0 && <span className="fleet-filter-or-inline">or</span>}
-        {clause.map(([role, label], ti) => {
-          const isHighlight = highlight && role === highlight.role && label === highlight.value
-          return (
-            <span key={ti} className={`fleet-filter-term${isHighlight ? ' fleet-filter-term-preview' : ''}`}>
-              {ti > 0 && <span className="fleet-filter-and">+</span>}
-              <span className={`fleet-filter-role fleet-filter-role-${role}`}>{role}</span>
-              <span className="fleet-filter-label">{agentNames[label] || label.replace('fleet:', '')}</span>
-              {!isHighlight && (
-                <span className="fleet-filter-term-x" data-clause={ci} data-term={ti}>×</span>
-              )}
-            </span>
-          )
-        })}
+  // Highlight index: if hovering a group, that group; if new OR clause, the last group
+  const toHighlightIdx = toGroupIdx >= 0 ? toGroupIdx : (toPreview && toPreview.length > filter.length ? toPreview.length - 1 : -1)
+  const fromHighlightIdx = fromGroupIdx >= 0 ? fromGroupIdx : (fromPreview && fromPreview.length > filter.length ? fromPreview.length - 1 : -1)
+
+  // Publish preview state so dropPillOnTarget can apply the right filter on release
+  useEffect(() => {
+    if (pillOver) {
+      filterDropPreview.shapeId = shapeId
+      filterDropPreview.toPreview = toPreview
+      filterDropPreview.fromPreview = fromPreview
+      filterDropPreview.activePaneRole = hoveredGroup?.pane ?? null
+    } else {
+      filterDropPreview.shapeId = null
+      filterDropPreview.toPreview = null
+      filterDropPreview.fromPreview = null
+      filterDropPreview.activePaneRole = null
+    }
+    return () => {
+      filterDropPreview.shapeId = null
+      filterDropPreview.toPreview = null
+      filterDropPreview.fromPreview = null
+      filterDropPreview.activePaneRole = null
+    }
+  }, [pillOver, toPreview, fromPreview, hoveredGroup, shapeId])
+
+  // Render a single chip (role:label) — matches dashboard's chipHtml
+  function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
+    const display = agentNames[label] || label.replace('fleet:', '')
+    return (
+      <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
+        <span className="fleet-filter-chip-role">{role}:</span>
+        <span className="fleet-filter-chip-label">{display}</span>
+        {opts?.x && (
+          <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>
+        )}
       </span>
-    ))
+    )
+  }
+
+  // Render AND group box — vertical stack of chips, matching dashboard's .filter-and-group
+  function renderAndGroup(
+    clause: [string, string][],
+    ci: number,
+    opts?: { highlight?: boolean; ghostRole?: string; ghostValue?: string; showX?: boolean },
+  ) {
+    const cls = opts?.highlight
+      ? 'fleet-filter-and-group fleet-filter-and-group-highlight'
+      : 'fleet-filter-and-group fleet-filter-and-group-normal'
+    return (
+      <div className={cls} data-group-idx={ci}>
+        {clause.map(([role, label], ti) => (
+          <div key={ti}>
+            {renderChip(role, label, opts?.showX ? { x: { ci, ti } } : undefined)}
+          </div>
+        ))}
+        {opts?.ghostRole && opts?.ghostValue && (
+          <div>{renderChip(opts.ghostRole, opts.ghostValue, { ghost: true })}</div>
+        )}
+      </div>
+    )
+  }
+
+  // Render full DNF as AND group boxes separated by "or"
+  function renderDnfExpression(
+    dnf: [string, string][][],
+    opts?: {
+      showX?: boolean
+      highlightIdx?: number
+      ghostRole?: string
+      ghostValue?: string
+    },
+  ) {
+    const groups = dnf.map((clause, ci) => {
+      const isHighlighted = opts?.highlightIdx === ci
+      return (
+        <div key={ci} className="fleet-filter-group-row">
+          {ci > 0 && <span className="fleet-filter-or-sep">or</span>}
+          {renderAndGroup(clause, ci, {
+            highlight: isHighlighted,
+            ghostRole: isHighlighted ? opts?.ghostRole : undefined,
+            ghostValue: isHighlighted ? opts?.ghostValue : undefined,
+            showX: opts?.showX,
+          })}
+        </div>
+      )
+    })
+
+    // Show new OR group when ghosting and not highlighting any existing group
+    const showNewGroup = opts?.ghostRole && opts?.ghostValue &&
+      (opts?.highlightIdx === undefined || opts?.highlightIdx < 0) && dnf.length > 0
+
+    return (
+      <div className="fleet-filter-group-container">
+        {groups}
+        {showNewGroup && (
+          <div className="fleet-filter-group-row">
+            <span className="fleet-filter-or-sep">or</span>
+            <div className="fleet-filter-and-group fleet-filter-and-group-highlight">
+              {renderChip(opts!.ghostRole!, opts!.ghostValue!, { ghost: true })}
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -1128,17 +1377,31 @@ function FilterOverlay({
       {pillOver ? (
         /* Two-pane drop preview: top = to, bottom = from */
         <div className="fleet-filter-drop-panes">
-          <div className={`fleet-filter-drop-pane fleet-filter-pane-to${pillOver.role === 'to' ? ' fleet-filter-pane-active' : ''}`}>
+          <div
+            ref={toPaneRef}
+            className={`fleet-filter-drop-pane fleet-filter-pane-to${hoveredGroup?.pane === 'to' ? ' fleet-filter-pane-active' : ''}`}
+          >
             <span className="fleet-filter-pane-label">to</span>
-            <div className="fleet-filter-pane-dnf">
-              {toPreview && renderDnf(toPreview, { role: 'to', value: pillOver.value })}
-            </div>
+            {toPreview ? renderDnfExpression(toPreview, {
+              highlightIdx: toHighlightIdx,
+            }) : (
+              <div className="fleet-filter-and-group fleet-filter-and-group-highlight">
+                {renderChip('to', pillOver.value, { ghost: true })}
+              </div>
+            )}
           </div>
-          <div className={`fleet-filter-drop-pane fleet-filter-pane-from${pillOver.role === 'from' ? ' fleet-filter-pane-active' : ''}`}>
+          <div
+            ref={fromPaneRef}
+            className={`fleet-filter-drop-pane fleet-filter-pane-from${hoveredGroup?.pane === 'from' ? ' fleet-filter-pane-active' : ''}`}
+          >
             <span className="fleet-filter-pane-label">from</span>
-            <div className="fleet-filter-pane-dnf">
-              {fromPreview && renderDnf(fromPreview, { role: 'from', value: pillOver.value })}
-            </div>
+            {fromPreview ? renderDnfExpression(fromPreview, {
+              highlightIdx: fromHighlightIdx,
+            }) : (
+              <div className="fleet-filter-and-group fleet-filter-and-group-highlight">
+                {renderChip('from', pillOver.value, { ghost: true })}
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -1149,32 +1412,16 @@ function FilterOverlay({
             <span className="fleet-filter-overlay-close">×</span>
           </div>
           {filter.length === 0 ? (
-            <div style={{ opacity: 0.3, fontSize: 10, padding: '20px 0', textAlign: 'center' }}>
+            <div className="fleet-filter-empty">
               No filter — drag agent pills here
             </div>
           ) : (
-            <div className="fleet-filter-dnf">
-              {filter.map((clause, ci) => (
-                <div key={ci} className="fleet-filter-clause">
-                  {ci > 0 && <div className="fleet-filter-or">OR</div>}
-                  <div className="fleet-filter-clause-terms">
-                    {clause.map(([role, label], ti) => (
-                      <span key={ti} className="fleet-filter-term">
-                        {ti > 0 && <span className="fleet-filter-and">+</span>}
-                        <span className={`fleet-filter-role fleet-filter-role-${role}`}>{role}</span>
-                        <span className="fleet-filter-label">{agentNames[label] || label.replace('fleet:', '')}</span>
-                        <span className="fleet-filter-term-x" data-clause={ci} data-term={ti}>×</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {filter.length > 0 && (
-            <div style={{ borderTop: '1px solid rgba(128,128,128,0.1)', paddingTop: 4, marginTop: 4 }}>
-              <span className="fleet-filter-clear">Clear all</span>
-            </div>
+            <>
+              {renderDnfExpression(filter, { showX: true })}
+              <div className="fleet-filter-footer">
+                <span className="fleet-filter-clear">Clear all</span>
+              </div>
+            </>
           )}
         </>
       )}

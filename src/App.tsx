@@ -206,11 +206,6 @@ function App() {
         })
         .filter((m): m is BookMember => m !== null)
 
-      if (members.length === 0) {
-        setState({ phase: 'error', message: `Book "${docName}" has no loadable members.` })
-        return
-      }
-
       setState({ phase: 'book', bookName: docName, members })
       return
     }

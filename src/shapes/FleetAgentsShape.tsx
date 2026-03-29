@@ -129,6 +129,7 @@ function usePillDrag() {
     color: string,
   ) => {
     stopEventPropagation(e)
+    e.preventDefault()
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
 
@@ -155,17 +156,24 @@ function usePillDrag() {
       if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
       drag.started = true
 
-      // Create ephemeral pill at current pointer position
+      // Create ephemeral pill — size shape bounds to match rendered chip content
       const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const measureEl = document.createElement('span')
+      measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+      measureEl.textContent = drag.displayName
+      document.body.appendChild(measureEl)
+      const pw = measureEl.offsetWidth
+      const ph = measureEl.offsetHeight
+      document.body.removeChild(measureEl)
       const pillId = createShapeId()
       editor.createShape({
         id: pillId,
         type: 'fleet-pill',
-        x: pagePos.x - 35,
-        y: pagePos.y - 9,
+        x: pagePos.x - pw / 2,
+        y: pagePos.y - ph / 2,
         props: {
-          w: 70,
-          h: 18,
+          w: pw,
+          h: ph,
           pillType: drag.pillType,
           value: drag.value,
           displayName: drag.displayName,
@@ -177,11 +185,14 @@ function usePillDrag() {
 
     if (drag.pillId) {
       const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const pillShape = editor.getShape(drag.pillId as any) as any
+      const pw = pillShape?.props?.w || 70
+      const ph = pillShape?.props?.h || 18
       editor.updateShape({
         id: drag.pillId as any,
         type: 'fleet-pill',
-        x: pagePos.x - 35,
-        y: pagePos.y - 9,
+        x: pagePos.x - pw / 2,
+        y: pagePos.y - ph / 2,
       })
     }
   }, [editor])

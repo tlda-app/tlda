@@ -27,6 +27,7 @@ import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
+import { FleetContainerShapeUtil } from './shapes/FleetContainerShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool'
@@ -41,7 +42,7 @@ import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
-import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext, FleetHUDContext } from './PanelContext'
+import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
@@ -107,10 +108,6 @@ function AgentPillSlot() {
   return <>{content}</>
 }
 
-function FleetHUDSlot() {
-  const content = useContext(FleetHUDContext)
-  return <>{content}</>
-}
 
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
@@ -643,7 +640,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetHUDSlot /><FleetLockOverlay /><HighlighterSlider /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetLockOverlay /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -719,7 +716,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetContainerShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
@@ -861,27 +858,26 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             licenseKey={LICENSE_KEY}
           />
         )}
+        {editorRef.current && (
+          <FleetHUD
+            mainEditor={editorRef.current}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+          />
+        )}
       </div>
     </div>
   )
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
-  const fleetHUDContent = editorRef.current ? (
-    <FleetHUD
-      mainEditor={editorRef.current}
-      shapeUtils={shapeUtils}
-      tools={tools}
-      licenseKey={LICENSE_KEY}
-    />
-  ) : null
 
   return (
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
-    <FleetHUDContext.Provider value={fleetHUDContent}>
     <Tldraw
         store={storeWithStatus}
         licenseKey={LICENSE_KEY}
@@ -1234,7 +1230,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <TocDropTargetManager />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
-    </FleetHUDContext.Provider>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>

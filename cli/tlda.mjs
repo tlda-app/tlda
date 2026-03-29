@@ -1659,6 +1659,61 @@ async function ensureServer() {
   await cmdServer('start')
 }
 
+// --- Fleet dev setup ---
+
+async function cmdFleetDev() {
+  const snapshotPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'projects', 'fleet-dev', 'sync-snapshot.json')
+  const projectPath = join(dirname(snapshotPath), 'project.json')
+
+  if (!existsSync(projectPath)) {
+    console.error('fleet-dev project not found. Run from the tlda repo root.')
+    process.exit(1)
+  }
+
+  // Reset sync snapshot to known-good test state
+  const snapshot = {
+    tombstoneHistoryStartsAtClock: 0,
+    documentClock: 100,
+    documents: [
+      // Blank page (800x1035, standard SVG page size)
+      rec('shape:fleet-dev-page-0', 'svg-page', 0, 0, { w: 800, h: 1035, pageIndex: 0 }, 'a1', true),
+      // Agents panel — right of page
+      rec('shape:fleet-dev-agents', 'fleet-agents', 860, 0, { w: 340, h: 400 }, 'a2'),
+      // Chat with multi-clause filter: (to:alice AND from:bob) OR (to:carol)
+      rec('shape:fleet-dev-chat-filtered', 'fleet-chat', 860, 420, {
+        w: 400, h: 600,
+        filter: [[['to', 'fleet:alice'], ['from', 'fleet:bob']], [['to', 'fleet:carol']]],
+      }, 'a3'),
+      // Chat with no filter
+      rec('shape:fleet-dev-chat-empty', 'fleet-chat', 1280, 420, { w: 400, h: 600, filter: [] }, 'a4'),
+      // Search
+      rec('shape:fleet-dev-search', 'fleet-search', 1280, 0, { w: 380, h: 400 }, 'a5'),
+    ],
+  }
+  writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2))
+  console.log(green('Reset fleet-dev sync snapshot.'))
+
+  // Restart server so it loads the fresh snapshot
+  console.log(dim('  Restarting server...'))
+  try {
+    await api('POST', '/api/admin/restart', {})
+  } catch {
+    // Server may not have this endpoint — manual restart
+  }
+  console.log(dim('  If shapes look stale: tlda server stop && tlda server start'))
+
+  const server = getServer()
+  console.log(`\n  ${server}/?doc=fleet-dev\n`)
+  console.log(dim('  Click the page in TOC to zoom to the fleet shapes area.'))
+
+  function rec(id, type, x, y, props, index, locked = false) {
+    return {
+      state: { id, type, typeName: 'shape', x, y, rotation: 0, isLocked: locked, opacity: 1, meta: {}, props, parentId: 'page:page', index },
+      lastChangedClock: parseInt(id.replace(/\D/g, '').slice(-1)) || 1,
+    }
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -1691,6 +1746,7 @@ async function main() {
       case 'auth': await cmdAuth(); break
       case 'remotes': await cmdRemotes(); break
       case 'config': await cmdConfig(); break
+      case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       default:
         console.log(`tlda — tlda CLI
 

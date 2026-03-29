@@ -1,12 +1,31 @@
-/* FleetHUD — floating panel showing fleet shapes region */
+/* FleetHUD — toggle pill + expanded panel */
 
+/* Collapsed pill — sits in the build-pills-row */
+.fleet-pill-container {
+  position: relative;
+  pointer-events: all;
+}
+
+.fleet-pill {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: color 0.3s;
+}
+
+.fleet-pill:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Expanded HUD — full overlay with fleet shapes */
 .fleet-hud-wrap {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 999; /* below toolbar (1000) so toolbar stays clickable */
+  z-index: 999;
   pointer-events: none;
 }
 
@@ -20,34 +39,24 @@
   background: transparent !important;
   pointer-events: none;
 }
-/* Only the actual fleet shape content captures events — everything else passes through */
+/* Only the actual fleet shape content captures events */
 .fleet-hud-wrap .fleet-shape,
 .fleet-hud-wrap .fleet-chat-shape,
 .fleet-hud-wrap .fleet-agents-shape {
   pointer-events: auto;
 }
 
-.fleet-hud-label {
-  display: none;
-}
-
-.fleet-hud-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.fleet-hud-count {
-  font-size: 8px;
-  color: rgba(100, 100, 100, 0.4);
-  flex-shrink: 0;
-}
-
-.fleet-hud-lock {
+.fleet-hud-controls {
   position: absolute;
   top: 0;
   left: 0;
+  display: flex;
+  gap: 2px;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.fleet-hud-lock {
   border: none;
   background: none;
   font-size: 13px;
@@ -56,8 +65,6 @@
   line-height: 1;
   opacity: 0.15;
   transition: opacity 0.2s;
-  pointer-events: auto;
-  z-index: 1000;
 }
 .fleet-hud-lock:hover {
   opacity: 0.6;
@@ -66,29 +73,27 @@
 .fleet-hud-close {
   border: none;
   background: none;
-  color: rgba(100, 100, 100, 0.4);
-  font-size: 11px;
+  color: rgba(100, 100, 100, 0.15);
+  font-size: 14px;
   cursor: pointer;
-  padding: 0 2px;
-  line-height: 20px;
-  flex-shrink: 0;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: color 0.2s;
 }
 .fleet-hud-close:hover {
-  color: rgba(100, 100, 100, 0.8);
+  color: rgba(100, 100, 100, 0.6);
 }
 
 /* Dark mode */
-html[data-theme="dark"] .fleet-hud-label {
-  color: rgba(255, 255, 255, 0.25);
-  background: transparent;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+html[data-theme="dark"] .fleet-pill {
+  color: rgba(255, 255, 255, 0.1);
 }
-html[data-theme="dark"] .fleet-hud-count {
-  color: rgba(255, 255, 255, 0.15);
+html[data-theme="dark"] .fleet-pill:hover {
+  color: rgba(255, 255, 255, 0.6);
 }
 html[data-theme="dark"] .fleet-hud-close {
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.15);
 }
 html[data-theme="dark"] .fleet-hud-close:hover {
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.6);
 }
