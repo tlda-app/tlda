@@ -134,14 +134,25 @@ export function dropPillOnTarget(
     // Doc pill dropped on canvas → share if needed, then navigate
     const pill = editor.getShape(pillId) as any
     const docValue = pill.props.value as string // "file:/path" or "doc:name"
+    // Navigate to doc: dispatch event for BookViewer to handle in-place,
+    // or open in new tab if we're not in the right book
+    const openDoc = (docName: string) => {
+      // Try in-place navigation via BookViewer event
+      const notHandled = window.dispatchEvent(new CustomEvent('fleet-open-doc', {
+        detail: { docName, book: 'fleet-workspace' },
+        cancelable: true,
+      }))
+      // dispatchEvent returns false if preventDefault was called (= handled)
+      if (notHandled) {
+        const url = new URL(window.location.href)
+        url.searchParams.set('doc', 'fleet-workspace')
+        url.hash = docName
+        window.open(url.toString(), '_blank')
+      }
+    }
     if (docValue.startsWith('doc:')) {
-      // Already a tlda project — just navigate
-      const docName = docValue.slice(4)
-      const url = new URL(window.location.href)
-      url.searchParams.set('doc', docName)
-      window.location.href = url.toString()
+      openDoc(docValue.slice(4))
     } else if (docValue.startsWith('file:')) {
-      // Raw file — use fleet server's share-file endpoint to create project + push
       const filePath = docValue.slice(5)
       ;(async () => {
         try {
@@ -151,10 +162,7 @@ export function dropPillOnTarget(
             body: JSON.stringify({ path: filePath, book: 'fleet-workspace' }),
           })
           const data = await res.json()
-          const docName = data?.doc || 'fleet-workspace'
-          const url = new URL(window.location.href)
-          url.searchParams.set('doc', docName)
-          window.location.href = url.toString()
+          openDoc(data?.doc || 'fleet-workspace')
         } catch (e) {
           console.error('[fleet] Failed to share file:', e)
         }
