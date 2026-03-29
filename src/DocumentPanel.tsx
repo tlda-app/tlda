@@ -205,6 +205,9 @@ const HL_SLOTS: { id: string; color: string; label: string }[] = [
   { id: 'yellow', color: '#ffc940', label: 'explain' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
+  { id: 'zone-toggle', color: '#666', label: 'zone' },
+  { id: 'select', color: '#666', label: 'browse' },
+  { id: 'draw', color: '#666', label: 'pen' },
 ]
 
 function PhoneHighlighterButton() {
@@ -228,18 +231,34 @@ function PhoneHighlighterButton() {
     return () => { editor.off('change', update) }
   }, [editor])
 
+  const [zoneEnabled, setZoneEnabled] = useState(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
+  )
+
   const activateSlot = useCallback((idx: number) => {
     const slot = HL_SLOTS[idx]
+    if (slot.id === 'zone-toggle') {
+      const next = !zoneEnabled
+      setZoneEnabled(next)
+      localStorage.setItem('hl-zone-mode', next ? '1' : '0')
+      return
+    }
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
       setMode('eraser')
+    } else if (slot.id === 'select') {
+      editor.setCurrentTool('browse')
+      setMode('hand')
+    } else if (slot.id === 'draw') {
+      editor.setCurrentTool('draw')
+      setMode('hand')
     } else {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
       setMode('highlight')
     }
     setColorIdx(idx)
-  }, [editor])
+  }, [editor, zoneEnabled])
 
   // Undo last highlight: find most recent highlight shape and delete it
   const undoLastHighlight = useCallback(() => {
@@ -328,6 +347,12 @@ function PhoneHighlighterButton() {
             >
               {slot.id === 'eraser' ? (
                 <span className="phone-hl-slot-eraser">✕</span>
+              ) : slot.id === 'zone-toggle' ? (
+                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>{zoneEnabled ? '⇤' : '⇥'}</span>
+              ) : slot.id === 'select' ? (
+                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>↖</span>
+              ) : slot.id === 'draw' ? (
+                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>✎</span>
               ) : (
                 <span className="phone-hl-slot-dot" />
               )}
@@ -614,7 +639,12 @@ export function AgentPill({ editor }: { editor: Editor }) {
 }
 
 
-// Stub exports for SvgDocument compatibility — phone mode uses PhoneHighlighterButton inside PhoneOverlay
-export function HighlighterButton() { return null }
+// Desktop highlighter button — same as phone version, positioned by InFrontOfTheCanvas
+export function HighlighterButton() {
+  const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  // On touch devices, the PhoneOverlay renders its own copy — don't duplicate
+  if (isTouch) return null
+  return <PhoneHighlighterButton />
+}
 export function SemanticHighlightPill() { return null }
 

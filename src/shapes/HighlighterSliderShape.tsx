@@ -9,7 +9,7 @@
  * On iPad: only responds to pen (isPen), only shows in pen mode.
  * On desktop: responds to mouse.
  */
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import {
   useEditor,
   useValue,
@@ -43,6 +43,18 @@ const DOT_GAP = 6
 export function HighlighterSlider() {
   // Hide in embed mode (fleet shared doc iframe)
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
+  // Only show when zone mode is enabled via the highlighter button toggle
+  const [zoneEnabled, setZoneEnabled] = useState(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
+  )
+  // Listen for storage changes (toggled from the button component)
+  useEffect(() => {
+    const handler = () => setZoneEnabled(localStorage.getItem('hl-zone-mode') === '1')
+    window.addEventListener('storage', handler)
+    // Also poll since storage event doesn't fire in same tab
+    const interval = setInterval(handler, 500)
+    return () => { window.removeEventListener('storage', handler); clearInterval(interval) }
+  }, [])
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
   const penColor = useValue('pen color', () => {
@@ -73,8 +85,9 @@ export function HighlighterSlider() {
     return () => ro.disconnect()
   }, [])
 
-  // On touch devices, only show in pen mode
+  // Only show when zone mode is enabled and not in embed mode
   if (isEmbed) return null
+  if (!zoneEnabled) return null
   if (isTouch && !isPenMode) return null
 
   const activateSlot = (idx: number) => {
