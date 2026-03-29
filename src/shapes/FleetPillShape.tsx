@@ -129,6 +129,37 @@ export function dropPillOnTarget(
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))
+  } else if (editor.getShape(pillId)?.type === 'fleet-pill' &&
+             (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
+    // Doc pill dropped on canvas → share if needed, then navigate
+    const pill = editor.getShape(pillId) as any
+    const docValue = pill.props.value as string // "file:/path" or "doc:name"
+    if (docValue.startsWith('doc:')) {
+      // Already a tlda project — just navigate
+      const docName = docValue.slice(4)
+      const url = new URL(window.location.href)
+      url.searchParams.set('doc', docName)
+      window.location.href = url.toString()
+    } else if (docValue.startsWith('file:')) {
+      // Raw file — use fleet server's share-file endpoint to create project + push
+      const filePath = docValue.slice(5)
+      ;(async () => {
+        try {
+          const res = await fetch('/api/share-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, book: 'fleet-workspace' }),
+          })
+          const data = await res.json()
+          const docName = data?.doc || 'fleet-workspace'
+          const url = new URL(window.location.href)
+          url.searchParams.set('doc', docName)
+          window.location.href = url.toString()
+        } catch (e) {
+          console.error('[fleet] Failed to share file:', e)
+        }
+      })()
+    }
   } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat matching current lock state
     const fleetShapes = editor.getCurrentPageShapes().filter(s =>

@@ -309,7 +309,9 @@
 .fleet-chat-shape .chat-ts,
 .fleet-chat-shape .chat-activity-card,
 .fleet-chat-shape .code-block-header,
-.fleet-chat-shape .tool-ref {
+.fleet-chat-shape .tool-ref,
+.fleet-chat-shape .md-file-card,
+.fleet-chat-shape .tlda-card {
   cursor: grab;
   touch-action: none;
 }

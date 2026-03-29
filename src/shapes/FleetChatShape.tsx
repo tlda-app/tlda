@@ -536,7 +536,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -623,6 +623,34 @@ function FleetChatComponent({ shape }: { shape: any }) {
             pillId: null, pillType: 'tool', value: 'tool',
             displayName: toolRef.querySelector('.tool-ref-type')?.textContent || 'tool',
             color: '#c8b060', content: (preview?.textContent || toolRef.textContent || '').trim(),
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // MD file card or shared-doc card → drag as doc reference
+      if (!drag) {
+        const mdCard = target.closest('.md-file-card') as HTMLElement
+        if (mdCard) {
+          const filePath = mdCard.dataset.path || ''
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || filePath.split('/').pop() || 'file'
+          drag = {
+            pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
+            displayName: name, color: '#9370db', content: filePath,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+      if (!drag) {
+        const tldaCard = target.closest('.tlda-card') as HTMLElement
+        if (tldaCard) {
+          const tldaId = tldaCard.dataset.tldaId || ''
+          const docName = tldaCard.querySelector('.doc-name')?.textContent || tldaId
+          drag = {
+            pillId: null, pillType: 'doc' as any, value: `doc:${docName}`,
+            displayName: docName, color: '#9370db', content: docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
