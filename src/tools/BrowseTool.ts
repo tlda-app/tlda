@@ -1,12 +1,15 @@
 import { StateNode, type TLPointerEventInfo } from 'tldraw'
 
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+
 /**
- * Smart browse tool for HTML documents.
+ * Smart browse tool for HTML documents and fleet UI.
  *
- * Respects z-order:
- * - Unlocked shape (note, annotation) → delegate to select (drag/edit)
- * - Locked html-page shape (iframe) → pass through for web interaction
- * - Empty canvas → delegate to select (box select / lasso)
+ * Event routing by shape type:
+ * - Fleet shapes (locked): stay in browse. React components handle pointer
+ *   events via pointer-events:all. Wheel scroll works natively through DOM.
+ * - Locked html-page shapes (iframes): pass through for web interaction.
+ * - Unlocked shapes / empty canvas: delegate to select (drag/edit/box select).
  *
  * The select tool returns to browse when selection empties
  * (see SvgDocument.tsx bounce-back reactor).
@@ -27,12 +30,12 @@ export class BrowseTool extends StateNode {
     })
 
     if (hitShape && hitShape.isLocked) {
-      // Locked shape (html-page iframe) — pass through for web interaction
+      // Locked shapes (fleet UI, html-page iframes): stay in browse,
+      // let DOM handle the interaction via pointer-events:all
       return
     }
 
-    // Unlocked shape or empty canvas — delegate to select for
-    // shape interaction or box-select/lasso
+    // Unlocked shape or empty canvas — delegate to select
     this.editor.setCurrentTool('select')
     this.editor.root.handleEvent(info)
   }
