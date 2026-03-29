@@ -187,8 +187,8 @@ export function CanvasClipPanel({
         editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
       }
     }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => el.removeEventListener('wheel', onWheel, { capture: true })
   }, [editor, lockCamera, mainEditor])
 
   // Panel height: at least 5 lines, at most maxHeightFraction of viewport
