@@ -136,7 +136,11 @@ export function dropPillOnTarget(
     const docValue = pill.props.value as string // "file:/path" or "doc:name"
     // Navigate to doc: dispatch event for BookViewer to handle in-place,
     // or open in new tab if we're not in the right book
-    const openDoc = (docName: string) => {
+    const openDoc = async (docName: string) => {
+      // Ensure content is current
+      await fetch(`/api/projects/${encodeURIComponent(docName)}/build`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      }).catch(() => {})
       // Try in-place navigation via BookViewer event
       const notHandled = window.dispatchEvent(new CustomEvent('fleet-open-doc', {
         detail: { docName, book: 'fleet-workspace' },
