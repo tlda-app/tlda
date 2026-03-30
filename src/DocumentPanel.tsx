@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useContext } from 'react'
+const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import type { Editor } from 'tldraw'
@@ -8,7 +9,7 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab } from './panels/TocTab'
 import { HistoryTab } from './panels/HistoryTab'
 import { NotesTab } from './panels/NotesTab'
-import { FleetTab } from './panels/FleetTab'
+
 import './DocumentPanel.css'
 
 // ======================
@@ -198,16 +199,16 @@ const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width:
 
 // Color slots for the highlighter slider. Severity-ordered (red = most severe).
 // Violet is reserved for the user's personal notes — not a reading-assist color.
-const HL_SLOTS: { id: string; color: string; label: string }[] = [
-  { id: 'eraser', color: '#888', label: 'Eraser' },
+const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
+  { id: 'eraser', color: '#888', label: 'Eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
   { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
   { id: 'yellow', color: '#ffc940', label: 'explain' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
-  { id: 'zone-toggle', color: '#666', label: 'zone' },
-  { id: 'select', color: '#666', label: 'browse' },
-  { id: 'draw', color: '#666', label: 'pen' },
+  { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
+  { id: 'select', color: '#666', label: 'browse', svgIcon: `${TLDRAW_ICON_BASE}#tool-pointer` },
+  { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
 ]
 
 function PhoneHighlighterButton() {
@@ -345,14 +346,16 @@ function PhoneHighlighterButton() {
               className={`phone-hl-slot${i === dragSlot ? ' active' : ''}`}
               style={{ '--slot-color': slot.color } as React.CSSProperties}
             >
-              {slot.id === 'eraser' ? (
-                <span className="phone-hl-slot-eraser">✕</span>
-              ) : slot.id === 'zone-toggle' ? (
-                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>{zoneEnabled ? '⇤' : '⇥'}</span>
-              ) : slot.id === 'select' ? (
-                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>↖</span>
-              ) : slot.id === 'draw' ? (
-                <span className="phone-hl-slot-eraser" style={{ fontSize: 10 }}>✎</span>
+              {slot.svgIcon ? (
+                <span className="phone-hl-slot-icon" style={{
+                  display: 'block', width: 20, height: 20,
+                  WebkitMaskImage: `url("${slot.svgIcon}")`,
+                  maskImage: `url("${slot.svgIcon}")`,
+                  WebkitMaskSize: '100%', maskSize: '100%',
+                  WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+                  WebkitMaskPosition: 'center', maskPosition: 'center',
+                  backgroundColor: slot.color,
+                }} />
               ) : (
                 <span className="phone-hl-slot-dot" />
               )}
@@ -363,7 +366,9 @@ function PhoneHighlighterButton() {
       {/* Label rendered outside slot hierarchy — position:fixed breaks inside transformed parents */}
       {dragging && dragSlot != null && (
         <span className="phone-hl-slot-label" style={{ '--slot-color': HL_SLOTS[dragSlot]?.color || '#666' } as React.CSSProperties}>
-          {HL_SLOTS[dragSlot]?.id === 'eraser' ? 'Eraser' : HL_SLOTS[dragSlot]?.label}
+          {HL_SLOTS[dragSlot]?.id === 'zone-toggle'
+            ? (zoneEnabled ? 'Disable zone' : 'Enable zone')
+            : HL_SLOTS[dragSlot]?.label}
         </span>
       )}
       <button
@@ -376,22 +381,40 @@ function PhoneHighlighterButton() {
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
       >
-        {mode === 'eraser' ? (
-          <span style={{ fontSize: 16 }}>✕</span>
-        ) : (
-          <svg width="20" height="20" viewBox="0 0 20 20">
-            <rect x="4" y="2" width="12" height="16" rx="2"
-              fill={isActive ? activeColor : 'none'}
-              stroke={isActive ? activeColor : 'currentColor'}
-              strokeWidth="1.5"
-              opacity={isActive ? 0.9 : 0.5}
-            />
-            <rect x="4" y="12" width="12" height="6" rx="0"
-              fill={isActive ? 'rgba(0,0,0,0.15)' : 'currentColor'}
-              opacity={isActive ? 1 : 0.2}
-            />
-          </svg>
-        )}
+        {(() => {
+          const toolId = editor.getCurrentToolId()
+          const iconSlot = HL_SLOTS.find(s =>
+            (s.id === 'eraser' && toolId === 'eraser') ||
+            (s.id === 'select' && toolId === 'browse') ||
+            (s.id === 'draw' && toolId === 'draw')
+          )
+          if (iconSlot?.svgIcon) {
+            return <span style={{
+              display: 'block', width: 20, height: 20,
+              WebkitMaskImage: `url("${iconSlot.svgIcon}")`,
+              maskImage: `url("${iconSlot.svgIcon}")`,
+              WebkitMaskSize: '100%', maskSize: '100%',
+              WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+              WebkitMaskPosition: 'center', maskPosition: 'center',
+              backgroundColor: isActive ? 'white' : 'currentColor',
+            }} />
+          }
+          // Default: highlighter marker
+          return (
+            <svg width="20" height="20" viewBox="0 0 20 20">
+              <rect x="4" y="2" width="12" height="16" rx="2"
+                fill={isActive ? activeColor : 'none'}
+                stroke={isActive ? activeColor : 'currentColor'}
+                strokeWidth="1.5"
+                opacity={isActive ? 0.9 : 0.5}
+              />
+              <rect x="4" y="12" width="12" height="6" rx="0"
+                fill={isActive ? 'rgba(0,0,0,0.15)' : 'currentColor'}
+                opacity={isActive ? 1 : 0.2}
+              />
+            </svg>
+          )
+        })()}
       </button>
     </>
   )

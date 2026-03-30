@@ -1540,12 +1540,8 @@ body.phone-mode .phone-hl-btn {
   box-shadow: none;
 }
 
-/* Phone highlighter color slider — appears above button during drag */
+/* Highlighter color slider — appears to the left of button during drag */
 .phone-hl-slider {
-  display: none;
-}
-
-body.phone-mode .phone-hl-slider {
   display: flex;
   flex-direction: row;
   position: fixed;
