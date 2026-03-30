@@ -27,8 +27,10 @@ export interface RefStoreEntry {
   color?: string
   canvasBounds?: { x: number; y: number; w: number; h: number }
   shapeId?: string
+  highlightShapeId?: string
   file?: string
   lineno?: number
+  screenshotRef?: string
 }
 export const refStore = new Map<string, RefStoreEntry>()
 
@@ -90,10 +92,25 @@ export function dropPillOnTarget(
       if (pill?.props?.color) entry.color = pill.props.color
       if (pill?.props?.value) {
         entry.shapeId = pill.props.value
-        const srcShape = editor.getShape(pill.props.value as any)
+        const srcShape = editor.getShape(pill.props.value as any) as any
         if (srcShape) {
-          const srcBounds = editor.getShapePageBounds(srcShape.id)
-          if (srcBounds) entry.canvasBounds = { x: srcBounds.x, y: srcBounds.y, w: srcBounds.w, h: srcBounds.h }
+          // Resolve source provenance: DotAnnotation → highlightId → highlight.meta.sourceAnchor
+          // Also check srcShape.meta directly (covers highlight shapes dragged without DotAnnotation)
+          const highlightId = srcShape.props?.highlightId
+          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
+          // Use highlight bounds for canvasBounds/screenshotRef (wider region than dot)
+          const refShape = highlight || srcShape
+          if (highlight) entry.highlightShapeId = highlight.id
+          const refBounds = editor.getShapePageBounds(refShape.id)
+          if (refBounds) {
+            entry.canvasBounds = { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h }
+            entry.screenshotRef = `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}`
+          }
+          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
+          if (anchor) {
+            if (anchor.file) entry.file = anchor.file
+            if (anchor.line != null) entry.lineno = anchor.line
+          }
         }
       }
       refStore.set(token, entry)

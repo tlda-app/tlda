@@ -61,6 +61,7 @@ import { FollowingBadge } from './pills/FollowingBadge'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
+import { AnnotationViewer } from './overlays/AnnotationViewer'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
@@ -844,6 +845,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           tools={tools}
           licenseKey={LICENSE_KEY}
           onSelectChange={handleSelectChange}
+        />
+      )}
+      {editorRef.current && (
+        <AnnotationViewer
+          mainEditor={editorRef.current}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
         />
       )}
       <div className="build-pills-row">

@@ -162,6 +162,28 @@ function makeCtx(agents: any[], tasks: any[]) {
   }
 }
 
+/** Extract annotation metadata from «...» tokens in text for message attachments */
+function extractRefAttachments(text: string): Record<string, any>[] | undefined {
+  const attachments: Record<string, any>[] = []
+  const tokenRe = /«(.+?)»/g
+  let m
+  while ((m = tokenRe.exec(text)) !== null) {
+    const token = `«${m[1]}»`
+    const ref = refStore.get(token)
+    if (!ref) continue
+    const att: Record<string, any> = { token, type: ref.type, label: ref.label, content: ref.content }
+    if (ref.color) att.color = ref.color
+    if (ref.canvasBounds) att.canvasBounds = ref.canvasBounds
+    if (ref.shapeId) att.shapeId = ref.shapeId
+    if (ref.highlightShapeId) att.highlightShapeId = ref.highlightShapeId
+    if (ref.file) att.file = ref.file
+    if (ref.lineno != null) att.lineno = ref.lineno
+    if (ref.screenshotRef) att.screenshotRef = ref.screenshotRef
+    attachments.push(att)
+  }
+  return attachments.length > 0 ? attachments : undefined
+}
+
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   // Expose editor to trackpad input adapter
@@ -312,9 +334,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
         ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"`
         : ''
       const shapeAttr = ref?.shapeId ? ` data-shape-ref="${ref.shapeId}"` : ''
+      const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
 
-      return `<span class="${cls}"${boundsAttr}${shapeAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
+      return `<span class="${cls}"${boundsAttr}${shapeAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
@@ -454,6 +477,51 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     }
   }, [doc, refResolver, w])
+
+  // Hover events on annotation ref-chips → dispatch to AnnotationViewer
+  const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function onAnnotationOver(e: MouseEvent) {
+      const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
+      if (!chip) return
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+      annotationHoverTimerRef.current = setTimeout(() => {
+        const boundsStr = chip.dataset.bounds
+        if (!boundsStr) return
+        const [x, y, w, h] = boundsStr.split(',').map(Number)
+        if (![x, y, w, h].every(n => isFinite(n))) return
+        // Extract label and color from the chip
+        const label = chip.textContent?.trim() || 'Annotation'
+        const dotEl = chip.querySelector('.ref-chip-dot') as HTMLElement | null
+        const color = dotEl?.style.background || undefined
+        const shapeId = chip.dataset.shapeRef || undefined
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: { bounds: { x, y, w, h }, shapeId, label, color }
+        }))
+      }, 100)
+    }
+
+    function onAnnotationOut(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      if (!target.closest('.ref-chip-annotation')) return
+      // Check if moving into the viewer itself
+      const related = e.relatedTarget as HTMLElement | null
+      if (related?.closest('.annotation-viewer')) return
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+    }
+
+    logEl.addEventListener('mouseover', onAnnotationOver)
+    logEl.addEventListener('mouseout', onAnnotationOut)
+    return () => {
+      logEl.removeEventListener('mouseover', onAnnotationOver)
+      logEl.removeEventListener('mouseout', onAnnotationOut)
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+    }
+  }, [])
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -984,7 +1052,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text)
+                      const atts = extractRefAttachments(text)
+                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -999,7 +1068,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text)
+                      const atts = extractRefAttachments(text)
+                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
