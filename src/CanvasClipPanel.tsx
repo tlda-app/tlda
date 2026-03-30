@@ -36,6 +36,8 @@ interface CanvasClipPanelProps {
   maxHeightFraction?: number
   className?: string
   lockCamera?: boolean
+  /** When set, fade all highlight/annotation shapes except these to 0.15 opacity */
+  emphasizeShapeIds?: string[]
   children?: React.ReactNode
 }
 
@@ -49,9 +51,11 @@ export function CanvasClipPanel({
   maxHeightFraction = DEFAULT_MAX_HEIGHT_FRACTION,
   className,
   lockCamera = false,
+  emphasizeShapeIds,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+  const emphasizedIdsRef = useRef<Set<string>>(new Set())
 
   // Create copy store from main editor's document records
   const store = useMemo(() => {
@@ -83,13 +87,14 @@ export function CanvasClipPanel({
     }, { source: 'all', scope: 'document' })
 
     // copy → main (reverse sync for shape edits made in the panel)
+    // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
     const unsubCopy = store.listen(({ changes }) => {
       mainEditor.store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isDocRecord(record)) mainEditor.store.put([record])
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isDocRecord(to)) mainEditor.store.put([to])
+          if (isDocRecord(to) && !emphasizedIdsRef.current.has(to.id)) mainEditor.store.put([to])
         }
         for (const record of Object.values(changes.removed)) {
           if (isDocRecord(record)) {
@@ -158,6 +163,24 @@ export function CanvasClipPanel({
       })
     }
   }, [editor, bounds, panelWidth, lockCamera])
+
+  // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
+  useEffect(() => {
+    if (!editor || !emphasizeShapeIds || emphasizeShapeIds.length === 0) return
+    const keepSet = new Set(emphasizeShapeIds)
+    const FADE_TYPES = new Set(['highlight', 'dot-annotation'])
+    const faded = new Set<string>()
+    store.mergeRemoteChanges(() => {
+      for (const shape of editor.getCurrentPageShapes()) {
+        if (FADE_TYPES.has(shape.type) && !keepSet.has(shape.id)) {
+          store.put([{ ...shape, opacity: 0.15 }])
+          faded.add(shape.id)
+        }
+      }
+    })
+    emphasizedIdsRef.current = faded
+    return () => { emphasizedIdsRef.current = new Set() }
+  }, [editor, emphasizeShapeIds, store])
 
   // Wheel handling — two modes:
   // Normal panels: wheel pans the camera vertically

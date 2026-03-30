@@ -334,10 +334,11 @@ function FleetChatComponent({ shape }: { shape: any }) {
         ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"`
         : ''
       const shapeAttr = ref?.shapeId ? ` data-shape-ref="${ref.shapeId}"` : ''
+      const highlightAttr = isAnnotation && ref?.highlightShapeId ? ` data-highlight-ref="${ref.highlightShapeId}"` : ''
       const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
 
-      return `<span class="${cls}"${boundsAttr}${shapeAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
+      return `<span class="${cls}"${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
@@ -497,9 +498,11 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const label = chip.textContent?.trim() || 'Annotation'
         const dotEl = chip.querySelector('.ref-chip-dot') as HTMLElement | null
         const color = dotEl?.style.background || undefined
-        const shapeId = chip.dataset.shapeRef || undefined
+        const shapeIds: string[] = []
+        if (chip.dataset.shapeRef) shapeIds.push(chip.dataset.shapeRef)
+        if (chip.dataset.highlightRef) shapeIds.push(chip.dataset.highlightRef)
         window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: { bounds: { x, y, w, h }, shapeId, label, color }
+          detail: { bounds: { x, y, w, h }, shapeIds, label, color }
         }))
       }, 100)
     }

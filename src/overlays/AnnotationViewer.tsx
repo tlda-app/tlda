@@ -25,7 +25,7 @@ interface AnnotationViewerProps {
 
 interface ViewerData {
   bounds: ClipBounds
-  shapeId?: string
+  shapeIds?: string[]
   label?: string
   color?: string
 }
@@ -38,7 +38,7 @@ export function AnnotationViewer({
 }: AnnotationViewerProps) {
   const [data, setData] = useState<ViewerData | null>(null)
   const [state, setState] = useState<ViewerState>('hovering')
-  const [size, setSize] = useState({ w: 500, h: 300 })
+  const [size, setSize] = useState({ w: 650, h: 450 })
   const prevCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -49,7 +49,7 @@ export function AnnotationViewer({
       if (!detail?.bounds) return
       setData({
         bounds: detail.bounds,
-        shapeId: detail.shapeId,
+        shapeIds: detail.shapeIds,
         label: detail.label,
         color: detail.color,
       })
@@ -189,12 +189,18 @@ export function AnnotationViewer({
       <div className="annotation-viewer-canvas" style={{ height: size.h }}>
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={data.bounds}
+          bounds={{
+            x: data.bounds.x - 80,
+            y: data.bounds.y - 120,
+            w: data.bounds.w + 160,
+            h: data.bounds.h + 240,
+          }}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={licenseKey}
           panelWidth={size.w}
           maxHeightFraction={0.5}
+          emphasizeShapeIds={data.shapeIds}
           className="annotation-viewer-clip"
         />
       </div>
@@ -206,7 +212,7 @@ export function AnnotationViewer({
             <path
               d="M30 12 L18 24 L30 36"
               fill="none"
-              stroke="white"
+              stroke="rgba(80,80,80,0.5)"
               strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"

@@ -59,7 +59,7 @@
 
 .annotation-viewer-hint {
   font-size: 10px;
-  opacity: 0.5;
+  opacity: 0.25;
   white-space: nowrap;
 }
 
@@ -92,7 +92,7 @@
 .annotation-viewer-back-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(80, 80, 80, 0.45);
+  background: rgba(120, 120, 120, 0.15);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -102,7 +102,7 @@
   transition: background 0.15s;
 }
 .annotation-viewer-back-overlay:hover {
-  background: rgba(80, 80, 80, 0.55);
+  background: rgba(120, 120, 120, 0.25);
 }
 
 /* Resize handle (bottom-right corner) */
