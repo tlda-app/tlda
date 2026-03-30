@@ -10,9 +10,10 @@ import {
 } from './synctexLookup'
 import { PDF_WIDTH, PDF_HEIGHT } from './layoutConstants'
 
-// Note: synctex y coords are measured from page top (0 = top of physical page).
-// The SVG viewBox starts at -72, but the page image shape maps the full viewBox
-// to canvas pixels, so canvas_y = page.y + synctex_y * scale (no offset needed).
+// dvisvgm SVG viewBox is "-72 -72 612 792". Synctex coords have origin at the
+// TeX reference point (1 inch from page edges), which is viewBox (0,0). The page
+// shape covers the full viewBox, so synctex coords need +72 before scaling.
+const VIEWBOX_OFFSET = 72
 
 export interface SourceAnchor {
   file: string      // Source file (relative to doc root)
@@ -103,12 +104,12 @@ export function canvasToPdf(
       const localY = canvasY - bounds.y
 
       // Scale from canvas pixels to synctex/PDF units
-      // Synctex y coords are from page top (0 = top of page)
-      // Canvas local coords already start at page top, so just divide by scale
+      // The viewBox starts at -72, so canvas origin maps to viewBox -72.
+      // Subtract VIEWBOX_OFFSET to convert from viewBox coords to synctex coords.
       const scaleX = bounds.width / PDF_WIDTH   // pixels per viewBox unit
       const scaleY = bounds.height / PDF_HEIGHT
-      const pdfX = localX / scaleX
-      const pdfY = localY / scaleY
+      const pdfX = localX / scaleX - VIEWBOX_OFFSET
+      const pdfY = localY / scaleY - VIEWBOX_OFFSET
 
       return { page: i + 1, x: pdfX, y: pdfY }
     }
@@ -132,12 +133,13 @@ export function pdfToCanvas(
   const bounds = page.bounds
 
   // Scale from synctex coords to canvas pixels
-  // Synctex y coords are from page top (0 = top of page), same as canvas local coords
+  // Synctex coords start at TeX origin (72pt from page edge = viewBox 0,0).
+  // Add VIEWBOX_OFFSET to shift from synctex space to viewBox space before scaling.
   const scaleX = bounds.width / PDF_WIDTH
   const scaleY = bounds.height / PDF_HEIGHT
 
-  const canvasX = bounds.x + pdfX * scaleX
-  const canvasY = bounds.y + pdfY * scaleY
+  const canvasX = bounds.x + (pdfX + VIEWBOX_OFFSET) * scaleX
+  const canvasY = bounds.y + (pdfY + VIEWBOX_OFFSET) * scaleY
 
   return { x: canvasX, y: canvasY }
 }

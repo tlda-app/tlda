@@ -31,12 +31,13 @@ const TARGET_WIDTH = _lc.TARGET_WIDTH // 800
 const PAGE_GAP = _lc.PAGE_GAP         // 32
 const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
 
+const VIEWBOX_OFFSET = 72
 function pdfToCanvas(page, pdfX, pdfY) {
   const scaleX = TARGET_WIDTH / PDF_WIDTH
   const scaleY = PAGE_HEIGHT / PDF_HEIGHT
   return {
-    x: pdfX * scaleX,
-    y: (page - 1) * (PAGE_HEIGHT + PAGE_GAP) + pdfY * scaleY,
+    x: (pdfX + VIEWBOX_OFFSET) * scaleX,
+    y: (page - 1) * (PAGE_HEIGHT + PAGE_GAP) + (pdfY + VIEWBOX_OFFSET) * scaleY,
   }
 }
 

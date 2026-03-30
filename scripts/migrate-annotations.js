@@ -75,6 +75,9 @@ function buildPageInfo(pageCount) {
 
 const pages = buildPageInfo(docConfig.pages)
 
+// dvisvgm viewBox offset: synctex coords start at TeX origin (72pt from page edge)
+const VIEWBOX_OFFSET = 72
+
 // Convert canvas to PDF coordinates
 function canvasToPdf(x, y) {
   for (let i = 0; i < pages.length; i++) {
@@ -83,8 +86,8 @@ function canvasToPdf(x, y) {
       const scale = page.width / CANVAS_WIDTH
       return {
         page: i + 1,
-        x: (x - page.bounds.x) * scale,
-        y: (y - page.bounds.y) * scale
+        x: (x - page.bounds.x) * scale - VIEWBOX_OFFSET,
+        y: (y - page.bounds.y) * scale - VIEWBOX_OFFSET
       }
     }
   }
@@ -99,8 +102,8 @@ function pdfToCanvas(pdfPage, pdfX, pdfY) {
   const page = pages[pageIndex]
   const scale = CANVAS_WIDTH / page.width
   return {
-    x: page.bounds.x + pdfX * scale,
-    y: page.bounds.y + pdfY * scale
+    x: page.bounds.x + (pdfX + VIEWBOX_OFFSET) * scale,
+    y: page.bounds.y + (pdfY + VIEWBOX_OFFSET) * scale
   }
 }
 
