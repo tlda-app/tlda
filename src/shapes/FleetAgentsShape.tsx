@@ -87,8 +87,6 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override hideSelectionBoundsBg = () => true
-  override hideSelectionBoundsFg = () => true
 
   component(shape: any) {
     return <FleetAgentsComponent shape={shape} />
@@ -114,7 +112,7 @@ interface DragState {
 
 const DRAG_THRESHOLD = 5
 
-function usePillDrag(isLocked: boolean) {
+function usePillDrag() {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 
@@ -125,7 +123,7 @@ function usePillDrag(isLocked: boolean) {
     displayName: string,
     color: string,
   ) => {
-    if (isLocked) stopEventPropagation(e)
+    stopEventPropagation(e)
     e.preventDefault()
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
@@ -140,7 +138,7 @@ function usePillDrag(isLocked: boolean) {
       startY: e.clientY,
       started: false,
     }
-  }, [editor, isLocked])
+  }, [editor])
 
   const moveDrag = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current
@@ -219,11 +217,9 @@ function usePillDrag(isLocked: boolean) {
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
-  const isShapeLocked = useValue('locked', () => editor.getShape(shape.id)?.isLocked ?? true, [editor, shape.id])
-
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
-  const { startDrag, moveDrag, endDrag } = usePillDrag(isShapeLocked)
+  const { startDrag, moveDrag, endDrag } = usePillDrag()
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -285,7 +281,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: isShapeLocked ? 'all' : 'none',
+        pointerEvents: 'all',
         overflow: 'hidden',
       }}
     >
@@ -305,7 +301,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         onPointerMove={moveDrag}
         onPointerUp={endDrag}
       >
-        {/* Close button */}
+        {/* Close + layout buttons */}
         <button
           className="fleet-close-btn"
           onPointerDown={stopEventPropagation}
@@ -315,6 +311,17 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           }}
         >
           ×
+        </button>
+        <button
+          className="fleet-layout-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.select(shape.id)
+          }}
+          title="Resize / move"
+        >
+          ⋮⋮
         </button>
 
         {/* Header */}
@@ -327,8 +334,8 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
-        {/* Agent rows — scrollable; stopEventPropagation when locked so pill drag works */}
-        <div className="fleet-agents-body" onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}>
+        {/* Agent rows — scrollable */}
+        <div className="fleet-agents-body" onPointerDown={stopEventPropagation}>
           {aliveAgents.length === 0 && staleAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : (

@@ -332,10 +332,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
           const token = `«annotation:${displayName}»`
           refStore.set(token, { type: 'annotation', label: displayName, content: text })
-          const wasLocked = (chat as any).isLocked
-          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
-          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: true })
           return
         }
       }

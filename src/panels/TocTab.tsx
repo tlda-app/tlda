@@ -650,7 +650,7 @@ export function DarkModeToggle() {
   )
 }
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-pill', 'fleet-container']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-pill']
 
 export function FleetToggle() {
   const editor = useEditor()
@@ -660,8 +660,6 @@ export function FleetToggle() {
     // Always delete existing fleet shapes and recreate fresh
     const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
     if (existing.length > 0) {
-      // Unlock first — tldraw won't delete locked shapes via deleteShapes
-      editor.updateShapes(existing.map(s => ({ id: s.id, type: s.type, isLocked: false })))
       editor.deleteShapes(existing.map(s => s.id))
     }
 
@@ -712,28 +710,24 @@ export function FleetToggle() {
         id: createShapeId(),
         type: 'fleet-agents' as any,
         x: anchorX, y: anchorY,
-        isLocked: true,
         props: { w: leftW, h: chatH },
       },
       {
         id: createShapeId(),
         type: 'fleet-search' as any,
         x: anchorX, y: anchorY + chatH + gap,
-        isLocked: true,
         props: { w: leftW, h: chatH },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
-        isLocked: true,
         props: { w: chatW, h: chatH, filter: filter1 },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY + chatH + gap,
-        isLocked: true,
         props: { w: chatW, h: chatH, filter: filter2 },
       },
     ])

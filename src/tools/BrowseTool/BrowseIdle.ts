@@ -161,8 +161,10 @@ export class BrowseIdle extends StateNode {
       case 'canvas': {
         const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
-        // ===== BROWSE ADDITION: locked HTML page (iframe) passthrough =====
-        // Locked HTML pages should let the DOM handle clicks (iframe navigation etc).
+        // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
+        // Fleet shapes always get DOM passthrough (content is always interactive).
+        // Locked HTML pages (iframes) also get DOM passthrough.
+        if (hitShape && FLEET_TYPES.has(hitShape.type as string)) return
         if (hitShape && hitShape.isLocked) return
         // ===== END BROWSE ADDITION =====
 
@@ -202,9 +204,9 @@ export class BrowseIdle extends StateNode {
 
         if (this.editor.isShapeOrAncestorLocked(shape)) {
           // ===== BROWSE ADDITION: fleet/HTML shapes stay idle =====
-          // Locked fleet shapes: DOM handles events (passthrough)
-          if (FLEET_TYPES.has(shape.type as string) && shape.isLocked) return
-          // Other locked shapes (HTML pages): stay idle for DOM passthrough
+          // Fleet shapes: DOM always handles events (content is always interactive)
+          if (FLEET_TYPES.has(shape.type as string)) return
+          // Locked HTML pages: DOM handles events
           if (shape.isLocked) return
           // ===== END BROWSE ADDITION =====
           this.parent.transition('pointing_canvas', info)

@@ -86,11 +86,43 @@
   opacity: 0.35;
 }
 
+/* --- Layout (resize/move) button --- */
+.fleet-shape .fleet-layout-btn {
+  position: absolute;
+  top: 4px;
+  right: 22px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.15;
+  transition: opacity 0.2s, background 0.2s;
+  z-index: 10;
+  padding: 0;
+  font-family: inherit;
+  letter-spacing: -2px;
+}
+.fleet-shape .fleet-layout-btn:hover {
+  opacity: 0.6;
+  background: rgba(128, 128, 128, 0.15);
+}
+.fleet-shape:hover .fleet-layout-btn {
+  opacity: 0.35;
+}
+
 /* --- Filter edit button --- */
 .fleet-shape .fleet-filter-btn {
   position: absolute;
   top: 4px;
-  right: 22px;
+  right: 40px;
   width: 16px;
   height: 16px;
   display: flex;
@@ -1187,16 +1219,14 @@
 
 /* =============================================================================
    Pointer-events architecture
-   HTMLContainer: pointer-events: all when locked (DOM handles interactions),
-                  pointer-events: none when unlocked (tldraw handles everything).
-   Buttons stay interactive in both states via explicit pointer-events: auto.
-   Content areas (log, input, body, results) inherit from container — they are
-   active when locked (pointer-events: all) and invisible when unlocked so
-   tldraw can select, drag, and resize normally.
+   HTMLContainer: always pointer-events: all (content always interactive).
+   BrowseTool handles fleet shapes by passing events to DOM.
+   Layout button selects the shape for resize/move via tldraw.
    ============================================================================= */
 
-/* Buttons — always interactive regardless of shape lock state */
+/* Buttons — always interactive */
 .fleet-shape .fleet-close-btn,
-.fleet-shape .fleet-filter-btn {
+.fleet-shape .fleet-filter-btn,
+.fleet-shape .fleet-layout-btn {
   pointer-events: auto;
 }

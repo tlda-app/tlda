@@ -2,7 +2,7 @@
  * FleetHUD — toggle pill in bottom-left that expands to show fleet shapes
  * region (chat + agents) via CanvasClipPanel.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
@@ -108,34 +108,6 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded, fleetBounds])
 
-  // Lock state — check if fleet shapes are locked
-  const [isLocked, setIsLocked] = useState(true)
-  useEffect(() => {
-    const check = () => {
-      const shapes = mainEditor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
-      setIsLocked(shapes.length === 0 || (shapes[0].isLocked ?? true))
-    }
-    check()
-    const unsub = mainEditor.store.listen(() => check(), { source: 'all', scope: 'document' })
-    return unsub
-  }, [mainEditor])
-
-  const toggleLock = useCallback(() => {
-    const shapes = mainEditor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
-    if (shapes.length === 0) return
-    const newLocked = !(shapes[0].isLocked ?? true)
-    if (newLocked) {
-      mainEditor.selectNone()
-      // Clear stuck hover indicator — once locked, pointer-events: all prevents
-      // tldraw from receiving pointermove, so hoveredShapeId never clears naturally
-      mainEditor.setHoveredShape(null)
-    }
-    for (const s of shapes) {
-      mainEditor.updateShape({ id: s.id, type: s.type, isLocked: newLocked })
-    }
-    mainEditor.user.updateUserPreferences({ isSnapMode: !newLocked })
-  }, [mainEditor])
-
   // Cmd+scroll on the HUD grows/shrinks the panel
   useEffect(() => {
     const el = hudRef.current
@@ -181,13 +153,6 @@ export function FleetHUD({
   return (
     <div className="fleet-hud-wrap" ref={hudRef} style={{ left: adjustedLeft }}>
       <div className="fleet-hud-controls">
-        <button
-          className="fleet-hud-lock"
-          onClick={toggleLock}
-          title={isLocked ? 'Unlock fleet layout' : 'Lock fleet layout'}
-        >
-          {isLocked ? '🔒' : '🔓'}
-        </button>
         <button
           className="fleet-hud-close"
           onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}

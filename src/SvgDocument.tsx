@@ -27,7 +27,6 @@ import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
-import { FleetContainerShapeUtil } from './shapes/FleetContainerShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
@@ -52,7 +51,6 @@ import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
 import { FleetHUD } from './overlays/FleetHUD'
-import { FleetLockOverlay } from './overlays/FleetLockOverlay'
 import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
@@ -602,7 +600,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           type: 'fleet-agents' as any,
           x: anchorX,
           y: anchorY,
-          isLocked: true,
           props: { w: leftW, h: 500 },
         },
         {
@@ -610,7 +607,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           type: 'fleet-search' as any,
           x: anchorX,
           y: anchorY + 510,
-          isLocked: true,
           props: { w: leftW, h: 450 },
         },
         {
@@ -618,7 +614,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap,
           y: anchorY,
-          isLocked: true,
           props: { w: chatW, h: chatH, filter: [] },
         },
         {
@@ -626,7 +621,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap,
           y: anchorY + chatH + gap,
-          isLocked: true,
           props: { w: chatW, h: chatH, filter: [] },
         },
       ])
@@ -643,7 +637,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetLockOverlay /><HighlighterSlider /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -719,7 +713,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetContainerShapeUtil, InlineDocShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches

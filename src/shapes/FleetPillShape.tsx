@@ -61,10 +61,6 @@ export function dropPillOnTarget(
   }
 
   if (hitShape && hitShape.type === 'fleet-chat') {
-    // Locked shapes silently ignore updateShape — temporarily unlock for programmatic updates
-    const wasLocked = hitShape.isLocked
-    if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
-    const relockChat = () => { if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true }) }
 
     // Content pill → insert reference chip token into target chat's input
     if (content) {
@@ -93,7 +89,7 @@ export function dropPillOnTarget(
           type: 'fleet-chat' as any,
           props: { filter: preview },
         })
-        relockChat()
+
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
         }))
