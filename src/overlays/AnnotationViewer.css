@@ -60,33 +60,33 @@
   height: 100%;
 }
 
-/* Nav overlay buttons — big, faint, top corners */
+/* Nav overlay buttons — giant faint zones, overlap text but barely visible */
 .annotation-viewer-nav-btn {
   position: absolute;
   z-index: 10;
   top: 28px; /* below label bar */
-  width: 64px;
-  height: 64px;
+  bottom: 0;
+  width: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  color: rgba(100, 100, 100, 0.2);
-  transition: color 0.15s;
+  color: rgba(140, 140, 140, 0.10);
+  transition: color 0.2s;
   padding: 0;
 }
 .annotation-viewer-nav-btn:hover {
-  color: rgba(100, 100, 100, 0.5);
+  color: rgba(140, 140, 140, 0.35);
 }
 
 .annotation-viewer-nav-left {
-  left: 4px;
+  left: 0;
 }
 
 .annotation-viewer-nav-right {
-  right: 4px;
+  right: 0;
 }
 
 /* Resize handle (bottom-right corner) */

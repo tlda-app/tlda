@@ -204,25 +204,27 @@ export function AnnotationViewer({
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
             onClick={state === 'pinned' ? handleGo : handleBack}
           >
-            <svg width="36" height="36" viewBox="0 0 36 36">
+            <svg width="48" height="48" viewBox="0 0 48 48">
               {state === 'pinned' ? (
-                <path d="M14 8 L26 18 L14 28" fill="none" stroke="currentColor"
-                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                /* → forward arrow */
+                <path d="M16 24 H32 M26 18 L32 24 L26 30" fill="none" stroke="currentColor"
+                  strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
               ) : (
-                <path d="M22 8 L10 18 L22 28" fill="none" stroke="currentColor"
-                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                /* ← back arrow */
+                <path d="M32 24 H16 M22 18 L16 24 L22 30" fill="none" stroke="currentColor"
+                  strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
               )}
             </svg>
           </button>
 
-          {/* Top-right: close */}
+          {/* Right half: close */}
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-right"
             onClick={handleClose}
           >
-            <svg width="36" height="36" viewBox="0 0 36 36">
-              <path d="M10 10 L26 26 M26 10 L10 26" fill="none" stroke="currentColor"
-                strokeWidth="2.5" strokeLinecap="round" />
+            <svg width="48" height="48" viewBox="0 0 48 48">
+              <path d="M16 16 L32 32 M32 16 L16 32" fill="none" stroke="currentColor"
+                strokeWidth="3" strokeLinecap="round" />
             </svg>
           </button>
         </>
