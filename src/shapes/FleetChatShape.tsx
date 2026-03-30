@@ -17,11 +17,13 @@ import { useState, useEffect, useCallback, useRef, useMemo, useContext } from 'r
 
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
-import { renderChatLine, esc, timeShort } from 'fleet-dashboard/js/chat-render.mjs'
+// @ts-ignore — vanilla JS module
+import { renderChatLine, esc } from 'fleet-dashboard/js/chat-render.mjs'
+// @ts-ignore — vanilla JS module
 import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, useFleetThinking, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -91,12 +93,11 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: DEFAULT_W, h: DEFAULT_H, filter: [] }
   }
 
-  override canEdit = () => true
+  override canEdit = () => false
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
-  override hideSelectionBoundsFg = () => true
 
   component(shape: any) {
     return <FleetChatComponent shape={shape} />
@@ -151,13 +152,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const doc = useContext(DocContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
-  const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
 
 
   // DNF filter: [[a,b],[c]] means (a AND b) OR c
-  const dnfFilter = filter.length > 0 ? filter : null
+  const dnfFilter = (filter.length > 0 ? filter : null) as string[][] | null
 
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)
@@ -183,6 +184,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const liveEvents = useFleetEvents(dnfFilter)
   const activityEvents = useFleetActivity(dnfFilter)
   const tasks = useFleetTasks()
+  const thinkingAgents = useFleetThinking(dnfFilter)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Merge older (scrollback) events with live events + activity events
@@ -199,7 +201,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => { setOlderEvents([]) }, [filterKey])
 
-  const [inputText, setInputText] = useState('')
+
   const chatLogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -261,7 +263,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     if (doc) html = linkifyDocRefs(html)
     // Turn «type:label» reference tokens into chips with hover preview
-    html = html.replace(/«(.+?)»/g, (match, inner) => {
+    html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const ref = refStore.get(token)
       // Display: strip the "type:" prefix, show just the label
@@ -403,12 +405,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
   // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
   const pillOverKey = useValue('pill-over', () => {
-    const pills = editor.getCurrentPageShapes().filter(s => s.type === 'fleet-pill')
+    const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
     if (pills.length === 0) return ''
     const myBounds = editor.getShapePageBounds(shape.id)
     if (!myBounds) return ''
     for (const pill of pills) {
-      const props = (pill as any).props
+      const props = pill.props
       if (props.pillType !== 'agent' && props.pillType !== 'label') continue
       const pb = editor.getShapePageBounds(pill.id)
       if (!pb) continue
@@ -450,30 +452,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return [...seen]
   }, [filterKey])
 
-  // Single target shorthand (for placeholder text etc.)
-  const sendTarget = sendTargets.length === 1 ? sendTargets[0] : null
-
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
-
-  const handleSend = useCallback(async () => {
-    const text = inputText.trim()
-    if (!text || sendTargets.length === 0) return
-    for (const target of sendTargets) {
-      await sendMessage(target, text)
-    }
-    setInputText('')
-  }, [inputText, sendTargets])
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // Stop ALL propagation so tldraw doesn't intercept keys
-    e.stopPropagation()
-    ;(e.nativeEvent as any).stopImmediatePropagation?.()
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }, [handleSend])
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
@@ -531,7 +511,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
-      if (!logEl.contains(target)) return
+      if (!logEl!.contains(target)) return
 
       const names = agentNamesRef.current
 
@@ -678,7 +658,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const pillId = createShapeId()
         editor.createShape({
           id: pillId,
-          type: 'fleet-pill',
+          type: 'fleet-pill' as any,
           x: pagePos.x - 35,
           y: pagePos.y - 9,
           props: {
@@ -695,7 +675,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
         editor.updateShape({
           id: drag.pillId as any,
-          type: 'fleet-pill',
+          type: 'fleet-pill' as any,
           x: pagePos.x - 35,
           y: pagePos.y - 9,
         })
@@ -834,6 +814,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
           )}
+          {[...thinkingAgents].map(agentId => (
+            <div key={agentId} className="chat-line chat-thinking">
+              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+              {' '}<span className="thinking-text">thinking…</span>
+            </div>
+          ))}
         </div>
 
         {/* Doc-link hover preview — positioned relative to shape container */}
@@ -943,7 +929,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       // Text file → read contents, insert as code block
                       const text = await file.text()
                       const ext = file.name.split('.').pop() || ''
-                      const block = `\`\`\`${ext}\n${text}\n\`\`\``
+                      const _block = `\`\`\`${ext}\n${text}\n\`\`\``; void _block
                       const token = `«file:${file.name}»`
                       refStore.set(token, { type: 'file', label: file.name, content: text })
                       const pos = ta.selectionStart || ta.value.length
@@ -1071,7 +1057,7 @@ function DocLinkPreview({
 }
 
 function SendHint({
-  filter,
+  filter: _filter,
   sendTargets,
   agentNames,
   inputRef,
