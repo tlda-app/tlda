@@ -203,6 +203,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
+  // Input history (up/down arrow navigation like terminal)
+  const sentHistoryRef = useRef<string[]>([])
+  const historyIndexRef = useRef<number>(-1)
+
   // Merge older (scrollback) events with live events + activity events
   const events = useMemo(() => {
     const all = [...liveEvents, ...activityEvents]
@@ -878,6 +882,38 @@ function FleetChatComponent({ shape }: { shape: any }) {
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
+                if (e.key === 'ArrowUp') {
+                  const history = sentHistoryRef.current
+                  if (history.length === 0) return
+                  if (historyIndexRef.current === -1 && ta.value !== '') return
+                  e.preventDefault()
+                  const nextIdx = historyIndexRef.current + 1
+                  if (nextIdx < history.length) {
+                    historyIndexRef.current = nextIdx
+                    ta.value = history[history.length - 1 - nextIdx]
+                    ta.style.height = 'auto'
+                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    ta.setSelectionRange(ta.value.length, ta.value.length)
+                  }
+                  return
+                }
+                if (e.key === 'ArrowDown') {
+                  if (historyIndexRef.current === -1) return
+                  e.preventDefault()
+                  const nextIdx = historyIndexRef.current - 1
+                  historyIndexRef.current = nextIdx
+                  if (nextIdx < 0) {
+                    ta.value = ''
+                    ta.style.height = 'auto'
+                  } else {
+                    const history = sentHistoryRef.current
+                    ta.value = history[history.length - 1 - nextIdx]
+                    ta.style.height = 'auto'
+                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    ta.setSelectionRange(ta.value.length, ta.value.length)
+                  }
+                  return
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   const val = ta.value
                   if (val.trim() === '') {
@@ -895,6 +931,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
                       for (const t of sendTargets) sendMessage(t, text)
+                      sentHistoryRef.current = [...sentHistoryRef.current, text]
+                      historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
@@ -908,6 +946,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
                       for (const t of sendTargets) sendMessage(t, text)
+                      sentHistoryRef.current = [...sentHistoryRef.current, text]
+                      historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()

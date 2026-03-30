@@ -10,6 +10,7 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -36,4 +37,14 @@ body {
   align-items: center;
   gap: 8px;
   pointer-events: none;
+}
+
+/* Chrome renders fixed-position UI inside tldraw's InFrontOfTheCanvas at half
+   size on retina macOS displays. Compensate by scaling the in-front container
+   back to full size.  Only applies on retina (DPR >= 2) Chrome displays where
+   the mismatch with Safari occurs. */
+@media (-webkit-min-device-pixel-ratio: 2) {
+  body.is-chrome .tl-canvas__in-front {
+    zoom: 2;
+  }
 }
