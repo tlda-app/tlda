@@ -70,6 +70,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  const isShapeLocked = useValue('locked', () => editor.getShape(shape.id)?.isLocked ?? true, [editor, shape.id])
   const agents = useFleetAgents()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
@@ -125,7 +126,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: shape.isLocked ? 'all' : 'none',
+        pointerEvents: isShapeLocked ? 'all' : 'none',
         overflow: 'visible',
       }}
     >
@@ -158,12 +159,16 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           ×
         </button>
 
-        {/* Search input */}
-        <div style={{
-          padding: 6,
-          borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
-          flexShrink: 0,
-        }}>
+        {/* Search input — pointer-events: auto (CSS) */}
+        <div
+          className="fleet-search-input-area"
+          onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
+          style={{
+            padding: 6,
+            borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+            flexShrink: 0,
+          }}
+        >
           <input
             ref={inputRef}
             type="text"
@@ -171,8 +176,8 @@ function FleetSearchComponent({ shape }: { shape: any }) {
             value={query}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            onPointerDown={stopEventPropagation}
-            onFocus={stopEventPropagation}
+            onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
+            onFocus={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
             style={{
               width: '100%',
               background: 'rgba(128, 128, 128, 0.08)',
@@ -187,13 +192,17 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           />
         </div>
 
-        {/* Results */}
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          scrollbarWidth: 'thin' as const,
-          scrollbarColor: 'rgba(255,255,255,0.1) transparent',
-        }}>
+        {/* Results — pointer-events: auto (CSS) */}
+        <div
+          className="fleet-search-results"
+          onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            scrollbarWidth: 'thin' as const,
+            scrollbarColor: 'rgba(255,255,255,0.1) transparent',
+          }}
+        >
           {loading && (
             <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
               searching…
@@ -218,8 +227,8 @@ function FleetSearchComponent({ shape }: { shape: any }) {
                 cursor: 'pointer',
                 transition: 'background 0.1s',
               }}
-              onPointerDown={stopEventPropagation}
-              onPointerUp={stopEventPropagation}
+              onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
+              onPointerUp={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
               onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(128, 128, 128, 0.06)' }}
               onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
             >

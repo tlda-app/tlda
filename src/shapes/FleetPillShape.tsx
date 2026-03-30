@@ -174,17 +174,13 @@ export function dropPillOnTarget(
       })()
     }
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat matching current lock state
-    const fleetShapes = editor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'fleet-chat' || (s.type as string) === 'fleet-agents' || (s.type as string) === 'fleet-search'
-    ) as any[]
-    const locked = fleetShapes.length > 0 ? (fleetShapes[0].isLocked ?? false) : false
+    // Drop on empty canvas → create new fleet-chat, always unlocked
     editor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
       x: pagePoint.x,
       y: pagePoint.y,
-      isLocked: locked,
+      isLocked: false,
       props: {
         w: 400,
         h: 600,

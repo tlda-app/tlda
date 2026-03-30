@@ -169,8 +169,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const doc = useContext(DocContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  // Reactively track isLocked — tldraw memoizes shape components and won't
+  // re-render when top-level fields (outside props) change.
+  const isLocked = useValue('isLocked', () => editor.getShape(shape.id)?.isLocked ?? true, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+
+  // Close filter overlay on unlock
+  useEffect(() => {
+    if (!isLocked) {
+      setFilterOpen(false)
+      setFilterOpenByPill(false)
+    }
+  }, [isLocked])
 
 
   // DNF filter: [[a,b],[c]] means (a AND b) OR c
@@ -759,7 +770,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: shape.isLocked ? 'all' : 'none',
+        pointerEvents: isLocked ? 'all' : 'none',
         overflow: 'visible',
       }}
     >
@@ -780,7 +791,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Close + filter edit buttons */}
+        {/* Close + filter edit buttons — pointer-events: auto (CSS), stop propagation on interaction */}
         <button
           className="fleet-close-btn"
           onPointerDown={stopEventPropagation}
@@ -810,7 +821,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages — rendered via chat-render.mjs */}
+        {/* Messages — pointer-events: auto (CSS), stop propagation when locked so tldraw doesn't see chat interactions */}
         <div
           ref={chatLogRef}
           className="fleet-chat-log"
@@ -819,6 +830,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             overflowY: 'auto',
             padding: '4px 0',
           }}
+          onPointerDown={(e) => { if (isLocked) stopEventPropagation(e) }}
           onScroll={handleScroll}
           onClick={handleDocLinkClick}
         >
@@ -855,13 +867,17 @@ function FleetChatComponent({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Input */}
-        <div style={{
-          borderTop: '1px solid rgba(128, 128, 128, 0.15)',
-          padding: 4,
-          flexShrink: 0,
-          position: 'relative',
-        }}>
+        {/* Input — pointer-events: auto (CSS), stop propagation when locked so tldraw doesn't see input interactions */}
+        <div
+          className="fleet-chat-input-area"
+          onPointerDown={(e) => { if (isLocked) stopEventPropagation(e) }}
+          style={{
+            borderTop: '1px solid rgba(128, 128, 128, 0.15)',
+            padding: 4,
+            flexShrink: 0,
+            position: 'relative',
+          }}
+        >
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
@@ -962,14 +978,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
               }}
               onPointerDown={(e) => {
-                stopEventPropagation(e)
+                if (isLocked) stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   for (const t of targets) sendMessage(t, text)
                 })
               }}
               onFocus={(e) => {
-                stopEventPropagation(e)
+                if (isLocked) stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   for (const t of targets) sendMessage(t, text)
                 })

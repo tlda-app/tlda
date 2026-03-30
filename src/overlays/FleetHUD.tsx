@@ -115,6 +115,12 @@ export function FleetHUD({
     const shapes = mainEditor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
     if (shapes.length === 0) return
     const newLocked = !(shapes[0].isLocked ?? true)
+    if (newLocked) {
+      mainEditor.selectNone()
+      // Clear stuck hover indicator — once locked, pointer-events: all prevents
+      // tldraw from receiving pointermove, so hoveredShapeId never clears naturally
+      mainEditor.setHoveredShape(null)
+    }
     for (const s of shapes) {
       mainEditor.updateShape({ id: s.id, type: s.type, isLocked: newLocked })
     }
