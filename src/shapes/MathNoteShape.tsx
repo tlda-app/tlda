@@ -18,6 +18,7 @@ import {
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getActiveMacros } from '../katexMacros'
+import { chatInsertBus, refStore } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
 import { getVimMode, subscribeVimMode } from '../vimMode'
@@ -314,7 +315,31 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideSelectionBoundsBg = () => false
   override hideSelectionBoundsFg = () => false
 
-  override onTranslateEnd = (_initial: any, current: any) => {
+  override onTranslateEnd = (initial: any, current: any) => {
+    // If dropped on a fleet-chat shape → snap back + insert annotation token
+    const bounds = this.editor.getShapePageBounds(current.id)
+    if (bounds) {
+      const center = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
+      const chats = this.editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
+      for (const chat of chats) {
+        const cb = this.editor.getShapePageBounds(chat.id)
+        if (!cb) continue
+        if (center.x >= cb.x && center.x <= cb.x + cb.w && center.y >= cb.y && center.y <= cb.y + cb.h) {
+          // Snap note back to original position
+          this.editor.updateShape({ id: current.id, type: current.type, x: initial.x, y: initial.y })
+          // Build token from active tab content
+          const text = (current.props.text as string) || ''
+          const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
+          const token = `«annotation:${displayName}»`
+          refStore.set(token, { type: 'annotation', label: displayName, content: text })
+          const wasLocked = (chat as any).isLocked
+          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
+          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: true })
+          return
+        }
+      }
+    }
     checkMergeOverlap(this.editor, current.id)
   }
 
