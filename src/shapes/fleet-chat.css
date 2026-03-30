@@ -1184,3 +1184,19 @@
 .chat-thinking .thinking-text {
   color: var(--text-dim, #888);
 }
+
+/* =============================================================================
+   Pointer-events architecture
+   HTMLContainer: pointer-events: all when locked (DOM handles interactions),
+                  pointer-events: none when unlocked (tldraw handles everything).
+   Buttons stay interactive in both states via explicit pointer-events: auto.
+   Content areas (log, input, body, results) inherit from container — they are
+   active when locked (pointer-events: all) and invisible when unlocked so
+   tldraw can select, drag, and resize normally.
+   ============================================================================= */
+
+/* Buttons — always interactive regardless of shape lock state */
+.fleet-shape .fleet-close-btn,
+.fleet-shape .fleet-filter-btn {
+  pointer-events: auto;
+}

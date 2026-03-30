@@ -161,15 +161,9 @@ export class BrowseIdle extends StateNode {
       case 'canvas': {
         const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
-        // ===== BROWSE ADDITION: fleet/HTML routing for locked shapes =====
-        if (hitShape && hitShape.isLocked) {
-          if (FLEET_TYPES.has(hitShape.type as string)) {
-            // Fleet shape — React handles via pointer-events:all, stay idle
-            return
-          }
-          // Locked HTML page (iframe) — DOM handles, stay idle
-          return
-        }
+        // ===== BROWSE ADDITION: locked HTML page (iframe) passthrough =====
+        // Locked HTML pages should let the DOM handle clicks (iframe navigation etc).
+        if (hitShape && hitShape.isLocked) return
         // ===== END BROWSE ADDITION =====
 
         if (hitShape && !hitShape.isLocked) {
@@ -208,7 +202,8 @@ export class BrowseIdle extends StateNode {
 
         if (this.editor.isShapeOrAncestorLocked(shape)) {
           // ===== BROWSE ADDITION: fleet/HTML shapes stay idle =====
-          if (FLEET_TYPES.has(shape.type as string)) return
+          // Locked fleet shapes: DOM handles events (passthrough)
+          if (FLEET_TYPES.has(shape.type as string) && shape.isLocked) return
           // Other locked shapes (HTML pages): stay idle for DOM passthrough
           if (shape.isLocked) return
           // ===== END BROWSE ADDITION =====
@@ -328,6 +323,18 @@ export class BrowseIdle extends StateNode {
           return
         }
 
+        // ===== BROWSE ADDITION: don't create text when double-clicking inside a fleet shape =====
+        // getShapeAtPoint above uses hitInside:false so it misses fleet shape interiors.
+        // Check explicitly before falling through to handleDoubleClickOnCanvas.
+        const fleetHit = this.editor.getShapeAtPoint(
+          this.editor.inputs.getCurrentPagePoint(),
+          { hitInside: true, hitLocked: false, hitLabels: false, renderingOnly: true,
+            margin: this.editor.options.hitTestMargin / this.editor.getZoomLevel(),
+            filter: (s) => FLEET_TYPES.has(s.type as string) }
+        )
+        if (fleetHit) return
+        // ===== END BROWSE ADDITION =====
+
         if (!this.editor.inputs.getShiftKey()) {
           this.handleDoubleClickOnCanvas(info)
         }
@@ -384,6 +391,10 @@ export class BrowseIdle extends StateNode {
       case 'shape': {
         const { shape } = info
         const util = this.editor.getShapeUtil(shape)
+
+        // ===== BROWSE ADDITION: fleet shapes don't edit — eat the double-click =====
+        if (FLEET_TYPES.has(shape.type as string)) return
+        // ===== END BROWSE ADDITION =====
 
         if (shape.type !== 'video' && shape.type !== 'embed' && this.editor.getIsReadonly()) break
 

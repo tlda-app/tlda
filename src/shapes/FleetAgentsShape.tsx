@@ -12,6 +12,7 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  useValue,
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef } from 'react'
@@ -113,7 +114,7 @@ interface DragState {
 
 const DRAG_THRESHOLD = 5
 
-function usePillDrag() {
+function usePillDrag(isLocked: boolean) {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 
@@ -124,7 +125,7 @@ function usePillDrag() {
     displayName: string,
     color: string,
   ) => {
-    stopEventPropagation(e)
+    if (isLocked) stopEventPropagation(e)
     e.preventDefault()
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
@@ -139,7 +140,7 @@ function usePillDrag() {
       startY: e.clientY,
       started: false,
     }
-  }, [editor])
+  }, [editor, isLocked])
 
   const moveDrag = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current
@@ -218,10 +219,11 @@ function usePillDrag() {
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
+  const isShapeLocked = useValue('locked', () => editor.getShape(shape.id)?.isLocked ?? true, [editor, shape.id])
 
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
-  const { startDrag, moveDrag, endDrag } = usePillDrag()
+  const { startDrag, moveDrag, endDrag } = usePillDrag(isShapeLocked)
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -283,7 +285,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: shape.isLocked ? 'all' : 'none',
+        pointerEvents: isShapeLocked ? 'all' : 'none',
         overflow: 'hidden',
       }}
     >
@@ -325,8 +327,8 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
-        {/* Agent rows — scrollable; stopEventPropagation so pill drag works here */}
-        <div className="fleet-agents-body" onPointerDown={stopEventPropagation}>
+        {/* Agent rows — scrollable; stopEventPropagation when locked so pill drag works */}
+        <div className="fleet-agents-body" onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}>
           {aliveAgents.length === 0 && staleAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : (
@@ -344,9 +346,9 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                 <>
                   <div
                     className="fleet-agents-section-header"
-                    onPointerDown={stopEventPropagation}
+                    onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
                     onPointerUp={(e) => {
-                      stopEventPropagation(e)
+                      if (isShapeLocked) stopEventPropagation(e)
                       setShowStale(!showStale)
                     }}
                   >

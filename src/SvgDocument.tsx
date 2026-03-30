@@ -890,6 +890,25 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           editorRef.current = editor
           setEditorMounted(true)
 
+          // Patch isInAny NARROWLY for SelectionFg only.
+          // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
+          // "select.pointing_shape","select.crop.idle") to decide whether to show handles.
+          // BrowseTool uses browse.* states, so handles are hidden. We detect the exact
+          // 4-arg SelectionFg call and remap it — leaving all other isInAny callers untouched.
+          const FG_PATHS = new Set(['select.idle','select.pointing_selection','select.pointing_shape','select.crop.idle'])
+          const origIsInAny = editor.isInAny.bind(editor)
+          ;(editor as any).isInAny = (...paths: string[]) => {
+            const result = origIsInAny(...paths)
+            if (result) return result
+            // Only remap the exact SelectionFg call (4 paths, all in FG_PATHS)
+            if (paths.length === 4 && paths.every((p: string) => FG_PATHS.has(p))) {
+              return origIsInAny('browse.idle') ||
+                     origIsInAny('browse.pointing_selection') ||
+                     origIsInAny('browse.pointing_shape')
+            }
+            return false
+          }
+
           // Set up hyperref link navigation: open target in RefViewer panel
           setNavigateToAnchor((anchorId: string, title: string) => {
             const entry = anchorIndex.get(anchorId)
