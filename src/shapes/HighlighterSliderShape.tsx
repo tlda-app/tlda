@@ -9,7 +9,7 @@
  * On iPad: only responds to pen (isPen), only shows in pen mode.
  * On desktop: responds to mouse.
  */
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
 import {
   useEditor,
   useValue,
@@ -25,6 +25,21 @@ const highlightColors: Record<string, string> = {
   'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
 }
 
+// Browse tool icon: pointer + starburst sparkle (matches the toolbar button)
+const _browseStarburst = (() => {
+  const cx = 12.5, cy = 5.5, rOuter = 5, rInner = 1.8, spikes = 8
+  const pts = []
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i * Math.PI) / spikes - Math.PI / 2
+    const r = i % 2 === 0 ? rOuter : rInner
+    pts.push(`${+(cx + Math.cos(angle) * r).toFixed(1)},${+(cy + Math.sin(angle) * r).toFixed(1)}`)
+  }
+  return pts.join(' ')
+})()
+const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor"/><polygon points="${_browseStarburst}" fill="currentColor"/></svg>`
+)}`
+
 const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
   { id: 'eraser', color: '#888', label: 'eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
@@ -32,7 +47,7 @@ const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[]
   { id: 'yellow', color: '#ffc940', label: 'explain' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
-  { id: 'select', color: '#666', label: 'browse', svgIcon: `${TLDRAW_ICON_BASE}#tool-pointer` },
+  { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
 ]
 
@@ -62,7 +77,20 @@ export function HighlighterSlider() {
     return highlightColors[colorName] || '#1d1d1d'
   }, [editor])
 
-  const [activeIdx, setActiveIdx] = useState(3)
+  // Derive activeIdx reactively from editor state — shared source of truth with button-slider
+  const activeToolId = useValue('toolId', () => editor.getCurrentToolId(), [editor])
+  const activeColorName = useValue('colorName', () =>
+    (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'yellow',
+    [editor]
+  )
+  const activeIdx = useMemo(() => {
+    if (activeToolId === 'eraser') return HL_SLOTS.findIndex(s => s.id === 'eraser')
+    if (activeToolId === 'draw') return HL_SLOTS.findIndex(s => s.id === 'draw')
+    if (activeToolId === 'browse' || activeToolId === 'select') return HL_SLOTS.findIndex(s => s.id === 'select')
+    const idx = HL_SLOTS.findIndex(s => s.id === activeColorName)
+    return idx >= 0 ? idx : 3
+  }, [activeToolId, activeColorName])
+
   const [cursorY, setCursorY] = useState<number | null>(null)
   const [cursorX, setCursorX] = useState<number | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -95,14 +123,13 @@ export function HighlighterSlider() {
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
     } else if (slot.id === 'select') {
-      editor.setCurrentTool('select')
+      editor.setCurrentTool('browse')
     } else if (slot.id === 'draw') {
       editor.setCurrentTool('draw')
     } else {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
     }
-    setActiveIdx(idx)
   }
 
   const undoLastHighlight = () => {
@@ -157,7 +184,7 @@ export function HighlighterSlider() {
     } else if (!dragging && dragStartY) {
       const cur = editor.getCurrentToolId()
       if (cur === 'highlight' || cur === 'eraser') {
-        editor.setCurrentTool('select')
+        editor.setCurrentTool('browse')
       } else {
         activateSlot(activeIdx)
       }

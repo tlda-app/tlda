@@ -1547,10 +1547,12 @@ body.phone-mode .phone-hl-btn {
   flex-direction: row;
   position: fixed;
   z-index: 10002;
-  background: var(--color-panel, white);
+  background: rgba(248, 248, 250, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border-radius: 22px;
   padding: 4px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   pointer-events: none;
   gap: 2px;
 }
@@ -1613,7 +1615,7 @@ html[data-theme="dark"] .phone-hl-btn.active {
 }
 
 html[data-theme="dark"] .phone-hl-slider {
-  background: var(--color-panel, rgb(30, 30, 40));
+  background: rgba(28, 28, 36, 0.75);
 }
 
 html[data-theme="dark"] .phone-hl-slot.active {

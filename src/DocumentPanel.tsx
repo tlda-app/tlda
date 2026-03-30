@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback, useContext } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
-import { useEditor, stopEventPropagation, DefaultColorStyle } from 'tldraw'
+import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
@@ -199,6 +199,21 @@ const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width:
 
 // Color slots for the highlighter slider. Severity-ordered (red = most severe).
 // Violet is reserved for the user's personal notes — not a reading-assist color.
+// Browse tool icon: pointer + starburst sparkle (matches the toolbar button)
+const _browseStarburst = (() => {
+  const cx = 12.5, cy = 5.5, rOuter = 5, rInner = 1.8, spikes = 8
+  const pts = []
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i * Math.PI) / spikes - Math.PI / 2
+    const r = i % 2 === 0 ? rOuter : rInner
+    pts.push(`${+(cx + Math.cos(angle) * r).toFixed(1)},${+(cy + Math.sin(angle) * r).toFixed(1)}`)
+  }
+  return pts.join(' ')
+})()
+const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor"/><polygon points="${_browseStarburst}" fill="currentColor"/></svg>`
+)}`
+
 const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
   { id: 'eraser', color: '#888', label: 'Eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
@@ -207,31 +222,32 @@ const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[]
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
   { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
-  { id: 'select', color: '#666', label: 'browse', svgIcon: `${TLDRAW_ICON_BASE}#tool-pointer` },
+  { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
 ]
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
-  const [mode, setMode] = useState<'hand' | 'highlight' | 'eraser'>('hand')
-  const [colorIdx, setColorIdx] = useState(1) // default yellow
+  // Derive mode and colorIdx reactively from editor state — shared source of truth with zone-slider
+  const activeToolId = useValue('toolId', () => editor.getCurrentToolId(), [editor])
+  const activeColorName = useValue('color', () =>
+    (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'light-red',
+    [editor]
+  )
+  const colorIdx = useMemo(() => {
+    if (activeToolId === 'eraser') return HL_SLOTS.findIndex(s => s.id === 'eraser')
+    if (activeToolId === 'draw') return HL_SLOTS.findIndex(s => s.id === 'draw')
+    if (activeToolId === 'browse' || activeToolId === 'select') return HL_SLOTS.findIndex(s => s.id === 'select')
+    const idx = HL_SLOTS.findIndex(s => s.id === activeColorName)
+    return idx >= 0 ? idx : 1
+  }, [activeToolId, activeColorName])
+  const mode = activeToolId === 'highlight' ? 'highlight' : activeToolId === 'eraser' ? 'eraser' : 'hand'
+
   const [dragging, setDragging] = useState(false)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
   const [dragBtnRect, setDragBtnRect] = useState<DOMRect | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
-
-  // Sync with editor tool changes (e.g. if toolbar changes tool)
-  useEffect(() => {
-    const update = () => {
-      const tool = editor.getCurrentToolId()
-      if (tool === 'highlight') setMode('highlight')
-      else if (tool === 'eraser') setMode('eraser')
-      else setMode('hand')
-    }
-    editor.on('change', update)
-    return () => { editor.off('change', update) }
-  }, [editor])
 
   const [zoneEnabled, setZoneEnabled] = useState(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
@@ -247,19 +263,14 @@ function PhoneHighlighterButton() {
     }
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
-      setMode('eraser')
     } else if (slot.id === 'select') {
       editor.setCurrentTool('browse')
-      setMode('hand')
     } else if (slot.id === 'draw') {
       editor.setCurrentTool('draw')
-      setMode('hand')
     } else {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
-      setMode('highlight')
     }
-    setColorIdx(idx)
   }, [editor, zoneEnabled])
 
   // Undo last highlight: find most recent highlight shape and delete it
@@ -294,7 +305,6 @@ function PhoneHighlighterButton() {
     } else {
       // Switch back to phone-hand (axis-locked scroll)
       editor.setCurrentTool('phone-hand')
-      setMode('hand')
     }
   }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
 
@@ -316,7 +326,9 @@ function PhoneHighlighterButton() {
     if (!dragging) setDragging(true)
     // Slots laid out L→R: [eraser, yellow, green, blue, violet, orange]
     // Button is to the right. Drag left a little = orange (idx 5), a lot = eraser (idx 0)
-    const slotWidth = 40
+    // Counter-scale for hires displays: CSS zoom makes slots visually larger but clientX is unscaled
+    const hiresScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1
+    const slotWidth = 40 * hiresScale
     const steps = Math.round((-dx) / slotWidth) // positive = dragged left
     const idx = Math.max(0, Math.min(HL_SLOTS.length - 1, HL_SLOTS.length - steps))
     setDragSlot(idx)
@@ -342,7 +354,11 @@ function PhoneHighlighterButton() {
   }, [])
 
   const activeSlot = dragSlot ?? colorIdx
-  const activeColor = HL_SLOTS[activeSlot]?.color || HL_SLOTS[1].color
+  const activeSlotDef = HL_SLOTS[activeSlot]
+  // For draw slot, show the current pen/highlight color instead of neutral gray
+  const activeColor = activeSlotDef?.id === 'draw'
+    ? (HL_SLOTS.find(s => s.id === activeColorName)?.color || '#1d1d1d')
+    : (activeSlotDef?.color || HL_SLOTS[1].color)
   const isActive = mode !== 'hand'
 
   return (
@@ -404,35 +420,19 @@ function PhoneHighlighterButton() {
           const toolId = editor.getCurrentToolId()
           const iconSlot = HL_SLOTS.find(s =>
             (s.id === 'eraser' && toolId === 'eraser') ||
-            (s.id === 'select' && toolId === 'browse') ||
+            (s.id === 'select' && (toolId === 'browse' || toolId === 'select')) ||
             (s.id === 'draw' && toolId === 'draw')
           )
-          if (iconSlot?.svgIcon) {
-            return <span style={{
-              display: 'block', width: 20, height: 20,
-              WebkitMaskImage: `url("${iconSlot.svgIcon}")`,
-              maskImage: `url("${iconSlot.svgIcon}")`,
-              WebkitMaskSize: '100%', maskSize: '100%',
-              WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
-              WebkitMaskPosition: 'center', maskPosition: 'center',
-              backgroundColor: isActive ? 'white' : 'currentColor',
-            }} />
-          }
-          // Default: highlighter marker
-          return (
-            <svg width="20" height="20" viewBox="0 0 20 20">
-              <rect x="4" y="2" width="12" height="16" rx="2"
-                fill={isActive ? activeColor : 'none'}
-                stroke={isActive ? activeColor : 'currentColor'}
-                strokeWidth="1.5"
-                opacity={isActive ? 0.9 : 0.5}
-              />
-              <rect x="4" y="12" width="12" height="6" rx="0"
-                fill={isActive ? 'rgba(0,0,0,0.15)' : 'currentColor'}
-                opacity={isActive ? 1 : 0.2}
-              />
-            </svg>
-          )
+          const iconUrl = iconSlot?.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`
+          return <span style={{
+            display: 'block', width: 20, height: 20,
+            WebkitMaskImage: `url("${iconUrl}")`,
+            maskImage: `url("${iconUrl}")`,
+            WebkitMaskSize: '100%', maskSize: '100%',
+            WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+            WebkitMaskPosition: 'center', maskPosition: 'center',
+            backgroundColor: isActive ? 'white' : 'currentColor',
+          }} />
         })()}
       </button>
     </>
