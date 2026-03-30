@@ -15,10 +15,13 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  createShapeId,
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
-import { useCallback } from 'react'
+import type { Editor } from 'tldraw'
+import { useCallback, useRef } from 'react'
+import { dropPillOnTarget } from './FleetPillShape'
 
 const DOT_SIZE = 10
 const CARD_W = 240
@@ -67,12 +70,48 @@ export class DotAnnotationShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
+const DRAG_THRESHOLD = 5
+
+/** Extract visible text from SVG that spatially intersects the highlight region. */
+function extractTextFromHighlight(editor: Editor, shape: any): string {
+  // Use the referenced highlight shape's bounds if available; fall back to annotation bounds
+  const refId = shape.props.highlightId
+  const bounds = refId
+    ? editor.getShapePageBounds(refId as any) ?? editor.getShapePageBounds(shape.id)
+    : editor.getShapePageBounds(shape.id)
+  if (!bounds) return ''
+
+  const tl = editor.pageToScreen({ x: bounds.x, y: bounds.y })
+  const br = editor.pageToScreen({ x: bounds.x + bounds.w, y: bounds.y + bounds.h })
+  // Expand a bit to capture partially-overlapping text
+  const pad = 8
+  const minX = tl.x - pad, maxX = br.x + pad
+  const minY = tl.y - pad, maxY = br.y + pad
+
+  const hits: { text: string; x: number; y: number }[] = []
+  document.querySelectorAll<SVGTextElement>('.tl-shapes text, .tl-canvas text').forEach(el => {
+    const r = el.getBoundingClientRect()
+    if (r.right < minX || r.left > maxX || r.bottom < minY || r.top > maxY) return
+    const t = el.textContent?.trim()
+    if (t) hits.push({ text: t, x: r.left, y: r.top })
+  })
+
+  hits.sort((a, b) => Math.abs(a.y - b.y) < 4 ? a.x - b.x : a.y - b.y)
+  return hits.map(h => h.text).join(' ')
+}
+
 function DotAnnotationComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { highlightColor, text, collapsed } = shape.props
+  const dragRef = useRef<{
+    pillId: string | null
+    startX: number
+    startY: number
+    started: boolean
+    extractedText: string
+  } | null>(null)
 
-  const handleToggle = useCallback((e: React.PointerEvent) => {
-    stopEventPropagation(e)
+  const toggleCollapsed = useCallback(() => {
     const newCollapsed = !collapsed
     editor.store.update(shape.id, (s: any) => ({
       ...s,
@@ -85,6 +124,62 @@ function DotAnnotationComponent({ shape }: { shape: any }) {
     }))
   }, [editor, shape.id, collapsed])
 
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    e.preventDefault()
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    dragRef.current = { pillId: null, startX: e.clientX, startY: e.clientY, started: false, extractedText: '' }
+  }, [])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY
+    if (!drag.started && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+
+    if (!drag.started) {
+      drag.started = true
+      drag.extractedText = extractTextFromHighlight(editor, shape)
+      const displayName = (drag.extractedText.slice(0, 40) || 'annotation').trim()
+      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const pillId = createShapeId()
+      editor.createShape({
+        id: pillId,
+        type: 'fleet-pill' as any,
+        x: pagePos.x - 35,
+        y: pagePos.y - 9,
+        props: { pillType: 'annotation', value: shape.id, displayName, color: highlightColor },
+      })
+      drag.pillId = pillId as string
+    }
+
+    if (drag.pillId) {
+      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 35, y: pagePos.y - 9 })
+    }
+  }, [editor, shape, highlightColor])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current
+    dragRef.current = null
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
+    if (!drag) return
+
+    if (!drag.started) {
+      toggleCollapsed()
+      return
+    }
+    if (!drag.pillId) return
+    const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+    dropPillOnTarget(editor, drag.pillId as any, shape.id, pagePos, drag.extractedText || text || shape.id)
+    try { editor.deleteShapes([drag.pillId as any]) } catch {}
+  }, [editor, shape, text, toggleCollapsed])
+
+  const handleToggle = useCallback((e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    toggleCollapsed()
+  }, [toggleCollapsed])
+
   if (collapsed) {
     return (
       <HTMLContainer
@@ -92,10 +187,12 @@ function DotAnnotationComponent({ shape }: { shape: any }) {
           width: DOT_SIZE,
           height: DOT_SIZE,
           pointerEvents: 'all',
-          cursor: 'pointer',
+          cursor: 'grab',
           overflow: 'visible',
         }}
-        onPointerDown={handleToggle}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
       >
         <div
           style={{
