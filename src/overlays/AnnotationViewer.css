@@ -7,23 +7,19 @@
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  cursor: pointer;
   user-select: none;
   margin-bottom: 8px;
 }
 
 .annotation-viewer--hovering {
   opacity: 0.95;
+  cursor: pointer;
 }
 
-.annotation-viewer--pinned {
-  opacity: 1;
-  cursor: default;
-}
-
+.annotation-viewer--pinned,
 .annotation-viewer--navigated {
   opacity: 1;
-  cursor: pointer;
+  cursor: default;
 }
 
 /* Label bar */
@@ -53,30 +49,6 @@
   white-space: nowrap;
 }
 
-.annotation-viewer-spacer {
-  flex: 1;
-}
-
-.annotation-viewer-hint {
-  font-size: 10px;
-  opacity: 0.25;
-  white-space: nowrap;
-}
-
-.annotation-viewer-close {
-  background: none;
-  border: none;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--color-text-1);
-  opacity: 0.6;
-  padding: 0 2px;
-}
-.annotation-viewer-close:hover {
-  opacity: 1;
-}
-
 /* Canvas area */
 .annotation-viewer-canvas {
   position: relative;
@@ -88,21 +60,33 @@
   height: 100%;
 }
 
-/* Back button overlay — translucent gray with arrow */
-.annotation-viewer-back-overlay {
+/* Nav overlay buttons — big, faint, top corners */
+.annotation-viewer-nav-btn {
   position: absolute;
-  inset: 0;
-  background: rgba(120, 120, 120, 0.15);
+  z-index: 10;
+  top: 28px; /* below label bar */
+  width: 64px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: none;
+  border: none;
   cursor: pointer;
-  z-index: 10;
-  border-radius: 0 0 7px 7px;
-  transition: background 0.15s;
+  color: rgba(100, 100, 100, 0.2);
+  transition: color 0.15s;
+  padding: 0;
 }
-.annotation-viewer-back-overlay:hover {
-  background: rgba(120, 120, 120, 0.25);
+.annotation-viewer-nav-btn:hover {
+  color: rgba(100, 100, 100, 0.5);
+}
+
+.annotation-viewer-nav-left {
+  left: 4px;
+}
+
+.annotation-viewer-nav-right {
+  right: 4px;
 }
 
 /* Resize handle (bottom-right corner) */

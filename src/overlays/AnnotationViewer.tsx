@@ -3,8 +3,8 @@
  *
  * States:
  * 1. Hovering — preview shown, dismiss on mouseleave
- * 2. Pinned — resizable, pannable, X to close
- * 3. Navigated — becomes a back button (translucent arrow overlay)
+ * 2. Pinned — faint forward arrow (top-left) + × (top-right) overlaid
+ * 3. Navigated — back arrow replaces forward, × stays
  *
  * Rendered in bottomPanelsContent alongside RefViewer.
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
@@ -83,37 +83,39 @@ export function AnnotationViewer({
     }
   }, [])
 
-  // Pin on click
+  // Pin on click (hovering → pinned)
   const handleClick = useCallback(() => {
     if (state === 'hovering') {
       setState('pinned')
     }
   }, [state])
 
-  // Navigate on double-click: vertical only, maintain x
-  const handleDoubleClick = useCallback(() => {
-    if (state !== 'pinned' || !data) return
+  // Navigate: vertical only, maintain x
+  const handleGo = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!data) return
     const cam = mainEditor.getCamera()
     prevCameraRef.current = { x: cam.x, y: cam.y, z: cam.z }
-    // Navigate to annotation bounds — vertical only
-    const targetY = -(data.bounds.y - 100) // show annotation near top with some padding
+    const targetY = -(data.bounds.y - 100)
     mainEditor.setCamera(
       { x: cam.x, y: targetY, z: cam.z },
       { animation: { duration: 300 } }
     )
     setState('navigated')
-  }, [state, data, mainEditor])
+  }, [data, mainEditor])
 
   // Go back
-  const handleBack = useCallback(() => {
-    if (state !== 'navigated' || !prevCameraRef.current) return
+  const handleBack = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!prevCameraRef.current) return
     mainEditor.setCamera(prevCameraRef.current, { animation: { duration: 300 } })
     prevCameraRef.current = null
     setState('pinned')
-  }, [state, mainEditor])
+  }, [mainEditor])
 
   // Close
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
     setData(null)
     setState('hovering')
     prevCameraRef.current = null
@@ -145,6 +147,8 @@ export function AnnotationViewer({
 
   if (!data) return null
 
+  const isPinnedOrNav = state === 'pinned' || state === 'navigated'
+
   return (
     <div
       className={`annotation-viewer annotation-viewer--${state}`}
@@ -160,8 +164,7 @@ export function AnnotationViewer({
           }, 200)
         }
       }}
-      onClick={state === 'navigated' ? handleBack : handleClick}
-      onDoubleClick={handleDoubleClick}
+      onClick={state === 'hovering' ? handleClick : undefined}
     >
       {/* Label bar */}
       <div className="annotation-viewer-label">
@@ -171,18 +174,6 @@ export function AnnotationViewer({
         <span className="annotation-viewer-title">
           {data.label || 'Annotation'}
         </span>
-        <span className="annotation-viewer-spacer" />
-        {state === 'pinned' && (
-          <span className="annotation-viewer-hint">double-click to go</span>
-        )}
-        {(state === 'pinned' || state === 'navigated') && (
-          <button
-            className="annotation-viewer-close"
-            onClick={(e) => { e.stopPropagation(); handleClose() }}
-          >
-            ×
-          </button>
-        )}
       </div>
 
       {/* Canvas */}
@@ -205,20 +196,36 @@ export function AnnotationViewer({
         />
       </div>
 
-      {/* Back button overlay — translucent gray with arrow */}
-      {state === 'navigated' && (
-        <div className="annotation-viewer-back-overlay">
-          <svg width="48" height="48" viewBox="0 0 48 48">
-            <path
-              d="M30 12 L18 24 L30 36"
-              fill="none"
-              stroke="rgba(80,80,80,0.5)"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </div>
+      {/* Overlay buttons — faint, large, top corners */}
+      {isPinnedOrNav && (
+        <>
+          {/* Top-left: forward (pinned) or back (navigated) */}
+          <button
+            className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            onClick={state === 'pinned' ? handleGo : handleBack}
+          >
+            <svg width="36" height="36" viewBox="0 0 36 36">
+              {state === 'pinned' ? (
+                <path d="M14 8 L26 18 L14 28" fill="none" stroke="currentColor"
+                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              ) : (
+                <path d="M22 8 L10 18 L22 28" fill="none" stroke="currentColor"
+                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              )}
+            </svg>
+          </button>
+
+          {/* Top-right: close */}
+          <button
+            className="annotation-viewer-nav-btn annotation-viewer-nav-right"
+            onClick={handleClose}
+          >
+            <svg width="36" height="36" viewBox="0 0 36 36">
+              <path d="M10 10 L26 26 M26 10 L10 26" fill="none" stroke="currentColor"
+                strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </>
       )}
 
       {/* Resize handle */}
