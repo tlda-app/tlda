@@ -206,6 +206,18 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'inline-doc': {
+    props: {
+      w: T.number,
+      h: T.number,
+      url: T.string,
+      title: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.inline-doc',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
