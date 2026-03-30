@@ -14,7 +14,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useCallback } from 'react'
 
 const FLEET_CHILD_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
 
@@ -49,14 +49,13 @@ export class FleetContainerShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetContainerComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const { w, h, label } = shape.props
-  const adoptedRef = useRef(false)
+  const { w, h } = shape.props
   const isLocked = useValue('locked', () => editor.getShape(shape.id)?.isLocked ?? true, [editor, shape.id])
 
   const toggleLock = useCallback(() => {
     const newLocked = !isLocked
     // Toggle container
-    editor.updateShape({ id: shape.id, type: 'fleet-container', isLocked: newLocked })
+    editor.updateShape({ id: shape.id, type: 'fleet-container' as any, isLocked: newLocked })
     // Toggle all fleet children
     const children = editor.getCurrentPageShapes().filter(
       (s) => FLEET_CHILD_TYPES.includes(s.type) && s.parentId === shape.id

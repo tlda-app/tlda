@@ -47,8 +47,9 @@ export function dropPillOnTarget(
   content?: string,
 ) {
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
-  const allChats = editor.getCurrentPageShapes().filter(s => s.type === 'fleet-chat')
-  let hitShape: TLShape | undefined
+  // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
+  const allChats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
+  let hitShape: any
   for (const chat of allChats) {
     const bounds = editor.getShapePageBounds(chat.id)
     if (bounds &&
@@ -62,8 +63,8 @@ export function dropPillOnTarget(
   if (hitShape && hitShape.type === 'fleet-chat') {
     // Locked shapes silently ignore updateShape — temporarily unlock for programmatic updates
     const wasLocked = hitShape.isLocked
-    if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat', isLocked: false })
-    const relockChat = () => { if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat', isLocked: true }) }
+    if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
+    const relockChat = () => { if (wasLocked) editor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true }) }
 
     // Content pill → insert reference chip token into target chat's input
     if (content) {
@@ -89,7 +90,7 @@ export function dropPillOnTarget(
       if (preview) {
         editor.updateShape({
           id: hitShape.id,
-          type: 'fleet-chat',
+          type: 'fleet-chat' as any,
           props: { filter: preview },
         })
         relockChat()
@@ -122,14 +123,14 @@ export function dropPillOnTarget(
     }
     editor.updateShape({
       id: hitShape.id,
-      type: 'fleet-chat',
-      props: { ...(hitShape as any).props, filter: newFilter },
+      type: 'fleet-chat' as any,
+      props: { ...hitShape.props, filter: newFilter },
     })
     relockChat()
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))
-  } else if (editor.getShape(pillId)?.type === 'fleet-pill' &&
+  } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc pill dropped on canvas → share if needed, then navigate
     const pill = editor.getShape(pillId) as any
@@ -172,15 +173,15 @@ export function dropPillOnTarget(
         }
       })()
     }
-  } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
+  } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat matching current lock state
     const fleetShapes = editor.getCurrentPageShapes().filter(s =>
-      s.type === 'fleet-chat' || s.type === 'fleet-agents' || s.type === 'fleet-search'
-    )
+      (s.type as string) === 'fleet-chat' || (s.type as string) === 'fleet-agents' || (s.type as string) === 'fleet-search'
+    ) as any[]
     const locked = fleetShapes.length > 0 ? (fleetShapes[0].isLocked ?? false) : false
     editor.createShape({
       id: createShapeId(),
-      type: 'fleet-chat',
+      type: 'fleet-chat' as any,
       x: pagePoint.x,
       y: pagePoint.y,
       isLocked: locked,

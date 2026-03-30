@@ -565,7 +565,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       }
 
       // Create fleet shapes straight above the doc (2 pages up)
-      const pageShapes = editor.getCurrentPageShapes().filter(s => s.type === 'html-page' || s.type === 'svg-page')
+      const pageShapes = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
       let anchorX = 0, anchorY = 0, docWidth = 700
       if (pageShapes.length > 0) {
         let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
@@ -596,7 +596,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       editor.createShapes([
         {
           id: createShapeId(),
-          type: 'fleet-agents',
+          type: 'fleet-agents' as any,
           x: anchorX,
           y: anchorY,
           isLocked: true,
@@ -604,7 +604,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         },
         {
           id: createShapeId(),
-          type: 'fleet-search',
+          type: 'fleet-search' as any,
           x: anchorX,
           y: anchorY + 510,
           isLocked: true,
@@ -612,7 +612,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         },
         {
           id: createShapeId(),
-          type: 'fleet-chat',
+          type: 'fleet-chat' as any,
           x: anchorX + leftW + gap,
           y: anchorY,
           isLocked: true,
@@ -620,7 +620,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         },
         {
           id: createShapeId(),
-          type: 'fleet-chat',
+          type: 'fleet-chat' as any,
           x: anchorX + leftW + gap,
           y: anchorY + chatH + gap,
           isLocked: true,
@@ -629,8 +629,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       ])
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('keydown', handleKeyDown, true) // capture phase — tldraw eats it in Chrome
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
   }, [])
 
   const components = useMemo<TLComponents>(

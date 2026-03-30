@@ -69,14 +69,14 @@ function truncate(text: string, max: number): string {
 function FleetSearchComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
-  const isEditing = useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const agents = useFleetAgents()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const agentName = useCallback((id: string) => {
     if (!id) return 'unknown'
@@ -125,7 +125,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: shape.isLocked ? 'all' : 'none',
         overflow: 'visible',
       }}
     >

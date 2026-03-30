@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
 import { useBook } from '../BookContext'
-import { useEditor, useValue } from 'tldraw'
+import { useEditor, useValue, createShapeId } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
@@ -565,6 +565,7 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
+      <FleetToggle />
       <DarkModeToggle />
       <VimModeToggle />
       <CameraLinkToggle />
@@ -644,6 +645,107 @@ export function DarkModeToggle() {
   return (
     <div className="toc-diff-hint" onClick={cycle}>
       <span className="toc-toggle-icon">{icon}</span> {label}
+    </div>
+  )
+}
+
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
+
+export function FleetToggle() {
+  const editor = useEditor()
+  const hasFleet = useValue('hasFleet', () =>
+    editor.getCurrentPageShapes().some(s => FLEET_SHAPE_TYPES.includes(s.type)), [editor])
+
+  const handleClick = useCallback(() => {
+    const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
+    if (existing.length > 0) {
+      // Pan to fleet shapes
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const s of existing) {
+        const b = editor.getShapePageBounds(s.id)
+        if (!b) continue
+        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+        maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
+      }
+      if (isFinite(minX)) {
+        editor.centerOnPoint(
+          { x: (minX + maxX) / 2, y: (minY + maxY) / 2 },
+          { animation: { duration: 300 } }
+        )
+      }
+      return
+    }
+
+    // Create fleet shapes above the doc
+    const pageShapes = editor.getCurrentPageShapes().filter(s =>
+      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+    let anchorX = 0, anchorY = 0, docWidth = 700
+    if (pageShapes.length > 0) {
+      let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b) {
+          if (b.x < minLeft) minLeft = b.x
+          if (b.x + b.w > maxRight) maxRight = b.x + b.w
+          if (b.y < minTop) minTop = b.y
+        }
+      }
+      docWidth = maxRight - minLeft
+      anchorX = minLeft
+      anchorY = minTop - 1200
+    } else {
+      const vb = editor.getViewportScreenBounds()
+      const cam = editor.getCamera()
+      anchorX = -cam.x + (vb.x + vb.w / 2) / cam.z
+      anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
+    }
+
+    const chatW = docWidth
+    const leftW = 340
+    const gap = 10
+    const chatH = 475
+
+    editor.createShapes([
+      {
+        id: createShapeId(),
+        type: 'fleet-agents' as any,
+        x: anchorX, y: anchorY,
+        isLocked: true,
+        props: { w: leftW, h: 500 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-search' as any,
+        x: anchorX, y: anchorY + 510,
+        isLocked: true,
+        props: { w: leftW, h: 450 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: true,
+        props: { w: chatW, h: chatH, filter: [] },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY + chatH + gap,
+        isLocked: true,
+        props: { w: chatW, h: chatH, filter: [] },
+      },
+    ])
+
+    // Pan to the new shapes
+    editor.centerOnPoint(
+      { x: anchorX + (leftW + gap + chatW) / 2, y: anchorY + chatH / 2 },
+      { animation: { duration: 300 } }
+    )
+  }, [editor])
+
+  return (
+    <div className="toc-diff-hint" onClick={handleClick}>
+      <span className="toc-toggle-icon">{'\u2693'}</span> {hasFleet ? 'Go to Fleet' : 'Add Fleet'}
     </div>
   )
 }

@@ -1,6 +1,8 @@
 // SyncTeX anchoring for annotations
 // Stores source locations so annotations can survive document rebuilds
 // Uses server when available (local dev), falls back to static lookup.json (hosted)
+declare const USE_SERVER: boolean
+declare const SYNCTEX_SERVER: string
 
 import {
   getSourceAnchorStatic,

@@ -23,6 +23,10 @@ import { renderChatLine, esc } from 'fleet-dashboard/js/chat-render.mjs'
 import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
+// @ts-ignore — vanilla JS module
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from 'fleet-dashboard/js/voice.mjs'
+// @ts-ignore — vanilla JS module
+import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, useFleetThinking, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
@@ -33,6 +37,16 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
+
+// --- Voice + trackpad input (global, one-time init) ---
+initVoice()
+
+let _tldaEditor: any = null
+initTrackpad({
+  getEditor: () => _tldaEditor,
+  onDoubleClick: () => toggleRecording(),
+  onTripleClick: () => sendCurrentText(),
+})
 
 
 // --- Markdown renderer using markdown-it + KaTeX ---
@@ -150,6 +164,8 @@ function makeCtx(agents: any[], tasks: any[]) {
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  // Expose editor to trackpad input adapter
+  _tldaEditor = editor
   const doc = useContext(DocContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
@@ -739,7 +755,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: shape.isLocked ? 'all' : 'none',
         overflow: 'visible',
       }}
     >
@@ -855,6 +871,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
               ref={inputRef as any}
               placeholder={sendTargets.length > 0 ? `→ ${sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(', ')}` : ''}
               rows={1}
+              autoCorrect="off"
+              autoCapitalize="off"
+              autoComplete="off"
+              spellCheck={false}
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
@@ -877,6 +897,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       for (const t of sendTargets) sendMessage(t, text)
                       ta.value = ''
                       ta.style.height = 'auto'
+                      resetTranscript()
                     }
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
@@ -889,6 +910,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       for (const t of sendTargets) sendMessage(t, text)
                       ta.value = ''
                       ta.style.height = 'auto'
+                      resetTranscript()
                     }
                   }
                 }
@@ -899,8 +921,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 ta.style.height = 'auto'
                 ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
               }}
-              onPointerDown={stopEventPropagation}
-              onFocus={stopEventPropagation}
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                // Register voice target on pointerdown — onFocus can be unreliable in tldraw
+                setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
+                  for (const t of targets) sendMessage(t, text)
+                })
+              }}
+              onFocus={(e) => {
+                stopEventPropagation(e)
+                setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
+                  for (const t of targets) sendMessage(t, text)
+                })
+              }}
               style={{
                 width: '100%',
                 background: 'transparent',

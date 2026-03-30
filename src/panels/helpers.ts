@@ -98,13 +98,6 @@ export interface TocEntry {
   entry: LookupEntry
 }
 
-const DEMOTE: Record<TocLevel, TocLevel> = {
-  part: 'chapter',
-  chapter: 'section',
-  section: 'subsection',
-  subsection: 'subsubsection',
-  subsubsection: 'subsubsection',
-}
 
 export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appendixLine?: { line: number; file?: string } }): TocEntry[] {
   const headings: TocEntry[] = []
@@ -113,7 +106,6 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
   // Find appendix boundary — use metadata from synctex extraction (scans source files)
   // The \appendix and \begin{appendix} commands produce no typeset output, so they
   // never appear in synctex. The extractor scans source files and records the line.
-  let appendixPage = Infinity
   let appendixEntry: LookupEntry | null = null
   if (meta?.appendixLine) {
     const al = meta.appendixLine
@@ -151,13 +143,10 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
     // Use same-file match if it's a section heading; otherwise use input file
     if (bestKey && sectionRe.test(lines[bestKey].content)) {
       appendixEntry = lines[bestKey]
-      appendixPage = appendixEntry.page
     } else if (bestInputKey) {
       appendixEntry = lines[bestInputKey]
-      appendixPage = appendixEntry.page
     } else if (bestKey) {
       appendixEntry = lines[bestKey]
-      appendixPage = appendixEntry.page
     }
   }
 

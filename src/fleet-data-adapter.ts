@@ -5,7 +5,7 @@
  * subscribe() and re-renders on updates. One SSE connection shared
  * across all fleet shapes.
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import {
   init,
   subscribe,
@@ -16,19 +16,19 @@ import {
   fetchHistory,
   loadBefore,
   matchesFilter,
+  resolveFilter,
   // @ts-ignore — vanilla JS module
 } from 'fleet-dashboard/js/fleet-data.mjs'
 
 // --- Lazy initialization ---
 
 let initPromise: Promise<void> | null = null
-let initDone = false
 
 function ensureInit(): Promise<void> {
   if (!initPromise) {
-    initPromise = init().then(() => { initDone = true })
+    initPromise = init()
   }
-  return initPromise
+  return initPromise!
 }
 
 // --- Hooks ---
@@ -131,10 +131,22 @@ export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
-    ensureInit().then(() => {
+    ensureInit().then(async () => {
       if (cancelled) return
-      // No initial seed — activity events are live-only (same as dashboard chat.mjs)
       if (!filter) return // activity requires a filter
+
+      // Seed from history: resolve filter to agent IDs, fetch activity for the first one
+      const agentIds = [...resolveFilter(filter)]
+      if (agentIds.length > 0) {
+        try {
+          const history = await fetchHistory(agentIds[0], 500)
+          if (!cancelled) {
+            setEvents(history.filter((e: any) => e._activity))
+          }
+        } catch (e) {
+          console.error('[useFleetActivity] history seed failed:', e)
+        }
+      }
 
       unsub = subscribe('activity', filter, (event: any) => {
         setEvents(prev => [...prev, event])
@@ -148,6 +160,59 @@ export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
   }, [filterKey])
 
   return events
+}
+
+/**
+ * Subscribe to thinking/status events for agents matching the filter.
+ * Returns a Set of agent IDs currently in thinking state.
+ */
+export function useFleetThinking(dnfFilter?: string[][] | null): Set<string> {
+  const [thinking, setThinking] = useState<Set<string>>(new Set())
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+
+  useEffect(() => {
+    let unsubThinking: (() => void) | null = null
+    let unsubStatus: (() => void) | null = null
+    let cancelled = false
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
+
+    ensureInit().then(() => {
+      if (cancelled || !filter) return
+
+      function inFilter(agentId: string): boolean {
+        return matchesFilter(filter, { agent: agentId, from: agentId })
+      }
+
+      unsubThinking = subscribe('thinking', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        setThinking(prev => {
+          const next = new Set(prev)
+          if (data.thinking) next.add(data.agent)
+          else next.delete(data.agent)
+          return next
+        })
+      })
+
+      unsubStatus = subscribe('status', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        setThinking(prev => {
+          const next = new Set(prev)
+          if (data.state === 'thinking') next.add(data.agent)
+          else next.delete(data.agent)
+          return next
+        })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsubThinking?.()
+      unsubStatus?.()
+      setThinking(new Set())
+    }
+  }, [filterKey])
+
+  return thinking
 }
 
 // --- Search API ---

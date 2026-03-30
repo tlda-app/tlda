@@ -305,7 +305,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }
   }
 
-  override canEdit = (shape: MathNoteShape) => !shape.props.collapsed
+  override canEdit = (shape: any) => !shape.props.collapsed
   override canResize = () => true
   override canBind = () => false
   override isAspectRatioLocked = () => false

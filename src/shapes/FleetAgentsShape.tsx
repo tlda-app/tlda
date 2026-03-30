@@ -55,10 +55,6 @@ function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
   return 'alive'
 }
 
-function respawnAgent(agentId: string) {
-  fetch(`http://localhost:5199/api/respawn/${encodeURIComponent(agentId)}`, { method: 'POST' })
-    .catch(() => {})
-}
 
 function agentDisplayName(agent: any): string {
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
@@ -168,7 +164,7 @@ function usePillDrag() {
       const pillId = createShapeId()
       editor.createShape({
         id: pillId,
-        type: 'fleet-pill',
+        type: 'fleet-pill' as any,
         x: pagePos.x - pw / 2,
         y: pagePos.y - ph / 2,
         props: {
@@ -190,7 +186,7 @@ function usePillDrag() {
       const ph = pillShape?.props?.h || 18
       editor.updateShape({
         id: drag.pillId as any,
-        type: 'fleet-pill',
+        type: 'fleet-pill' as any,
         x: pagePos.x - pw / 2,
         y: pagePos.y - ph / 2,
       })
@@ -218,7 +214,6 @@ function usePillDrag() {
   return { startDrag, moveDrag, endDrag }
 }
 
-const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
 
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
@@ -288,7 +283,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: shape.isLocked ? 'all' : 'none',
         overflow: 'hidden',
       }}
     >
@@ -367,7 +362,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                       agent={agent}
                       task={getTaskForAgent(agent.id)}
                       dimmed
-                      showRespawn
                       onStartDrag={startDrag}
                     />
                   ))}
@@ -391,13 +385,11 @@ function AgentRow({
   agent,
   task,
   dimmed,
-  showRespawn,
   onStartDrag,
 }: {
   agent: any
   task: any
   dimmed?: boolean
-  showRespawn?: boolean
   onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 }) {
   const taskDesc = task?.title || task?.description || ''
@@ -442,19 +434,6 @@ function AgentRow({
             {label}
           </span>
         ))}
-        {showRespawn && (
-          <button
-            className="fleet-agents-respawn-btn"
-            title="Respawn agent"
-            onPointerDown={stopEventPropagation}
-            onPointerUp={(e) => {
-              stopEventPropagation(e)
-              respawnAgent(agent.id)
-            }}
-          >
-            ↻
-          </button>
-        )}
       </span>
     </div>
   )

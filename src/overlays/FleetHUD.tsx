@@ -2,7 +2,7 @@
  * FleetHUD — toggle pill in bottom-left that expands to show fleet shapes
  * region (chat + agents) via CanvasClipPanel.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
@@ -48,9 +48,11 @@ export function FleetHUD({
   tools,
   licenseKey,
 }: FleetHUDProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   const agents = useFleetAgents()
+  const [hudScale, setHudScale] = useState(1)
+  const hudRef = useRef<HTMLDivElement>(null)
 
   // Reactively update fleet bounds when shapes change
   useEffect(() => {
@@ -119,6 +121,21 @@ export function FleetHUD({
     mainEditor.user.updateUserPreferences({ isSnapMode: !newLocked })
   }, [mainEditor])
 
+  // Cmd+scroll on the HUD grows/shrinks the panel
+  useEffect(() => {
+    const el = hudRef.current
+    if (!el || !expanded) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.metaKey && !e.ctrlKey) return
+      e.preventDefault()
+      e.stopPropagation()
+      const delta = e.deltaY > 0 ? -0.03 : 0.03
+      setHudScale(s => Math.min(2, Math.max(0.5, s + delta)))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => el.removeEventListener('wheel', onWheel, { capture: true })
+  }, [expanded])
+
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
@@ -128,7 +145,7 @@ export function FleetHUD({
       <div className="fleet-pill-container">
         <span
           className="fleet-pill"
-          onClick={() => setExpanded(true)}
+          onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
           onPointerDown={e => e.stopPropagation()}
         >
           {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
@@ -138,8 +155,11 @@ export function FleetHUD({
   }
 
   // Expanded: CanvasClipPanel with fleet region
+  // Right edge stays fixed — scaling expands leftward to reveal more fleet shapes
+  const scaledWidth = fleetBounds.w * hudScale
+  const adjustedLeft = hudLeft + fleetBounds.w - scaledWidth
   return (
-    <div className="fleet-hud-wrap" style={{ left: hudLeft }}>
+    <div className="fleet-hud-wrap" ref={hudRef} style={{ left: adjustedLeft }}>
       <div className="fleet-hud-controls">
         <button
           className="fleet-hud-lock"
@@ -150,7 +170,7 @@ export function FleetHUD({
         </button>
         <button
           className="fleet-hud-close"
-          onClick={() => setExpanded(false)}
+          onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
           title="Collapse"
         >
           ×
@@ -162,8 +182,8 @@ export function FleetHUD({
         shapeUtils={shapeUtils}
         tools={tools}
         licenseKey={licenseKey}
-        panelWidth={fleetBounds.w}
-        maxHeightFraction={1.0}
+        panelWidth={scaledWidth}
+        maxHeightFraction={0.95}
         lockCamera={true}
         className="fleet-hud"
       />
