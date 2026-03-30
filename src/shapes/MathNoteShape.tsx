@@ -6,11 +6,9 @@ import {
   useValue,
   stopEventPropagation,
   DefaultColorStyle,
-  createShapeId,
 } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
-import { dropPillOnTarget } from './FleetPillShape'
 import {
   switchTab,
   addTab,
@@ -972,54 +970,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // Drag-off state for tab detach
     const dragTabRef = useRef<{ index: number; startX: number; startY: number; active: boolean } | null>(null)
 
-    // Drag handle state — drag note header to fleet-chat to insert content as annotation pill
-    const pillDragRef = useRef<{ pillId: string | null; startX: number; startY: number; started: boolean } | null>(null)
-
-    const handlePillDragDown = useCallback((e: React.PointerEvent) => {
-      stopEventPropagation(e)
-      ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-      pillDragRef.current = { pillId: null, startX: e.clientX, startY: e.clientY, started: false }
-    }, [])
-
-    const handlePillDragMove = useCallback((e: React.PointerEvent) => {
-      const drag = pillDragRef.current
-      if (!drag) return
-      const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY
-      if (!drag.started && Math.hypot(dx, dy) < 5) return
-
-      if (!drag.started) {
-        drag.started = true
-        const text = (shape.props.text as string) || ''
-        const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        const pillId = createShapeId()
-        editor.createShape({
-          id: pillId,
-          type: 'fleet-pill' as any,
-          x: pagePos.x - 35,
-          y: pagePos.y - 9,
-          props: { pillType: 'annotation', value: shape.id, displayName, color: '#8b5cf6' },
-        })
-        drag.pillId = pillId as string
-      }
-
-      if (drag.pillId) {
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 35, y: pagePos.y - 9 })
-      }
-    }, [editor, shape])
-
-    const handlePillDragUp = useCallback((e: React.PointerEvent) => {
-      const drag = pillDragRef.current
-      pillDragRef.current = null
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
-      if (!drag?.started || !drag.pillId) return
-      const text = (shape.props.text as string) || ''
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      dropPillOnTarget(editor, drag.pillId as any, shape.id, pagePos, text)
-      try { editor.deleteShapes([drag.pillId as any]) } catch {}
-    }, [editor, shape])
-
     let tabBar: React.ReactNode = null
     if (showTabBar) {
       const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
@@ -1175,25 +1125,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
           >
             {isDone ? '\u2713' : '\u25CB'}
-          </div>
-          {/* Drag handle — drag to fleet-chat to insert note content as annotation */}
-          <div
-            onPointerDown={handlePillDragDown}
-            onPointerMove={handlePillDragMove}
-            onPointerUp={handlePillDragUp}
-            style={{
-              padding: '3px 5px',
-              fontSize: '10px',
-              cursor: 'grab',
-              userSelect: 'none',
-              pointerEvents: 'all',
-              flexShrink: 0,
-              color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)',
-              letterSpacing: '1px',
-            }}
-            title="Drag to chat to insert note content"
-          >
-            {'⠿'}
           </div>
           {/* Tab labels (only when multi-tab) */}
           {multiTab && tabs.map((_, i) => (
