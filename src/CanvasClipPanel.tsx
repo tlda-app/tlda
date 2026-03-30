@@ -172,13 +172,12 @@ export function CanvasClipPanel({
       e.stopPropagation()
       if (lockCamera) {
         // Vertical: scroll the hovered fleet shape's chat log.
-        // Use editor.getHoveredShapeId() — tldraw's own hit tracking is more
-        // reliable than elementFromPoint (which can return the ghost/overlay).
+        // forceMobile=true disables hover tracking so getHoveredShapeId() always
+        // returns null — use elementFromPoint instead.
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-          const hoveredId = editor.getHoveredShapeId()
-          const chatLog = hoveredId
-            ? (el.querySelector(`[data-shape-id="${hoveredId}"] .fleet-chat-log`) as HTMLElement | null)
-            : null
+          const target = document.elementFromPoint(e.clientX, e.clientY)
+          const chatLog = (target?.closest('[data-shape-id]')
+            ?.querySelector('.fleet-chat-log') ?? null) as HTMLElement | null
           if (chatLog) chatLog.scrollTop += e.deltaY
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
