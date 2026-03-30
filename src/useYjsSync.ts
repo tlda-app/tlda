@@ -183,8 +183,13 @@ export function writeSignal(key: string, payload: Record<string, unknown>): void
   signalCache.set(key, data)
   // Dispatch locally so own UI reacts immediately
   bus.dispatchDirect(key, data)
-  // Fire-and-forget POST to server for broadcast to other clients
-  fetch(`${activeServerUrl}/api/projects/${activeDocName}/signal`, {
+  // Fire-and-forget POST to server for broadcast to other clients.
+  // Use a relative URL when the signal server is a different origin (dev proxy handles it).
+  const signalPath = `/api/projects/${activeDocName}/signal`
+  const isCrossOrigin = activeServerUrl && typeof window !== 'undefined'
+    && new URL(activeServerUrl).origin !== window.location.origin
+  const signalUrl = isCrossOrigin ? signalPath : `${activeServerUrl}${signalPath}`
+  fetch(signalUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, ...data }),

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
+import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote } from './tools/VoiceNoteTool'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
@@ -216,11 +217,14 @@ const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
 
 const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
   { id: 'eraser', color: '#888', label: 'Eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
+  { id: 'black', color: '#1d1d1d', label: 'cut' },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
-  { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
-  { id: 'yellow', color: '#ffc940', label: 'explain' },
+  { id: 'orange', color: '#ff8c40', label: 'expand' },
+  { id: 'yellow', color: '#ffc940', label: 'question' },
+  { id: 'grey', color: '#9fa1a4', label: 'compress' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
+  { id: 'light-violet', color: '#e0d4f5', label: 'personal' },
   { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
   { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
@@ -239,7 +243,7 @@ function PhoneHighlighterButton() {
     if (activeToolId === 'draw') return HL_SLOTS.findIndex(s => s.id === 'draw')
     if (activeToolId === 'browse' || activeToolId === 'select') return HL_SLOTS.findIndex(s => s.id === 'select')
     const idx = HL_SLOTS.findIndex(s => s.id === activeColorName)
-    return idx >= 0 ? idx : 1
+    return idx >= 0 ? idx : 4
   }, [activeToolId, activeColorName])
   const mode = activeToolId === 'highlight' ? 'highlight' : activeToolId === 'eraser' ? 'eraser' : 'hand'
 
@@ -522,6 +526,8 @@ export function PhoneOverlay() {
 
       {/* Highlighter toggle — bottom right, drag for color slider */}
       <PhoneHighlighterButton />
+      {/* Voice note button — bottom right, left of highlighter */}
+      <VoiceNoteButton />
 
       {/* Page number indicator — shows during scroll, fades out */}
       <PhonePageIndicator />
@@ -689,4 +695,93 @@ export function HighlighterButton() {
   return <PhoneHighlighterButton />
 }
 export function SemanticHighlightPill() { return null }
+
+// ======================
+// Voice Note Button
+// ======================
+
+function VoiceNoteButtonInner() {
+  const editor = useEditor()
+  const [recording, setRecording] = useState(false)
+  const recRef = useRef<any>(null)
+  const transcriptRef = useRef('')
+
+  const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
+
+  const cancelRecording = useCallback(() => {
+    if (recRef.current) { recRef.current.stop(); recRef.current = null }
+    transcriptRef.current = ''
+    clearVoiceTranscript()
+    clearPendingPlacement()
+    setStopRecordingCallback(null)
+    setRecording(false)
+    editor.setCurrentTool('select')
+  }, [editor])
+
+  const startRecording = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) return
+    transcriptRef.current = ''
+    clearVoiceTranscript()
+    const rec = new SR()
+    rec.continuous = true
+    rec.interimResults = false
+    rec.lang = 'en-US'
+    rec.onresult = (e: any) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) appendVoiceTranscript(e.results[i][0].transcript + ' ')
+      }
+    }
+    rec.onend = () => {
+      commitVoiceNote()
+      if (recRef.current === rec) recRef.current = null
+    }
+    rec.start()
+    recRef.current = rec
+    // Register stop callback for the tool to call on placement
+    setStopRecordingCallback(() => {
+      if (recRef.current) { recRef.current.stop(); recRef.current = null }
+      setRecording(false)
+    })
+    setRecording(true)
+    // Enter ghost/placement mode immediately
+    editor.setCurrentTool('voice-note')
+  }, [editor])
+
+  const handleClick = useCallback(() => {
+    if (recording || isPlacing) {
+      cancelRecording()
+    } else {
+      startRecording()
+    }
+  }, [recording, isPlacing, cancelRecording, startRecording])
+
+  const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
+
+  return (
+    <button
+      className={cls}
+      onClick={handleClick}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+      title={recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note'}
+    >
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
+        <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
+        <path d="M3 9a6 6 0 0 0 12 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+        <line x1="9" y1="15" x2="9" y2="17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    </button>
+  )
+}
+
+export function VoiceNoteButton() {
+  // Only render if SpeechRecognition is available
+  if (typeof window === 'undefined') return null
+  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+  if (!SR) return null
+  return <VoiceNoteButtonInner />
+}
 

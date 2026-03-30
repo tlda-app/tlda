@@ -42,11 +42,14 @@ const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
 
 const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
   { id: 'eraser', color: '#888', label: 'eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
+  { id: 'black', color: '#1d1d1d', label: 'cut' },
   { id: 'light-red', color: '#dc2626', label: 'wrong' },
-  { id: 'orange', color: '#ff8c40', label: 'cite/prove' },
-  { id: 'yellow', color: '#ffc940', label: 'explain' },
+  { id: 'orange', color: '#ff8c40', label: 'expand' },
+  { id: 'yellow', color: '#ffc940', label: 'question' },
+  { id: 'grey', color: '#9fa1a4', label: 'compress' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
+  { id: 'light-violet', color: '#e0d4f5', label: 'personal' },
   { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
 ]
@@ -88,7 +91,7 @@ export function HighlighterSlider() {
     if (activeToolId === 'draw') return HL_SLOTS.findIndex(s => s.id === 'draw')
     if (activeToolId === 'browse' || activeToolId === 'select') return HL_SLOTS.findIndex(s => s.id === 'select')
     const idx = HL_SLOTS.findIndex(s => s.id === activeColorName)
-    return idx >= 0 ? idx : 3
+    return idx >= 0 ? idx : 4
   }, [activeToolId, activeColorName])
 
   const [cursorY, setCursorY] = useState<number | null>(null)

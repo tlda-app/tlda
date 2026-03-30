@@ -1352,8 +1352,29 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 boxShadow: `0 0 0 2px ${dotColor}33`,
                 transition: 'transform 0.15s, box-shadow 0.15s',
                 transform: showDotCard ? 'scale(1.3)' : 'scale(1)',
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
-            />
+            >
+              {/* Mic icon for voice notes — fades when translation accepted */}
+              {shape.meta?.voiceNote && (
+                <svg
+                  width="6" height="6" viewBox="0 0 18 18" fill="white"
+                  style={{
+                    opacity: shape.meta?.translationAccepted ? 0.2 : 0.55,
+                    transition: 'opacity 0.4s',
+                    pointerEvents: 'none',
+                    flexShrink: 0,
+                  }}
+                >
+                  <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
+                  <path d="M3 9a6 6 0 0 0 12 0" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" />
+                  <line x1="9" y1="15" x2="9" y2="17" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              )}
+            </div>
             {/* Hover/click card — inverse-scaled to fixed screen size */}
             {showDotCard && (
               <div
@@ -1495,7 +1516,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
   indicator(shape: any) {
     if (shape.props.collapsed) {
-      return <circle cx={5} cy={5} r={5} />
+      return null
     }
     return <rect width={shape.props.w} height={shape.props.h} rx={4} ry={4} />
   }

@@ -237,7 +237,8 @@ function checkDocBuildStatusDisk(docName) {
 
 async function headlessScreenshot(docName, targetPage) {
   const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
-  const url = `${serverUrl}/?doc=${docName}`;
+  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
+  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
   const browser = await getHeadlessBrowser();
   const page = await browser.newPage();
   try {
@@ -264,6 +265,94 @@ async function headlessScreenshot(docName, targetPage) {
     const buf = await page.screenshot({ type: 'png' });
     const base64 = buf.toString('base64');
     return base64;
+  } finally {
+    await page.close();
+    scheduleBrowserClose();
+  }
+}
+
+/**
+ * Take a cropped screenshot of a specific canvas region.
+ * Centers the viewport on the given canvas bounds, then clips to the exact region.
+ * @param {string} docName - document name
+ * @param {{ x: number, y: number, w: number, h: number }} bounds - canvas bounds to capture
+ * @param {number} [padding=200] - extra pixels around the bounds (generous for context)
+ * @param {string} [focusShapeId] - if provided, desaturate other annotations to highlight this one
+ */
+async function headlessScreenshotCrop(docName, bounds, padding = 200, focusShapeId = null) {
+  const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
+  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
+  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
+  const browser = await getHeadlessBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: 1280, height: 960 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Center on the bounds and zoom to fit
+    const clip = await page.evaluate((b, pad) => {
+      const editor = window.__tldraw_editor__;
+      if (!editor) return null;
+      // Zoom to fit the bounds with padding
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      editor.centerOnPoint({ x: cx, y: cy });
+      // Calculate zoom to fit bounds in viewport
+      const vw = 1280, vh = 960;
+      const zoomX = vw / (b.w + pad * 2);
+      const zoomY = vh / (b.h + pad * 2);
+      const zoom = Math.min(zoomX, zoomY, 2); // cap at 2x for readability
+      editor.setCamera({ x: -(cx - vw / (2 * zoom)), y: -(cy - vh / (2 * zoom)), z: zoom });
+      // Convert canvas bounds to screen coords
+      const tl = editor.pageToScreen({ x: b.x, y: b.y });
+      const br = editor.pageToScreen({ x: b.x + b.w, y: b.y + b.h });
+      return {
+        x: Math.max(0, Math.floor(tl.x - pad)),
+        y: Math.max(0, Math.floor(tl.y - pad)),
+        width: Math.min(vw, Math.ceil(br.x - tl.x + pad * 2)),
+        height: Math.min(vh, Math.ceil(br.y - tl.y + pad * 2)),
+      };
+    }, bounds, padding);
+
+    // Force light theme and hide fleet UI shapes for clean document screenshots
+    await page.evaluate(() => {
+      document.documentElement.classList.remove('tl-theme__dark');
+      document.documentElement.classList.add('tl-theme__light');
+      document.body.classList.remove('tl-theme__dark');
+      document.body.classList.add('tl-theme__light');
+      const editor = window.__tldraw_editor__;
+      if (!editor) return;
+      const fleetTypes = new Set(['fleet-chat', 'fleet-agents', 'fleet-pill', 'fleet-status']);
+      for (const shape of editor.getCurrentPageShapes()) {
+        if (!fleetTypes.has(shape.type)) continue;
+        const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
+        if (el) el.style.display = 'none';
+      }
+    });
+
+    // Fade non-target annotations (keep colors recognizable, just lower salience)
+    if (focusShapeId) {
+      await page.evaluate((targetId) => {
+        const editor = window.__tldraw_editor__;
+        if (!editor) return;
+        const annotationTypes = new Set(['highlight', 'draw', 'dot-annotation']);
+        for (const shape of editor.getCurrentPageShapes()) {
+          if (!annotationTypes.has(shape.type)) continue;
+          if (shape.id === targetId) continue;
+          const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
+          if (el) el.style.opacity = '0.4';
+        }
+      }, focusShapeId);
+    }
+
+    await new Promise(r => setTimeout(r, 500)); // let render settle
+
+    const buf = clip
+      ? await page.screenshot({ type: 'png', clip })
+      : await page.screenshot({ type: 'png' });
+    return buf.toString('base64');
   } finally {
     await page.close();
     scheduleBrowserClose();
@@ -1707,6 +1796,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'crop_screenshot',
+      description: 'Take a cropped screenshot of a specific document region. Pass a screenshotRef from an annotation attachment, or specify doc + bounds directly. Returns a PNG image.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Screenshot ref string from annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h")',
+          },
+          doc: {
+            type: 'string',
+            description: 'Document name (required if ref is not provided)',
+          },
+          x: { type: 'number', description: 'Canvas X of crop region' },
+          y: { type: 'number', description: 'Canvas Y of crop region' },
+          w: { type: 'number', description: 'Width of crop region' },
+          h: { type: 'number', description: 'Height of crop region' },
+          padding: { type: 'number', description: 'Extra pixels around the region (default: 200)' },
+          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out' },
+        },
+      },
+    },
+    {
       name: 'highlight_location',
       description: 'Highlight a location in the TLDraw canvas on the iPad. Use this for forward sync from TeX source to iPad.',
       inputSchema: {
@@ -2106,7 +2218,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
-  'wait_for_feedback', 'screenshot', 'get_latest_feedback',
+  'wait_for_feedback', 'screenshot', 'crop_screenshot', 'get_latest_feedback',
   'highlight_location', 'add_annotation', 'send_note',
   'scroll_to_line', 'read_pen_annotations',
   'draw_highlight', 'draw_arrow',
@@ -2741,6 +2853,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (e) {
       return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'crop_screenshot') {
+    let docName, bounds, padding = args?.padding || 200;
+    if (args?.ref) {
+      // Parse ref: "tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>"
+      const parts = args.ref.split(':');
+      // Expected: ["tlda-screenshot", "page", "page", "<x>,<y>,<w>,<h>"]
+      const coordStr = parts[parts.length - 1];
+      const coords = coordStr.split(',').map(Number);
+      if (coords.length !== 4 || coords.some(isNaN)) {
+        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
+      }
+      [bounds] = [{ x: coords[0], y: coords[1], w: coords[2], h: coords[3] }];
+      // Doc name must be provided separately when using ref
+      docName = args.doc;
+    } else {
+      docName = args?.doc;
+      if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
+        bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
+      }
+    }
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
+    }
+    if (!bounds) {
+      return { content: [{ type: 'text', text: 'Missing bounds — provide ref or x/y/w/h' }], isError: true };
+    }
+    try {
+      const base64 = await headlessScreenshotCrop(docName, bounds, padding, args?.shapeId || null);
+      return {
+        content: [
+          { type: 'text', text: `Cropped screenshot (${Math.round(base64.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
+          { type: 'image', data: base64, mimeType: 'image/png' },
+        ],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Crop screenshot failed: ${e.message}` }], isError: true };
     }
   }
 

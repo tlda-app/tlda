@@ -1861,3 +1861,48 @@ html[data-theme="dark"] .fleet-chat-input input:focus {
   background: rgba(255, 255, 255, 0.04);
 }
 
+/* Voice note button — bottom right, left of highlighter */
+.voice-note-btn {
+  display: flex;
+  position: fixed;
+  bottom: 16px;
+  right: 68px;
+  z-index: 10001;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  transition: background 0.15s, opacity 0.15s, box-shadow 0.15s;
+  touch-action: none;
+  opacity: 0.15;
+}
+.voice-note-btn:hover { opacity: 0.5; }
+
+.voice-note-btn.recording {
+  background: rgba(239, 100, 100, 0.18);
+  color: rgba(180, 60, 60, 0.7);
+  opacity: 1;
+}
+.voice-note-btn.placing {
+  background: rgba(255, 200, 64, 0.18);
+  color: rgba(160, 120, 0, 0.7);
+  opacity: 1;
+}
+
+body.phone-mode .voice-note-btn {
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  right: calc(68px + env(safe-area-inset-right));
+  opacity: 0.5;
+}
+
+html[data-theme="dark"] .voice-note-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+

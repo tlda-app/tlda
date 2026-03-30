@@ -33,11 +33,12 @@ import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasS
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
+import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -640,7 +641,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetLockOverlay /><HighlighterSlider /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetLockOverlay /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -721,7 +722,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, TextSelectTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
