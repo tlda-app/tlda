@@ -669,8 +669,10 @@ export function FleetToggle() {
       return tb - ta
     })
     const [agent1, agent2] = sorted.slice(0, 2)
-    const filter1 = agent1 ? [[(agent1.friendly_name || agent1.id) as string]] : []
-    const filter2 = agent2 ? [[(agent2.friendly_name || agent2.id) as string]] : []
+    const name1 = (agent1?.friendly_name || agent1?.id) as string | undefined
+    const name2 = (agent2?.friendly_name || agent2?.id) as string | undefined
+    const filter1: [string, string][][] = name1 ? [[['from', name1]], [['to', name1]]] : []
+    const filter2: [string, string][][] = name2 ? [[['from', name2]], [['to', name2]]] : []
 
     // Position: right edge of fleet just left of doc's left margin, ~1 page above doc top
     const pageShapes = editor.getCurrentPageShapes().filter(s =>
