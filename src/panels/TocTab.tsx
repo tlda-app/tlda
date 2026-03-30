@@ -11,6 +11,7 @@ import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+import { useFleetAgents } from '../fleet-data-adapter'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -653,57 +654,52 @@ const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
 
 export function FleetToggle() {
   const editor = useEditor()
-  const hasFleet = useValue('hasFleet', () =>
-    editor.getCurrentPageShapes().some(s => FLEET_SHAPE_TYPES.includes(s.type)), [editor])
+  const allAgents = useFleetAgents()
 
   const handleClick = useCallback(() => {
+    // Always delete existing fleet shapes and recreate fresh
     const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
-    if (existing.length > 0) {
-      // Pan to fleet shapes
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (const s of existing) {
-        const b = editor.getShapePageBounds(s.id)
-        if (!b) continue
-        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
-        maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
-      }
-      if (isFinite(minX)) {
-        editor.centerOnPoint(
-          { x: (minX + maxX) / 2, y: (minY + maxY) / 2 },
-          { animation: { duration: 300 } }
-        )
-      }
-      return
-    }
+    if (existing.length > 0) editor.deleteShapes(existing.map(s => s.id))
 
-    // Create fleet shapes above the doc
+    // Pick 2 most recently active non-human agents for 1-on-1 chat filters
+    const nonHuman = allAgents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
+    const sorted = [...nonHuman].sort((a: any, b: any) => {
+      const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
+      const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
+      return tb - ta
+    })
+    const [agent1, agent2] = sorted.slice(0, 2)
+    const filter1 = agent1 ? [[(agent1.friendly_name || agent1.id) as string]] : []
+    const filter2 = agent2 ? [[(agent2.friendly_name || agent2.id) as string]] : []
+
+    // Position: right edge of fleet just left of doc's left margin, ~1 page above doc top
     const pageShapes = editor.getCurrentPageShapes().filter(s =>
       (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-    let anchorX = 0, anchorY = 0, docWidth = 700
+
+    const leftW = 340
+    const chatW = 420
+    const gap = 10
+    const chatH = 510
+    const totalW = leftW + gap + chatW
+
+    let anchorX = 0, anchorY = 0
     if (pageShapes.length > 0) {
-      let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
+      let minLeft = Infinity, minTop = Infinity
       for (const ps of pageShapes) {
         const b = editor.getShapePageBounds(ps.id)
         if (b) {
           if (b.x < minLeft) minLeft = b.x
-          if (b.x + b.w > maxRight) maxRight = b.x + b.w
           if (b.y < minTop) minTop = b.y
         }
       }
-      docWidth = maxRight - minLeft
-      anchorX = minLeft
+      anchorX = minLeft - 40 - totalW
       anchorY = minTop - 1200
     } else {
       const vb = editor.getViewportScreenBounds()
       const cam = editor.getCamera()
-      anchorX = -cam.x + (vb.x + vb.w / 2) / cam.z
+      anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - totalW / 2
       anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
     }
-
-    const chatW = docWidth
-    const leftW = 340
-    const gap = 10
-    const chatH = 475
 
     editor.createShapes([
       {
@@ -711,41 +707,40 @@ export function FleetToggle() {
         type: 'fleet-agents' as any,
         x: anchorX, y: anchorY,
         isLocked: true,
-        props: { w: leftW, h: 500 },
+        props: { w: leftW, h: chatH },
       },
       {
         id: createShapeId(),
         type: 'fleet-search' as any,
-        x: anchorX, y: anchorY + 510,
+        x: anchorX, y: anchorY + chatH + gap,
         isLocked: true,
-        props: { w: leftW, h: 450 },
+        props: { w: leftW, h: chatH },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: true,
-        props: { w: chatW, h: chatH, filter: [] },
+        props: { w: chatW, h: chatH, filter: filter1 },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY + chatH + gap,
         isLocked: true,
-        props: { w: chatW, h: chatH, filter: [] },
+        props: { w: chatW, h: chatH, filter: filter2 },
       },
     ])
 
-    // Pan to the new shapes
     editor.centerOnPoint(
-      { x: anchorX + (leftW + gap + chatW) / 2, y: anchorY + chatH / 2 },
+      { x: anchorX + totalW / 2, y: anchorY + chatH },
       { animation: { duration: 300 } }
     )
-  }, [editor])
+  }, [editor, allAgents])
 
   return (
     <div className="toc-diff-hint" onClick={handleClick}>
-      <span className="toc-toggle-icon">{'\u2693'}</span> {hasFleet ? 'Go to Fleet' : 'Add Fleet'}
+      <span className="toc-toggle-icon">{'\u2693'}</span> Fleet
     </div>
   )
 }
