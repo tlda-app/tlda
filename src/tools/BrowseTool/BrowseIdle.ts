@@ -11,7 +11,6 @@ import {
   StateNode,
   Vec,
   createShapeId,
-  debugFlags,
   kickoutOccludedShapes,
   pointInPolygon,
   toRichText,
@@ -188,6 +187,7 @@ export class BrowseIdle extends StateNode {
 
         if (
           selectedShapeIds.length > 1 ||
+          (onlySelectedShape && FLEET_TYPES.has(onlySelectedShape.type as string)) ||
           (onlySelectedShape &&
             !this.editor.getShapeUtil(onlySelectedShape).hideSelectionBoundsBg(onlySelectedShape))
         ) {
@@ -452,6 +452,7 @@ export class BrowseIdle extends StateNode {
 
         if (
           selectedShapeIds.length > 1 ||
+          (onlySelectedShape && FLEET_TYPES.has(onlySelectedShape.type as string)) ||
           (onlySelectedShape &&
             !this.editor.getShapeUtil(onlySelectedShape).hideSelectionBoundsBg(onlySelectedShape))
         ) {
@@ -524,21 +525,15 @@ export class BrowseIdle extends StateNode {
       }
     }
 
-    if (debugFlags['editOnType'].get()) {
-      if (!SKIPPED_KEYS_FOR_AUTO_EDITING.includes(info.key) && !info.altKey && !info.ctrlKey) {
-        const onlySelectedShape = this.editor.getOnlySelectedShape()
-        if (
-          onlySelectedShape &&
-          this.editor.isShapeOfType(onlySelectedShape, 'note') &&
-          this.editor.canEditShape(onlySelectedShape)
-        ) {
-          this.startEditingShape(onlySelectedShape, {
-            ...info,
-            target: 'shape',
-            shape: onlySelectedShape,
-          }, true)
-          return
-        }
+    if (!SKIPPED_KEYS_FOR_AUTO_EDITING.includes(info.key) && !info.altKey && !info.ctrlKey) {
+      const onlySelectedShape = this.editor.getOnlySelectedShape()
+      if (
+        onlySelectedShape &&
+        this.editor.isShapeOfType(onlySelectedShape, 'note') &&
+        this.editor.canEditShape(onlySelectedShape)
+      ) {
+        this.startEditingShape(onlySelectedShape, info, true)
+        return
       }
     }
   }
@@ -584,11 +579,7 @@ export class BrowseIdle extends StateNode {
           onlySelectedShape &&
           this.editor.canEditShape(onlySelectedShape, { type: 'press_enter' })
         ) {
-          this.startEditingShape(onlySelectedShape, {
-            ...info,
-            target: 'shape',
-            shape: onlySelectedShape,
-          }, true)
+          this.startEditingShape(onlySelectedShape, info, true)
           return
         }
         if (this.editor.canCropShape(onlySelectedShape)) {
