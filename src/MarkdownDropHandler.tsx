@@ -53,23 +53,18 @@ export function MarkdownDropHandler() {
   const editor = useEditor()
 
   useEffect(() => {
-    function hasMarkdownItems(e: DragEvent): boolean {
+    function handleDragOver(e: DragEvent) {
+      // Can't access filenames during dragover (browser security).
+      // Allow any file drop and filter to .md in handleDrop.
       const items = e.dataTransfer?.items
-      if (!items) return false
+      if (!items) return
       for (let i = 0; i < items.length; i++) {
-        const item = items[i]
-        if (item.kind === 'file') {
-          const file = item.getAsFile()
-          if (file && isMarkdownFile(file)) return true
+        if (items[i].kind === 'file') {
+          e.preventDefault()
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+          return
         }
       }
-      return false
-    }
-
-    function handleDragOver(e: DragEvent) {
-      if (!hasMarkdownItems(e)) return
-      e.preventDefault()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
 
     function handleDrop(e: DragEvent) {

@@ -650,7 +650,7 @@ export function DarkModeToggle() {
   )
 }
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-pill', 'fleet-container']
 
 export function FleetToggle() {
   const editor = useEditor()
@@ -659,7 +659,11 @@ export function FleetToggle() {
   const handleClick = useCallback(() => {
     // Always delete existing fleet shapes and recreate fresh
     const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
-    if (existing.length > 0) editor.deleteShapes(existing.map(s => s.id))
+    if (existing.length > 0) {
+      // Unlock first — tldraw won't delete locked shapes via deleteShapes
+      editor.updateShapes(existing.map(s => ({ id: s.id, type: s.type, isLocked: false })))
+      editor.deleteShapes(existing.map(s => s.id))
+    }
 
     // Pick 2 most recently active non-human agents for 1-on-1 chat filters
     const nonHuman = allAgents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
