@@ -20,7 +20,7 @@
 
 import express from 'express'
 import { createServer, request as httpRequest } from 'http'
-import { WebSocketServer } from 'ws'
+import { WebSocketServer, WebSocket as WS } from 'ws'
 import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -378,6 +378,7 @@ app.get('/{*path}', (req, res) => {
 const server = createServer(app)
 
 const syncWss = new WebSocketServer({ noServer: true })
+const fleetWss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
@@ -403,6 +404,27 @@ server.on('upgrade', (req, socket, head) => {
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
     })
+    return
+  }
+
+  // Proxy /ws/fleet to fleet server for live chat events
+  if (url.pathname === '/ws/fleet') {
+    const fleetUrl = new URL(FLEET_SERVER)
+    const target = `ws://${fleetUrl.hostname}:${fleetUrl.port}${req.url}`
+    const upstream = new WS(target)
+    upstream.on('open', () => {
+      fleetWss.handleUpgrade(req, socket, head, (ws) => {
+        upstream.on('message', (data) => {
+          try { if (ws.readyState === 1) ws.send(data.toString()) } catch {}
+        })
+        ws.on('message', (data) => {
+          try { if (upstream.readyState === 1) upstream.send(data.toString()) } catch {}
+        })
+        upstream.on('close', () => ws.close())
+        ws.on('close', () => upstream.close())
+      })
+    })
+    upstream.on('error', () => socket.destroy())
     return
   }
 

@@ -34,17 +34,46 @@ body {
 
 .build-pills-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   pointer-events: none;
 }
 
-/* Chrome renders fixed-position UI inside tldraw's InFrontOfTheCanvas at half
-   size on retina macOS displays. Compensate by scaling the in-front container
-   back to full size.  Only applies on retina (DPR >= 2) Chrome displays where
-   the mismatch with Safari occurs. */
-@media (-webkit-min-device-pixel-ratio: 2) {
-  body.is-chrome .tl-canvas__in-front {
-    zoom: 2;
-  }
+/* High-res display compensation: macOS "More Space" gives huge CSS viewports.
+   Scale up UI chrome so it's not physically tiny. Uses --hires-scale set by main.tsx.
+   Only affects overlays — tldraw canvas/shapes are unaffected. */
+html.hires .tlui-layout {
+  overflow: visible;
+  contain: layout style;
+}
+html.hires .tlui-main-toolbar {
+  zoom: var(--hires-scale);
+}
+html.hires [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
+  zoom: var(--hires-scale);
+}
+html.hires .build-pills-row {
+  zoom: var(--hires-scale);
+}
+html.hires .fleet-pill-container {
+  zoom: var(--hires-scale);
+}
+html.hires .fleet-hud-controls {
+  zoom: var(--hires-scale);
+}
+html.hires .doc-panel {
+  zoom: var(--hires-scale);
+}
+html.hires .phone-hl-btn {
+  zoom: var(--hires-scale);
+}
+html.hires .phone-hl-slider {
+  zoom: var(--hires-scale);
+}
+html.hires .agent-indicator {
+  zoom: var(--hires-scale);
+}
+html.hires .ping-button-standalone {
+  zoom: var(--hires-scale);
 }

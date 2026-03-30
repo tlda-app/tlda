@@ -40,24 +40,23 @@
 }
 
 .fleet-hud-wrap > .clip-panel {
-  pointer-events: none;
+  pointer-events: auto;
   background: transparent !important;
   box-shadow: none !important;
   border-radius: 0 !important;
 }
 .fleet-hud-wrap .clip-panel-canvas {
   background: transparent !important;
-  pointer-events: none;
+  pointer-events: auto;
 }
 /* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
 .fleet-hud-wrap [class*="watermark"] {
   display: none !important;
 }
-/* Only the actual fleet shape content captures events */
-.fleet-hud-wrap .fleet-shape,
-.fleet-hud-wrap .fleet-chat-shape,
-.fleet-hud-wrap .fleet-agents-shape {
-  pointer-events: auto;
+/* Disable Chrome zoom:2 fix inside the HUD — the HUD tldraw instance
+   has its own scaling and the doubling breaks hit testing */
+.fleet-hud-wrap .tl-canvas__in-front {
+  zoom: 1 !important;
 }
 
 .fleet-hud-controls {

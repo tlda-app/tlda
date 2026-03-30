@@ -51,7 +51,10 @@ export function FleetHUD({
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   const agents = useFleetAgents()
-  const [hudScale, setHudScale] = useState(1)
+  const [hudScale, setHudScale] = useState(() => {
+    const saved = localStorage.getItem('fleet-hud-scale')
+    return saved ? parseFloat(saved) || 1 : 1
+  })
   const hudRef = useRef<HTMLDivElement>(null)
 
   // Reactively update fleet bounds when shapes change
@@ -79,19 +82,25 @@ export function FleetHUD({
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
 
-  // Track fleet shapes' screen-space horizontal position when expanded
-  // When the user pans the main editor, the HUD shifts to stay aligned with the document margin
-  const [hudLeft, setHudLeft] = useState(0)
+  // Track fleet shapes' screen-space position when expanded
+  // hudRight = screen-space X of the fleet bounds right edge (constant anchor point)
+  // hudBaseWidth = screen-space width of fleet bounds at cam.z (base width before HUD scaling)
+  const [hudRight, setHudRight] = useState(0)
+  const [hudBaseWidth, setHudBaseWidth] = useState(0)
   useEffect(() => {
     if (!expanded || !fleetBounds) return
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
+    let lastCamZ = mainEditor.getCamera().z
     const poll = () => {
       const cam = mainEditor.getCamera()
-      if (cam.x !== lastCamX || hudLeft === 0) {
+      if (cam.x !== lastCamX || cam.z !== lastCamZ || hudRight === 0) {
         lastCamX = cam.x
-        const screenX = (fleetBounds.x + cam.x) * cam.z
-        setHudLeft(screenX)
+        lastCamZ = cam.z
+        const screenRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
+        const screenW = fleetBounds.w * cam.z
+        setHudRight(screenRight)
+        setHudBaseWidth(screenW)
       }
       rafId = requestAnimationFrame(poll)
     }
@@ -136,7 +145,11 @@ export function FleetHUD({
       e.preventDefault()
       e.stopPropagation()
       const delta = e.deltaY > 0 ? -0.03 : 0.03
-      setHudScale(s => Math.min(2, Math.max(0.5, s + delta)))
+      setHudScale(s => {
+        const next = Math.min(2, Math.max(0.5, s + delta))
+        localStorage.setItem('fleet-hud-scale', String(next))
+        return next
+      })
     }
     el.addEventListener('wheel', onWheel, { passive: false, capture: true })
     return () => el.removeEventListener('wheel', onWheel, { capture: true })
@@ -162,8 +175,9 @@ export function FleetHUD({
 
   // Expanded: CanvasClipPanel with fleet region
   // Right edge stays fixed — scaling expands leftward to reveal more fleet shapes
-  const scaledWidth = fleetBounds.w * hudScale
-  const adjustedLeft = hudLeft + fleetBounds.w - scaledWidth
+  // panelWidth is in CSS pixels: base screen width * hudScale
+  const panelWidth = hudBaseWidth * hudScale
+  const adjustedLeft = hudRight - panelWidth
   return (
     <div className="fleet-hud-wrap" ref={hudRef} style={{ left: adjustedLeft }}>
       <div className="fleet-hud-controls">
@@ -188,7 +202,7 @@ export function FleetHUD({
         shapeUtils={shapeUtils}
         tools={tools}
         licenseKey={licenseKey}
-        panelWidth={scaledWidth}
+        panelWidth={panelWidth}
         maxHeightFraction={0.95}
         lockCamera={true}
         className="fleet-hud"
