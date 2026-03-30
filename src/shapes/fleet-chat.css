@@ -1142,6 +1142,27 @@
   display: block;
 }
 
+/* Annotation chips — colored dot, location badge, clickable */
+.fleet-chat-shape .ref-chip-annotation {
+  cursor: pointer;
+  gap: 3px;
+}
+.fleet-chat-shape .ref-chip-annotation:hover {
+  background: rgba(147, 112, 219, 0.3);
+  border-color: rgba(147, 112, 219, 0.5);
+}
+.fleet-chat-shape .ref-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .ref-chip-loc {
+  font-size: 8px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
 /* --- Input highlight underlay (mirrors textarea, highlights <<ref>> tokens) --- */
 
 .fleet-chat-shape .fleet-chat-input-underlay {

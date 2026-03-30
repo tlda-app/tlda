@@ -287,13 +287,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
     let html = renderedHtml
-    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
-    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
-    if (doc && Object.keys(labelRegions).length > 0) {
-      html = linkifyArrowRefs(html, labelRegions)
-    }
-    if (doc) html = linkifyDocRefs(html)
-    // Turn «type:label» reference tokens into chips with hover preview
+    // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
+    // (otherwise "Theorem 3.2" inside a token gets wrapped in a doc-link span
+    // and the regex can't match the original token)
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const ref = refStore.get(token)
@@ -304,13 +300,55 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const preview = content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
-      return `<span class="ref-chip">${displayEsc}${preview}</span>`
+
+      const isAnnotation = ref?.type === 'annotation'
+      const colorDot = isAnnotation && ref?.color
+        ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
+        : ''
+      const locBadge = isAnnotation && ref?.file
+        ? `<span class="ref-chip-loc">${ref.file.split('/').pop()}${ref.lineno ? ':' + ref.lineno : ''}</span>`
+        : ''
+      const boundsAttr = ref?.canvasBounds
+        ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"`
+        : ''
+      const shapeAttr = ref?.shapeId ? ` data-shape-ref="${ref.shapeId}"` : ''
+      const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
+
+      return `<span class="${cls}"${boundsAttr}${shapeAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
+    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
+    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
+    if (doc && Object.keys(labelRegions).length > 0) {
+      html = linkifyArrowRefs(html, labelRegions)
+    }
+    if (doc) html = linkifyDocRefs(html)
     return html
   }, [renderedHtml, doc, labelRegions])
 
+  // Handle clicks on ref-chip annotations → navigate to canvas bounds
+  const handleRefChipClick = useCallback((e: React.MouseEvent) => {
+    const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
+    if (!chip) return
+    const boundsStr = chip.dataset.bounds
+    if (boundsStr) {
+      const [x, y, w, h] = boundsStr.split(',').map(Number)
+      if ([x, y, w, h].every(n => isFinite(n))) {
+        e.stopPropagation()
+        editor.zoomToBounds({ x: x - 20, y: y - 20, w: w + 40, h: h + 40 }, { animation: { duration: 300 } })
+        const shapeRef = chip.dataset.shapeRef
+        if (shapeRef) {
+          try { editor.select(shapeRef as any) } catch {}
+        }
+      }
+    }
+  }, [editor])
+
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+    // Also check for annotation chip clicks
+    const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
+    if (chipTarget) { handleRefChipClick(e); return }
+
     const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
     if (!target || !doc) return
 

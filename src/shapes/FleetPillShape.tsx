@@ -19,7 +19,18 @@ const PILL_H = 18
 export const chatInsertBus = new EventTarget()
 
 /** Stash for reference chip content — keyed by token string, value is hover content */
-export const refStore = new Map<string, { type: string; label: string; content: string }>()
+export interface RefStoreEntry {
+  type: string
+  label: string
+  content: string
+  // Annotation-specific fields
+  color?: string
+  canvasBounds?: { x: number; y: number; w: number; h: number }
+  shapeId?: string
+  file?: string
+  lineno?: number
+}
+export const refStore = new Map<string, RefStoreEntry>()
 
 /**
  * Module-level state for filter overlay drop preview.
@@ -74,7 +85,18 @@ export function dropPillOnTarget(
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
       const token = `«${pillType}:${displayName}»`
-      refStore.set(token, { type: pillType, label: displayName, content })
+      const entry: RefStoreEntry = { type: pillType, label: displayName, content }
+      // Capture annotation metadata from pill shape props
+      if (pill?.props?.color) entry.color = pill.props.color
+      if (pill?.props?.value) {
+        entry.shapeId = pill.props.value
+        const srcShape = editor.getShape(pill.props.value as any)
+        if (srcShape) {
+          const srcBounds = editor.getShapePageBounds(srcShape.id)
+          if (srcBounds) entry.canvasBounds = { x: srcBounds.x, y: srcBounds.y, w: srcBounds.w, h: srcBounds.h }
+        }
+      }
+      refStore.set(token, entry)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
