@@ -1536,19 +1536,18 @@ body.phone-mode .phone-hl-btn {
 .phone-hl-btn.active {
   background: var(--hl-color, #ffc940);
   color: white;
-  opacity: 0.85;
+  opacity: 0.5;
   box-shadow: none;
 }
 
 /* Highlighter color slider — appears to the left of button during drag */
+/* Position is set via inline style (dynamic from button rect). */
 .phone-hl-slider {
   display: flex;
   flex-direction: row;
   position: fixed;
-  bottom: calc(28px + env(safe-area-inset-bottom));
-  right: calc(68px + env(safe-area-inset-right));
   z-index: 10002;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--color-panel, white);
   border-radius: 22px;
   padding: 4px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
@@ -1614,7 +1613,7 @@ html[data-theme="dark"] .phone-hl-btn.active {
 }
 
 html[data-theme="dark"] .phone-hl-slider {
-  background: rgba(30, 30, 40, 0.92);
+  background: var(--color-panel, rgb(30, 30, 40));
 }
 
 html[data-theme="dark"] .phone-hl-slot.active {

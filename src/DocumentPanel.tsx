@@ -217,6 +217,7 @@ function PhoneHighlighterButton() {
   const [colorIdx, setColorIdx] = useState(1) // default yellow
   const [dragging, setDragging] = useState(false)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const [dragBtnRect, setDragBtnRect] = useState<DOMRect | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
 
@@ -303,6 +304,7 @@ function PhoneHighlighterButton() {
     e.stopPropagation()
     e.preventDefault()
     dragStartX.current = e.clientX
+    setDragBtnRect(btnRef.current?.getBoundingClientRect() ?? null)
     setDragging(false)
     setDragSlot(null)
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
@@ -329,7 +331,15 @@ function PhoneHighlighterButton() {
     }
     setDragging(false)
     setDragSlot(null)
+    setDragBtnRect(null)
   }, [dragging, dragSlot, activateSlot, handleTap])
+
+  const handlePointerCancel = useCallback((e: React.PointerEvent) => {
+    ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+    setDragging(false)
+    setDragSlot(null)
+    setDragBtnRect(null)
+  }, [])
 
   const activeSlot = dragSlot ?? colorIdx
   const activeColor = HL_SLOTS[activeSlot]?.color || HL_SLOTS[1].color
@@ -337,9 +347,17 @@ function PhoneHighlighterButton() {
 
   return (
     <>
-      {/* Color slider popup — shown during drag */}
-      {dragging && (
-        <div className="phone-hl-slider" onPointerDown={stopEventPropagation} onTouchStart={stopEventPropagation}>
+      {/* Color slider popup — shown during drag, positioned at button circle */}
+      {dragging && dragBtnRect && (
+        <div
+          className="phone-hl-slider"
+          style={{
+            bottom: `${window.innerHeight - dragBtnRect.bottom}px`,
+            right: `${window.innerWidth - dragBtnRect.left + 6}px`,
+          }}
+          onPointerDown={stopEventPropagation}
+          onTouchStart={stopEventPropagation}
+        >
           {HL_SLOTS.map((slot, i) => (
             <div
               key={slot.id}
@@ -378,6 +396,7 @@ function PhoneHighlighterButton() {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
       >
