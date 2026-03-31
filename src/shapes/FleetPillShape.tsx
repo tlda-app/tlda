@@ -45,7 +45,8 @@ export const filterDropPreview = {
   shapeId: null as string | null,
   toPreview: null as [string, string][][] | null,
   fromPreview: null as [string, string][][] | null,
-  activePaneRole: null as 'to' | 'from' | null,
+  replacePreview: null as [string, string][][] | null,
+  activePaneRole: null as 'to' | 'from' | 'replace' | null,
 }
 
 /**
@@ -124,9 +125,11 @@ export function dropPillOnTarget(
     // Agent/label pill → modify filter
     // If the filter overlay is open and has a preview, use its computed filter
     if (filterDropPreview.shapeId === hitShape.id && filterDropPreview.activePaneRole) {
-      const preview = filterDropPreview.activePaneRole === 'to'
-        ? filterDropPreview.toPreview
-        : filterDropPreview.fromPreview
+      const preview = filterDropPreview.activePaneRole === 'replace'
+        ? filterDropPreview.replacePreview
+        : filterDropPreview.activePaneRole === 'to'
+          ? filterDropPreview.toPreview
+          : filterDropPreview.fromPreview
       if (preview) {
         editor.updateShape({
           id: hitShape.id,

@@ -68,6 +68,9 @@ html.hires .doc-panel {
 html.hires .phone-hl-btn {
   zoom: var(--hires-scale);
 }
+html.hires .voice-note-btn {
+  zoom: var(--hires-scale);
+}
 html.hires .phone-hl-slider {
   zoom: var(--hires-scale);
 }

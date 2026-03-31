@@ -27,7 +27,7 @@ import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from 'fleet-dashboard/js/voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, useFleetThinking, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -222,6 +222,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const activityEvents = useFleetActivity(dnfFilter)
   const tasks = useFleetTasks()
   const thinkingAgents = useFleetThinking(dnfFilter)
+  const compactingAgents = useFleetCompacting(dnfFilter)
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (thinkingAgents.size === 0 && compactingAgents.size === 0) return
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [thinkingAgents.size, compactingAgents.size])
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Input history (up/down arrow navigation like terminal)
@@ -858,6 +865,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       e.preventDefault()
       dragRef.current = drag
+
+      document.addEventListener('pointermove', onPointerMove, { capture: true })
+      document.addEventListener('pointerup', onPointerUp, { capture: true })
     }
 
     function onPointerMove(e: PointerEvent) {
@@ -984,6 +994,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     function onPointerUp(e: PointerEvent) {
+      document.removeEventListener('pointermove', onPointerMove, { capture: true })
+      document.removeEventListener('pointerup', onPointerUp, { capture: true })
       const drag = dragRef.current
       if (!drag) return
       e.stopImmediatePropagation()
@@ -1002,11 +1014,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
-    document.addEventListener('pointermove', onPointerMove, { capture: true })
-    document.addEventListener('pointerup', onPointerUp, { capture: true })
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      // Also clean up move/up in case they were left attached (e.g. unmount during drag)
       document.removeEventListener('pointermove', onPointerMove, { capture: true })
       document.removeEventListener('pointerup', onPointerUp, { capture: true })
     }
@@ -1108,6 +1119,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
             shapeId={shape.id}
             editor={editor}
             onClose={() => setFilterOpen(false)}
+            externalPillOver={pillOver}
           />
         )}
 
@@ -1135,12 +1147,36 @@ function FleetChatComponent({ shape }: { shape: any }) {
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
           )}
-          {[...thinkingAgents].map(agentId => (
-            <div key={agentId} className="chat-line chat-thinking">
-              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-              {' '}<span className="thinking-text">thinking…</span>
-            </div>
-          ))}
+          {[...thinkingAgents.entries()].map(([agentId, startTs]) => {
+            const elapsed = Date.now() - startTs
+            const secs = Math.floor(elapsed / 1000)
+            const timeStr = secs >= 60
+              ? `${Math.floor(secs / 60)}m ${secs % 60}s`
+              : `${secs}s`
+            void tick
+            return (
+              <div key={agentId} className="chat-line chat-thinking">
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">thinking…</span>
+                {' '}<span className="thinking-elapsed">({timeStr})</span>
+              </div>
+            )
+          })}
+          {[...compactingAgents.entries()].map(([agentId, startTs]) => {
+            const elapsed = Date.now() - startTs
+            const secs = Math.floor(elapsed / 1000)
+            const timeStr = secs >= 60
+              ? `${Math.floor(secs / 60)}m ${secs % 60}s`
+              : `${secs}s`
+            void tick
+            return (
+              <div key={`compact-${agentId}`} className="chat-line chat-thinking">
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">compacting…</span>
+                {' '}<span className="thinking-elapsed">({timeStr})</span>
+              </div>
+            )
+          })}
         </div>
 
         {/* Doc-link hover preview — positioned relative to shape container */}
@@ -1554,12 +1590,14 @@ function FilterOverlay({
   shapeId,
   editor,
   onClose,
+  externalPillOver,
 }: {
   filter: [string, string][][]
   agentNames: Record<string, string>
   shapeId: any
   editor: any
   onClose: () => void
+  externalPillOver?: { role: string; value: string; displayName: string } | null
 }) {
   // Native click delegation on document capture — bypasses tldraw completely
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -1619,17 +1657,19 @@ function FilterOverlay({
     return `${pill.props.value}\0${pill.props.displayName}`
   }, [editor, shapeId])
 
-  const pillOver = useMemo(() => {
+  const internalPillOver = useMemo(() => {
     if (!pillOverKey) return null
     const [value, displayName] = pillOverKey.split('\0')
     return { value, displayName }
   }, [pillOverKey])
+  const pillOver = externalPillOver ?? internalPillOver
 
   // AND-group hover detection via pill shape position vs DOM bounding rects.
   // Pointer events don't work during drag because FleetAgentsShape holds pointer capture.
   // Instead, poll the pill's screen position each frame and check against clause box rects.
   const toPaneRef = useRef<HTMLDivElement>(null)
   const fromPaneRef = useRef<HTMLDivElement>(null)
+  const replaceZoneRef = useRef<HTMLDivElement>(null)
 
   // AND-group hover detection with hysteresis to prevent oscillation.
   // Once hovering a group, stick to it until the pill clearly leaves (EXIT_PAD away).
@@ -1657,6 +1697,17 @@ function FilterOverlay({
         return { pane: last.pane as 'to' | 'from', idx: last.idx }
       }
       lastGroupRef.current = null
+    }
+
+    // Check replace zone first (bottom-left corner)
+    const replaceEl = replaceZoneRef.current
+    if (replaceEl) {
+      const r = replaceEl.getBoundingClientRect()
+      if (screenPt.x >= r.x - ENTER_PAD && screenPt.x <= r.x + r.width + ENTER_PAD &&
+          screenPt.y >= r.y - ENTER_PAD && screenPt.y <= r.y + r.height + ENTER_PAD) {
+        lastGroupRef.current = { pane: 'replace', idx: -1, rect: DOMRect.fromRect(r) }
+        return { pane: 'replace' as any, idx: -1 }
+      }
     }
 
     // Check each pane
@@ -1704,20 +1755,24 @@ function FilterOverlay({
   // Publish preview state so dropPillOnTarget can apply the right filter on release
   useEffect(() => {
     if (pillOver) {
+      const replacePreview: [string, string][][] = [[['to', pillOver.value]], [['from', pillOver.value]]]
       filterDropPreview.shapeId = shapeId
       filterDropPreview.toPreview = toPreview
       filterDropPreview.fromPreview = fromPreview
-      filterDropPreview.activePaneRole = hoveredGroup?.pane ?? null
+      filterDropPreview.replacePreview = replacePreview
+      filterDropPreview.activePaneRole = (hoveredGroup?.pane as any) ?? null
     } else {
       filterDropPreview.shapeId = null
       filterDropPreview.toPreview = null
       filterDropPreview.fromPreview = null
+      filterDropPreview.replacePreview = null
       filterDropPreview.activePaneRole = null
     }
     return () => {
       filterDropPreview.shapeId = null
       filterDropPreview.toPreview = null
       filterDropPreview.fromPreview = null
+      filterDropPreview.replacePreview = null
       filterDropPreview.activePaneRole = null
     }
   }, [pillOver, toPreview, fromPreview, hoveredGroup, shapeId])
@@ -1806,8 +1861,17 @@ function FilterOverlay({
   return (
     <div ref={overlayRef} className="fleet-filter-overlay" onPointerDown={stopEventPropagation}>
       {pillOver ? (
-        /* Two-pane drop preview: top = to, bottom = from */
+        /* Two-pane drop preview: top = to, bottom = from, with replace zone in bottom-left */
         <div className="fleet-filter-drop-panes">
+          <div
+            ref={replaceZoneRef}
+            className={`fleet-filter-replace-zone${hoveredGroup?.pane === 'replace' ? ' fleet-filter-replace-zone-active' : ''}`}
+          >
+            <span className="fleet-filter-replace-label">only</span>
+            {renderChip('to', pillOver.value)}
+            <span className="fleet-filter-replace-sep">+</span>
+            {renderChip('from', pillOver.value)}
+          </div>
           <div
             ref={toPaneRef}
             className={`fleet-filter-drop-pane fleet-filter-pane-to${hoveredGroup?.pane === 'to' ? ' fleet-filter-pane-active' : ''}`}
