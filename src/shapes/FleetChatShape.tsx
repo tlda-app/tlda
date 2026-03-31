@@ -908,12 +908,35 @@ function FleetChatComponent({ shape }: { shape: any }) {
           y: pagePos.y - 9,
         })
       }
+
+      // Membrane glow: when dragging an annotation pill near the fleet-chat edge
+      if (drag.started && drag.pillType === 'annotation') {
+        const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
+        if (shapeEl) {
+          const rect = shapeEl.getBoundingClientRect()
+          const edgeDist = Math.min(
+            e.clientX - rect.left, rect.right - e.clientX,
+            e.clientY - rect.top, rect.bottom - e.clientY,
+          )
+          const inside = e.clientX >= rect.left && e.clientX <= rect.right &&
+                         e.clientY >= rect.top && e.clientY <= rect.bottom
+          if (inside && edgeDist < 60) {
+            const intensity = Math.max(0, 1 - edgeDist / 60)
+            shapeEl.style.boxShadow = `0 0 ${12 + intensity * 12}px rgba(59, 130, 246, ${0.1 + intensity * 0.35})`
+          } else {
+            shapeEl.style.boxShadow = ''
+          }
+        }
+      }
     }
 
     function onPointerUp(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
       e.stopImmediatePropagation()
+      // Clear membrane glow
+      const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
+      if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
       if (!drag.started || !drag.pillId) return
       const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
