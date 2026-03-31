@@ -10,12 +10,7 @@ import {
 } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
-import {
-  switchTab,
-  addTab,
-  detachTab,
-  checkMergeOverlap,
-} from '../noteThreading'
+// noteThreading removed — no tabs, no merge
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import MarkdownIt from 'markdown-it'
@@ -214,8 +209,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     autoSize: T.optional(T.boolean),
     choices: T.optional(T.arrayOf(T.string)),
     selectedChoice: T.optional(T.number),
-    tabs: T.optional(T.arrayOf(T.string)),
-    activeTab: T.optional(T.number),
     done: T.optional(T.boolean),
     collapsed: T.optional(T.boolean),
   }
@@ -276,7 +269,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }
       }
     }
-    checkMergeOverlap(this.editor, current.id)
   }
 
   override onResize = (shape: any, info: any) => {
@@ -309,8 +301,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const suppressUpdateRef = useRef(false)
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
-    // Track measured content height per tab so shape height = max across tabs
-    const tabHeightsRef = useRef<number[]>([])
 
     const [dotHovered, setDotHovered] = useState(false)
     const [dotClicked, setDotClicked] = useState(false)
@@ -424,35 +414,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
-    // Reset per-tab height cache when tab count changes (tab added/removed)
-    const numTabs = (shape.props.tabs as string[] | undefined)?.length || 1
-    useEffect(() => { tabHeightsRef.current = [] }, [numTabs])
-
     // Auto-size: use ResizeObserver to track content height changes reliably.
-    // This fires after KaTeX renders, font loading, and any async layout changes.
-    // Height = max across all tabs so switching tabs doesn't cause resize jitter.
     // Only allow shrinking when the element is actually visible (not culled by TLDraw).
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
-      const activeIdx = (shape.props.activeTab as number) || 0
       const measure = () => {
         const contentH = el.scrollHeight
         const tabBarH = tabBarRef.current?.offsetHeight || 0
-        const thisTabH = contentH + tabBarH
-
-        // Record this tab's measured height
-        const heights = tabHeightsRef.current
-        while (heights.length <= activeIdx) heights.push(0)
-        heights[activeIdx] = thisTabH
-
-        // Target = max across all measured tabs
-        const target = Math.max(40, ...heights)
+        const target = Math.max(40, contentH + tabBarH)
         const diff = target - shape.props.h
         if (Math.abs(diff) > 2) {
-          // Only allow shrinking if the element is actually rendered.
-          // TLDraw culls off-screen shapes — their content has 0/tiny scrollHeight.
           if (diff < 0) {
             const rect = el.getBoundingClientRect()
             if (rect.height < 1) return // culled — skip shrink
@@ -468,7 +441,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       ro.observe(el)
       measure()
       return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.activeTab])
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -801,8 +774,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const autoH = shape.props.autoSize
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
-      const shapeTabs = shape.props.tabs as string[] | undefined
-      const hasChoices = choices && choices.length > 0 && (!shapeTabs || shapeTabs.length <= 1 || ((shape.props.activeTab as number) || 0) === 0)
+      const hasChoices = choices && choices.length > 0
 
       let textContent
       if (renderedHtml) {
@@ -898,134 +870,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    // Tab bar — single-shape model: tabs stored in props.tabs
-    const tabs = shape.props.tabs as string[] | undefined
-    const activeTabIdx = (shape.props.activeTab as number) || 0
     const showTabBar = !isEditing
-    const multiTab = tabs && tabs.length > 1
-
-    // Auto-widen shape when tabs overflow (up to 400px)
-    const tabCount = tabs?.length ?? 0
-    useEffect(() => {
-      if (tabCount < 2) return
-      const TAB_WIDTH = 70 // ~padding + preview text
-      const PADDING = 60 // done + add + margin
-      const needed = tabCount * TAB_WIDTH + PADDING
-      const currentW = shape.props.w as number
-      if (needed > currentW && currentW < 400) {
-        const newW = Math.min(400, needed)
-        editor.updateShape({ id: shape.id, type: shape.type, props: { w: newW } })
-      }
-    }, [tabCount]) // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Context menu state for tab detach (fallback)
-    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null)
-
-    useEffect(() => {
-      if (!contextMenu) return
-      const dismiss = () => setContextMenu(null)
-      document.addEventListener('pointerdown', dismiss, true)
-      return () => document.removeEventListener('pointerdown', dismiss, true)
-    }, [contextMenu])
-
-    // Drag-off state for tab detach
-    const dragTabRef = useRef<{ index: number; startX: number; startY: number; active: boolean } | null>(null)
 
     let tabBar: React.ReactNode = null
     if (showTabBar) {
-      const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
-      const activeColor = isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)'
-      const activeBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'
-      const borderColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'
       const doneColor = isDone
         ? (isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)')
         : (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)')
-
-      // Get tab label for a given index, using live text for active tab
-      const getTabLabel = (i: number): string => {
-        const raw = i === activeTabIdx ? (shape.props.text || '') : (tabs?.[i] || '')
-        const preview = raw.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim()
-        return preview ? preview.slice(0, 12).trim() + (preview.length > 12 ? '..' : '') : '\u00B7'
-      }
-
-      // Drag-off handler: on pointerdown, track start; on pointermove, if >30px vertical, detach
-      const handleTabPointerDown = (e: React.PointerEvent, i: number) => {
-        stopEventPropagation(e)
-        if (e.button === 2) return
-        dragTabRef.current = { index: i, startX: e.clientX, startY: e.clientY, active: false }
-        const el = e.currentTarget as HTMLElement
-        el.setPointerCapture(e.pointerId)
-      }
-
-      const handleTabPointerMove = (e: React.PointerEvent) => {
-        const drag = dragTabRef.current
-        if (!drag) return
-        if (!multiTab) return
-        const dy = Math.abs(e.clientY - drag.startY)
-        if (dy > 30 && !drag.active) {
-          drag.active = true
-          const pagePoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
-          const newId = detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
-          dragTabRef.current = null
-          ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-
-          // Continue dragging the detached shape via document-level listeners.
-          // The user's pointer is still held down; we track it manually and
-          // update the new shape's position until pointerup.
-          if (newId) {
-            editor.select(newId)
-            const startPage = { ...pagePoint }
-            const shapeStart = { x: pagePoint.x, y: pagePoint.y }
-            let rafId = 0
-            let lastClientX = e.clientX
-            let lastClientY = e.clientY
-
-            const onMove = (ev: PointerEvent) => {
-              lastClientX = ev.clientX
-              lastClientY = ev.clientY
-              if (!rafId) {
-                rafId = requestAnimationFrame(() => {
-                  rafId = 0
-                  const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
-                  editor.updateShape({
-                    id: newId,
-                    type: 'math-note',
-                    x: shapeStart.x + (p.x - startPage.x),
-                    y: shapeStart.y + (p.y - startPage.y),
-                  } as any)
-                })
-              }
-            }
-            const onUp = () => {
-              document.removeEventListener('pointermove', onMove)
-              document.removeEventListener('pointerup', onUp)
-              if (rafId) cancelAnimationFrame(rafId)
-              // Final position update
-              const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
-              editor.updateShape({
-                id: newId,
-                type: 'math-note',
-                x: shapeStart.x + (p.x - startPage.x),
-                y: shapeStart.y + (p.y - startPage.y),
-              } as any)
-              // Check for merge overlap on drop
-              setTimeout(() => checkMergeOverlap(editor, newId), 0)
-            }
-            document.addEventListener('pointermove', onMove)
-            document.addEventListener('pointerup', onUp)
-          }
-        }
-      }
-
-      const handleTabPointerUp = (e: React.PointerEvent, i: number) => {
-        const drag = dragTabRef.current
-        dragTabRef.current = null
-        if (drag && !drag.active) {
-          // Normal click — switch tab
-          switchTab(editor, shape.id, i)
-        }
-        try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
-      }
 
       tabBar = (
         <div
@@ -1034,10 +885,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           style={{
             display: 'flex',
             alignItems: 'stretch',
-            borderBottom: multiTab ? `1px solid ${borderColor}` : undefined,
             flexShrink: 0,
-            overflowX: 'auto',
-            scrollbarWidth: 'none',
           }}
         >
           {/* Done toggle */}
@@ -1087,64 +935,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {isDone ? '\u2713' : '\u25CB'}
           </div>
-          {/* Tab labels (only when multi-tab) */}
-          {multiTab && tabs.map((_, i) => (
-            <div
-              key={i}
-              onPointerDown={(e) => handleTabPointerDown(e, i)}
-              onPointerMove={handleTabPointerMove}
-              onPointerUp={(e) => handleTabPointerUp(e, i)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                stopEventPropagation(e)
-                setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
-              }}
-              style={{
-                padding: '3px 8px',
-                fontSize: '10px',
-                fontFamily: '-apple-system, sans-serif',
-                cursor: 'pointer',
-                userSelect: 'none',
-                pointerEvents: 'all',
-                flexShrink: 0,
-                color: i === activeTabIdx ? activeColor : inactiveColor,
-                fontWeight: i === activeTabIdx ? 600 : 400,
-                borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
-                backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
-                marginBottom: '-1px',
-                maxWidth: '80px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {getTabLabel(i)}
-            </div>
-          ))}
-          {/* + button inline with tabs */}
-          <div
-            className="note-tab-add"
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              addTab(editor, shape.id, '')
-              requestAnimationFrame(() => {
-                editor.setEditingShape(shape.id)
-              })
-            }}
-            style={{
-              padding: '3px 6px',
-              fontSize: '12px',
-              fontWeight: 300,
-              fontFamily: '-apple-system, sans-serif',
-              color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)',
-              cursor: 'pointer',
-              userSelect: 'none',
-              pointerEvents: 'all',
-              flexShrink: 0,
-            }}
-          >
-            +
-          </div>
           {/* Spacer */}
           <div style={{ flex: 1 }} />
           {/* Publish button for draft notes */}
@@ -1186,51 +976,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               {'\u00A7'}
             </div>
           )}
-        </div>
-      )
-    }
-
-    // Context menu portal for detach (fallback for right-click)
-    let contextMenuEl: React.ReactNode = null
-    if (contextMenu) {
-      contextMenuEl = (
-        <div
-          style={{
-            position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
-            zIndex: 9999,
-            background: isDark ? '#2a2a2a' : '#fff',
-            border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'}`,
-            borderRadius: '4px',
-            boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.12)',
-            padding: '2px 0',
-            pointerEvents: 'all',
-          }}
-          onPointerDown={(e) => stopEventPropagation(e)}
-        >
-          <div
-            style={{
-              padding: '4px 12px',
-              fontSize: '12px',
-              cursor: 'pointer',
-              fontFamily: '-apple-system, sans-serif',
-              color: isDark ? '#ccc' : undefined,
-            }}
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              detachTab(editor, shape.id, contextMenu.tabIndex)
-              setContextMenu(null)
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'
-            }}
-          >
-            Detach tab
-          </div>
         </div>
       )
     }
@@ -1375,7 +1120,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           }}>
             {content}
           </div>
-          {contextMenuEl}
       </HTMLContainer>
     )
   }

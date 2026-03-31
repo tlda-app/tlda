@@ -222,7 +222,7 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!editor || !emphasizeShapeIds || emphasizeShapeIds.length === 0) return
     const keepSet = new Set(emphasizeShapeIds)
-    const FADE_TYPES = new Set(['highlight', 'dot-annotation'])
+    const FADE_TYPES = new Set(['highlight', 'math-note'])
     const faded = new Set<string>()
     store.mergeRemoteChanges(() => {
       for (const shape of editor.getCurrentPageShapes()) {

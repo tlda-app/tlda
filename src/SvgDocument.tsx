@@ -12,9 +12,9 @@ import {
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
-import { MathNoteShapeUtil, setMathNoteEntryMode, setReplyContext } from './shapes/MathNoteShape'
+import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
 import { TocDropTargetShapeUtil, TocDropTargetManager } from './shapes/TocDropTargetShape'
-import { switchTab, addTab } from './noteThreading'
+// noteThreading removed — no tabs
 import { HtmlPageShapeUtil } from './shapes/HtmlPageShape'
 import { SvgPageShapeUtil } from './shapes/SvgPageShape'
 import { SvgFigureShapeUtil } from './shapes/SvgFigureShape'
@@ -22,7 +22,7 @@ import { ReadingAssistBarShapeUtil } from './shapes/ReadingAssistBarShape'
 import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
 import { TimelineOverlayShapeUtil } from './shapes/TimelineOverlayShape'
 import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
-import { DotAnnotationShapeUtil } from './shapes/DotAnnotationShape'
+// DotAnnotationShape removed — math-note dots replace it
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
@@ -384,52 +384,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       if (!targetId) return
       e.preventDefault()
 
-      // 'i' on a tabbed note: create reply tab with split-view context
-      if (e.key === 'i') {
-        const targetShape = editor.getShape(targetId as any)
-        const targetTabs = targetShape && (targetShape.props as any).tabs as string[] | undefined
-        if (targetTabs && targetTabs.length >= 1) {
-          // Save current tab text as reply context
-          const currentText = (targetShape!.props as any).text || ''
-          setReplyContext(currentText)
-          addTab(editor, targetId as any, '')
-        }
-      }
-
       setMathNoteEntryMode(e.key as 'i' | ':')
       editor.setEditingShape(targetId as any)
       lastEditedNoteRef.current = targetId
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
-
-  // Arrow keys cycle tabs on selected math-note (vim-style navigation)
-  useEffect(() => {
-    const handleArrowKey = (e: KeyboardEvent) => {
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'h' && e.key !== 'l') return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (isInputFocused()) return
-      const editor = editorRef.current
-      if (!editor) return
-      if (editor.getEditingShapeId()) return
-      const selected = editor.getSelectedShapeIds()
-      if (selected.length !== 1) return
-      const shape = editor.getShape(selected[0])
-      if (!shape || (shape.type as string) !== 'math-note') return
-      const tabs = (shape.props as any).tabs as string[] | undefined
-      if (!tabs || tabs.length <= 1) return
-      const active = (shape.props as any).activeTab || 0
-      const next = (e.key === 'ArrowRight' || e.key === 'l')
-        ? Math.min(active + 1, tabs.length - 1)
-        : Math.max(active - 1, 0)
-      if (next !== active) {
-        e.preventDefault()
-        switchTab(editor, shape.id, next)
-      }
-    }
-    window.addEventListener('keydown', handleArrowKey)
-    return () => window.removeEventListener('keydown', handleArrowKey)
   }, [])
 
   // Track last-edited note across all entry methods (double-click, etc.)
@@ -720,7 +680,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, DotAnnotationShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetContainerShapeUtil, InlineDocShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetContainerShapeUtil, InlineDocShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches

@@ -100,8 +100,7 @@ export function dropPillOnTarget(
         entry.shapeId = pill.props.value
         const srcShape = editor.getShape(pill.props.value as any) as any
         if (srcShape) {
-          // Resolve source provenance: DotAnnotation → highlightId → highlight.meta.sourceAnchor
-          // Also check srcShape.meta directly (covers highlight shapes dragged without DotAnnotation)
+          // Resolve source provenance: shape → highlightId → highlight.meta.sourceAnchor
           const highlightId = srcShape.props?.highlightId
           const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
           // Use highlight bounds for canvasBounds/screenshotRef (wider region than dot)

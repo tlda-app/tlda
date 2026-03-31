@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShape, TLPageId } from 'tldraw'
 import { navigateTo, getShapeText, COLOR_HEX } from './helpers'
-import { getTabCount } from '../noteThreading'
+// noteThreading removed — no tabs
 import { useBook } from '../BookContext'
 
 type SortMode = 'document' | 'recency'
@@ -136,8 +136,6 @@ export function NotesTab() {
   const handleDragStart = useCallback((e: React.DragEvent, data: {
     text: string
     color: string
-    tabs?: string[]
-    activeTab?: number
     sourceDoc?: string
     sourceShapeId?: string
   }) => {
@@ -175,17 +173,12 @@ export function NotesTab() {
     const color = (shape.props as Record<string, unknown>).color as string || 'yellow'
     const meta = shape.meta as Record<string, unknown>
     const anchor = meta?.sourceAnchor as { line?: number } | undefined
-    const tabCount = getTabCount(shape)
     const pageName = multiPage ? pageNames.get(shape.parentId) : undefined
 
     // Strip math delimiters for cleaner preview
     const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
 
     const shapeDone = isDone(shape)
-    const props = shape.props as Record<string, unknown>
-    const tabs = props.tabs as string[] | undefined
-    const activeTabIdx = props.activeTab as number | undefined
-
     return (
       <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
         style={shapeDone ? { opacity: 0.55 } : undefined}
@@ -193,8 +186,6 @@ export function NotesTab() {
         onDragStart={(e) => handleDragStart(e, {
           text: text,
           color,
-          tabs,
-          activeTab: activeTabIdx,
           sourceDoc: book?.members[book.activeIndex]?.key,
           sourceShapeId: shape.id,
         })}
@@ -215,7 +206,6 @@ export function NotesTab() {
         <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
           {pageName && <span style={{ opacity: 0.6 }}>{pageName}</span>}
           {anchor?.line && <span>L{anchor.line}</span>}
-          {tabCount > 1 && <span>{tabCount} tabs</span>}
           {shapeDone && (
             <button
               className="note-undone-btn"
@@ -248,8 +238,6 @@ export function NotesTab() {
         onDragStart={(e) => handleDragStart(e, {
           text,
           color,
-          tabs: note.props.tabs as string[] | undefined,
-          activeTab: note.props.activeTab as number | undefined,
           sourceDoc: note.docKey,
           sourceShapeId: note.id,
         })}
