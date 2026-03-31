@@ -34,7 +34,7 @@ interface ViewerData {
 export function AnnotationViewer({
   mainEditor,
   shapeUtils,
-  tools,
+  tools: _tools,
   licenseKey,
 }: AnnotationViewerProps) {
   const [data, setData] = useState<ViewerData | null>(null)

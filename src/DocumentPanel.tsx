@@ -225,9 +225,13 @@ const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[]
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
   { id: 'light-violet', color: '#e0d4f5', label: 'personal' },
-  { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
-  { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
+  { id: 'select', color: '#888', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
+]
+
+// Options accessible via upward drag — toggles and settings
+const OPTIONS_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
+  { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
 ]
 
 function PhoneHighlighterButton() {
@@ -248,10 +252,19 @@ function PhoneHighlighterButton() {
   const mode = activeToolId === 'highlight' ? 'highlight' : activeToolId === 'eraser' ? 'eraser' : 'hand'
 
   const [dragging, setDragging] = useState(false)
+  const [dragMode, setDragMode] = useState<'color' | 'options' | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const [optionsSlot, setOptionsSlot] = useState<number | null>(null)
   const [dragBtnRect, setDragBtnRect] = useState<DOMRect | null>(null)
+  // Refs mirror the above for reliable reads in pointer handlers (state updates are async)
+  const dragModeRef = useRef<'color' | 'options' | null>(null)
+  const dragSlotRef = useRef<number | null>(null)
+  const optionsSlotRef = useRef<number | null>(null)
+  const dragBtnRectRef = useRef<DOMRect | null>(null)
+  const colorIdxRef = useRef(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
+  colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const [zoneEnabled, setZoneEnabled] = useState(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
@@ -259,12 +272,6 @@ function PhoneHighlighterButton() {
 
   const activateSlot = useCallback((idx: number) => {
     const slot = HL_SLOTS[idx]
-    if (slot.id === 'zone-toggle') {
-      const next = !zoneEnabled
-      setZoneEnabled(next)
-      localStorage.setItem('hl-zone-mode', next ? '1' : '0')
-      return
-    }
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
     } else if (slot.id === 'select') {
@@ -312,107 +319,203 @@ function PhoneHighlighterButton() {
     }
   }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
 
-  // Drag handling for color slider — horizontal L/R
+  // Drag handling — horizontal L/R for colors, vertical up for options
   const dragStartX = useRef(0)
+  const dragStartY = useRef(0)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
     dragStartX.current = e.clientX
-    setDragBtnRect(btnRef.current?.getBoundingClientRect() ?? null)
+    dragStartY.current = e.clientY
+    const btnRect = btnRef.current?.getBoundingClientRect() ?? null
+    dragBtnRectRef.current = btnRect
+    setDragBtnRect(btnRect)
     setDragging(false)
-    setDragSlot(null)
+    dragModeRef.current = null; setDragMode(null)
+    dragSlotRef.current = null; setDragSlot(null)
+    optionsSlotRef.current = null; setOptionsSlot(null)
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }, [])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const dx = e.clientX - dragStartX.current
-    if (Math.abs(dx) < 10 && !dragging) return
-    if (!dragging) setDragging(true)
-    // Slots laid out L→R: [eraser, yellow, green, blue, violet, orange]
-    // Button is to the right. Drag left a little = orange (idx 5), a lot = eraser (idx 0)
-    // Counter-scale for hires displays: CSS zoom makes slots visually larger but clientX is unscaled
-    const hiresScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1
-    const slotWidth = 40 * hiresScale
-    const steps = Math.round((-dx) / slotWidth) // positive = dragged left
-    const idx = Math.max(0, Math.min(HL_SLOTS.length - 1, HL_SLOTS.length - steps))
-    setDragSlot(idx)
-  }, [dragging])
+    const dy = e.clientY - dragStartY.current // positive = down
+
+    // Determine drag mode if not yet set — read ref (always current, state update may not have committed)
+    let currentMode = dragModeRef.current
+    if (currentMode === null) {
+      const absDx = Math.abs(dx), absDy = Math.abs(dy)
+      // Up-drag: within ~6° of vertical (|dx| < 10% of |dy|) and moving upward
+      if (absDy > 15 && dy < 0 && absDx < 0.1 * absDy) {
+        currentMode = 'options'
+        dragModeRef.current = 'options'; setDragMode('options')
+        setDragging(true)
+        optionsSlotRef.current = 0; setOptionsSlot(0)
+      } else if (absDx > 10) {
+        currentMode = 'color'
+        dragModeRef.current = 'color'; setDragMode('color')
+        setDragging(true)
+      } else {
+        return
+      }
+    }
+
+    if (currentMode === 'color') {
+      // Use absolute cursor position relative to button left edge (= slider right edge)
+      const hiresScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1
+      const btnRect = dragBtnRectRef.current
+      if (!btnRect) return
+      const distFromBtnLeft = btnRect.left - e.clientX // positive = cursor to left of button
+      const slotW = 29 * hiresScale // 27px slot + 2px gap, scaled
+      // 16.5 * hiresScale = padding(3) + halfSlot(13.5), scaled — distance from right edge to first slot center
+      const slotPos = Math.round((distFromBtnLeft - 16.5 * hiresScale) / slotW)
+      // Active slot is the button itself — filter it from the slider
+      const activeOrigIdx = colorIdxRef.current
+      const filteredIndices = HL_SLOTS.map((_, i) => i).filter(i => i !== activeOrigIdx)
+      const clampedPos = Math.max(0, Math.min(filteredIndices.length - 1, slotPos))
+      // Rightmost filtered slot = index 0 (just left of button), leftmost = last index
+      const origIdx = filteredIndices[filteredIndices.length - 1 - clampedPos] ?? activeOrigIdx
+      dragSlotRef.current = origIdx; setDragSlot(origIdx)
+    }
+    // options mode: optionsSlot already set to 0 on mode entry (single option)
+  }, [])
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    if (dragging && dragSlot !== null) {
-      activateSlot(dragSlot)
-    } else if (!dragging) {
+    // Read refs — always current even if state update hasn't committed yet
+    const currentMode = dragModeRef.current
+    const currentSlot = dragSlotRef.current
+    const currentOptions = optionsSlotRef.current
+    if (currentMode === 'color' && currentSlot !== null) {
+      activateSlot(currentSlot)
+    } else if (currentMode === 'options' && currentOptions !== null) {
+      const slot = OPTIONS_SLOTS[currentOptions]
+      if (slot?.id === 'zone-toggle') {
+        setZoneEnabled(prev => {
+          const next = !prev
+          localStorage.setItem('hl-zone-mode', next ? '1' : '0')
+          return next
+        })
+      }
+    } else if (currentMode === null) {
       handleTap()
     }
-    setDragging(false)
-    setDragSlot(null)
+    dragModeRef.current = null; setDragging(false); setDragMode(null)
+    dragSlotRef.current = null; setDragSlot(null)
+    optionsSlotRef.current = null; setOptionsSlot(null)
     setDragBtnRect(null)
-  }, [dragging, dragSlot, activateSlot, handleTap])
+  }, [activateSlot, handleTap])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    setDragging(false)
-    setDragSlot(null)
-    setDragBtnRect(null)
+    dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
+    setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
   }, [])
 
-  const activeSlot = dragSlot ?? colorIdx
-  const activeSlotDef = HL_SLOTS[activeSlot]
-  // For draw slot, show the current pen/highlight color instead of neutral gray
-  const activeColor = activeSlotDef?.id === 'draw'
+  // Clear slider if window loses focus (app switch, cmd-tab, tab hide, etc.)
+  useEffect(() => {
+    const reset = () => {
+      dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
+      setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+    }
+    window.addEventListener('blur', reset)
+    document.addEventListener('visibilitychange', reset)
+    return () => {
+      window.removeEventListener('blur', reset)
+      document.removeEventListener('visibilitychange', reset)
+    }
+  }, [])
+
+  // Button color always reflects current selection (not the dragged preview slot)
+  const btnSlotDef = HL_SLOTS[colorIdx]
+  const btnColor = btnSlotDef?.id === 'draw'
     ? (HL_SLOTS.find(s => s.id === activeColorName)?.color || '#1d1d1d')
-    : (activeSlotDef?.color || HL_SLOTS[1].color)
+    : (btnSlotDef?.color || HL_SLOTS[1].color)
   const isActive = mode !== 'hand'
+  // zoom: hiresScale on .phone-hl-slider means position values are scaled — divide to compensate
+  const hiresScale = typeof window !== 'undefined'
+    ? (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1)
+    : 1
 
   return (
     <>
-      {/* Color slider popup — shown during drag, positioned at button circle */}
-      {dragging && dragBtnRect && (
+      {/* Color slider popup — horizontal drag left */}
+      {dragging && dragMode === 'color' && dragBtnRect && (
         <div
           className="phone-hl-slider"
           style={{
-            bottom: `${window.innerHeight - dragBtnRect.bottom}px`,
-            right: `${window.innerWidth - dragBtnRect.left + 6}px`,
+            bottom: `${(window.innerHeight - dragBtnRect.bottom) / hiresScale}px`,
+            right: `${(window.innerWidth - dragBtnRect.left) / hiresScale}px`,
           }}
           onPointerDown={stopEventPropagation}
           onTouchStart={stopEventPropagation}
         >
-          {HL_SLOTS.map((slot, i) => (
-            <div
+          {HL_SLOTS.map((slot, i) => {
+            if (i === colorIdx) return null // active slot is the button
+            const isToolSlot = !!slot.svgIcon // eraser, select, draw — ring style like inactive button
+            const slotColor = slot.id === 'draw'
+              ? (HL_SLOTS.find(s => s.id === activeColorName)?.color || '#1d1d1d')
+              : slot.color
+            return <div
               key={slot.id}
-              className={`phone-hl-slot${i === dragSlot ? ' active' : ''}`}
-              style={{ '--slot-color': slot.color } as React.CSSProperties}
+              className={`phone-hl-slot${isToolSlot ? ' tool' : ' color'}${i === dragSlot ? ' active' : ''}`}
+              style={{ '--hl-color': slotColor } as React.CSSProperties}
             >
-              {slot.svgIcon ? (
-                <span className="phone-hl-slot-icon" style={{
-                  display: 'block', width: 20, height: 20,
+              <span style={{
+                display: 'block', width: 20, height: 20,
+                WebkitMaskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                maskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                WebkitMaskSize: '100%', maskSize: '100%',
+                WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+                WebkitMaskPosition: 'center', maskPosition: 'center',
+                backgroundColor: 'currentColor',
+              }} />
+            </div>
+          })}
+        </div>
+      )}
+      {/* Color label */}
+      {dragging && dragMode === 'color' && dragSlot != null && (
+        <span className="phone-hl-slot-label" style={{ '--slot-color': HL_SLOTS[dragSlot]?.color || '#666' } as React.CSSProperties}>
+          {HL_SLOTS[dragSlot]?.label}
+        </span>
+      )}
+      {/* Options popup — vertical up drag */}
+      {dragging && dragMode === 'options' && dragBtnRect && (
+        <div
+          className="phone-hl-options"
+          style={{
+            bottom: `${window.innerHeight - dragBtnRect.top + 6}px`,
+            right: `${window.innerWidth - dragBtnRect.right}px`,
+
+          }}
+          onPointerDown={stopEventPropagation}
+          onTouchStart={stopEventPropagation}
+        >
+          {OPTIONS_SLOTS.map((slot, i) => (
+            <div key={slot.id} className={`phone-hl-option${i === optionsSlot ? ' active' : ''}`}>
+              {slot.svgIcon && (
+                <span style={{
+                  display: 'block', width: 15, height: 15,
                   WebkitMaskImage: `url("${slot.svgIcon}")`,
                   maskImage: `url("${slot.svgIcon}")`,
                   WebkitMaskSize: '100%', maskSize: '100%',
                   WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                   WebkitMaskPosition: 'center', maskPosition: 'center',
-                  backgroundColor: slot.color,
+                  backgroundColor: 'currentColor',
                 }} />
-              ) : (
-                <span className="phone-hl-slot-dot" />
               )}
+              <span className="phone-hl-option-label">
+                {slot.id === 'zone-toggle' ? (zoneEnabled ? 'Zone: off' : 'Zone: on') : slot.label}
+              </span>
             </div>
           ))}
         </div>
       )}
-      {/* Label rendered outside slot hierarchy — position:fixed breaks inside transformed parents */}
-      {dragging && dragSlot != null && (
-        <span className="phone-hl-slot-label" style={{ '--slot-color': HL_SLOTS[dragSlot]?.color || '#666' } as React.CSSProperties}>
-          {HL_SLOTS[dragSlot]?.id === 'zone-toggle'
-            ? (zoneEnabled ? 'Disable zone' : 'Enable zone')
-            : HL_SLOTS[dragSlot]?.label}
-        </span>
-      )}
       <button
         ref={btnRef}
         className={`phone-hl-btn${isActive ? ' active' : ''}`}
-        style={{ '--hl-color': activeColor } as React.CSSProperties}
+        style={{ '--hl-color': btnColor } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
 import { useBook } from '../BookContext'
-import { useEditor, useValue, createShapeId } from 'tldraw'
+import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
@@ -12,7 +12,7 @@ import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../c
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { forceDeleteShapes } from '../shapes/fleet-utils'
+import { createFleetLayout } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -651,92 +651,12 @@ export function DarkModeToggle() {
   )
 }
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-pill']
-
 export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()
 
   const handleClick = useCallback(() => {
-    // Always delete existing fleet shapes and recreate fresh
-    const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
-    if (existing.length > 0) {
-      forceDeleteShapes(editor, existing.map(s => s.id))
-    }
-
-    // Pick 2 most recently active non-human agents for 1-on-1 chat filters
-    const nonHuman = allAgents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
-    const sorted = [...nonHuman].sort((a: any, b: any) => {
-      const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
-      const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
-      return tb - ta
-    })
-    const [agent1, agent2] = sorted.slice(0, 2)
-    const name1 = (agent1?.friendly_name || agent1?.id) as string | undefined
-    const name2 = (agent2?.friendly_name || agent2?.id) as string | undefined
-    const filter1: [string, string][][] = name1 ? [[['from', name1]], [['to', name1]]] : []
-    const filter2: [string, string][][] = name2 ? [[['from', name2]], [['to', name2]]] : []
-
-    // Position: right edge of fleet just left of doc's left margin, ~1 page above doc top
-    const pageShapes = editor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-
-    const leftW = 340
-    const chatW = 420
-    const gap = 10
-    const chatH = 510
-    const totalW = leftW + gap + chatW
-
-    let anchorX = 0, anchorY = 0
-    if (pageShapes.length > 0) {
-      let minLeft = Infinity, minTop = Infinity
-      for (const ps of pageShapes) {
-        const b = editor.getShapePageBounds(ps.id)
-        if (b) {
-          if (b.x < minLeft) minLeft = b.x
-          if (b.y < minTop) minTop = b.y
-        }
-      }
-      anchorX = minLeft - 40 - totalW
-      anchorY = minTop - 1200
-    } else {
-      const vb = editor.getViewportScreenBounds()
-      const cam = editor.getCamera()
-      anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - totalW / 2
-      anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
-    }
-
-    editor.createShapes([
-      {
-        id: createShapeId(),
-        type: 'fleet-agents' as any,
-        x: anchorX, y: anchorY,
-        props: { w: leftW, h: chatH },
-      },
-      {
-        id: createShapeId(),
-        type: 'fleet-search' as any,
-        x: anchorX, y: anchorY + chatH + gap,
-        props: { w: leftW, h: chatH },
-      },
-      {
-        id: createShapeId(),
-        type: 'fleet-chat' as any,
-        x: anchorX + leftW + gap, y: anchorY,
-        props: { w: chatW, h: chatH, filter: filter1 },
-      },
-      {
-        id: createShapeId(),
-        type: 'fleet-chat' as any,
-        x: anchorX + leftW + gap, y: anchorY + chatH + gap,
-        props: { w: chatW, h: chatH, filter: filter2 },
-      },
-    ])
-
-    editor.centerOnPoint(
-      { x: anchorX + totalW / 2, y: anchorY + chatH },
-      { animation: { duration: 300 } }
-    )
+    createFleetLayout(editor, allAgents)
   }, [editor, allAgents])
 
   return (

@@ -3,7 +3,6 @@ import {
   Tldraw,
   react,
   useEditor,
-  createShapeId,
   DefaultColorStyle,
   DefaultSizeStyle,
   defaultShapeUtils,
@@ -27,7 +26,6 @@ import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
-import { FleetContainerShapeUtil } from './shapes/FleetContainerShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
@@ -52,7 +50,6 @@ import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
 import { FleetHUD } from './overlays/FleetHUD'
-import { FleetLockOverlay } from './overlays/FleetLockOverlay'
 import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
@@ -497,105 +494,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, hasDiffBuiltin, diffMode])
 
-  // Shift+F: create fleet container with agents+chat children, or zoom to existing
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'F' || !e.shiftKey) return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (isInputFocused()) return
-      const editor = editorRef.current
-      if (!editor) return
-      if (editor.getEditingShapeId()) return
-
-      e.preventDefault()
-
-      // Check if fleet shapes already exist — if so, just pan to them
-      const existingFleet = editor.getCurrentPageShapes().filter(s => ['fleet-chat', 'fleet-agents', 'fleet-search'].includes(s.type))
-      if (existingFleet.length > 0) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-        for (const s of existingFleet) {
-          const b = editor.getShapePageBounds(s.id)
-          if (!b) continue
-          minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
-          maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
-        }
-        if (isFinite(minX)) {
-          editor.centerOnPoint(
-            { x: (minX + maxX) / 2, y: (minY + maxY) / 2 },
-            { animation: { duration: 300 } }
-          )
-        }
-        return
-      }
-
-      // Create fleet shapes straight above the doc (2 pages up)
-      const pageShapes = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-      let anchorX = 0, anchorY = 0, docWidth = 700
-      if (pageShapes.length > 0) {
-        let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
-        for (const ps of pageShapes) {
-          const b = editor.getShapePageBounds(ps.id)
-          if (b) {
-            if (b.x < minLeft) minLeft = b.x
-            if (b.x + b.w > maxRight) maxRight = b.x + b.w
-            if (b.y < minTop) minTop = b.y
-          }
-        }
-        docWidth = maxRight - minLeft
-        anchorX = minLeft
-        anchorY = minTop - 1200
-      } else {
-        // No pages — fall back to viewport center
-        const vb = editor.getViewportScreenBounds()
-        const cam = editor.getCamera()
-        anchorX = -cam.x + (vb.x + vb.w / 2) / cam.z
-        anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
-      }
-
-      const chatW = docWidth
-      const leftW = 340
-      const gap = 10
-      const chatH = 475
-
-      editor.createShapes([
-        {
-          id: createShapeId(),
-          type: 'fleet-agents' as any,
-          x: anchorX,
-          y: anchorY,
-          isLocked: true,
-          props: { w: leftW, h: 500 },
-        },
-        {
-          id: createShapeId(),
-          type: 'fleet-search' as any,
-          x: anchorX,
-          y: anchorY + 510,
-          isLocked: true,
-          props: { w: leftW, h: 450 },
-        },
-        {
-          id: createShapeId(),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap,
-          y: anchorY,
-          isLocked: true,
-          props: { w: chatW, h: chatH, filter: [] },
-        },
-        {
-          id: createShapeId(),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap,
-          y: anchorY + chatH + gap,
-          isLocked: true,
-          props: { w: chatW, h: chatH, filter: [] },
-        },
-      ])
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true) // capture phase — tldraw eats it in Chrome
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [])
 
   const components = useMemo<TLComponents>(
     () => ({
@@ -604,7 +502,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><FleetLockOverlay /><HighlighterSlider /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -680,7 +578,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetContainerShapeUtil, InlineDocShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches

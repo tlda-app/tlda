@@ -100,6 +100,8 @@ export function HighlighterSlider() {
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [dragStartY, setDragStartY] = useState(0)
   const lastTapTime = useRef(0)
+  const [showHud, setShowHud] = useState(false)
+  const hudFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Dynamically measure TOC panel height so slider starts below it
   const [tocBottom, setTocBottom] = useState(0)
@@ -114,6 +116,21 @@ export function HighlighterSlider() {
     const ro = new ResizeObserver(update)
     ro.observe(tocEl)
     return () => ro.disconnect()
+  }, [])
+
+  // Reset drag state on blur — must be before early returns (hooks rule)
+  useEffect(() => {
+    const onBlur = () => {
+      if (hudFadeRef.current) { clearTimeout(hudFadeRef.current); hudFadeRef.current = null }
+      setShowHud(false)
+      setDragging(false)
+      setDragIdx(null)
+      setDragStartY(0)
+      setCursorY(null)
+      setCursorX(null)
+    }
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
   }, [])
 
   // Only show when zone mode is enabled and not in embed mode
@@ -170,6 +187,8 @@ export function HighlighterSlider() {
     setCursorX(e.clientX)
     if (!dragging && dragStartY && Math.abs(e.clientY - dragStartY) > 6) {
       setDragging(true)
+      setShowHud(true)
+      if (hudFadeRef.current) clearTimeout(hudFadeRef.current)
     }
     if (dragging) {
       const top = sliderTop(dragStartY, activeIdx)
@@ -197,6 +216,22 @@ export function HighlighterSlider() {
     setDragStartY(0)
     setCursorY(null)
     setCursorX(null)
+    if (hudFadeRef.current) clearTimeout(hudFadeRef.current)
+    hudFadeRef.current = setTimeout(() => setShowHud(false), 500)
+  }
+
+  const resetDrag = () => {
+    if (hudFadeRef.current) { clearTimeout(hudFadeRef.current); hudFadeRef.current = null }
+    setShowHud(false)
+    setDragging(false)
+    setDragIdx(null)
+    setDragStartY(0)
+    setCursorY(null)
+    setCursorX(null)
+  }
+
+  const handlePointerCancel = (_e: React.PointerEvent) => {
+    resetDrag()
   }
 
   const handlePointerEnter = (e: React.PointerEvent) => {
@@ -222,6 +257,7 @@ export function HighlighterSlider() {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       style={{
         position: 'absolute', right: 0, top: tocBottom || '10%', bottom: '10%', width: 250,
         zIndex: 999, cursor: 'pointer', touchAction: 'none',
@@ -241,36 +277,48 @@ export function HighlighterSlider() {
             const isPointing = dragStartY > 0
             const highlighted = i === displayIdx
             const dotColor = slot.id === 'draw' ? penColor : slot.color
+            const isToolSlot = !!slot.svgIcon
+            const dotW = isPointing && highlighted ? DOT_SIZE + 6 : DOT_SIZE
             return <div key={slot.id} style={{
-              width: isPointing && highlighted ? DOT_SIZE + 6 : DOT_SIZE,
-              height: isPointing && highlighted ? DOT_SIZE + 6 : DOT_SIZE,
+              position: 'relative',
+              width: dotW, height: dotW,
               borderRadius: '50%',
-              background: slot.svgIcon ? 'transparent' : dotColor,
-              opacity: isPointing ? (highlighted ? 0.9 : 0.25) : 0.12,
-              transition: 'all 0.08s',
-              border: i === activeIdx ? `2px solid ${dotColor}` : '2px solid transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               boxSizing: 'border-box',
-              ...(slot.svgIcon ? {
-                WebkitMaskImage: `url("${slot.svgIcon}")`,
-                maskImage: `url("${slot.svgIcon}")`,
-                WebkitMaskSize: '70%', maskSize: '70%',
+              transition: 'all 0.08s',
+              opacity: isPointing ? (highlighted ? 0.9 : 0.25) : 0.12,
+              // Color slots: filled circle; tool slots: ring
+              background: isToolSlot ? 'none' : dotColor,
+              boxShadow: isToolSlot ? `inset 0 0 0 1.5px ${dotColor}` : 'none',
+            }}>
+              {/* Icon — color slots: white overlay-blended; tool slots: colored */}
+              <span style={{
+                display: 'block',
+                width: dotW * 0.7, height: dotW * 0.7,
+                WebkitMaskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                maskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',
-                backgroundColor: dotColor,
-              } : {}),
-            }} />
+                backgroundColor: isToolSlot ? dotColor : 'white',
+                mixBlendMode: isToolSlot ? 'normal' : 'overlay',
+                opacity: isToolSlot ? 1 : 0.8,
+              }} />
+            </div>
           })}
         </div>
       )}
-      {/* HUD at top-center */}
-      {(dragStartY > 0) && (() => {
+      {/* HUD at top-center — visible while dragging, fades out after */}
+      {showHud && (() => {
         const slot = HL_SLOTS[displayIdx]
         const hudColor = slot?.id === 'draw' ? penColor : (slot?.color || '#888')
         return <div style={{
           position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
           background: hudColor, color: '#fff',
           padding: '4px 14px', borderRadius: 12, fontSize: 12, fontWeight: 500,
-          opacity: 0.85, pointerEvents: 'none', zIndex: 9999,
+          opacity: dragging ? 0.85 : 0,
+          transition: 'opacity 0.4s ease',
+          pointerEvents: 'none', zIndex: 9999,
         }}>
           {slot?.label}
         </div>

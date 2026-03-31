@@ -1504,8 +1504,8 @@ html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
   bottom: 16px;
   right: 16px;
   z-index: 10001;
-  width: 44px;
-  height: 44px;
+  width: 27px;
+  height: 27px;
   align-items: center;
   justify-content: center;
   background: none;
@@ -1530,14 +1530,28 @@ body.phone-mode .phone-hl-btn {
 }
 
 /* Show selected color as subtle ring when inactive */
-.phone-hl-btn {
+/* Inactive button + tool slots (eraser, select, draw): ring style */
+.phone-hl-btn,
+.phone-hl-slot.tool {
   box-shadow: inset 0 0 0 2px var(--hl-color, transparent);
+  background: none;
+  color: var(--hl-color, rgba(0, 0, 0, 0.5));
 }
-.phone-hl-btn.active {
+/* Active button + color slots: filled circle */
+.phone-hl-btn.active,
+.phone-hl-slot.color {
   background: var(--hl-color, #ffc940);
   color: white;
-  opacity: 0.5;
   box-shadow: none;
+}
+/* Icon blends into fill — less stark white-on-color */
+.phone-hl-btn.active span,
+.phone-hl-slot.color span {
+  mix-blend-mode: overlay;
+  opacity: 0.8;
+}
+.phone-hl-btn.active {
+  opacity: 0.2;
 }
 
 /* Highlighter color slider — appears to the left of button during drag */
@@ -1547,20 +1561,19 @@ body.phone-mode .phone-hl-btn {
   flex-direction: row;
   position: fixed;
   z-index: 10002;
-  background: rgba(248, 248, 250, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-radius: 22px;
-  padding: 4px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: none;
   pointer-events: none;
   gap: 2px;
+  opacity: 0.6;
 }
 
 .phone-hl-slot {
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 27px;
+  height: 27px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1570,12 +1583,11 @@ body.phone-mode .phone-hl-btn {
 
 .phone-hl-slot.active {
   transform: scale(1.25);
-  background: rgba(0, 0, 0, 0.06);
 }
 
 .phone-hl-slot-dot {
-  width: 20px;
-  height: 20px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: var(--slot-color);
 }
@@ -1614,8 +1626,49 @@ html[data-theme="dark"] .phone-hl-btn.active {
   color: white;
 }
 
-html[data-theme="dark"] .phone-hl-slider {
-  background: rgba(28, 28, 36, 0.75);
+/* Options popup — appears above button on upward drag */
+.phone-hl-options {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  z-index: 10002;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: none;
+  pointer-events: none;
+  gap: 2px;
+}
+
+.phone-hl-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(80, 80, 80, 0.6);
+  white-space: nowrap;
+  transition: background 0.08s;
+}
+
+.phone-hl-option.active {
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(40, 40, 40, 0.9);
+}
+
+.phone-hl-option-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+html[data-theme="dark"] .phone-hl-option {
+  color: rgba(200, 200, 200, 0.6);
+}
+html[data-theme="dark"] .phone-hl-option.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(220, 220, 220, 0.9);
 }
 
 html[data-theme="dark"] .phone-hl-slot.active {
@@ -1861,15 +1914,15 @@ html[data-theme="dark"] .fleet-chat-input input:focus {
   background: rgba(255, 255, 255, 0.04);
 }
 
-/* Voice note button — bottom right, left of highlighter */
+/* Voice note button — bottom right, stacked above highlighter */
 .voice-note-btn {
   display: flex;
   position: fixed;
-  bottom: 16px;
-  right: 68px;
+  bottom: 49px;
+  right: 16px;
   z-index: 10001;
-  width: 44px;
-  height: 44px;
+  width: 27px;
+  height: 27px;
   align-items: center;
   justify-content: center;
   background: none;
@@ -1897,8 +1950,8 @@ html[data-theme="dark"] .fleet-chat-input input:focus {
 }
 
 body.phone-mode .voice-note-btn {
-  bottom: calc(24px + env(safe-area-inset-bottom));
-  right: calc(68px + env(safe-area-inset-right));
+  bottom: calc(57px + env(safe-area-inset-bottom));
+  right: calc(16px + env(safe-area-inset-right));
   opacity: 0.5;
 }
 

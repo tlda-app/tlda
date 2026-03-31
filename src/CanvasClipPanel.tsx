@@ -70,17 +70,15 @@ export function CanvasClipPanel({
     onEditorMount?.(editor)
   }, [editor, onEditorMount])
 
-  // Enable snapping in locked-camera mode (HUD fleet shape arrangement)
-  useEffect(() => {
-    if (!editor || !lockCamera) return
-    editor.user.updateUserPreferences({ isSnapMode: true })
-  }, [editor, lockCamera])
+  // Snapping disabled in HUD — the copy store has 100+ shapes (PDF pages,
+  // highlights, etc.) that all act as snap targets, making drag unusable.
+  // TODO: re-enable once we can filter snap targets to fleet shapes only.
 
   // Create copy store from main editor's document records
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
     const docRecords = allRecords.filter(isDocRecord)
-      .map(r => lockCamera ? unlockFleetShape(r) : r)
+      .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
@@ -102,7 +100,7 @@ export function CanvasClipPanel({
               store.put([{ ...record, isLocked: true } as any])
               lockedIdsRef.current.add(record.id)
             } else {
-              store.put([lockCamera ? unlockFleetShape(record) : record])
+              store.put([lockCamera ? lockNonFleetUnlockFleet(record) : record])
             }
           }
         }
@@ -112,7 +110,7 @@ export function CanvasClipPanel({
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
             } else {
-              store.put([lockCamera ? unlockFleetShape(to) : to])
+              store.put([lockCamera ? lockNonFleetUnlockFleet(to) : to])
             }
           }
         }
@@ -127,22 +125,29 @@ export function CanvasClipPanel({
 
     // copy → main (re-lock fleet shapes so they stay locked on main canvas)
     // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
+    // In lockCamera mode (HUD), only sync fleet shapes back — non-fleet shapes (PDF pages,
+    // highlights, etc.) are read-only in the HUD and should never propagate changes to main.
+    const isFleetShape = (r: any) =>
+      r.typeName === 'shape' && FLEET_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
       mainEditor.store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isPill(record)) continue
-          if (isDocRecord(record)) mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
+          if (!isDocRecord(record)) continue
+          if (lockCamera && !isFleetShape(record)) continue
+          mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
         }
         for (const [, to] of Object.values(changes.updated)) {
           if (isPill(to)) continue
           if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
+          if (lockCamera && !isFleetShape(to)) continue
           mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
         }
         for (const record of Object.values(changes.removed)) {
           if (isPill(record)) continue
-          if (isDocRecord(record)) {
-            try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
-          }
+          if (!isDocRecord(record)) continue
+          if (lockCamera && !isFleetShape(record)) continue
+          try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
         }
       })
     }, { source: 'all', scope: 'document' })
@@ -449,12 +454,15 @@ function isDocRecord(record: TLRecord): boolean {
     record.typeName === 'page' || record.typeName === 'document'
 }
 
-/** Unlock fleet shapes in the HUD copy store so they're draggable/resizable. */
-function unlockFleetShape(record: TLRecord): TLRecord {
-  if (record.typeName === 'shape' && FLEET_TYPES.has((record as any).type) && (record as any).isLocked) {
+
+/** For lockCamera (HUD): unlock fleet shapes, lock everything else.
+ *  Prevents tldraw from moving PDF pages/highlights during fleet shape drag. */
+function lockNonFleetUnlockFleet(record: TLRecord): TLRecord {
+  if (record.typeName !== 'shape') return record
+  if (FLEET_TYPES.has((record as any).type)) {
     return { ...record, isLocked: false } as TLRecord
   }
-  return record
+  return { ...record, isLocked: true } as TLRecord
 }
 
 /** Re-lock fleet shapes when syncing back to main store. */
