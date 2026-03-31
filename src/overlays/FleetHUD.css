@@ -27,16 +27,11 @@
   color: rgba(80, 80, 80, 0.7);
 }
 
-/* Expanded HUD — full overlay with fleet shapes, vertically centered */
+/* Expanded HUD — full overlay with fleet shapes, positioned by JS */
 .fleet-hud-wrap {
   position: fixed;
-  top: 0;
-  bottom: 0;
   z-index: 999;
   pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
 }
 
 .fleet-hud-wrap > .clip-panel {

@@ -164,10 +164,10 @@ export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
 
 /**
  * Subscribe to thinking/status events for agents matching the filter.
- * Returns a Set of agent IDs currently in thinking state.
+ * Returns a Map of agentId → timestamp when thinking started (ms).
  */
-export function useFleetThinking(dnfFilter?: string[][] | null): Set<string> {
-  const [thinking, setThinking] = useState<Set<string>>(new Set())
+export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, number> {
+  const [thinking, setThinking] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
   useEffect(() => {
@@ -186,8 +186,8 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Set<string> {
       unsubThinking = subscribe('thinking', null, (data: any) => {
         if (!inFilter(data.agent)) return
         setThinking(prev => {
-          const next = new Set(prev)
-          if (data.thinking) next.add(data.agent)
+          const next = new Map(prev)
+          if (data.thinking) next.set(data.agent, Date.now())
           else next.delete(data.agent)
           return next
         })
@@ -196,8 +196,8 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Set<string> {
       unsubStatus = subscribe('status', null, (data: any) => {
         if (!inFilter(data.agent)) return
         setThinking(prev => {
-          const next = new Set(prev)
-          if (data.state === 'thinking') next.add(data.agent)
+          const next = new Map(prev)
+          if (data.state === 'thinking') { if (!next.has(data.agent)) next.set(data.agent, Date.now()) }
           else next.delete(data.agent)
           return next
         })
@@ -208,11 +208,52 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Set<string> {
       cancelled = true
       unsubThinking?.()
       unsubStatus?.()
-      setThinking(new Set())
+      setThinking(new Map())
     }
   }, [filterKey])
 
   return thinking
+}
+
+/**
+ * Subscribe to compacting events for agents matching the filter.
+ * Returns a Map of agentId → timestamp when compacting started (ms).
+ */
+export function useFleetCompacting(dnfFilter?: string[][] | null): Map<string, number> {
+  const [compacting, setCompacting] = useState<Map<string, number>>(new Map())
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
+
+    ensureInit().then(() => {
+      if (cancelled || !filter) return
+
+      function inFilter(agentId: string): boolean {
+        return matchesFilter(filter, { agent: agentId, from: agentId })
+      }
+
+      unsub = subscribe('compacting', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        setCompacting(prev => {
+          const next = new Map(prev)
+          if (data.compacting) next.set(data.agent, Date.now())
+          else next.delete(data.agent)
+          return next
+        })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+      setCompacting(new Map())
+    }
+  }, [filterKey])
+
+  return compacting
 }
 
 // --- Search API ---

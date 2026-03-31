@@ -14,6 +14,16 @@ import App from './App.tsx'
   }
 }
 
+// Global mousemove class — visible while cursor is moving, fades after 1.5s idle
+{
+  let timer: ReturnType<typeof setTimeout>
+  window.addEventListener('mousemove', () => {
+    document.documentElement.classList.add('mousemove')
+    clearTimeout(timer)
+    timer = setTimeout(() => document.documentElement.classList.remove('mousemove'), 1500)
+  })
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

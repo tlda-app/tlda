@@ -51,17 +51,12 @@ export function FleetHUD({
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   const agents = useFleetAgents()
-  const [hudScale, setHudScale] = useState(() => {
-    const saved = localStorage.getItem('fleet-hud-scale')
-    return saved ? parseFloat(saved) || 1 : 1
-  })
   const hudRef = useRef<HTMLDivElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const draggingRef = useRef(false)
 
   // Reactively update fleet bounds when shapes change.
-  // Position updates are debounced — during drag (rapid updates), bounds are
-  // suppressed. On drop (updates stop), bounds recalculate after a short delay.
+  // Position updates: freeze during drag, recalculate on pointerup only.
+  // This prevents the auto-zoom panel from resizing mid-drag.
   useEffect(() => {
     setFleetBounds(getFleetBounds(mainEditor))
 
@@ -75,29 +70,31 @@ export function FleetHUD({
         Object.values(changes.removed).some(isFleetChange)
 
       if (hasAddOrRemove) {
-        if (debounceRef.current) clearTimeout(debounceRef.current)
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
         return
       }
 
-      // Position/size updates: debounce (drag detection)
+      // Position/size updates: mark as dragging, recalc on pointerup
       const hasUpdate = Object.values(changes.updated)
         .some(([from, to]) => isFleetChange(from) || isFleetChange(to))
 
       if (hasUpdate) {
         draggingRef.current = true
-        if (debounceRef.current) clearTimeout(debounceRef.current)
-        debounceRef.current = setTimeout(() => {
-          draggingRef.current = false
-          setFleetBounds(getFleetBounds(mainEditor))
-        }, 150)
       }
     }, { source: 'all', scope: 'document' })
 
+    const handlePointerUp = () => {
+      if (draggingRef.current) {
+        draggingRef.current = false
+        setFleetBounds(getFleetBounds(mainEditor))
+      }
+    }
+    window.addEventListener('pointerup', handlePointerUp, true)
+
     return () => {
       unsub()
-      if (debounceRef.current) clearTimeout(debounceRef.current)
+      window.removeEventListener('pointerup', handlePointerUp, true)
     }
   }, [mainEditor])
 
@@ -105,50 +102,30 @@ export function FleetHUD({
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
 
-  // Track fleet shapes' screen-space position when expanded
-  // hudRight = screen-space X of the fleet bounds right edge (constant anchor point)
-  // hudBaseWidth = screen-space width of fleet bounds at cam.z (base width before HUD scaling)
+  // Track fleet shapes' screen-space right edge — anchored to canvas position
   const [hudRight, setHudRight] = useState(0)
-  const [hudBaseWidth, setHudBaseWidth] = useState(0)
   useEffect(() => {
     if (!expanded || !fleetBounds) return
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
+    const update = () => {
+      const cam = mainEditor.getCamera()
+      lastCamX = cam.x
+      lastCamZ = cam.z
+      setHudRight((fleetBounds.x + fleetBounds.w + cam.x) * cam.z)
+    }
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ || hudRight === 0) {
-        lastCamX = cam.x
-        lastCamZ = cam.z
-        const screenRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
-        const screenW = fleetBounds.w * cam.z
-        setHudRight(screenRight)
-        setHudBaseWidth(screenW)
+        update()
       }
       rafId = requestAnimationFrame(poll)
     }
+    update()
     rafId = requestAnimationFrame(poll)
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded, fleetBounds])
-
-  // Cmd+scroll on the HUD grows/shrinks the panel
-  useEffect(() => {
-    const el = hudRef.current
-    if (!el || !expanded) return
-    const onWheel = (e: WheelEvent) => {
-      if (!e.metaKey && !e.ctrlKey) return
-      e.preventDefault()
-      e.stopPropagation()
-      const delta = e.deltaY > 0 ? -0.03 : 0.03
-      setHudScale(s => {
-        const next = Math.min(2, Math.max(0.5, s + delta))
-        localStorage.setItem('fleet-hud-scale', String(next))
-        return next
-      })
-    }
-    el.addEventListener('wheel', onWheel, { passive: false, capture: true })
-    return () => el.removeEventListener('wheel', onWheel, { capture: true })
-  }, [expanded])
 
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
@@ -169,12 +146,14 @@ export function FleetHUD({
   }
 
   // Expanded: CanvasClipPanel with fleet region
-  // Right edge stays fixed — scaling expands leftward to reveal more fleet shapes
-  // panelWidth is in CSS pixels: base screen width * hudScale
-  const panelWidth = hudBaseWidth * hudScale
-  const adjustedLeft = hudRight - panelWidth
+  // Auto-zoom: fit all fleet shapes within 80% screen height, width follows aspect ratio
+  // Docked to right edge of viewport, vertically centered
+  const panelHeight = window.innerHeight * 0.8
+  const zoom = panelHeight / fleetBounds.h
+  const panelWidth = fleetBounds.w * zoom
+  const adjustedTop = (window.innerHeight - panelHeight) / 2
   return (
-    <div className="fleet-hud-wrap" ref={hudRef} style={{ left: adjustedLeft }}>
+    <div className="fleet-hud-wrap" ref={hudRef} style={{ left: hudRight - panelWidth, top: adjustedTop }}>
       <div className="fleet-hud-controls">
         <button
           className="fleet-hud-close"
@@ -191,7 +170,7 @@ export function FleetHUD({
         tools={tools}
         licenseKey={licenseKey}
         panelWidth={panelWidth}
-        maxHeightFraction={0.95}
+        maxHeightFraction={1}
         lockCamera={true}
         className="fleet-hud"
       />

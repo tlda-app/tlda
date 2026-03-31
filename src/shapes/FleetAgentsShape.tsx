@@ -14,7 +14,7 @@ import {
   useEditor,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 
@@ -115,6 +115,81 @@ function usePillDrag() {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 
+  // Always-on document capture listeners so they're registered before any
+  // dynamic listeners (including tldraw's own per-drag listeners). When no
+  // drag is active the null-check exits immediately — zero overhead.
+  // Pill stays in the HUD editor throughout; screenToPage uses HUD coords,
+  // which share the same camera as the main canvas. dropPillOnTarget routes
+  // shape creation to the main editor via __tldraw_editor__.
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      const drag = dragRef.current
+      if (!drag) return
+      e.stopImmediatePropagation()
+      e.preventDefault()
+
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+
+      if (!drag.started) {
+        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+        drag.started = true
+
+        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const measureEl = document.createElement('span')
+        measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+        measureEl.textContent = drag.displayName
+        document.body.appendChild(measureEl)
+        const pw = measureEl.offsetWidth
+        const ph = measureEl.offsetHeight
+        document.body.removeChild(measureEl)
+        const pillId = createShapeId()
+        editor.createShape({
+          id: pillId,
+          type: 'fleet-pill' as any,
+          x: pagePos.x - pw / 2,
+          y: pagePos.y - ph / 2,
+          props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
+        })
+        drag.pillId = pillId as unknown as string
+        return
+      }
+
+      if (drag.pillId) {
+        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const pillShape = editor.getShape(drag.pillId as any) as any
+        const pw = pillShape?.props?.w || 70
+        const ph = pillShape?.props?.h || 18
+        editor.updateShape({
+          id: drag.pillId as any,
+          type: 'fleet-pill' as any,
+          x: pagePos.x - pw / 2,
+          y: pagePos.y - ph / 2,
+        })
+      }
+    }
+
+    function onUp(e: PointerEvent) {
+      const drag = dragRef.current
+      if (!drag) return
+      e.stopImmediatePropagation()
+      dragRef.current = null
+
+      if (!drag.started || !drag.pillId) return
+
+      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+      dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+      try { editor.deleteShapes([drag.pillId as any]) } catch {}
+    }
+
+    document.addEventListener('pointermove', onMove, { capture: true })
+    document.addEventListener('pointerup', onUp, { capture: true })
+    return () => {
+      document.removeEventListener('pointermove', onMove, { capture: true })
+      document.removeEventListener('pointerup', onUp, { capture: true })
+    }
+  }, [editor])
+
   const startDrag = useCallback((
     e: React.PointerEvent,
     pillType: 'agent' | 'label',
@@ -124,92 +199,13 @@ function usePillDrag() {
   ) => {
     stopEventPropagation(e)
     e.preventDefault()
-    const el = e.currentTarget as HTMLElement
-    el.setPointerCapture(e.pointerId)
-
     dragRef.current = {
-      pillId: null,
-      pillType,
-      value,
-      displayName,
-      color,
-      startX: e.clientX,
-      startY: e.clientY,
-      started: false,
+      pillId: null, pillType, value, displayName, color,
+      startX: e.clientX, startY: e.clientY, started: false,
     }
-  }, [editor])
+  }, [])
 
-  const moveDrag = useCallback((e: React.PointerEvent) => {
-    const drag = dragRef.current
-    if (!drag) return
-
-    const dx = e.clientX - drag.startX
-    const dy = e.clientY - drag.startY
-
-    if (!drag.started) {
-      if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
-      drag.started = true
-
-      // Create ephemeral pill — size shape bounds to match rendered chip content
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      const measureEl = document.createElement('span')
-      measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
-      measureEl.textContent = drag.displayName
-      document.body.appendChild(measureEl)
-      const pw = measureEl.offsetWidth
-      const ph = measureEl.offsetHeight
-      document.body.removeChild(measureEl)
-      const pillId = createShapeId()
-      editor.createShape({
-        id: pillId,
-        type: 'fleet-pill' as any,
-        x: pagePos.x - pw / 2,
-        y: pagePos.y - ph / 2,
-        props: {
-          w: pw,
-          h: ph,
-          pillType: drag.pillType,
-          value: drag.value,
-          displayName: drag.displayName,
-          color: drag.color,
-        },
-      })
-      drag.pillId = pillId as unknown as string
-    }
-
-    if (drag.pillId) {
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      const pillShape = editor.getShape(drag.pillId as any) as any
-      const pw = pillShape?.props?.w || 70
-      const ph = pillShape?.props?.h || 18
-      editor.updateShape({
-        id: drag.pillId as any,
-        type: 'fleet-pill' as any,
-        x: pagePos.x - pw / 2,
-        y: pagePos.y - ph / 2,
-      })
-    }
-  }, [editor])
-
-  const endDrag = useCallback((e: React.PointerEvent) => {
-    const drag = dragRef.current
-    if (!drag) return
-    dragRef.current = null
-
-    const el = e.currentTarget as HTMLElement
-    try { el.releasePointerCapture(e.pointerId) } catch {}
-
-    if (!drag.started || !drag.pillId) return
-
-    // Run drop logic
-    const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-    dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
-
-    // Delete ephemeral pill
-    try { editor.deleteShapes([drag.pillId as any]) } catch {}
-  }, [editor])
-
-  return { startDrag, moveDrag, endDrag }
+  return { startDrag }
 }
 
 
@@ -218,7 +214,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
-  const { startDrag, moveDrag, endDrag } = usePillDrag()
+  const { startDrag } = usePillDrag()
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -297,8 +293,6 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
           position: 'relative',
         }}
-        onPointerMove={moveDrag}
-        onPointerUp={endDrag}
       >
         {/* Close + layout buttons */}
         <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
