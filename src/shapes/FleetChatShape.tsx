@@ -262,7 +262,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
 
   const chatMessages = useMemo(() => {
-    return events
+    const sorted = events
       .filter((m: any) => {
         const t = m.type
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
@@ -273,7 +273,69 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
         return ta - tb
       })
+
+    // Populate refStore from annotation attachments BEFORE render
+    // (must happen synchronously so renderedHtml can find entries)
+    for (const m of sorted) {
+      const atts = (m as any).attachments || (m as any).metadata?.attachments
+      if (!atts || !Array.isArray(atts)) continue
+      for (const a of atts) {
+        if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
+          refStore.set(a.token, {
+            type: 'annotation',
+            label: a.label,
+            content: a.content,
+            color: a.color,
+            canvasBounds: a.canvasBounds,
+            shapeId: a.shapeId,
+            highlightShapeId: a.highlightShapeId,
+            file: a.file,
+            lineno: a.lineno,
+          })
+        }
+      }
+    }
+
+    return sorted
   }, [events])
+
+  // Fetch annotation attachments from server (fleet-data.mjs may not propagate metadata.attachments)
+  const [refStoreReady, setRefStoreReady] = useState(false)
+  useEffect(() => {
+    // Check for unresolved annotation tokens in messages
+    const unresolvedTokens = chatMessages
+      .filter((m: any) => m.text && /«annotation:.+?»/.test(m.text))
+      .filter((m: any) => {
+        const tokens = m.text.match(/«[^»]+»/g) || []
+        return tokens.some((t: string) => !refStore.has(t))
+      })
+    if (!unresolvedTokens.length) return
+    // Fetch recent events with metadata from the server
+    fetch('/api/chat/history?limit=100')
+      .then(r => r.json())
+      .then(data => {
+        const events = data.events || []
+        let populated = 0
+        for (const e of events) {
+          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata
+          const atts = meta?.attachments
+          if (!atts || !Array.isArray(atts)) continue
+          for (const a of atts) {
+            if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
+              refStore.set(a.token, {
+                type: 'annotation', label: a.label, content: a.content,
+                color: a.color, canvasBounds: a.canvasBounds,
+                shapeId: a.shapeId, highlightShapeId: a.highlightShapeId,
+                file: a.file, lineno: a.lineno,
+              })
+              populated++
+            }
+          }
+        }
+        if (populated > 0) setRefStoreReady(r => !r) // toggle to trigger re-render
+      })
+      .catch(() => {})
+  }, [chatMessages])
 
   const renderedHtml = useMemo(() => {
     // Group consecutive activity events from the same agent into cards
@@ -304,7 +366,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
     flushActivity()
 
     return parts.join('')
-  }, [chatMessages, ctx])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages, ctx, refStoreReady])
 
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
@@ -321,9 +384,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const preview = content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
-
       const isAnnotation = ref?.type === 'annotation'
+      // Annotation chips use AnnotationViewer on hover — skip the CSS tooltip
+      const preview = (!isAnnotation && content) ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
       const colorDot = isAnnotation && ref?.color
         ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
         : ''
@@ -347,7 +410,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions])
+  }, [renderedHtml, doc, labelRegions, refStoreReady])
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -501,8 +564,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const shapeIds: string[] = []
         if (chip.dataset.shapeRef) shapeIds.push(chip.dataset.shapeRef)
         if (chip.dataset.highlightRef) shapeIds.push(chip.dataset.highlightRef)
+        // Anchor viewer to the chip element, not the cursor
+        const chipRect = chip.getBoundingClientRect()
         window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: { bounds: { x, y, w, h }, shapeIds, label, color }
+          detail: { bounds: { x, y, w, h }, shapeIds, label, color, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
         }))
       }, 100)
     }

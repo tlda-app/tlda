@@ -268,7 +268,7 @@ function PhoneHighlighterButton() {
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
     } else if (slot.id === 'select') {
-      editor.setCurrentTool('browse')
+      editor.setCurrentTool('select')
     } else if (slot.id === 'draw') {
       editor.setCurrentTool('draw')
     } else {

@@ -33,6 +33,8 @@ export interface RefStoreEntry {
   screenshotRef?: string
 }
 export const refStore = new Map<string, RefStoreEntry>()
+// Expose for dev/testing — agents populate via browser console
+;(window as any).__refStore = refStore
 
 /**
  * Module-level state for filter overlay drop preview.

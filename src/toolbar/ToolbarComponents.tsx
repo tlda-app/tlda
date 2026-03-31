@@ -10,8 +10,8 @@ import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
 
 export function BrowseToolbarItem() {
   const tools = useTools()
-  const isSelected = useIsToolSelected(tools['browse'])
-  return <TldrawUiMenuToolItem toolId="browse" isSelected={isSelected} />
+  const isSelected = useIsToolSelected(tools['select'])
+  return <TldrawUiMenuToolItem toolId="select" isSelected={isSelected} />
 }
 
 export function MathNoteToolbarItem() {

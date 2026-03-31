@@ -28,6 +28,7 @@ interface ViewerData {
   shapeIds?: string[]
   label?: string
   color?: string
+  chipRect?: { left: number; top: number; right: number; bottom: number; width: number; height: number }
 }
 
 export function AnnotationViewer({
@@ -41,6 +42,7 @@ export function AnnotationViewer({
   const [size, setSize] = useState({ w: 650, h: 450 })
   const prevCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clickStartRef = useRef<{ x: number; y: number } | null>(null)
 
   // Listen for show/hide events from FleetChatShape
   useEffect(() => {
@@ -52,6 +54,7 @@ export function AnnotationViewer({
         shapeIds: detail.shapeIds,
         label: detail.label,
         color: detail.color,
+        chipRect: detail.chipRect,
       })
       setState('hovering')
       prevCameraRef.current = null
@@ -83,12 +86,31 @@ export function AnnotationViewer({
     }
   }, [])
 
-  // Pin on click (hovering → pinned)
-  const handleClick = useCallback(() => {
-    if (state === 'hovering') {
-      setState('pinned')
+  // Click-to-pin: track pointerdown/pointerup, if < 5px movement → pin
+  // Passive capture listeners so tldraw still gets events for panning
+  const canvasWrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = canvasWrapRef.current
+    if (!el || !data) return
+    const onDown = (e: PointerEvent) => {
+      clickStartRef.current = { x: e.clientX, y: e.clientY }
     }
-  }, [state])
+    const onUp = (e: PointerEvent) => {
+      if (!clickStartRef.current) return
+      const dx = e.clientX - clickStartRef.current.x
+      const dy = e.clientY - clickStartRef.current.y
+      clickStartRef.current = null
+      if (Math.sqrt(dx * dx + dy * dy) < 5) {
+        setState(cur => cur === 'hovering' ? 'pinned' : cur)
+      }
+    }
+    el.addEventListener('pointerdown', onDown, { capture: true })
+    el.addEventListener('pointerup', onUp, { capture: true })
+    return () => {
+      el.removeEventListener('pointerdown', onDown, { capture: true })
+      el.removeEventListener('pointerup', onUp, { capture: true })
+    }
+  }, [data])
 
   // Navigate: vertical only, maintain x
   const handleGo = useCallback((e: React.MouseEvent) => {
@@ -149,10 +171,33 @@ export function AnnotationViewer({
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
 
+  // Position on top of the chip — viewer overlaps, chip roughly centered vertically.
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const totalH = size.h
+  const chip = data.chipRect
+  let left: number
+  let top: number
+  if (chip) {
+    // Horizontal: align left edge with chip, clamp to viewport
+    left = chip.left
+    if (left + size.w > vw - 8) left = vw - size.w - 8
+    if (left < 8) left = 8
+    // Vertical: center viewer on chip, clamp to viewport
+    const chipMid = chip.top + chip.height / 2
+    top = chipMid - totalH / 2
+    if (top < 8) top = 8
+    if (top + totalH > vh - 8) top = vh - totalH - 8
+  } else {
+    // Fallback: center of viewport
+    left = (vw - size.w) / 2
+    top = (vh - totalH) / 2
+  }
+
   return (
     <div
       className={`annotation-viewer annotation-viewer--${state}`}
-      style={{ width: size.w }}
+      style={{ width: size.w, position: 'fixed', left, top, zIndex: 9999, pointerEvents: 'auto' }}
       onMouseEnter={() => {
         if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
       }}
@@ -164,67 +209,54 @@ export function AnnotationViewer({
           }, 200)
         }
       }}
-      onClick={state === 'hovering' ? handleClick : undefined}
+      onPointerDown={(e) => e.stopPropagation()}
     >
-      {/* Label bar */}
-      <div className="annotation-viewer-label">
-        {data.color && (
-          <span className="annotation-viewer-dot" style={{ background: data.color }} />
-        )}
-        <span className="annotation-viewer-title">
-          {data.label || 'Annotation'}
-        </span>
-      </div>
-
-      {/* Canvas */}
-      <div className="annotation-viewer-canvas" style={{ height: size.h }}>
+      {/* Canvas — read-only, full page width, click anywhere to pin */}
+      <div ref={canvasWrapRef} className="annotation-viewer-canvas" style={{ height: size.h }}>
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={{
-            x: data.bounds.x - 80,
-            y: data.bounds.y - 120,
-            w: data.bounds.w + 160,
-            h: data.bounds.h + 240,
+            x: 0,
+            y: data.bounds.y - 200,
+            w: 800,
+            h: 1035,
           }}
           shapeUtils={shapeUtils}
-          tools={tools}
+          tools={[]}
           licenseKey={licenseKey}
           panelWidth={size.w}
           maxHeightFraction={0.5}
           emphasizeShapeIds={data.shapeIds}
+          readOnly
           className="annotation-viewer-clip"
         />
       </div>
 
-      {/* Overlay buttons — faint, large, top corners */}
+      {/* Nav buttons — positioned on top of the canvas */}
       {isPinnedOrNav && (
         <>
-          {/* Top-left: forward (pinned) or back (navigated) */}
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
             onClick={state === 'pinned' ? handleGo : handleBack}
           >
-            <svg width="48" height="48" viewBox="0 0 48 48">
+            <svg width="250" height="250" viewBox="0 0 250 250">
               {state === 'pinned' ? (
-                /* → forward arrow */
-                <path d="M16 24 H32 M26 18 L32 24 L26 30" fill="none" stroke="currentColor"
-                  strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M12 125 H238 M170 12 L238 125 L170 238" fill="none" stroke="currentColor"
+                  strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
               ) : (
-                /* ← back arrow */
-                <path d="M32 24 H16 M22 18 L16 24 L22 30" fill="none" stroke="currentColor"
-                  strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
+                  strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
               )}
             </svg>
           </button>
 
-          {/* Right half: close */}
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-right"
             onClick={handleClose}
           >
-            <svg width="48" height="48" viewBox="0 0 48 48">
-              <path d="M16 16 L32 32 M32 16 L16 32" fill="none" stroke="currentColor"
-                strokeWidth="3" strokeLinecap="round" />
+            <svg width="250" height="250" viewBox="0 0 250 250">
+              <path d="M12 12 L238 238 M238 12 L12 238" fill="none" stroke="currentColor"
+                strokeWidth="48" strokeLinecap="square" />
             </svg>
           </button>
         </>

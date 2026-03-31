@@ -1,14 +1,13 @@
 /* AnnotationViewer — hover/pin/navigate overlay for annotation ref-chips */
 
 .annotation-viewer {
-  position: relative;
-  background: var(--color-panel);
+  position: fixed;
   border: 1px solid var(--color-panel-contrast);
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
   user-select: none;
-  margin-bottom: 8px;
+  z-index: 9999;
 }
 
 .annotation-viewer--hovering {
@@ -22,33 +21,6 @@
   cursor: default;
 }
 
-/* Label bar */
-.annotation-viewer-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-family: var(--font-body, system-ui, sans-serif);
-  color: var(--color-text-1);
-  background: var(--color-panel-contrast);
-  border-bottom: 1px solid var(--color-panel-contrast);
-}
-
-.annotation-viewer-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.annotation-viewer-title {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Canvas area */
 .annotation-viewer-canvas {
   position: relative;
@@ -60,32 +32,44 @@
   height: 100%;
 }
 
-/* Nav overlay buttons — giant faint zones, overlap text but barely visible */
+/* Click anywhere on canvas to pin — no button needed */
+
+/* Nav buttons — big hit targets, icons flush in corners */
 .annotation-viewer-nav-btn {
   position: absolute;
-  z-index: 10;
-  top: 28px; /* below label bar */
+  z-index: 999;
+  top: 0;
   bottom: 0;
   width: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  color: rgba(140, 140, 140, 0.10);
+  pointer-events: all;
+  color: rgba(140, 140, 140, 0.0375);
   transition: color 0.2s;
   padding: 0;
+  overflow: visible;
+}
+.annotation-viewer-nav-btn svg {
+  position: absolute;
 }
 .annotation-viewer-nav-btn:hover {
-  color: rgba(140, 140, 140, 0.35);
+  color: rgba(140, 140, 140, 0.225);
 }
 
 .annotation-viewer-nav-left {
   left: 0;
 }
+.annotation-viewer-nav-left svg {
+  top: 0;
+  left: 0;
+}
 
 .annotation-viewer-nav-right {
+  right: 0;
+}
+.annotation-viewer-nav-right svg {
+  top: 0;
   right: 0;
 }
 

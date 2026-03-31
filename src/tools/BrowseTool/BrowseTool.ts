@@ -13,7 +13,7 @@ import { BrowseIdle } from './BrowseIdle'
  * are inherited unchanged.
  */
 export class BrowseTool extends SelectTool {
-  static override id = 'browse'
+  static override id = 'select'
 
   static override children(): TLStateNodeConstructor[] {
     // Get all of SelectTool's children, swap Idle → BrowseIdle

@@ -126,7 +126,7 @@ export function HighlighterSlider() {
     if (slot.id === 'eraser') {
       editor.setCurrentTool('eraser')
     } else if (slot.id === 'select') {
-      editor.setCurrentTool('browse')
+      editor.setCurrentTool('select')
     } else if (slot.id === 'draw') {
       editor.setCurrentTool('draw')
     } else {
@@ -187,7 +187,7 @@ export function HighlighterSlider() {
     } else if (!dragging && dragStartY) {
       const cur = editor.getCurrentToolId()
       if (cur === 'highlight' || cur === 'eraser') {
-        editor.setCurrentTool('browse')
+        editor.setCurrentTool('select')
       } else {
         activateSlot(activeIdx)
       }

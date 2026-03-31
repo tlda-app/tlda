@@ -10,10 +10,8 @@ import {
   Editor,
   StateNode,
   Vec,
-  createShapeId,
   kickoutOccludedShapes,
   pointInPolygon,
-  toRichText,
   throttle,
   isShapeId,
   richTextValidator,
@@ -140,16 +138,90 @@ export class BrowseIdle extends StateNode {
   static override id = 'idle'
 
   selectedShapesOnKeyDown: TLShape[] = []
+  private _deselHandler: ((e: PointerEvent) => void) | null = null
+  private _unlockedIds = new Set<string>()
+  private _selectionUnsub: (() => void) | null = null
 
   override onEnter() {
     this.parent.setCurrentToolIdMask(undefined)
     updateHoveredShapeId(this.editor)
     this.selectedShapesOnKeyDown = []
     this.editor.setCursor({ type: 'default', rotation: 0 })
+
+    // Track selection: unlock fleet shapes on select, re-lock on deselect
+    this._selectionUnsub = this.editor.store.listen(() => {
+      const selected = new Set(this.editor.getSelectedShapeIds())
+
+      // Re-lock any fleet shapes that were unlocked but are no longer selected
+      for (const id of this._unlockedIds) {
+        if (!selected.has(id)) {
+          const shape = this.editor.getShape(id as any)
+          if (shape && !shape.isLocked) {
+            this.editor.updateShape({ id: shape.id, type: shape.type, isLocked: true })
+          }
+          this._unlockedIds.delete(id)
+        }
+      }
+
+      // Unlock newly selected fleet shapes so handles render
+      for (const id of selected) {
+        if (this._unlockedIds.has(id)) continue
+        const shape = this.editor.getShape(id)
+        if (shape && FLEET_TYPES.has(shape.type as string) && shape.isLocked) {
+          this.editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+          this._unlockedIds.add(id)
+        }
+      }
+    }, { source: 'all', scope: 'session' })
+
+    // Capture-phase listener: clears selection when clicking outside the
+    // selected shape.  Runs before fleet shapes' stopEventPropagation can
+    // swallow the event, so the state machine always sees the click.
+    this._deselHandler = (e: PointerEvent) => {
+      const selected = this.editor.getSelectedShapeIds()
+      if (selected.length === 0) return
+
+      const target = e.target as HTMLElement | null
+      if (!target) return
+
+      // If clicking on a tldraw selection/resize handle, don't interfere
+      if (target.closest('.tl-corner-handle, .tl-resize-handle, .tl-selection__fg')) return
+
+      // Check if the click is inside the selected shape's DOM element
+      for (const id of selected) {
+        const el = document.querySelector(`[data-shape-id="${id}"]`)
+        if (el?.contains(target)) return
+      }
+
+      this.editor.selectNone()
+    }
+
+    const container = this.editor.getContainer()
+    container.addEventListener('pointerdown', this._deselHandler, { capture: true })
   }
 
   override onExit() {
     updateHoveredShapeId.cancel()
+
+    // Re-lock all fleet shapes we unlocked
+    for (const id of this._unlockedIds) {
+      const shape = this.editor.getShape(id as any)
+      if (shape && !shape.isLocked) {
+        this.editor.updateShape({ id: shape.id, type: shape.type, isLocked: true })
+      }
+    }
+    this._unlockedIds.clear()
+
+    if (this._selectionUnsub) {
+      this._selectionUnsub()
+      this._selectionUnsub = null
+    }
+
+    if (this._deselHandler) {
+      const container = this.editor.getContainer()
+      container.removeEventListener('pointerdown', this._deselHandler, { capture: true })
+      this._deselHandler = null
+    }
   }
 
   override onPointerMove() {
@@ -161,9 +233,23 @@ export class BrowseIdle extends StateNode {
       case 'canvas': {
         const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
-        // ===== BROWSE ADDITION: locked HTML page (iframe) passthrough =====
-        // Locked HTML pages should let the DOM handle clicks (iframe navigation etc).
-        if (hitShape && hitShape.isLocked) return
+        // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
+        // Fleet shapes always get DOM passthrough (content is always interactive).
+        // Locked HTML pages (iframes) also get DOM passthrough.
+        // If the hit shape is the currently selected shape, fall through to
+        // pointing_selection so it can be dragged. Otherwise deselect.
+        if (hitShape && FLEET_TYPES.has(hitShape.type as string)) {
+          if (!this.editor.getSelectedShapeIds().includes(hitShape.id)) {
+            this.editor.selectNone()
+          }
+          return
+        }
+        if (hitShape && hitShape.isLocked) {
+          if (!this.editor.getSelectedShapeIds().includes(hitShape.id)) {
+            this.editor.selectNone()
+          }
+          return
+        }
         // ===== END BROWSE ADDITION =====
 
         if (hitShape && !hitShape.isLocked) {
@@ -202,10 +288,16 @@ export class BrowseIdle extends StateNode {
 
         if (this.editor.isShapeOrAncestorLocked(shape)) {
           // ===== BROWSE ADDITION: fleet/HTML shapes stay idle =====
-          // Locked fleet shapes: DOM handles events (passthrough)
-          if (FLEET_TYPES.has(shape.type as string) && shape.isLocked) return
-          // Other locked shapes (HTML pages): stay idle for DOM passthrough
-          if (shape.isLocked) return
+          // Fleet shapes: DOM always handles events (content is always interactive)
+          if (FLEET_TYPES.has(shape.type as string)) {
+            this.editor.selectNone()
+            return
+          }
+          // Locked HTML pages: DOM handles events
+          if (shape.isLocked) {
+            this.editor.selectNone()
+            return
+          }
           // ===== END BROWSE ADDITION =====
           this.parent.transition('pointing_canvas', info)
           break
@@ -622,24 +714,9 @@ export class BrowseIdle extends StateNode {
     this.parent.transition('editing_shape', info)
   }
 
-  handleDoubleClickOnCanvas(info: TLClickEventInfo) {
-    if (this.editor.getIsReadonly()) return
-    if (!this.editor.options.createTextOnCanvasDoubleClick) return
-
-    this.editor.markHistoryStoppingPoint('creating text shape')
-    const id = createShapeId()
-    const { x, y } = this.editor.inputs.getCurrentPagePoint()
-    this.editor.createShapes([{
-      id,
-      type: 'text',
-      x,
-      y,
-      props: { richText: toRichText(''), autoSize: true },
-    }])
-    const shape = this.editor.getShape(id)
-    if (!shape) return
-    if (!this.editor.canEditShape(shape)) return
-    startEditingShapeWithRichText(this.editor, id, { info })
+  handleDoubleClickOnCanvas(_info: TLClickEventInfo) {
+    // No-op in browse mode — double-click on empty canvas shouldn't create text shapes
+    return
   }
 
   private nudgeSelectedShapes(ephemeral = false) {

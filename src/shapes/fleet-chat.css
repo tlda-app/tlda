@@ -1142,6 +1142,12 @@
   display: block;
 }
 
+/* Annotation chips use AnnotationViewer — suppress CSS tooltip */
+.fleet-chat-shape .ref-chip-annotation .ref-chip-preview,
+.fleet-chat-shape .ref-chip-annotation:hover .ref-chip-preview {
+  display: none !important;
+}
+
 /* Annotation chips — colored dot, location badge, clickable */
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;

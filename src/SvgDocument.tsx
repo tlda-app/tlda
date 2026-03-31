@@ -775,8 +775,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         onSelect: () => _editor.setCurrentTool('text-select'),
       }
       // Register browse tool — pointer with starburst sparkle (interactive pages)
-      tools['browse'] = {
-        id: 'browse',
+      tools['select'] = {
+        id: 'select',
         icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           {/* Smaller pointer arrow, shifted down-left */}
           <path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor" stroke="none" />
@@ -794,7 +794,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           })()}
         </svg>) as any,
         label: 'Browse',
-        onSelect: () => _editor.setCurrentTool('browse'),
+        onSelect: () => _editor.setCurrentTool('select'),
       }
       return tools
     },
