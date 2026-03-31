@@ -1,6 +1,7 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
+  Rectangle2d,
   T,
   useEditor,
   useValue,
@@ -9,15 +10,19 @@ import {
 } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
-import {
-  switchTab,
-  addTab,
-  detachTab,
-  checkMergeOverlap,
-} from '../noteThreading'
+// noteThreading removed — no tabs, no merge
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
+
+const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
+// Open all links in new tab so they don't navigate the tldraw iframe
+md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noopener')
+  return self.renderToken(tokens, idx, options)
+}
 import { chatInsertBus, refStore } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
@@ -92,94 +97,8 @@ function renderMarkdownMath(text: string, showErrors = false): string {
       }
     }
     // Markdown rendering for text segments
-    return renderMarkdownText(seg.content)
+    return md.render(seg.content)
   }).join('')
-}
-
-// Simple markdown rendering — no external deps
-function renderMarkdownText(text: string): string {
-  // Process line-by-line for block elements
-  const lines = text.split('\n')
-  const result: string[] = []
-  let inCodeBlock = false
-  let codeLines: string[] = []
-  let inList = false
-
-  for (const line of lines) {
-    // Code blocks
-    if (line.trimStart().startsWith('```')) {
-      if (inCodeBlock) {
-        result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
-        codeLines = []
-        inCodeBlock = false
-      } else {
-        if (inList) { result.push('</ul>'); inList = false }
-        inCodeBlock = true
-      }
-      continue
-    }
-    if (inCodeBlock) {
-      codeLines.push(escapeHtml(line))
-      continue
-    }
-
-    // Headings
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/)
-    if (headingMatch) {
-      if (inList) { result.push('</ul>'); inList = false }
-      const level = headingMatch[1].length
-      const sizes = ['1.3em', '1.1em', '1em']
-      const weights = ['700', '600', '600']
-      result.push(`<div style="font-size:${sizes[level - 1]};font-weight:${weights[level - 1]};margin:${level === 1 ? '0 0 4px' : '6px 0 2px'}">${renderInline(headingMatch[2])}</div>`)
-      continue
-    }
-
-    // Bullet lists
-    if (line.match(/^\s*[-*]\s+/)) {
-      if (!inList) { result.push('<ul style="margin:2px 0;padding-left:20px">'); inList = true }
-      const content = line.replace(/^\s*[-*]\s+/, '')
-      result.push(`<li style="margin:1px 0">${renderInline(content)}</li>`)
-      continue
-    }
-
-    // End list if we're in one and this isn't a list item
-    if (inList && line.trim() !== '') {
-      result.push('</ul>')
-      inList = false
-    }
-
-    // Empty lines
-    if (line.trim() === '') {
-      result.push('<br>')
-      continue
-    }
-
-    // Regular text
-    result.push(renderInline(line) + '<br>')
-  }
-
-  if (inCodeBlock) {
-    result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
-  }
-  if (inList) result.push('</ul>')
-
-  return result.join('')
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-// Inline markdown: bold, italic, code
-function renderInline(text: string): string {
-  let result = escapeHtml(text)
-  // Inline code (before bold/italic to avoid conflicts)
-  result = result.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.06);padding:1px 4px;border-radius:2px;font-size:0.9em">$1</code>')
-  // Bold
-  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // Italic
-  result = result.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  return result
 }
 
 // Legacy alias for KaTeX-only rendering (used in edit preview)
@@ -290,8 +209,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     autoSize: T.optional(T.boolean),
     choices: T.optional(T.arrayOf(T.string)),
     selectedChoice: T.optional(T.number),
-    tabs: T.optional(T.arrayOf(T.string)),
-    activeTab: T.optional(T.number),
     done: T.optional(T.boolean),
     collapsed: T.optional(T.boolean),
   }
@@ -307,13 +224,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   override canEdit = (shape: any) => !shape.props.collapsed
-  override canResize = () => true
+  override canResize = (shape: any) => !shape.props.collapsed
   override canBind = () => false
   override isAspectRatioLocked = () => false
-  override hideResizeHandles = () => false
+  override hideResizeHandles = (shape: any) => !!shape.props.collapsed
   override hideRotateHandle = () => true
-  override hideSelectionBoundsBg = () => false
-  override hideSelectionBoundsFg = () => false
+  override hideSelectionBoundsBg = (shape: any) => !!shape.props.collapsed
+  override hideSelectionBoundsFg = (shape: any) => !!shape.props.collapsed
+
+  override getGeometry(shape: any) {
+    if (shape.props.collapsed) {
+      return new Rectangle2d({ width: 10, height: 10, isFilled: true })
+    }
+    return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
+  }
 
   override onTranslateEnd = (initial: any, current: any) => {
     // If dropped on a fleet-chat shape → snap back + insert annotation token
@@ -331,13 +255,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           const text = (current.props.text as string) || ''
           const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
           const token = `«annotation:${displayName}»`
-          refStore.set(token, { type: 'annotation', label: displayName, content: text })
+          const noteBounds = this.editor.getShapePageBounds(current.id)
+          refStore.set(token, {
+            type: 'annotation', label: displayName, content: text,
+            shapeId: current.id,
+            canvasBounds: noteBounds ? { x: noteBounds.x, y: noteBounds.y, w: noteBounds.w, h: noteBounds.h } : undefined,
+          })
+          const wasLocked = (chat as any).isLocked
+          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
+          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: true })
           return
         }
       }
     }
-    checkMergeOverlap(this.editor, current.id)
   }
 
   override onResize = (shape: any, info: any) => {
@@ -370,8 +301,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const suppressUpdateRef = useRef(false)
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
-    // Track measured content height per tab so shape height = max across tabs
-    const tabHeightsRef = useRef<number[]>([])
 
     const [dotHovered, setDotHovered] = useState(false)
     const [dotClicked, setDotClicked] = useState(false)
@@ -485,35 +414,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing])
 
-    // Reset per-tab height cache when tab count changes (tab added/removed)
-    const numTabs = (shape.props.tabs as string[] | undefined)?.length || 1
-    useEffect(() => { tabHeightsRef.current = [] }, [numTabs])
-
     // Auto-size: use ResizeObserver to track content height changes reliably.
-    // This fires after KaTeX renders, font loading, and any async layout changes.
-    // Height = max across all tabs so switching tabs doesn't cause resize jitter.
     // Only allow shrinking when the element is actually visible (not culled by TLDraw).
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
-      const activeIdx = (shape.props.activeTab as number) || 0
       const measure = () => {
         const contentH = el.scrollHeight
         const tabBarH = tabBarRef.current?.offsetHeight || 0
-        const thisTabH = contentH + tabBarH
-
-        // Record this tab's measured height
-        const heights = tabHeightsRef.current
-        while (heights.length <= activeIdx) heights.push(0)
-        heights[activeIdx] = thisTabH
-
-        // Target = max across all measured tabs
-        const target = Math.max(40, ...heights)
+        const target = Math.max(40, contentH + tabBarH)
         const diff = target - shape.props.h
         if (Math.abs(diff) > 2) {
-          // Only allow shrinking if the element is actually rendered.
-          // TLDraw culls off-screen shapes — their content has 0/tiny scrollHeight.
           if (diff < 0) {
             const rect = el.getBoundingClientRect()
             if (rect.height < 1) return // culled — skip shrink
@@ -529,7 +441,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       ro.observe(el)
       measure()
       return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.activeTab])
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -862,8 +774,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const autoH = shape.props.autoSize
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
-      const shapeTabs = shape.props.tabs as string[] | undefined
-      const hasChoices = choices && choices.length > 0 && (!shapeTabs || shapeTabs.length <= 1 || ((shape.props.activeTab as number) || 0) === 0)
+      const hasChoices = choices && choices.length > 0
 
       let textContent
       if (renderedHtml) {
@@ -959,134 +870,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    // Tab bar — single-shape model: tabs stored in props.tabs
-    const tabs = shape.props.tabs as string[] | undefined
-    const activeTabIdx = (shape.props.activeTab as number) || 0
     const showTabBar = !isEditing
-    const multiTab = tabs && tabs.length > 1
-
-    // Auto-widen shape when tabs overflow (up to 400px)
-    const tabCount = tabs?.length ?? 0
-    useEffect(() => {
-      if (tabCount < 2) return
-      const TAB_WIDTH = 70 // ~padding + preview text
-      const PADDING = 60 // done + add + margin
-      const needed = tabCount * TAB_WIDTH + PADDING
-      const currentW = shape.props.w as number
-      if (needed > currentW && currentW < 400) {
-        const newW = Math.min(400, needed)
-        editor.updateShape({ id: shape.id, type: shape.type, props: { w: newW } })
-      }
-    }, [tabCount]) // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Context menu state for tab detach (fallback)
-    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null)
-
-    useEffect(() => {
-      if (!contextMenu) return
-      const dismiss = () => setContextMenu(null)
-      document.addEventListener('pointerdown', dismiss, true)
-      return () => document.removeEventListener('pointerdown', dismiss, true)
-    }, [contextMenu])
-
-    // Drag-off state for tab detach
-    const dragTabRef = useRef<{ index: number; startX: number; startY: number; active: boolean } | null>(null)
 
     let tabBar: React.ReactNode = null
     if (showTabBar) {
-      const inactiveColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)'
-      const activeColor = isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)'
-      const activeBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'
-      const borderColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'
       const doneColor = isDone
         ? (isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)')
         : (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)')
-
-      // Get tab label for a given index, using live text for active tab
-      const getTabLabel = (i: number): string => {
-        const raw = i === activeTabIdx ? (shape.props.text || '') : (tabs?.[i] || '')
-        const preview = raw.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim()
-        return preview ? preview.slice(0, 12).trim() + (preview.length > 12 ? '..' : '') : '\u00B7'
-      }
-
-      // Drag-off handler: on pointerdown, track start; on pointermove, if >30px vertical, detach
-      const handleTabPointerDown = (e: React.PointerEvent, i: number) => {
-        stopEventPropagation(e)
-        if (e.button === 2) return
-        dragTabRef.current = { index: i, startX: e.clientX, startY: e.clientY, active: false }
-        const el = e.currentTarget as HTMLElement
-        el.setPointerCapture(e.pointerId)
-      }
-
-      const handleTabPointerMove = (e: React.PointerEvent) => {
-        const drag = dragTabRef.current
-        if (!drag) return
-        if (!multiTab) return
-        const dy = Math.abs(e.clientY - drag.startY)
-        if (dy > 30 && !drag.active) {
-          drag.active = true
-          const pagePoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
-          const newId = detachTab(editor, shape.id, drag.index, pagePoint.x, pagePoint.y)
-          dragTabRef.current = null
-          ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-
-          // Continue dragging the detached shape via document-level listeners.
-          // The user's pointer is still held down; we track it manually and
-          // update the new shape's position until pointerup.
-          if (newId) {
-            editor.select(newId)
-            const startPage = { ...pagePoint }
-            const shapeStart = { x: pagePoint.x, y: pagePoint.y }
-            let rafId = 0
-            let lastClientX = e.clientX
-            let lastClientY = e.clientY
-
-            const onMove = (ev: PointerEvent) => {
-              lastClientX = ev.clientX
-              lastClientY = ev.clientY
-              if (!rafId) {
-                rafId = requestAnimationFrame(() => {
-                  rafId = 0
-                  const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
-                  editor.updateShape({
-                    id: newId,
-                    type: 'math-note',
-                    x: shapeStart.x + (p.x - startPage.x),
-                    y: shapeStart.y + (p.y - startPage.y),
-                  } as any)
-                })
-              }
-            }
-            const onUp = () => {
-              document.removeEventListener('pointermove', onMove)
-              document.removeEventListener('pointerup', onUp)
-              if (rafId) cancelAnimationFrame(rafId)
-              // Final position update
-              const p = editor.screenToPage({ x: lastClientX, y: lastClientY })
-              editor.updateShape({
-                id: newId,
-                type: 'math-note',
-                x: shapeStart.x + (p.x - startPage.x),
-                y: shapeStart.y + (p.y - startPage.y),
-              } as any)
-              // Check for merge overlap on drop
-              setTimeout(() => checkMergeOverlap(editor, newId), 0)
-            }
-            document.addEventListener('pointermove', onMove)
-            document.addEventListener('pointerup', onUp)
-          }
-        }
-      }
-
-      const handleTabPointerUp = (e: React.PointerEvent, i: number) => {
-        const drag = dragTabRef.current
-        dragTabRef.current = null
-        if (drag && !drag.active) {
-          // Normal click — switch tab
-          switchTab(editor, shape.id, i)
-        }
-        try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch {}
-      }
 
       tabBar = (
         <div
@@ -1095,10 +885,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           style={{
             display: 'flex',
             alignItems: 'stretch',
-            borderBottom: multiTab ? `1px solid ${borderColor}` : undefined,
             flexShrink: 0,
-            overflowX: 'auto',
-            scrollbarWidth: 'none',
           }}
         >
           {/* Done toggle */}
@@ -1148,64 +935,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {isDone ? '\u2713' : '\u25CB'}
           </div>
-          {/* Tab labels (only when multi-tab) */}
-          {multiTab && tabs.map((_, i) => (
-            <div
-              key={i}
-              onPointerDown={(e) => handleTabPointerDown(e, i)}
-              onPointerMove={handleTabPointerMove}
-              onPointerUp={(e) => handleTabPointerUp(e, i)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                stopEventPropagation(e)
-                setContextMenu({ x: e.clientX, y: e.clientY, tabIndex: i })
-              }}
-              style={{
-                padding: '3px 8px',
-                fontSize: '10px',
-                fontFamily: '-apple-system, sans-serif',
-                cursor: 'pointer',
-                userSelect: 'none',
-                pointerEvents: 'all',
-                flexShrink: 0,
-                color: i === activeTabIdx ? activeColor : inactiveColor,
-                fontWeight: i === activeTabIdx ? 600 : 400,
-                borderBottom: i === activeTabIdx ? `2px solid ${activeColor}` : '2px solid transparent',
-                backgroundColor: i === activeTabIdx ? activeBg : 'transparent',
-                marginBottom: '-1px',
-                maxWidth: '80px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {getTabLabel(i)}
-            </div>
-          ))}
-          {/* + button inline with tabs */}
-          <div
-            className="note-tab-add"
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              addTab(editor, shape.id, '')
-              requestAnimationFrame(() => {
-                editor.setEditingShape(shape.id)
-              })
-            }}
-            style={{
-              padding: '3px 6px',
-              fontSize: '12px',
-              fontWeight: 300,
-              fontFamily: '-apple-system, sans-serif',
-              color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)',
-              cursor: 'pointer',
-              userSelect: 'none',
-              pointerEvents: 'all',
-              flexShrink: 0,
-            }}
-          >
-            +
-          </div>
           {/* Spacer */}
           <div style={{ flex: 1 }} />
           {/* Publish button for draft notes */}
@@ -1251,63 +980,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    // Context menu portal for detach (fallback for right-click)
-    let contextMenuEl: React.ReactNode = null
-    if (contextMenu) {
-      contextMenuEl = (
-        <div
-          style={{
-            position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
-            zIndex: 9999,
-            background: isDark ? '#2a2a2a' : '#fff',
-            border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)'}`,
-            borderRadius: '4px',
-            boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.12)',
-            padding: '2px 0',
-            pointerEvents: 'all',
-          }}
-          onPointerDown={(e) => stopEventPropagation(e)}
-        >
-          <div
-            style={{
-              padding: '4px 12px',
-              fontSize: '12px',
-              cursor: 'pointer',
-              fontFamily: '-apple-system, sans-serif',
-              color: isDark ? '#ccc' : undefined,
-            }}
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              detachTab(editor, shape.id, contextMenu.tabIndex)
-              setContextMenu(null)
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'
-            }}
-          >
-            Detach tab
-          </div>
-        </div>
-      )
-    }
-
-    // Collapsed suggest dot rendering
+    // Collapsed dot rendering
     const isCollapsed = shape.props.collapsed === true && !isEditing
-    const showDotCard = isCollapsed && (dotHovered || dotClicked)
     const cameraZoom = useValue('zoom', () => editor.getCamera().z, [editor])
     if (isCollapsed) {
       const dotColor = DOT_COLORS[shape.props.color] || DOT_COLORS.orange
-      const choices = shape.props.choices as string[] | undefined
-      const selectedChoice = (shape.props.selectedChoice as number) ?? -1
-      const hasChoices = choices && choices.length > 0
-      const text = shape.props.text || ''
-      const cardHtml = (hasMath(text) || hasMarkdown(text)) ? renderMarkdownMath(text) : null
-      // Inverse scale so card renders at fixed screen size regardless of zoom
       const invZoom = 1 / cameraZoom
 
       return (
@@ -1326,19 +1003,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {/* The dot */}
             <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                setDotClicked(!dotClicked)
-              }}
-              onDoubleClick={(e) => {
-                // Prevent tldraw from entering edit mode
-                stopEventPropagation(e)
-                // Permanently expand on double-click
-                editor.updateShape({
-                  id: shape.id,
-                  type: 'math-note' as any,
-                  props: { collapsed: false, w: 220, h: 50, autoSize: true },
-                })
+              onClick={(e) => {
+                e.stopPropagation()
+                setDotClicked(c => !c)
               }}
               style={{
                 width: 10,
@@ -1347,123 +1014,42 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 backgroundColor: dotColor,
                 cursor: 'pointer',
                 boxShadow: `0 0 0 2px ${dotColor}33`,
-                transition: 'transform 0.15s, box-shadow 0.15s',
-                transform: showDotCard ? 'scale(1.3)' : 'scale(1)',
-                position: 'relative',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
             >
-              {/* Mic icon for voice notes — fades when translation accepted */}
-              {shape.meta?.voiceNote && (
-                <svg
-                  width="6" height="6" viewBox="0 0 18 18" fill="white"
-                  style={{
-                    opacity: shape.meta?.translationAccepted ? 0.2 : 0.55,
-                    transition: 'opacity 0.4s',
-                    pointerEvents: 'none',
-                    flexShrink: 0,
-                  }}
-                >
-                  <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
-                  <path d="M3 9a6 6 0 0 0 12 0" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" />
-                  <line x1="9" y1="15" x2="9" y2="17" stroke="white" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-              )}
+              {/* Sticky note icon */}
+              <svg width="6" height="6" viewBox="0 0 16 16" fill="white" style={{ opacity: 0.35, pointerEvents: 'none' }}>
+                <path d="M2 1h12v10l-4 4H2V1z" />
+                <path d="M10 11v4l4-4h-4z" fill={dotColor} opacity="0.6" />
+              </svg>
             </div>
-            {/* Hover/click card — inverse-scaled to fixed screen size */}
-            {showDotCard && (
+            {/* Hover or pinned: the actual expanded note */}
+            {(dotHovered || dotClicked) && (
               <div
-                onPointerDown={stopIfNotPenTouch(editor)}
                 style={{
                   position: 'absolute',
-                  top: 0,
-                  left: 14,
+                  top: -4,
+                  left: -4,
                   transform: `scale(${invZoom})`,
                   transformOrigin: 'top left',
-                  width: 260,
+                  width: shape.props.w || 220,
+                  minHeight: shape.props.h || 50,
                   backgroundColor: bgColor,
-                  borderRadius: 6,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.1)',
+                  borderRadius: 4,
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
                   zIndex: 1000,
-                  pointerEvents: 'all',
-                  overflow: 'hidden',
+                  pointerEvents: 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  opacity: 0.95,
                 }}
               >
-                {/* Card content */}
-                {cardHtml ? (
-                  <div
-                    style={{
-                      padding: '10px 12px',
-                      paddingBottom: hasChoices ? '4px' : '10px',
-                      fontSize: '13px',
-                      lineHeight: 1.4,
-                      color: '#1a1a1a',
-                      maxHeight: 200,
-                      overflow: 'auto',
-                    }}
-                    dangerouslySetInnerHTML={{ __html: cardHtml }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      padding: '10px 12px',
-                      paddingBottom: hasChoices ? '4px' : '10px',
-                      fontSize: '13px',
-                      lineHeight: 1.4,
-                      whiteSpace: 'pre-wrap',
-                      color: '#1a1a1a',
-                      maxHeight: 200,
-                      overflow: 'auto',
-                    }}
-                  >
-                    {text || '\u00A0'}
-                  </div>
-                )}
-                {/* Choice buttons */}
-                {hasChoices && (
-                  <div style={{
-                    padding: '4px 10px 10px',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '6px',
-                  }}>
-                    {choices.map((choice, i) => {
-                      const isSelected = selectedChoice === i
-                      const choiceHtml = hasMath(choice) ? renderMath(choice) : null
-                      return (
-                        <button
-                          key={i}
-                          onPointerDown={(e) => {
-                            if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
-                            e.stopPropagation()
-                            editor.updateShape({
-                              id: shape.id,
-                              type: 'math-note' as any,
-                              props: { selectedChoice: isSelected ? -1 : i },
-                            })
-                          }}
-                          style={{
-                            padding: '4px 10px',
-                            fontSize: '11px',
-                            lineHeight: 1.3,
-                            border: isSelected ? '2px solid rgba(0,0,0,0.5)' : '1px solid rgba(0,0,0,0.15)',
-                            borderRadius: '12px',
-                            backgroundColor: isSelected ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.5)',
-                            cursor: 'pointer',
-                            fontWeight: isSelected ? 600 : 400,
-                            transition: 'all 0.15s',
-                          }}
-                          {...(choiceHtml
-                            ? { dangerouslySetInnerHTML: { __html: choiceHtml } }
-                            : { children: choice }
-                          )}
-                        />
-                      )
-                    })}
-                  </div>
-                )}
+                {tabBar}
+                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+                  {content}
+                </div>
               </div>
             )}
           </div>
@@ -1481,10 +1067,38 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           pointerEvents: 'all',
           display: 'flex',
           flexDirection: 'column',
+          position: 'relative',
           opacity: isFilteredOut ? 0.15 : undefined,
           transition: 'opacity 0.2s',
         }}
       >
+          {/* Collapse dot — top-right corner inside the note */}
+          <div
+            onPointerDown={(e) => {
+              stopEventPropagation(e)
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { collapsed: true },
+              })
+            }}
+            style={{
+              position: 'absolute',
+              top: 4,
+              right: 4,
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              backgroundColor: DOT_COLORS[shape.props.color] || DOT_COLORS.orange,
+              cursor: 'pointer',
+              zIndex: 10,
+              opacity: 0.5,
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
+            title="Collapse to dot"
+          />
           {tabBar}
           {shape.meta?.friendly_name && (
             <div style={{
@@ -1506,7 +1120,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           }}>
             {content}
           </div>
-          {contextMenuEl}
       </HTMLContainer>
     )
   }

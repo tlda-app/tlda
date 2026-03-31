@@ -161,6 +161,28 @@ function makeCtx(agents: any[], tasks: any[]) {
   }
 }
 
+/** Extract annotation metadata from «...» tokens in text for message attachments */
+function extractRefAttachments(text: string): Record<string, any>[] | undefined {
+  const attachments: Record<string, any>[] = []
+  const tokenRe = /«(.+?)»/g
+  let m
+  while ((m = tokenRe.exec(text)) !== null) {
+    const token = `«${m[1]}»`
+    const ref = refStore.get(token)
+    if (!ref) continue
+    const att: Record<string, any> = { token, type: ref.type, label: ref.label, content: ref.content }
+    if (ref.color) att.color = ref.color
+    if (ref.canvasBounds) att.canvasBounds = ref.canvasBounds
+    if (ref.shapeId) att.shapeId = ref.shapeId
+    if (ref.highlightShapeId) att.highlightShapeId = ref.highlightShapeId
+    if (ref.file) att.file = ref.file
+    if (ref.lineno != null) att.lineno = ref.lineno
+    if (ref.screenshotRef) att.screenshotRef = ref.screenshotRef
+    attachments.push(att)
+  }
+  return attachments.length > 0 ? attachments : undefined
+}
+
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   // Expose editor to trackpad input adapter
@@ -228,7 +250,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
 
   const chatMessages = useMemo(() => {
-    return events
+    const sorted = events
       .filter((m: any) => {
         const t = m.type
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
@@ -239,7 +261,69 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
         return ta - tb
       })
+
+    // Populate refStore from annotation attachments BEFORE render
+    // (must happen synchronously so renderedHtml can find entries)
+    for (const m of sorted) {
+      const atts = (m as any).attachments || (m as any).metadata?.attachments
+      if (!atts || !Array.isArray(atts)) continue
+      for (const a of atts) {
+        if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
+          refStore.set(a.token, {
+            type: 'annotation',
+            label: a.label,
+            content: a.content,
+            color: a.color,
+            canvasBounds: a.canvasBounds,
+            shapeId: a.shapeId,
+            highlightShapeId: a.highlightShapeId,
+            file: a.file,
+            lineno: a.lineno,
+          })
+        }
+      }
+    }
+
+    return sorted
   }, [events])
+
+  // Fetch annotation attachments from server (fleet-data.mjs may not propagate metadata.attachments)
+  const [refStoreReady, setRefStoreReady] = useState(false)
+  useEffect(() => {
+    // Check for unresolved annotation tokens in messages
+    const unresolvedTokens = chatMessages
+      .filter((m: any) => m.text && /«annotation:.+?»/.test(m.text))
+      .filter((m: any) => {
+        const tokens = m.text.match(/«[^»]+»/g) || []
+        return tokens.some((t: string) => !refStore.has(t))
+      })
+    if (!unresolvedTokens.length) return
+    // Fetch recent events with metadata from the server
+    fetch('/api/chat/history?limit=100')
+      .then(r => r.json())
+      .then(data => {
+        const events = data.events || []
+        let populated = 0
+        for (const e of events) {
+          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata
+          const atts = meta?.attachments
+          if (!atts || !Array.isArray(atts)) continue
+          for (const a of atts) {
+            if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
+              refStore.set(a.token, {
+                type: 'annotation', label: a.label, content: a.content,
+                color: a.color, canvasBounds: a.canvasBounds,
+                shapeId: a.shapeId, highlightShapeId: a.highlightShapeId,
+                file: a.file, lineno: a.lineno,
+              })
+              populated++
+            }
+          }
+        }
+        if (populated > 0) setRefStoreReady(r => !r) // toggle to trigger re-render
+      })
+      .catch(() => {})
+  }, [chatMessages])
 
   const renderedHtml = useMemo(() => {
     // Group consecutive activity events from the same agent into cards
@@ -270,18 +354,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
     flushActivity()
 
     return parts.join('')
-  }, [chatMessages, ctx])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages, ctx, refStoreReady])
 
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
     let html = renderedHtml
-    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
-    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
-    if (doc && Object.keys(labelRegions).length > 0) {
-      html = linkifyArrowRefs(html, labelRegions)
-    }
-    if (doc) html = linkifyDocRefs(html)
-    // Turn «type:label» reference tokens into chips with hover preview
+    // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
+    // (otherwise "Theorem 3.2" inside a token gets wrapped in a doc-link span
+    // and the regex can't match the original token)
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const ref = refStore.get(token)
@@ -291,14 +372,58 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const preview = content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
-      return `<span class="ref-chip">${displayEsc}${preview}</span>`
+      const isAnnotation = ref?.type === 'annotation'
+      // Annotation chips use AnnotationViewer on hover — skip the CSS tooltip
+      const preview = (!isAnnotation && content) ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
+      const colorDot = isAnnotation && ref?.color
+        ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
+        : ''
+      const locBadge = isAnnotation && ref?.file
+        ? `<span class="ref-chip-loc">${ref.file.split('/').pop()}${ref.lineno ? ':' + ref.lineno : ''}</span>`
+        : ''
+      const boundsAttr = ref?.canvasBounds
+        ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"`
+        : ''
+      const shapeAttr = ref?.shapeId ? ` data-shape-ref="${ref.shapeId}"` : ''
+      const highlightAttr = isAnnotation && ref?.highlightShapeId ? ` data-highlight-ref="${ref.highlightShapeId}"` : ''
+      const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
+      const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
+
+      return `<span class="${cls}"${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
+    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
+    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
+    if (doc && Object.keys(labelRegions).length > 0) {
+      html = linkifyArrowRefs(html, labelRegions)
+    }
+    if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions])
+  }, [renderedHtml, doc, labelRegions, refStoreReady])
+
+  // Handle clicks on ref-chip annotations → navigate to canvas bounds
+  const handleRefChipClick = useCallback((e: React.MouseEvent) => {
+    const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
+    if (!chip) return
+    const boundsStr = chip.dataset.bounds
+    if (boundsStr) {
+      const [x, y, w, h] = boundsStr.split(',').map(Number)
+      if ([x, y, w, h].every(n => isFinite(n))) {
+        e.stopPropagation()
+        editor.zoomToBounds({ x: x - 20, y: y - 20, w: w + 40, h: h + 40 }, { animation: { duration: 300 } })
+        const shapeRef = chip.dataset.shapeRef
+        if (shapeRef) {
+          try { editor.select(shapeRef as any) } catch {}
+        }
+      }
+    }
+  }, [editor])
 
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+    // Also check for annotation chip clicks
+    const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
+    if (chipTarget) { handleRefChipClick(e); return }
+
     const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
     if (!target || !doc) return
 
@@ -404,6 +529,55 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     }
   }, [doc, refResolver, w])
+
+  // Hover events on annotation ref-chips → dispatch to AnnotationViewer
+  const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function onAnnotationOver(e: MouseEvent) {
+      const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
+      if (!chip) return
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+      annotationHoverTimerRef.current = setTimeout(() => {
+        const boundsStr = chip.dataset.bounds
+        if (!boundsStr) return
+        const [x, y, w, h] = boundsStr.split(',').map(Number)
+        if (![x, y, w, h].every(n => isFinite(n))) return
+        // Extract label and color from the chip
+        const label = chip.textContent?.trim() || 'Annotation'
+        const dotEl = chip.querySelector('.ref-chip-dot') as HTMLElement | null
+        const color = dotEl?.style.background || undefined
+        const shapeIds: string[] = []
+        if (chip.dataset.shapeRef) shapeIds.push(chip.dataset.shapeRef)
+        if (chip.dataset.highlightRef) shapeIds.push(chip.dataset.highlightRef)
+        // Anchor viewer to the chip element, not the cursor
+        const chipRect = chip.getBoundingClientRect()
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: { bounds: { x, y, w, h }, shapeIds, label, color, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
+        }))
+      }, 100)
+    }
+
+    function onAnnotationOut(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      if (!target.closest('.ref-chip-annotation')) return
+      // Check if moving into the viewer itself
+      const related = e.relatedTarget as HTMLElement | null
+      if (related?.closest('.annotation-viewer')) return
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+    }
+
+    logEl.addEventListener('mouseover', onAnnotationOver)
+    logEl.addEventListener('mouseout', onAnnotationOut)
+    return () => {
+      logEl.removeEventListener('mouseover', onAnnotationOver)
+      logEl.removeEventListener('mouseout', onAnnotationOut)
+      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+    }
+  }, [])
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -535,7 +709,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -656,6 +830,29 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
+      // Annotation ref-chip → drag as note (creates collapsed math-note on canvas drop)
+      if (!drag) {
+        const refChip = target.closest('.ref-chip-annotation') as HTMLElement
+        if (refChip) {
+          // Get label text excluding location badge and dot elements
+          const clone = refChip.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('.ref-chip-loc, .ref-chip-dot, .ref-chip-preview').forEach(el => el.remove())
+          const label = clone.textContent?.trim() || 'note'
+          // Reconstruct the token to look up content from refStore
+          const token = `«annotation:${label}»`
+          const ref = refStore.get(token)
+          const dotEl = refChip.querySelector('.ref-chip-dot') as HTMLElement | null
+          const chipColor = dotEl?.style.background || ref?.color || '#3b82f6'
+          drag = {
+            pillId: null, pillType: 'annotation' as any, value: token,
+            displayName: label, color: chipColor,
+            content: ref?.content || label,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
       if (!drag) return
 
       e.stopImmediatePropagation()
@@ -699,17 +896,109 @@ function FleetChatComponent({ shape }: { shape: any }) {
           y: pagePos.y - 9,
         })
       }
+
+      // Membrane handoff: when pointer leaves the chat, move the pill
+      // from the panel editor to the main editor (and vice versa)
+      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation'
+      if (drag.started && isMembraneType && drag.pillId) {
+        const mainEditor = (window as any).__tldraw_editor__ as any
+        const chatEl = logEl!.closest('[data-shape-id]') as HTMLElement | null
+        const chatRect = chatEl?.getBoundingClientRect()
+        const outside = chatRect && (
+          e.clientX < chatRect.left || e.clientX > chatRect.right ||
+          e.clientY < chatRect.top || e.clientY > chatRect.bottom
+        )
+
+        if (mainEditor && mainEditor !== editor) {
+          const onMain = !!(drag as any)._onMain
+          if (outside && !onMain) {
+            // Handoff: panel → main
+            try { editor.deleteShapes([drag.pillId as any]) } catch {}
+            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            mainEditor.createShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: mainPos.x - 5,
+              y: mainPos.y - 5,
+              props: {
+                w: 10, h: 10,
+                pillType: drag.pillType,
+                value: drag.value,
+                displayName: drag.displayName,
+                color: drag.color,
+              },
+            })
+            ;(drag as any)._onMain = true
+          } else if (!outside && onMain) {
+            // Handoff back: main → panel
+            try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
+            const panelPos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+            editor.createShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: panelPos.x - 35,
+              y: panelPos.y - 9,
+              props: {
+                w: 70, h: 18,  // chip form inside panel
+                pillType: drag.pillType,
+                value: drag.value,
+                displayName: drag.displayName,
+                color: drag.color,
+              },
+            })
+            ;(drag as any)._onMain = false
+          } else if (onMain) {
+            // Move on main editor
+            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            mainEditor.updateShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: mainPos.x - 5,
+              y: mainPos.y - 5,
+            })
+            // Skip the panel updateShape below
+            return
+          }
+        }
+      }
+
+      // Membrane glow: when dragging an annotation/doc pill near the fleet-chat edge
+      if (drag.started && (drag.pillType === 'annotation' || drag.pillType === 'doc')) {
+        const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
+        if (shapeEl) {
+          const rect = shapeEl.getBoundingClientRect()
+          const edgeDist = Math.min(
+            e.clientX - rect.left, rect.right - e.clientX,
+            e.clientY - rect.top, rect.bottom - e.clientY,
+          )
+          const inside = e.clientX >= rect.left && e.clientX <= rect.right &&
+                         e.clientY >= rect.top && e.clientY <= rect.bottom
+          if (inside && edgeDist < 60) {
+            const intensity = Math.max(0, 1 - edgeDist / 60)
+            shapeEl.style.boxShadow = `0 0 ${12 + intensity * 12}px rgba(59, 130, 246, ${0.1 + intensity * 0.35})`
+          } else {
+            shapeEl.style.boxShadow = ''
+          }
+        }
+      }
     }
 
     function onPointerUp(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
       e.stopImmediatePropagation()
+      // Clear membrane glow
+      const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
+      if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
       if (!drag.started || !drag.pillId) return
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos, drag.content)
-      try { editor.deleteShapes([drag.pillId as any]) } catch {}
+
+      const onMain = !!(drag as any)._onMain
+      const mainEditor = (window as any).__tldraw_editor__ as any
+      const dropEditor = (onMain && mainEditor) ? mainEditor : editor
+      const pagePos = dropEditor.screenToPage({ x: e.clientX, y: e.clientY })
+      dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
+      try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
@@ -945,7 +1234,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text)
+                      const atts = extractRefAttachments(text)
+                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -960,7 +1250,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text)
+                      const atts = extractRefAttachments(text)
+                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''

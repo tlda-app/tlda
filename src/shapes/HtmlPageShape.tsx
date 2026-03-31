@@ -100,7 +100,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const isTextSelectTool = useValue('text-select-tool', () =>
     editor.getCurrentToolId() === 'text-select', [editor])
   const isBrowseTool = useValue('browse-tool', () =>
-    editor.getCurrentToolId() === 'browse', [editor])
+    editor.getCurrentToolId() === 'select', [editor])
   const [isInteracting, setIsInteracting] = useState(false)
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
 

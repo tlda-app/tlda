@@ -37,7 +37,7 @@ export function doubleTapTools(fmt: FormatConfig): string[] {
 }
 
 const SVG_TOOLS = [
-  'browse',       // 0: home (subclasses select + fleet/HTML routing)
+  'select',       // 0: home (BrowseTool overrides select + fleet/HTML routing)
   'draw',         // 1: double-tap zone
   'highlight',    // 2: double-tap zone
   'eraser',       // 3: double-tap zone
@@ -54,7 +54,7 @@ const SVG_TOOLS = [
 ]
 
 const HTML_TOOLS = [
-  'browse',       // 0: home
+  'select',       // 0: home
   'draw',         // 1: double-tap zone
   'highlight',    // 2: double-tap zone
   'eraser',       // 3: double-tap zone

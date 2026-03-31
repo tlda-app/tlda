@@ -152,8 +152,6 @@ export function NoteDropHandler() {
       let data: {
         text: string
         color: string
-        tabs?: string[]
-        activeTab?: number
         sourceDoc?: string
         sourceShapeId?: string
       }
@@ -166,7 +164,6 @@ export function NoteDropHandler() {
       const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
       const shapeId = createShapeId()
       const text = data.text || ''
-      const tabs = data.tabs && data.tabs.length > 0 ? data.tabs : [text]
 
       editor.createShape({
         id: shapeId,
@@ -174,12 +171,10 @@ export function NoteDropHandler() {
         x: point.x,
         y: point.y,
         props: {
-          text: tabs[data.activeTab ?? 0] || text,
+          text,
           color: data.color || 'orange',
           w: 200,
           h: 150,
-          tabs,
-          activeTab: data.activeTab ?? 0,
         },
         meta: {
           createdAt: Date.now(),

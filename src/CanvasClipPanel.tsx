@@ -38,6 +38,10 @@ interface CanvasClipPanelProps {
   lockCamera?: boolean
   initialTool?: string
   onEditorMount?: (editor: Editor | null) => void
+  /** When set, fade all highlight/annotation shapes except these to 0.15 opacity */
+  emphasizeShapeIds?: string[]
+  /** Make the editor read-only (no selection, no interaction with shapes) */
+  readOnly?: boolean
   children?: React.ReactNode
 }
 
@@ -53,9 +57,13 @@ export function CanvasClipPanel({
   lockCamera = false,
   initialTool = 'select',
   onEditorMount,
+  emphasizeShapeIds,
+  readOnly = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+  const emphasizedIdsRef = useRef<Set<string>>(new Set())
+  const lockedIdsRef = useRef<Set<string>>(new Set())
 
   // Expose editor to parent
   useEffect(() => {
@@ -81,16 +89,35 @@ export function CanvasClipPanel({
 
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
+    // fleet-pill shapes are ephemeral drag ghosts — never sync between editors
+    const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
+
     // main → copy (unlock fleet shapes in HUD so they're draggable)
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
-          if (isDocRecord(record)) store.put([lockCamera ? unlockFleetShape(record) : record])
+          if (isPill(record)) continue
+          if (isDocRecord(record)) {
+            if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
+              store.put([{ ...record, isLocked: true } as any])
+              lockedIdsRef.current.add(record.id)
+            } else {
+              store.put([lockCamera ? unlockFleetShape(record) : record])
+            }
+          }
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isDocRecord(to)) store.put([lockCamera ? unlockFleetShape(to) : to])
+          if (isPill(to)) continue
+          if (isDocRecord(to)) {
+            if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
+              store.put([{ ...to, isLocked: true } as any])
+            } else {
+              store.put([lockCamera ? unlockFleetShape(to) : to])
+            }
+          }
         }
         for (const record of Object.values(changes.removed)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) {
             try { store.remove([record.id]) } catch { /* might not exist */ }
           }
@@ -99,15 +126,20 @@ export function CanvasClipPanel({
     }, { source: 'all', scope: 'document' })
 
     // copy → main (re-lock fleet shapes so they stay locked on main canvas)
+    // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
     const unsubCopy = store.listen(({ changes }) => {
       mainEditor.store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isDocRecord(to)) mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
+          if (isPill(to)) continue
+          if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
+          mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
         }
         for (const record of Object.values(changes.removed)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) {
             try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
           }
@@ -116,7 +148,7 @@ export function CanvasClipPanel({
     }, { source: 'all', scope: 'document' })
 
     return () => { unsubMain(); unsubCopy() }
-  }, [mainEditor.store, store, lockCamera])
+  }, [mainEditor.store, store, lockCamera, readOnly])
 
   // Apply camera constraints when bounds change
   // Use clip bounds for initial position, full page extent for scroll range
@@ -124,6 +156,18 @@ export function CanvasClipPanel({
   const animFrameRef = useRef(0)
   useEffect(() => {
     if (!editor || !bounds) return
+
+    // readOnly mode: free infinite canvas, just set initial camera position
+    if (readOnly) {
+      const zoom = panelWidth / bounds.w
+      const contentScreenH = bounds.h * zoom
+      const viewportH = Math.min(contentScreenH, window.innerHeight * DEFAULT_MAX_HEIGHT_FRACTION)
+      const yOffset = (viewportH > contentScreenH)
+        ? (viewportH - contentScreenH) / (2 * zoom)
+        : 0
+      editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
+      return
+    }
 
     // Target camera for these bounds
     const zoom = panelWidth / bounds.w
@@ -214,7 +258,25 @@ export function CanvasClipPanel({
     initialBoundsRef.current = false
 
     return () => cancelAnimationFrame(animFrameRef.current)
-  }, [editor, bounds, panelWidth, lockCamera])
+  }, [editor, bounds, panelWidth, lockCamera, readOnly])
+
+  // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
+  useEffect(() => {
+    if (!editor || !emphasizeShapeIds || emphasizeShapeIds.length === 0) return
+    const keepSet = new Set(emphasizeShapeIds)
+    const FADE_TYPES = new Set(['highlight', 'math-note'])
+    const faded = new Set<string>()
+    store.mergeRemoteChanges(() => {
+      for (const shape of editor.getCurrentPageShapes()) {
+        if (FADE_TYPES.has(shape.type) && !keepSet.has(shape.id)) {
+          store.put([{ ...shape, opacity: 0.15 }])
+          faded.add(shape.id)
+        }
+      }
+    })
+    emphasizedIdsRef.current = faded
+    return () => { emphasizedIdsRef.current = new Set() }
+  }, [editor, emphasizeShapeIds, store])
 
   // Wheel handling — two modes:
   // Normal panels: wheel pans the camera vertically
@@ -355,7 +417,25 @@ export function CanvasClipPanel({
           hideUi
           autoFocus={false}
           forceMobile
-          onMount={setEditor}
+          onMount={(ed) => {
+            setEditor(ed)
+            if (readOnly) {
+              ed.updateInstanceState({ isReadonly: true })
+              // Lock all shapes so they can't be selected
+              const lockAll = () => {
+                for (const shape of ed.getCurrentPageShapes()) {
+                  if (!shape.isLocked) {
+                    ed.updateShape({ id: shape.id, type: shape.type, isLocked: true })
+                    lockedIdsRef.current.add(shape.id)
+                  }
+                }
+              }
+              lockAll()
+              // Re-lock after sync catches up (shapes arrive async from main store)
+              setTimeout(lockAll, 500)
+              setTimeout(lockAll, 2000)
+            }
+          }}
         />
       </div>
     </div>
@@ -384,4 +464,3 @@ function relockFleetShape(record: TLRecord): TLRecord {
   }
   return record
 }
-

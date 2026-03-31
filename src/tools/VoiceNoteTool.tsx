@@ -130,7 +130,7 @@ export class VoiceNoteTool extends StateNode {
     if (info.key === 'Escape') {
       if (_stopRecording) { _stopRecording(); _stopRecording = null }
       _pendingTranscript = ''
-      this.editor.setCurrentTool('browse')
+      this.editor.setCurrentTool('select')
     }
   }
 

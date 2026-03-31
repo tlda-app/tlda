@@ -19,7 +19,22 @@ const PILL_H = 18
 export const chatInsertBus = new EventTarget()
 
 /** Stash for reference chip content — keyed by token string, value is hover content */
-export const refStore = new Map<string, { type: string; label: string; content: string }>()
+export interface RefStoreEntry {
+  type: string
+  label: string
+  content: string
+  // Annotation-specific fields
+  color?: string
+  canvasBounds?: { x: number; y: number; w: number; h: number }
+  shapeId?: string
+  highlightShapeId?: string
+  file?: string
+  lineno?: number
+  screenshotRef?: string
+}
+export const refStore = new Map<string, RefStoreEntry>()
+// Expose for dev/testing — agents populate via browser console
+;(window as any).__refStore = refStore
 
 /**
  * Module-level state for filter overlay drop preview.
@@ -46,6 +61,10 @@ export function dropPillOnTarget(
   pagePoint: { x: number; y: number },
   content?: string,
 ) {
+  // Prefer the main editor for shape creation — the calling editor may be a
+  // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
+  const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+  const createEditor = mainEditor || editor
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
   const allChats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
@@ -70,7 +89,32 @@ export function dropPillOnTarget(
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
       const token = `«${pillType}:${displayName}»`
-      refStore.set(token, { type: pillType, label: displayName, content })
+      const entry: RefStoreEntry = { type: pillType, label: displayName, content }
+      // Capture annotation metadata from pill shape props
+      if (pill?.props?.color) entry.color = pill.props.color
+      if (pill?.props?.value) {
+        entry.shapeId = pill.props.value
+        const srcShape = editor.getShape(pill.props.value as any) as any
+        if (srcShape) {
+          // Resolve source provenance: shape → highlightId → highlight.meta.sourceAnchor
+          const highlightId = srcShape.props?.highlightId
+          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
+          // Use highlight bounds for canvasBounds/screenshotRef (wider region than dot)
+          const refShape = highlight || srcShape
+          if (highlight) entry.highlightShapeId = highlight.id
+          const refBounds = editor.getShapePageBounds(refShape.id)
+          if (refBounds) {
+            entry.canvasBounds = { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h }
+            entry.screenshotRef = `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}`
+          }
+          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
+          if (anchor) {
+            if (anchor.file) entry.file = anchor.file
+            if (anchor.line != null) entry.lineno = anchor.line
+          }
+        }
+      }
+      refStore.set(token, entry)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
@@ -127,50 +171,100 @@ export function dropPillOnTarget(
     }))
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
-    // Doc pill dropped on canvas → share if needed, then navigate
+    // Doc/file pill dropped on canvas → create collapsed math-note with file content
     const pill = editor.getShape(pillId) as any
     const docValue = pill.props.value as string // "file:/path" or "doc:name"
-    // Navigate to doc: dispatch event for BookViewer to handle in-place,
-    // or open in new tab if we're not in the right book
-    const openDoc = async (docName: string) => {
-      // Ensure content is current
-      await fetch(`/api/projects/${encodeURIComponent(docName)}/build`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-      }).catch(() => {})
-      // Try in-place navigation via BookViewer event
-      const notHandled = window.dispatchEvent(new CustomEvent('fleet-open-doc', {
-        detail: { docName, book: 'fleet-workspace' },
-        cancelable: true,
-      }))
-      // dispatchEvent returns false if preventDefault was called (= handled)
-      if (notHandled) {
-        const url = new URL(window.location.href)
-        url.searchParams.set('doc', 'fleet-workspace')
-        url.hash = docName
-        window.open(url.toString(), '_blank')
-      }
-    }
-    if (docValue.startsWith('doc:')) {
-      openDoc(docValue.slice(4))
-    } else if (docValue.startsWith('file:')) {
+    const displayName = pill?.props?.displayName || 'file'
+
+    if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
         try {
-          const res = await fetch('/api/share-file', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: filePath, book: 'fleet-workspace' }),
+          const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`)
+          const text = res.ok ? await res.text() : `# ${displayName}\n\n(Could not read file)`
+          createEditor.createShape({
+            id: createShapeId(),
+            type: 'math-note' as any,
+            x: pagePoint.x - 5,
+            y: pagePoint.y - 5,
+            isLocked: false,
+            props: {
+              w: 300,
+              h: 50,
+              text,
+              color: 'light-violet',
+              autoSize: true,
+              collapsed: true,
+            },
           })
-          const data = await res.json()
-          openDoc(data?.doc || 'fleet-workspace')
         } catch (e) {
-          console.error('[fleet] Failed to share file:', e)
+          console.error('[fleet] Failed to read file for membrane drop:', e)
+          createEditor.createShape({
+            id: createShapeId(),
+            type: 'math-note' as any,
+            x: pagePoint.x - 5,
+            y: pagePoint.y - 5,
+            isLocked: false,
+            props: {
+              w: 300,
+              h: 50,
+              text: `# ${displayName}\n\n(Could not read file)`,
+              color: 'light-violet',
+              autoSize: true,
+              collapsed: true,
+            },
+          })
         }
       })()
+    } else {
+      // doc: prefix — create note with just the name
+      const docName = docValue.startsWith('doc:') ? docValue.slice(4) : docValue
+      createEditor.createShape({
+        id: createShapeId(),
+        type: 'math-note' as any,
+        x: pagePoint.x - 5,
+        y: pagePoint.y - 5,
+        isLocked: false,
+        props: {
+          w: 300,
+          h: 50,
+          text: `# ${docName}`,
+          color: 'light-violet',
+          autoSize: true,
+          collapsed: true,
+        },
+      })
     }
+  } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
+             (editor.getShape(pillId) as any)?.props?.pillType === 'annotation') {
+    // Annotation pill dropped on canvas → create collapsed math-note
+    const pill = editor.getShape(pillId) as any
+    const noteContent = content || pill?.props?.displayName || ''
+    // Map pill color hex to a math-note color name
+    const colorHex = (pill?.props?.color || '').toLowerCase()
+    const hexToName: Record<string, string> = {
+      '#ef4444': 'red', '#f97316': 'orange', '#eab308': 'yellow',
+      '#22c55e': 'green', '#3b82f6': 'blue', '#8b5cf6': 'violet',
+    }
+    const noteColor = hexToName[colorHex] || 'light-blue'
+    createEditor.createShape({
+      id: createShapeId(),
+      type: 'math-note' as any,
+      x: pagePoint.x - 5,
+      y: pagePoint.y - 5,
+      isLocked: false,
+      props: {
+        w: 200,
+        h: 50,
+        text: noteContent,
+        color: noteColor,
+        autoSize: true,
+        collapsed: true,
+      },
+    })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat, always unlocked
-    editor.createShape({
+    createEditor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
       x: pagePoint.x,
@@ -219,11 +313,23 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const editor = this.editor
     const pill = current as any
 
+    // Convert pill's page position to screen, then to main editor's page space.
+    // This handles the case where the pill is dragged in a CanvasClipPanel (HUD)
+    // which has a different camera than the main editor.
     const bounds = editor.getShapePageBounds(pill.id)
-    const centerX = bounds ? bounds.x + bounds.w / 2 : pill.x + pill.props.w / 2
-    const centerY = bounds ? bounds.y + bounds.h / 2 : pill.y + pill.props.h / 2
+    const pageCenterX = bounds ? bounds.x + bounds.w / 2 : pill.x + pill.props.w / 2
+    const pageCenterY = bounds ? bounds.y + bounds.h / 2 : pill.y + pill.props.h / 2
 
-    dropPillOnTarget(editor, pill.id, pill.props.value, { x: centerX, y: centerY })
+    const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+    let dropPoint = { x: pageCenterX, y: pageCenterY }
+
+    if (mainEditor && mainEditor !== editor) {
+      // Panel editor → screen → main editor page space
+      const screenPoint = editor.pageToScreen({ x: pageCenterX, y: pageCenterY })
+      dropPoint = mainEditor.screenToPage(screenPoint)
+    }
+
+    dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
 
     // Ephemeral: delete after drop
     editor.deleteShapes([pill.id])
@@ -232,6 +338,31 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   component(shape: any) {
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
+    const isDotForm = pillType === 'doc' || pillType === 'annotation'
+
+    // Dot form: small colored circle (like collapsed math-note)
+    if (isDotForm) {
+      return (
+        <HTMLContainer
+          style={{
+            pointerEvents: 'none',
+            overflow: 'visible',
+            width: 0,
+            height: 0,
+          }}
+        >
+          <div style={{
+            width: 10,
+            height: 10,
+            borderRadius: '50%',
+            backgroundColor: color,
+            boxShadow: `0 0 0 2px ${color}33, 0 0 8px ${color}40`,
+            cursor: 'grab',
+          }} />
+        </HTMLContainer>
+      )
+    }
+
     return (
       <HTMLContainer
         style={{
