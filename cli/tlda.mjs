@@ -69,7 +69,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -1781,6 +1781,132 @@ async function cmdFleetDev() {
   }
 }
 
+// --- Dev worktree setup ---
+
+async function findFreePort(startPort) {
+  const net = await import('net')
+  return new Promise((resolve) => {
+    const server = net.default.createServer()
+    server.listen(startPort, () => {
+      const { port } = server.address()
+      server.close(() => resolve(port))
+    })
+    server.on('error', () => resolve(findFreePort(startPort + 1)))
+  })
+}
+
+async function cmdDev() {
+  const { execSync, spawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+
+  const worktreeName = getFlag('worktree')
+  const portArg = getFlag('port')
+
+  // Find main repo root (works whether we're in a worktree or the main repo).
+  // git rev-parse --git-common-dir returns the shared .git dir — parent is the main repo.
+  const scriptDir = dirname(fileURLToPath(import.meta.url))
+  let repoRoot
+  try {
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: scriptDir, stdio: 'pipe' }).toString().trim()
+    // In main repo: '.git' (relative). In worktree: absolute path like /path/to/repo/.git
+    repoRoot = gitCommonDir === '.git'
+      ? join(scriptDir, '..')
+      : dirname(gitCommonDir)
+  } catch {
+    repoRoot = join(scriptDir, '..')
+  }
+
+  let worktreeDir = repoRoot  // default: current repo if no --worktree
+  if (worktreeName) {
+    worktreeDir = join(repoRoot, '.worktrees', worktreeName)
+
+    if (!existsSync(worktreeDir)) {
+      console.log(dim(`Creating worktree .worktrees/${worktreeName}...`))
+      try {
+        execSync(`git worktree add -b "${worktreeName}" ".worktrees/${worktreeName}"`, {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        })
+      } catch (e1) {
+        // Branch already exists — check it out without -b
+        try {
+          execSync(`git worktree add ".worktrees/${worktreeName}" "${worktreeName}"`, {
+            cwd: repoRoot,
+            stdio: 'pipe',
+          })
+        } catch (e2) {
+          throw new Error(`Failed to create worktree: ${e2.message}`)
+        }
+      }
+      console.log(green(`Worktree created: ${worktreeDir}`))
+    } else {
+      console.log(dim(`Using existing worktree: ${worktreeDir}`))
+    }
+  }
+
+  // npm install if needed (--ignore-scripts skips `prepare` vite build)
+  if (!existsSync(join(worktreeDir, 'node_modules'))) {
+    console.log(dim('Running npm install...'))
+    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
+  }
+
+  // Pick port
+  const port = portArg ? parseInt(portArg) : await findFreePort(5180)
+
+  // Start Vite in background
+  const viteLogFile = join(worktreeDir, '.dev-vite.log')
+  const logFd = fsOpenSync(viteLogFile, 'a')
+
+  const viteChild = spawn('npx', ['vite', '--port', String(port)], {
+    cwd: worktreeDir,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  })
+  viteChild.unref()
+
+  console.log(dim(`Vite starting on port ${port} (pid ${viteChild.pid})...`))
+
+  // Wait for Vite to be ready (poll up to 30s)
+  let ready = false
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      const res = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
+      if (res.ok || res.status === 404) { ready = true; break }
+    } catch {}
+  }
+
+  if (!ready) {
+    throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${viteLogFile}`)
+  }
+
+  // Write .dev-url
+  const token = getToken()
+  const url = token
+    ? `http://localhost:${port}/?token=${token}`
+    : `http://localhost:${port}/`
+  const devUrlPath = join(worktreeDir, '.dev-url')
+  writeFileSync(devUrlPath, url)
+
+  // Print summary
+  console.log(green(`\nVite dev server ready`))
+  if (worktreeName) console.log(`  Worktree: ${worktreeDir}`)
+  console.log(`  Port:     ${port}`)
+  console.log(`  PID:      ${viteChild.pid}`)
+  console.log(`  Log:      ${viteLogFile}`)
+  console.log(bold(`\n  ${url}\n`))
+}
+
+async function cmdDevUrl() {
+  const portArg = getFlag('port')
+  const port = portArg ? parseInt(portArg) : 5180
+  const token = getToken()
+  const url = token
+    ? `http://localhost:${port}/?token=${token}`
+    : `http://localhost:${port}/`
+  console.log(url)
+}
+
 // --- Main ---
 
 async function main() {
@@ -1815,6 +1941,8 @@ async function main() {
       case 'remotes': await cmdRemotes(); break
       case 'config': await cmdConfig(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
+      case 'dev': await cmdDev(); break
+      case 'dev-url': await cmdDevUrl(); break
       default:
         console.log(`tlda — tlda CLI
 
