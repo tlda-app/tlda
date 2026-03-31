@@ -68,7 +68,7 @@ export function commitVoiceNote() {
             editor.updateShape({
               id,
               type: 'math-note' as any,
-              meta: { voiceNote: true, rawTranscript: transcript, sourceAnchor } as Partial<JsonObject>,
+              meta: { voiceNote: true, rawTranscript: transcript, sourceAnchor } as any,
             })
           }
         })

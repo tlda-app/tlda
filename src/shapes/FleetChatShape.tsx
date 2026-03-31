@@ -780,35 +780,36 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }}
       >
         {/* Close, filter edit, and layout buttons */}
-        <button
-          className="fleet-close-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            editor.deleteShapes([shape.id])
-          }}
-        >
-          ×
-        </button>
-        <button
-          className="fleet-layout-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            // Select this shape so tldraw shows resize handles
-            editor.select(shape.id)
-          }}
-          title="Resize / move"
-        >
-          ⋮⋮
-        </button>
-        <button
-          className="fleet-filter-btn"
-          onPointerDown={stopEventPropagation}
-          onClick={() => setFilterOpen(prev => !prev)}
-        >
-          ⊞
-        </button>
+        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            className="fleet-close-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.deleteShapes([shape.id])
+            }}
+          >
+            ×
+          </button>
+          <button
+            className="fleet-layout-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.select(shape.id)
+            }}
+            title="Resize / move"
+          >
+            ⊞
+          </button>
+          <button
+            className="fleet-filter-btn"
+            onClick={() => setFilterOpen(prev => !prev)}
+          >
+            {filterOpen
+              ? <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2h12v9H6l-4 3v-3z"/></svg>
+              : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
+            }
+          </button>
+        </div>
 
         {/* Filter editor — full overlay showing DNF expression */}
         {filterOpen && (
@@ -830,7 +831,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
             overflowY: 'auto',
             padding: '4px 0',
           }}
-          onPointerDown={stopEventPropagation}
           onScroll={handleScroll}
           onClick={handleDocLinkClick}
         >
@@ -870,7 +870,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
         {/* Input */}
         <div
           className="fleet-chat-input-area"
-          onPointerDown={stopEventPropagation}
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
@@ -1282,12 +1281,6 @@ function FilterOverlay({
       const overlay = overlayRef.current
       if (!overlay || !overlay.contains(target)) return
 
-      // Close button
-      if (target.closest('.fleet-filter-overlay-close')) {
-        onClose()
-        return
-      }
-
       // Remove term ×
       const termX = target.closest('.fleet-filter-term-x') as HTMLElement
       if (termX) {
@@ -1556,7 +1549,6 @@ function FilterOverlay({
         <>
           <div className="fleet-filter-overlay-header">
             <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
-            <span className="fleet-filter-overlay-close">×</span>
           </div>
           {filter.length === 0 ? (
             <div className="fleet-filter-empty">

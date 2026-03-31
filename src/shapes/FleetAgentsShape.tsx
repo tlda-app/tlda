@@ -12,7 +12,6 @@ import {
   T,
   stopEventPropagation,
   useEditor,
-  useValue,
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef } from 'react'
@@ -302,27 +301,27 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         onPointerUp={endDrag}
       >
         {/* Close + layout buttons */}
-        <button
-          className="fleet-close-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            editor.deleteShapes([shape.id])
-          }}
-        >
-          ×
-        </button>
-        <button
-          className="fleet-layout-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            editor.select(shape.id)
-          }}
-          title="Resize / move"
-        >
-          ⋮⋮
-        </button>
+        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            className="fleet-close-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.deleteShapes([shape.id])
+            }}
+          >
+            ×
+          </button>
+          <button
+            className="fleet-layout-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.select(shape.id)
+            }}
+            title="Resize / move"
+          >
+            ⊞
+          </button>
+        </div>
 
         {/* Header */}
         <div
@@ -335,7 +334,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         </div>
 
         {/* Agent rows — scrollable */}
-        <div className="fleet-agents-body" onPointerDown={stopEventPropagation}>
+        <div className="fleet-agents-body">
           {aliveAgents.length === 0 && staleAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : (
@@ -353,9 +352,9 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                 <>
                   <div
                     className="fleet-agents-section-header"
-                    onPointerDown={(e) => { if (isShapeLocked) stopEventPropagation(e) }}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onPointerUp={(e) => {
-                      if (isShapeLocked) stopEventPropagation(e)
+                      e.stopPropagation()
                       setShowStale(!showStale)
                     }}
                   >

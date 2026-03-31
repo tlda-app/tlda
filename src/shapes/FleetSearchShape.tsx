@@ -145,32 +145,31 @@ function FleetSearchComponent({ shape }: { shape: any }) {
         }}
       >
         {/* Close + layout buttons */}
-        <button
-          className="fleet-close-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            editor.deleteShapes([shape.id])
-          }}
-        >
-          ×
-        </button>
-        <button
-          className="fleet-layout-btn"
-          onPointerDown={stopEventPropagation}
-          onPointerUp={(e) => {
-            stopEventPropagation(e)
-            editor.select(shape.id)
-          }}
-          title="Resize / move"
-        >
-          ⋮⋮
-        </button>
+        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            className="fleet-close-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.deleteShapes([shape.id])
+            }}
+          >
+            ×
+          </button>
+          <button
+            className="fleet-layout-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.select(shape.id)
+            }}
+            title="Resize / move"
+          >
+            ⊞
+          </button>
+        </div>
 
         {/* Search input */}
         <div
           className="fleet-search-input-area"
-          onPointerDown={stopEventPropagation}
           style={{
             padding: 6,
             borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
@@ -203,7 +202,6 @@ function FleetSearchComponent({ shape }: { shape: any }) {
         {/* Results — pointer-events: auto (CSS) */}
         <div
           className="fleet-search-results"
-          onPointerDown={(e) => { stopEventPropagation(e) }}
           style={{
             flex: 1,
             overflowY: 'auto',
@@ -235,8 +233,6 @@ function FleetSearchComponent({ shape }: { shape: any }) {
                 cursor: 'pointer',
                 transition: 'background 0.1s',
               }}
-              onPointerDown={(e) => { stopEventPropagation(e) }}
-              onPointerUp={(e) => { stopEventPropagation(e) }}
               onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(128, 128, 128, 0.06)' }}
               onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
             >

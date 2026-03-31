@@ -122,7 +122,6 @@ export function dropPillOnTarget(
       type: 'fleet-chat' as any,
       props: { ...hitShape.props, filter: newFilter },
     })
-    relockChat()
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))

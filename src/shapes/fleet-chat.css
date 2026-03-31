@@ -55,98 +55,51 @@
   font-family: inherit;
 }
 
-/* --- Close button --- */
-.fleet-shape .fleet-close-btn {
+/* --- Button group (close, layout, filter) --- */
+.fleet-shape .fleet-btn-group {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 16px;
-  height: 16px;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 10px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.15;
-  transition: opacity 0.2s, background 0.2s;
-  z-index: 10;
-  padding: 0;
-  font-family: inherit;
+  gap: 0;
+  border-radius: 4px;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.2s;
 }
-.fleet-shape .fleet-close-btn:hover {
-  opacity: 0.6;
-  background: rgba(128, 128, 128, 0.15);
+.fleet-shape:hover .fleet-btn-group {
+  opacity: 1;
 }
-.fleet-shape:hover .fleet-close-btn {
-  opacity: 0.35;
+.fleet-btn-group:hover {
+  background: rgba(128, 128, 128, 0.12);
 }
 
-/* --- Layout (resize/move) button --- */
-.fleet-shape .fleet-layout-btn {
-  position: absolute;
-  top: 4px;
-  right: 22px;
-  width: 16px;
-  height: 16px;
+.fleet-btn-group button {
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
   border: none;
   background: none;
   color: var(--text-dim);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.15;
-  transition: opacity 0.2s, background 0.2s;
-  z-index: 10;
-  padding: 0;
-  font-family: inherit;
-  letter-spacing: -2px;
-}
-.fleet-shape .fleet-layout-btn:hover {
-  opacity: 0.6;
-  background: rgba(128, 128, 128, 0.15);
-}
-.fleet-shape:hover .fleet-layout-btn {
-  opacity: 0.35;
-}
-
-/* --- Filter edit button --- */
-.fleet-shape .fleet-filter-btn {
-  position: absolute;
-  top: 4px;
-  right: 40px;
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  border: none;
-  background: none;
-  color: var(--text-dim);
-  font-size: 10px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.15;
-  transition: opacity 0.2s, background 0.2s;
-  z-index: 10;
+  opacity: 0.5;
+  transition: opacity 0.15s, font-weight 0.1s;
   padding: 0;
   font-family: inherit;
 }
-.fleet-shape .fleet-filter-btn:hover {
-  opacity: 0.6;
-  background: rgba(128, 128, 128, 0.15);
+.fleet-btn-group button:hover {
+  opacity: 1;
+  font-weight: bold;
 }
-.fleet-shape:hover .fleet-filter-btn {
-  opacity: 0.35;
+.fleet-btn-group .fleet-filter-btn svg {
+  display: block;
 }
 
 /* --- Filter editor overlay --- */
@@ -165,21 +118,6 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
-}
-.fleet-chat-shape .fleet-filter-overlay-close {
-  cursor: pointer;
-  opacity: 0.3;
-  font-size: 12px;
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-}
-.fleet-chat-shape .fleet-filter-overlay-close:hover {
-  opacity: 0.7;
-  background: rgba(128, 128, 128, 0.15);
 }
 /* --- Filter AND group boxes (ported from dashboard .filter-and-group) --- */
 .fleet-chat-shape .fleet-filter-group-container {
@@ -1222,11 +1160,16 @@
    HTMLContainer: always pointer-events: all (content always interactive).
    BrowseTool handles fleet shapes by passing events to DOM.
    Layout button selects the shape for resize/move via tldraw.
+   When selected for drag (fleet-drag-mode), pointer-events on HTMLContainer
+   are disabled so clicks fall through to tldraw's canvas for drag/resize.
    ============================================================================= */
 
-/* Buttons — always interactive */
-.fleet-shape .fleet-close-btn,
-.fleet-shape .fleet-filter-btn,
-.fleet-shape .fleet-layout-btn {
+/* Drag mode — BrowseIdle adds this class to the shape wrapper when selected */
+.fleet-drag-mode .tl-html-container {
+  pointer-events: none !important;
+}
+
+/* Button group — always interactive even in drag mode */
+.fleet-shape .fleet-btn-group {
   pointer-events: auto;
 }

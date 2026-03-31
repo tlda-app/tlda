@@ -12,6 +12,7 @@ import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../c
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
+import { forceDeleteShapes } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -660,7 +661,7 @@ export function FleetToggle() {
     // Always delete existing fleet shapes and recreate fresh
     const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type))
     if (existing.length > 0) {
-      editor.deleteShapes(existing.map(s => s.id))
+      forceDeleteShapes(editor, existing.map(s => s.id))
     }
 
     // Pick 2 most recently active non-human agents for 1-on-1 chat filters
