@@ -49,8 +49,8 @@ export class ZoomableImageShapeUtil extends BaseBoxShapeUtil<any> {
     return <ZoomableImageComponent shape={shape} />
   }
 
-  backgroundComponent(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} fill="white" />
+  backgroundComponent(_shape: any) {
+    return <div style={{ width: '100%', height: '100%', backgroundColor: 'white' }} />
   }
 
   indicator(shape: any) {

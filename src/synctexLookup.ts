@@ -89,7 +89,7 @@ export async function getSourceAnchorStatic(
     const pageOffset = entry.page - page
     if (pageOffset < -1 || pageOffset > 1) continue // only this page ± 1
     const colonIdx = key.indexOf(':')
-    const file = colonIdx >= 0 ? `./${key.slice(0, colonIdx)}` : `./${lookup.meta.texFile}`
+    const file = colonIdx >= 0 ? `./${key.slice(0, colonIdx)}` : `./${lookup.meta?.texFile ?? ''}`
     const line = colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key)
     candidates.push({ line, file, entry, pageOffset })
   }
@@ -221,7 +221,7 @@ export async function buildReverseIndex(docName: string): Promise<((page: number
   const lookup = await loadLookup(docName)
   if (!lookup) return null
 
-  const mainFile = lookup.meta.texFile
+  const mainFile = lookup.meta?.texFile ?? ''
 
   // Group entries by page, sorted by y
   // For keys like "file.tex:42", extract the file and line portions
