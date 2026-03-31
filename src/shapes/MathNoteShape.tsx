@@ -17,7 +17,10 @@ import {
 } from '../noteThreading'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
+
+const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 import { chatInsertBus, refStore } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
@@ -92,94 +95,8 @@ function renderMarkdownMath(text: string, showErrors = false): string {
       }
     }
     // Markdown rendering for text segments
-    return renderMarkdownText(seg.content)
+    return md.render(seg.content)
   }).join('')
-}
-
-// Simple markdown rendering — no external deps
-function renderMarkdownText(text: string): string {
-  // Process line-by-line for block elements
-  const lines = text.split('\n')
-  const result: string[] = []
-  let inCodeBlock = false
-  let codeLines: string[] = []
-  let inList = false
-
-  for (const line of lines) {
-    // Code blocks
-    if (line.trimStart().startsWith('```')) {
-      if (inCodeBlock) {
-        result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
-        codeLines = []
-        inCodeBlock = false
-      } else {
-        if (inList) { result.push('</ul>'); inList = false }
-        inCodeBlock = true
-      }
-      continue
-    }
-    if (inCodeBlock) {
-      codeLines.push(escapeHtml(line))
-      continue
-    }
-
-    // Headings
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/)
-    if (headingMatch) {
-      if (inList) { result.push('</ul>'); inList = false }
-      const level = headingMatch[1].length
-      const sizes = ['1.3em', '1.1em', '1em']
-      const weights = ['700', '600', '600']
-      result.push(`<div style="font-size:${sizes[level - 1]};font-weight:${weights[level - 1]};margin:${level === 1 ? '0 0 4px' : '6px 0 2px'}">${renderInline(headingMatch[2])}</div>`)
-      continue
-    }
-
-    // Bullet lists
-    if (line.match(/^\s*[-*]\s+/)) {
-      if (!inList) { result.push('<ul style="margin:2px 0;padding-left:20px">'); inList = true }
-      const content = line.replace(/^\s*[-*]\s+/, '')
-      result.push(`<li style="margin:1px 0">${renderInline(content)}</li>`)
-      continue
-    }
-
-    // End list if we're in one and this isn't a list item
-    if (inList && line.trim() !== '') {
-      result.push('</ul>')
-      inList = false
-    }
-
-    // Empty lines
-    if (line.trim() === '') {
-      result.push('<br>')
-      continue
-    }
-
-    // Regular text
-    result.push(renderInline(line) + '<br>')
-  }
-
-  if (inCodeBlock) {
-    result.push(`<pre style="background:rgba(0,0,0,0.05);padding:6px 8px;border-radius:3px;font-size:12px;overflow-x:auto;margin:4px 0"><code>${codeLines.join('\n')}</code></pre>`)
-  }
-  if (inList) result.push('</ul>')
-
-  return result.join('')
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-// Inline markdown: bold, italic, code
-function renderInline(text: string): string {
-  let result = escapeHtml(text)
-  // Inline code (before bold/italic to avoid conflicts)
-  result = result.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.06);padding:1px 4px;border-radius:2px;font-size:0.9em">$1</code>')
-  // Bold
-  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // Italic
-  result = result.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  return result
 }
 
 // Legacy alias for KaTeX-only rendering (used in edit preview)

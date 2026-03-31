@@ -72,22 +72,6 @@ export function CanvasClipPanel({
   }, [])
 
   // Mirror main editor's current tool into the panel editor (skip in readOnly mode)
-  useEffect(() => {
-    if (!editor || readOnly) return
-    let lastTool = ''
-    let rafId: number
-    const sync = () => {
-      const mainTool = mainEditor.getCurrentToolId()
-      if (mainTool !== lastTool) {
-        lastTool = mainTool
-        try { editor.setCurrentTool(mainTool) } catch { /* tool not registered in panel */ }
-      }
-      rafId = requestAnimationFrame(sync)
-    }
-    rafId = requestAnimationFrame(sync)
-    return () => cancelAnimationFrame(rafId)
-  }, [editor, mainEditor, readOnly])
-
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
     // main → copy

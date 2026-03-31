@@ -158,6 +158,17 @@ function FleetSearchComponent({ shape }: { shape: any }) {
         >
           ×
         </button>
+        <button
+          className="fleet-layout-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.select(shape.id)
+          }}
+          title="Select for resize"
+        >
+          ⋮⋮
+        </button>
 
         {/* Search input — pointer-events: auto (CSS) */}
         <div

@@ -721,7 +721,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -836,6 +836,29 @@ function FleetChatComponent({ shape }: { shape: any }) {
           drag = {
             pillId: null, pillType: 'doc' as any, value: `doc:${docName}`,
             displayName: docName, color: '#9370db', content: docName,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // Annotation ref-chip → drag as note (creates collapsed math-note on canvas drop)
+      if (!drag) {
+        const refChip = target.closest('.ref-chip-annotation') as HTMLElement
+        if (refChip) {
+          // Get label text excluding location badge and dot elements
+          const clone = refChip.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('.ref-chip-loc, .ref-chip-dot, .ref-chip-preview').forEach(el => el.remove())
+          const label = clone.textContent?.trim() || 'note'
+          // Reconstruct the token to look up content from refStore
+          const token = `«annotation:${label}»`
+          const ref = refStore.get(token)
+          const dotEl = refChip.querySelector('.ref-chip-dot') as HTMLElement | null
+          const chipColor = dotEl?.style.background || ref?.color || '#3b82f6'
+          drag = {
+            pillId: null, pillType: 'annotation' as any, value: token,
+            displayName: label, color: chipColor,
+            content: ref?.content || label,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -982,6 +1005,17 @@ function FleetChatComponent({ shape }: { shape: any }) {
           onClick={() => setFilterOpen(prev => !prev)}
         >
           ⊞
+        </button>
+        <button
+          className="fleet-layout-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.select(shape.id)
+          }}
+          title="Select for resize"
+        >
+          ⋮⋮
         </button>
 
         {/* Filter editor — full overlay showing DNF expression */}

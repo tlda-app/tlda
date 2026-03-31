@@ -214,6 +214,32 @@ export function dropPillOnTarget(
         }
       })()
     }
+  } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
+             (editor.getShape(pillId) as any)?.props?.pillType === 'annotation') {
+    // Annotation pill dropped on canvas → create collapsed math-note
+    const pill = editor.getShape(pillId) as any
+    const noteContent = content || pill?.props?.displayName || ''
+    // Map pill color hex to a math-note color name
+    const colorHex = (pill?.props?.color || '').toLowerCase()
+    const hexToName: Record<string, string> = {
+      '#ef4444': 'red', '#f97316': 'orange', '#eab308': 'yellow',
+      '#22c55e': 'green', '#3b82f6': 'blue', '#8b5cf6': 'violet',
+    }
+    const noteColor = hexToName[colorHex] || 'light-blue'
+    editor.createShape({
+      id: createShapeId(),
+      type: 'math-note' as any,
+      x: pagePoint.x - 5,
+      y: pagePoint.y - 5,
+      props: {
+        w: 200,
+        h: 50,
+        text: noteContent,
+        color: noteColor,
+        autoSize: true,
+        collapsed: true,
+      },
+    })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat, always unlocked
     editor.createShape({

@@ -316,6 +316,17 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         >
           ×
         </button>
+        <button
+          className="fleet-layout-btn"
+          onPointerDown={stopEventPropagation}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            editor.select(shape.id)
+          }}
+          title="Select for resize"
+        >
+          ⋮⋮
+        </button>
 
         {/* Header */}
         <div
