@@ -56,8 +56,12 @@ export function FleetHUD({
     return saved ? parseFloat(saved) || 1 : 1
   })
   const hudRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const draggingRef = useRef(false)
 
-  // Reactively update fleet bounds when shapes change
+  // Reactively update fleet bounds when shapes change.
+  // Position updates are debounced — during drag (rapid updates), bounds are
+  // suppressed. On drop (updates stop), bounds recalculate after a short delay.
   useEffect(() => {
     setFleetBounds(getFleetBounds(mainEditor))
 
@@ -65,17 +69,36 @@ export function FleetHUD({
       const isFleetChange = (record: any) =>
         record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
 
-      const hasFleetChange =
+      // Immediate: add/remove always recalculates
+      const hasAddOrRemove =
         Object.values(changes.added).some(isFleetChange) ||
-        Object.values(changes.removed).some(isFleetChange) ||
-        Object.values(changes.updated).some(([from, to]) => isFleetChange(from) || isFleetChange(to))
+        Object.values(changes.removed).some(isFleetChange)
 
-      if (hasFleetChange) {
+      if (hasAddOrRemove) {
+        if (debounceRef.current) clearTimeout(debounceRef.current)
+        draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
+        return
+      }
+
+      // Position/size updates: debounce (drag detection)
+      const hasUpdate = Object.values(changes.updated)
+        .some(([from, to]) => isFleetChange(from) || isFleetChange(to))
+
+      if (hasUpdate) {
+        draggingRef.current = true
+        if (debounceRef.current) clearTimeout(debounceRef.current)
+        debounceRef.current = setTimeout(() => {
+          draggingRef.current = false
+          setFleetBounds(getFleetBounds(mainEditor))
+        }, 150)
       }
     }, { source: 'all', scope: 'document' })
 
-    return unsub
+    return () => {
+      unsub()
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
   }, [mainEditor])
 
   const aliveCount = useMemo(() => {

@@ -37,6 +37,7 @@ interface CanvasClipPanelProps {
   className?: string
   lockCamera?: boolean
   initialTool?: string
+  onEditorMount?: (editor: Editor | null) => void
   children?: React.ReactNode
 }
 
@@ -51,9 +52,21 @@ export function CanvasClipPanel({
   className,
   lockCamera = false,
   initialTool = 'select',
+  onEditorMount,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+
+  // Expose editor to parent
+  useEffect(() => {
+    onEditorMount?.(editor)
+  }, [editor, onEditorMount])
+
+  // Enable snapping in locked-camera mode (HUD fleet shape arrangement)
+  useEffect(() => {
+    if (!editor || !lockCamera) return
+    editor.user.updateUserPreferences({ isSnapMode: true })
+  }, [editor, lockCamera])
 
   // Create copy store from main editor's document records
   const store = useMemo(() => {
@@ -107,59 +120,100 @@ export function CanvasClipPanel({
 
   // Apply camera constraints when bounds change
   // Use clip bounds for initial position, full page extent for scroll range
+  const initialBoundsRef = useRef(true)
+  const animFrameRef = useRef(0)
   useEffect(() => {
     if (!editor || !bounds) return
 
-    // Find the vertical extent for scroll range
-    let minY = bounds.y
-    let maxY = bounds.y + bounds.h
-    for (const shape of editor.getCurrentPageShapes()) {
-      if ((shape.type as string) === 'svg-page') {
-        const geo = editor.getShapeGeometry(shape)
-        if (geo) {
-          minY = Math.min(minY, (shape as any).y)
-          maxY = Math.max(maxY, (shape as any).y + geo.bounds.h)
-        }
-      }
-    }
-
-    editor.setCameraOptions({
-      constraints: {
-        bounds: { x: bounds.x, y: minY, w: bounds.w, h: maxY - minY },
-        behavior: 'inside',
-        origin: { x: 0.5, y: 0 },
-        padding: { x: 0, y: 0 },
-        initialZoom: 'fit-x',
-        baseZoom: 'fit-x',
-      },
-      zoomSteps: [0.5, 1, 2],
-    })
-
-    // Position camera to show the clip region, centered vertically
+    // Target camera for these bounds
     const zoom = panelWidth / bounds.w
     const contentScreenH = bounds.h * zoom
     const minScreenH = MIN_VISIBLE_LINES * LINE_HEIGHT_ESTIMATE * zoom
     const viewportH = Math.max(minScreenH, Math.min(contentScreenH, window.innerHeight * DEFAULT_MAX_HEIGHT_FRACTION))
-    // Center the bounds vertically if viewport is taller than content
     const yOffset = (viewportH > contentScreenH)
       ? (viewportH - contentScreenH) / (2 * zoom)
       : 0
-    editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
+    const targetCam = { x: -bounds.x, y: -(bounds.y - yOffset), z: zoom }
 
-    // Lock camera pan/zoom if requested (fleet HUD)
-    if (lockCamera) {
-      editor.setCameraOptions({
-        constraints: {
-          bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-          behavior: 'fixed',
-          origin: { x: 0.5, y: 0 },
-          padding: { x: 0, y: 0 },
-          initialZoom: 'fit-x',
-          baseZoom: 'fit-x',
-        },
-        zoomSteps: [1, 1],
-      })
+    if (lockCamera && !initialBoundsRef.current) {
+      // Animate camera to new bounds (post-drop rearrangement)
+      cancelAnimationFrame(animFrameRef.current)
+      const startCam = editor.getCamera()
+      const duration = 250
+      const start = performance.now()
+
+      const animate = (now: number) => {
+        const t = Math.min(1, (now - start) / duration)
+        const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+        editor.setCamera({
+          x: startCam.x + (targetCam.x - startCam.x) * ease,
+          y: startCam.y + (targetCam.y - startCam.y) * ease,
+          z: startCam.z + (targetCam.z - startCam.z) * ease,
+        })
+        // Update constraints to match current animated position
+        const curZoom = startCam.z + (targetCam.z - startCam.z) * ease
+        const curBoundsW = panelWidth / curZoom
+        editor.setCameraOptions({
+          constraints: {
+            bounds: { x: bounds.x, y: bounds.y, w: curBoundsW, h: bounds.h },
+            behavior: 'fixed',
+            origin: { x: 0.5, y: 0 },
+            padding: { x: 0, y: 0 },
+            initialZoom: 'fit-x',
+            baseZoom: 'fit-x',
+          },
+          zoomSteps: [1, 1],
+        })
+        if (t < 1) animFrameRef.current = requestAnimationFrame(animate)
+      }
+      animFrameRef.current = requestAnimationFrame(animate)
+    } else {
+      // First mount or non-locked: set immediately
+      // Find the vertical extent for scroll range (non-locked panels)
+      if (!lockCamera) {
+        let minY = bounds.y
+        let maxY = bounds.y + bounds.h
+        for (const shape of editor.getCurrentPageShapes()) {
+          if ((shape.type as string) === 'svg-page') {
+            const geo = editor.getShapeGeometry(shape)
+            if (geo) {
+              minY = Math.min(minY, (shape as any).y)
+              maxY = Math.max(maxY, (shape as any).y + geo.bounds.h)
+            }
+          }
+        }
+        editor.setCameraOptions({
+          constraints: {
+            bounds: { x: bounds.x, y: minY, w: bounds.w, h: maxY - minY },
+            behavior: 'inside',
+            origin: { x: 0.5, y: 0 },
+            padding: { x: 0, y: 0 },
+            initialZoom: 'fit-x',
+            baseZoom: 'fit-x',
+          },
+          zoomSteps: [0.5, 1, 2],
+        })
+      }
+
+      editor.setCamera(targetCam)
+
+      if (lockCamera) {
+        editor.setCameraOptions({
+          constraints: {
+            bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+            behavior: 'fixed',
+            origin: { x: 0.5, y: 0 },
+            padding: { x: 0, y: 0 },
+            initialZoom: 'fit-x',
+            baseZoom: 'fit-x',
+          },
+          zoomSteps: [1, 1],
+        })
+      }
     }
+    initialBoundsRef.current = false
+
+    return () => cancelAnimationFrame(animFrameRef.current)
   }, [editor, bounds, panelWidth, lockCamera])
 
   // Wheel handling — two modes:
