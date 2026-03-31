@@ -1,6 +1,7 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
+  Rectangle2d,
   T,
   useEditor,
   useValue,
@@ -21,6 +22,12 @@ import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
+// Open all links in new tab so they don't navigate the tldraw iframe
+md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noopener')
+  return self.renderToken(tokens, idx, options)
+}
 import { chatInsertBus, refStore } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
@@ -224,13 +231,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   override canEdit = (shape: any) => !shape.props.collapsed
-  override canResize = () => true
+  override canResize = (shape: any) => !shape.props.collapsed
   override canBind = () => false
   override isAspectRatioLocked = () => false
-  override hideResizeHandles = () => false
+  override hideResizeHandles = (shape: any) => !!shape.props.collapsed
   override hideRotateHandle = () => true
-  override hideSelectionBoundsBg = () => false
-  override hideSelectionBoundsFg = () => false
+  override hideSelectionBoundsBg = (shape: any) => !!shape.props.collapsed
+  override hideSelectionBoundsFg = (shape: any) => !!shape.props.collapsed
+
+  override getGeometry(shape: any) {
+    if (shape.props.collapsed) {
+      return new Rectangle2d({ width: 10, height: 10, isFilled: true })
+    }
+    return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
+  }
 
   override onTranslateEnd = (initial: any, current: any) => {
     // If dropped on a fleet-chat shape → snap back + insert annotation token
@@ -1221,18 +1235,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    // Collapsed suggest dot rendering
+    // Collapsed dot rendering
     const isCollapsed = shape.props.collapsed === true && !isEditing
-    const showDotCard = isCollapsed && (dotHovered || dotClicked)
     const cameraZoom = useValue('zoom', () => editor.getCamera().z, [editor])
     if (isCollapsed) {
       const dotColor = DOT_COLORS[shape.props.color] || DOT_COLORS.orange
-      const choices = shape.props.choices as string[] | undefined
-      const selectedChoice = (shape.props.selectedChoice as number) ?? -1
-      const hasChoices = choices && choices.length > 0
-      const text = shape.props.text || ''
-      const cardHtml = (hasMath(text) || hasMarkdown(text)) ? renderMarkdownMath(text) : null
-      // Inverse scale so card renders at fixed screen size regardless of zoom
       const invZoom = 1 / cameraZoom
 
       return (
@@ -1251,19 +1258,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {/* The dot */}
             <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                setDotClicked(!dotClicked)
-              }}
-              onDoubleClick={(e) => {
-                // Prevent tldraw from entering edit mode
-                stopEventPropagation(e)
-                // Permanently expand on double-click
-                editor.updateShape({
-                  id: shape.id,
-                  type: 'math-note' as any,
-                  props: { collapsed: false, w: 220, h: 50, autoSize: true },
-                })
+              onClick={(e) => {
+                e.stopPropagation()
+                setDotClicked(c => !c)
               }}
               style={{
                 width: 10,
@@ -1272,123 +1269,42 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 backgroundColor: dotColor,
                 cursor: 'pointer',
                 boxShadow: `0 0 0 2px ${dotColor}33`,
-                transition: 'transform 0.15s, box-shadow 0.15s',
-                transform: showDotCard ? 'scale(1.3)' : 'scale(1)',
-                position: 'relative',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
             >
-              {/* Mic icon for voice notes — fades when translation accepted */}
-              {shape.meta?.voiceNote && (
-                <svg
-                  width="6" height="6" viewBox="0 0 18 18" fill="white"
-                  style={{
-                    opacity: shape.meta?.translationAccepted ? 0.2 : 0.55,
-                    transition: 'opacity 0.4s',
-                    pointerEvents: 'none',
-                    flexShrink: 0,
-                  }}
-                >
-                  <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
-                  <path d="M3 9a6 6 0 0 0 12 0" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" />
-                  <line x1="9" y1="15" x2="9" y2="17" stroke="white" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-              )}
+              {/* Sticky note icon */}
+              <svg width="6" height="6" viewBox="0 0 16 16" fill="white" style={{ opacity: 0.35, pointerEvents: 'none' }}>
+                <path d="M2 1h12v10l-4 4H2V1z" />
+                <path d="M10 11v4l4-4h-4z" fill={dotColor} opacity="0.6" />
+              </svg>
             </div>
-            {/* Hover/click card — inverse-scaled to fixed screen size */}
-            {showDotCard && (
+            {/* Hover or pinned: the actual expanded note */}
+            {(dotHovered || dotClicked) && (
               <div
-                onPointerDown={stopIfNotPenTouch(editor)}
                 style={{
                   position: 'absolute',
-                  top: 0,
-                  left: 14,
+                  top: -4,
+                  left: -4,
                   transform: `scale(${invZoom})`,
                   transformOrigin: 'top left',
-                  width: 260,
+                  width: shape.props.w || 220,
+                  minHeight: shape.props.h || 50,
                   backgroundColor: bgColor,
-                  borderRadius: 6,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.18), 0 1px 4px rgba(0,0,0,0.1)',
+                  borderRadius: 4,
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
                   zIndex: 1000,
-                  pointerEvents: 'all',
-                  overflow: 'hidden',
+                  pointerEvents: 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  opacity: 0.95,
                 }}
               >
-                {/* Card content */}
-                {cardHtml ? (
-                  <div
-                    style={{
-                      padding: '10px 12px',
-                      paddingBottom: hasChoices ? '4px' : '10px',
-                      fontSize: '13px',
-                      lineHeight: 1.4,
-                      color: '#1a1a1a',
-                      maxHeight: 200,
-                      overflow: 'auto',
-                    }}
-                    dangerouslySetInnerHTML={{ __html: cardHtml }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      padding: '10px 12px',
-                      paddingBottom: hasChoices ? '4px' : '10px',
-                      fontSize: '13px',
-                      lineHeight: 1.4,
-                      whiteSpace: 'pre-wrap',
-                      color: '#1a1a1a',
-                      maxHeight: 200,
-                      overflow: 'auto',
-                    }}
-                  >
-                    {text || '\u00A0'}
-                  </div>
-                )}
-                {/* Choice buttons */}
-                {hasChoices && (
-                  <div style={{
-                    padding: '4px 10px 10px',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '6px',
-                  }}>
-                    {choices.map((choice, i) => {
-                      const isSelected = selectedChoice === i
-                      const choiceHtml = hasMath(choice) ? renderMath(choice) : null
-                      return (
-                        <button
-                          key={i}
-                          onPointerDown={(e) => {
-                            if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
-                            e.stopPropagation()
-                            editor.updateShape({
-                              id: shape.id,
-                              type: 'math-note' as any,
-                              props: { selectedChoice: isSelected ? -1 : i },
-                            })
-                          }}
-                          style={{
-                            padding: '4px 10px',
-                            fontSize: '11px',
-                            lineHeight: 1.3,
-                            border: isSelected ? '2px solid rgba(0,0,0,0.5)' : '1px solid rgba(0,0,0,0.15)',
-                            borderRadius: '12px',
-                            backgroundColor: isSelected ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.5)',
-                            cursor: 'pointer',
-                            fontWeight: isSelected ? 600 : 400,
-                            transition: 'all 0.15s',
-                          }}
-                          {...(choiceHtml
-                            ? { dangerouslySetInnerHTML: { __html: choiceHtml } }
-                            : { children: choice }
-                          )}
-                        />
-                      )
-                    })}
-                  </div>
-                )}
+                {tabBar}
+                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+                  {content}
+                </div>
               </div>
             )}
           </div>
@@ -1406,10 +1322,38 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           pointerEvents: 'all',
           display: 'flex',
           flexDirection: 'column',
+          position: 'relative',
           opacity: isFilteredOut ? 0.15 : undefined,
           transition: 'opacity 0.2s',
         }}
       >
+          {/* Collapse dot — top-right corner inside the note */}
+          <div
+            onPointerDown={(e) => {
+              stopEventPropagation(e)
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { collapsed: true },
+              })
+            }}
+            style={{
+              position: 'absolute',
+              top: 4,
+              right: 4,
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              backgroundColor: DOT_COLORS[shape.props.color] || DOT_COLORS.orange,
+              cursor: 'pointer',
+              zIndex: 10,
+              opacity: 0.5,
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
+            title="Collapse to dot"
+          />
           {tabBar}
           {shape.meta?.friendly_name && (
             <div style={{

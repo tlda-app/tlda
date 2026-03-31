@@ -321,6 +321,9 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           onPointerDown={stopEventPropagation}
           onPointerUp={(e) => {
             stopEventPropagation(e)
+            if (shape.isLocked) {
+              editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+            }
             editor.select(shape.id)
           }}
           title="Select for resize"

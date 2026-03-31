@@ -909,8 +909,73 @@ function FleetChatComponent({ shape }: { shape: any }) {
         })
       }
 
-      // Membrane glow: when dragging an annotation pill near the fleet-chat edge
-      if (drag.started && drag.pillType === 'annotation') {
+      // Membrane handoff: when pointer leaves the chat, move the pill
+      // from the panel editor to the main editor (and vice versa)
+      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation'
+      if (drag.started && isMembraneType && drag.pillId) {
+        const mainEditor = (window as any).__tldraw_editor__ as any
+        const chatEl = logEl!.closest('[data-shape-id]') as HTMLElement | null
+        const chatRect = chatEl?.getBoundingClientRect()
+        const outside = chatRect && (
+          e.clientX < chatRect.left || e.clientX > chatRect.right ||
+          e.clientY < chatRect.top || e.clientY > chatRect.bottom
+        )
+
+        if (mainEditor && mainEditor !== editor) {
+          const onMain = !!(drag as any)._onMain
+          if (outside && !onMain) {
+            // Handoff: panel → main
+            try { editor.deleteShapes([drag.pillId as any]) } catch {}
+            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            mainEditor.createShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: mainPos.x - 5,
+              y: mainPos.y - 5,
+              props: {
+                w: 10, h: 10,
+                pillType: drag.pillType,
+                value: drag.value,
+                displayName: drag.displayName,
+                color: drag.color,
+              },
+            })
+            ;(drag as any)._onMain = true
+          } else if (!outside && onMain) {
+            // Handoff back: main → panel
+            try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
+            const panelPos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+            editor.createShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: panelPos.x - 35,
+              y: panelPos.y - 9,
+              props: {
+                w: 70, h: 18,  // chip form inside panel
+                pillType: drag.pillType,
+                value: drag.value,
+                displayName: drag.displayName,
+                color: drag.color,
+              },
+            })
+            ;(drag as any)._onMain = false
+          } else if (onMain) {
+            // Move on main editor
+            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            mainEditor.updateShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: mainPos.x - 5,
+              y: mainPos.y - 5,
+            })
+            // Skip the panel updateShape below
+            return
+          }
+        }
+      }
+
+      // Membrane glow: when dragging an annotation/doc pill near the fleet-chat edge
+      if (drag.started && (drag.pillType === 'annotation' || drag.pillType === 'doc')) {
         const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
         if (shapeEl) {
           const rect = shapeEl.getBoundingClientRect()
@@ -939,9 +1004,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
       if (!drag.started || !drag.pillId) return
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos, drag.content)
-      try { editor.deleteShapes([drag.pillId as any]) } catch {}
+
+      const onMain = !!(drag as any)._onMain
+      const mainEditor = (window as any).__tldraw_editor__ as any
+      const dropEditor = (onMain && mainEditor) ? mainEditor : editor
+      const pagePos = dropEditor.screenToPage({ x: e.clientX, y: e.clientY })
+      dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
+      try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
@@ -1034,6 +1103,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
           onPointerDown={stopEventPropagation}
           onPointerUp={(e) => {
             stopEventPropagation(e)
+            if (shape.isLocked) {
+              editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+            }
             editor.select(shape.id)
           }}
           title="Select for resize"

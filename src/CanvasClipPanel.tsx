@@ -74,10 +74,14 @@ export function CanvasClipPanel({
   // Mirror main editor's current tool into the panel editor (skip in readOnly mode)
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
+    const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+    // fleet-pill shapes are ephemeral drag ghosts — never sync between editors
+    const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
     // main → copy
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) {
             // Lock new shapes in readOnly mode
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
@@ -89,16 +93,22 @@ export function CanvasClipPanel({
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
+          if (isPill(to)) continue
           if (isDocRecord(to)) {
             // Preserve isLocked when syncing shapes in readOnly mode
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
+            } else if (to.typeName === 'shape' && FLEET_SHAPE_TYPES.has((to as any).type)) {
+              // Don't overwrite copy's lock state for fleet shapes
+              const copyShape = store.get((to as any).id)
+              store.put([{ ...to, isLocked: (copyShape as any)?.isLocked ?? (to as any).isLocked } as any])
             } else {
               store.put([to])
             }
           }
         }
         for (const record of Object.values(changes.removed)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) {
             try { store.remove([record.id]) } catch { /* might not exist */ }
           }
@@ -108,23 +118,27 @@ export function CanvasClipPanel({
 
     // copy → main (reverse sync for shape edits made in the panel)
     // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
-    // Fleet shapes: always keep isLocked=true on main (panel may temporarily unlock for handles)
-    const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
     const unsubCopy = store.listen(({ changes }) => {
       mainEditor.store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) mainEditor.store.put([record])
         }
         for (const [, to] of Object.values(changes.updated)) {
+          if (isPill(to)) continue
           if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
-          // Never sync unlock back to main for fleet shapes
-          if (to.typeName === 'shape' && FLEET_SHAPE_TYPES.has((to as any).type) && !(to as any).isLocked) {
-            mainEditor.store.put([{ ...to, isLocked: true } as any])
+          // Don't sync isLocked changes for fleet shapes (panel manages lock independently)
+          if (to.typeName === 'shape' && FLEET_SHAPE_TYPES.has((to as any).type)) {
+            const mainShape = mainEditor.getShape((to as any).id)
+            if (mainShape) {
+              mainEditor.store.put([{ ...to, isLocked: mainShape.isLocked } as any])
+            }
           } else {
             mainEditor.store.put([to])
           }
         }
         for (const record of Object.values(changes.removed)) {
+          if (isPill(record)) continue
           if (isDocRecord(record)) {
             try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
           }
