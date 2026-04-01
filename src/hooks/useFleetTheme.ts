@@ -25,6 +25,10 @@ export function useFleetTheme() {
       }
     }
 
+    // Apply cached theme immediately (before SSE fires) so there's no flash on reload
+    const cached = localStorage.getItem('tlda-warm-mode')
+    if (cached !== null) applyTheme(cached === 'true' ? 'warm' : 'default')
+
     function connect() {
       es = new EventSource(FLEET_URL)
       es.onmessage = (event) => {
