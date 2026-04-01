@@ -57,6 +57,31 @@ export function useFleetAgents(): any[] {
   return agents
 }
 
+/** Lightweight agent count — only re-renders when the count changes (e.g., agents first load). */
+function useFleetAgentCount(): number {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setCount(getAgents().length)
+      unsub = subscribe('agents', null, () => {
+        setCount(getAgents().length)
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return count
+}
+
 export function useFleetTasks(): any[] {
   const [tasks, setTasks] = useState<any[]>([])
 
@@ -96,7 +121,7 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      // Seed with initial events from the store
+      // Seed with initial events from the store (server cap raised to 1000)
       const all = getEvents()
       const filtered = filter
         ? all.filter((e: any) => matchesFilter(filter, e))
@@ -125,6 +150,8 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
 export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
   const [events, setEvents] = useState<any[]>([])
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  // Re-run when agents load — resolveFilter depends on the agents list
+  const agentCount = useFleetAgentCount()
 
   useEffect(() => {
     let unsub: (() => void) | null = null
@@ -157,7 +184,7 @@ export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
       cancelled = true
       unsub?.()
     }
-  }, [filterKey])
+  }, [filterKey, agentCount])
 
   return events
 }

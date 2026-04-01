@@ -124,7 +124,9 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
 // --- Nick color system (matches dashboard) ---
 
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
+const nickHex = ['#7a9ec8','#9370db','#c8956a','#6aafb0','#b87a95','#c8b060']
 const nickMap = new Map<string, string>()
+const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
 function makeCtx(agents: any[], tasks: any[]) {
@@ -140,14 +142,18 @@ function makeCtx(agents: any[], tasks: any[]) {
     if (a?.human) return 'nick-human'
     if (id === 'keepalive') return 'nick-keepalive'
     if (!nickMap.has(id)) {
-      nickMap.set(id, nickColors[nickIdx % nickColors.length])
+      const idx = nickIdx % nickColors.length
+      nickMap.set(id, nickColors[idx])
+      nickHexMap.set(id, nickHex[idx])
       nickIdx++
     }
     return nickMap.get(id)!
   }
+  const getAgentColor = (id: string) => nickHexMap.get(id) || '#9370db'
   return {
     agentLabel,
     getNickClass,
+    getAgentColor,
     isHumanId: (id: string) => {
       const a = agents.find((a: any) => a.id === id)
       return !!(a?.human)
@@ -1308,13 +1314,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   for (const t of targets) sendMessage(t, text)
-                })
+                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   for (const t of targets) sendMessage(t, text)
-                })
+                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{
                 width: '100%',
