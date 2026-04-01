@@ -651,6 +651,46 @@ export function DarkModeToggle() {
   )
 }
 
+const ZONE_WIDTH_KEY = 'zone-width'
+const ZONE_WIDTH_EVENT = 'zone-width-change'
+const ZONE_WIDTH_DEFAULT = 60
+const ZONE_WIDTH_MIN = 20
+const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
+
+export function getZoneWidth(): number {
+  const stored = parseInt(localStorage.getItem(ZONE_WIDTH_KEY) || '')
+  if (isNaN(stored)) return ZONE_WIDTH_DEFAULT
+  return Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, stored))
+}
+
+export function applyZoneWidth(w: number) {
+  document.documentElement.style.setProperty('--zone-width', w + 'px')
+}
+
+export function ZoneWidthSlider() {
+  const [width, setWidth] = useState(getZoneWidth)
+
+  useEffect(() => {
+    applyZoneWidth(width)
+  }, [])
+
+  const onChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    // Invert: slider value increases left→right, zone width decreases left→right
+    const v = ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - parseInt(e.target.value)
+    setWidth(v)
+    localStorage.setItem(ZONE_WIDTH_KEY, String(v))
+    applyZoneWidth(v)
+    window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
+  }, [])
+
+  return (
+    <div className="toc-zone-width-slider">
+      <input type="range" min={ZONE_WIDTH_MIN} max={ZONE_WIDTH_MAX} step="1"
+        value={ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - width} onChange={onChange} />
+    </div>
+  )
+}
+
 export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()

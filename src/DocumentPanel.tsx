@@ -7,7 +7,7 @@ import type { Editor } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
-import { TocTab } from './panels/TocTab'
+import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { HistoryTab } from './panels/HistoryTab'
 import { NotesTab } from './panels/NotesTab'
 
@@ -188,6 +188,7 @@ export function DocumentPanel() {
       {tab === 'toc' && <TocTab />}
       {tab === 'history' && !isHtml && <HistoryTab />}
       {tab === 'notes' && <NotesTab />}
+      <ZoneWidthSlider />
     </div>
   )
 }

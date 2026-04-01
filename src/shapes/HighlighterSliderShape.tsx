@@ -65,6 +65,10 @@ export function HighlighterSlider() {
   const [zoneEnabled, setZoneEnabled] = useState(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
   )
+  const [zoneWidth, setZoneWidth] = useState(() => {
+    const stored = parseInt(typeof localStorage !== 'undefined' ? (localStorage.getItem('zone-width') || '') : '')
+    return isNaN(stored) ? 60 : Math.max(20, Math.min(250, stored))
+  })
   // Listen for storage changes (toggled from the button component)
   useEffect(() => {
     const handler = () => setZoneEnabled(localStorage.getItem('hl-zone-mode') === '1')
@@ -72,6 +76,11 @@ export function HighlighterSlider() {
     // Also poll since storage event doesn't fire in same tab
     const interval = setInterval(handler, 500)
     return () => { window.removeEventListener('storage', handler); clearInterval(interval) }
+  }, [])
+  useEffect(() => {
+    const handler = (e: Event) => setZoneWidth((e as CustomEvent).detail)
+    window.addEventListener('zone-width-change', handler)
+    return () => window.removeEventListener('zone-width-change', handler)
   }, [])
   const editor = useEditor()
   const isPenMode = useValue('is pen mode', () => editor.getInstanceState().isPenMode, [editor])
@@ -259,7 +268,7 @@ export function HighlighterSlider() {
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       style={{
-        position: 'absolute', right: 0, top: tocBottom || '10%', bottom: '10%', width: 250,
+        position: 'absolute', right: 0, top: tocBottom || '10%', bottom: '10%', width: zoneWidth,
         zIndex: 999, cursor: 'pointer', touchAction: 'none',
         pointerEvents: 'all',
       }}
