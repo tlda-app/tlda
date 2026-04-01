@@ -29,6 +29,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
+import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 
@@ -828,6 +829,17 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Update doc-version sentinel shape with source git commit hash (non-blocking)
     updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
       ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+    })
+
+    // Commit source snapshot to shadow repo and cache SVGs (non-blocking)
+    commitSnapshot(name).then(result => {
+      if (result) {
+        cacheSvgSnapshot(name, result.hash).catch(e => {
+          ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
+        })
+      }
+    }).catch(e => {
+      ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
     })
 
     status.building = false

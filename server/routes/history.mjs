@@ -13,9 +13,11 @@ import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
-import { readProject, outputDir } from '../lib/project-store.mjs'
+import { readProject, outputDir, sourceDir as getSourceDir } from '../lib/project-store.mjs'
+import { runBuild } from '../lib/build-runner.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
+import { listVersions, versionAt, checkoutSource, getShadowRepoDir } from '../lib/shadow-repo.mjs'
 
 // Lazy-load svg-text from mcp-server (it's in a sibling directory)
 let _loadPageText = null
@@ -366,6 +368,116 @@ function cleanExtractedText(text) {
     .replace(/  +/g, ' ')
     .trim()
 }
+
+/**
+ * GET /shadow — List recent shadow repo versions.
+ * ?timestamp=<unix_ms> — find the version active at that time.
+ * ?limit=<n> — max entries (default 20).
+ */
+router.get('/shadow', requireRead, async (req, res) => {
+  const { name } = req.params
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const ts = req.query.timestamp ? parseInt(req.query.timestamp, 10) : null
+  const limit = parseInt(req.query.limit, 10) || 20
+
+  try {
+    if (ts) {
+      const version = await versionAt(name, ts)
+      res.json({ version })
+    } else {
+      const versions = await listVersions(name, { limit })
+      res.json({ versions })
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * GET /shadow/at?time=<string> — Find version at a time string.
+ * time can be ISO, unix ms, or relative like "20 minutes ago".
+ */
+router.get('/shadow/at', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { time } = req.query
+  if (!time) return res.status(400).json({ error: 'time is required' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const version = await versionAt(name, time)
+    res.json({ version })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * POST /shadow/:ref/checkout — Restore source at a shadow repo ref.
+ * Extracts source from shadow repo, copies to project source dir, triggers a build.
+ */
+router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
+  const { name, ref } = req.params
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const tmpDir = await checkoutSource(name, ref)
+    const srcDir = getSourceDir(name)
+
+    // Clear existing source and copy from extracted ref
+    const { readdirSync, rmSync, cpSync } = await import('fs')
+    for (const entry of readdirSync(srcDir)) {
+      rmSync(join(srcDir, entry), { recursive: true, force: true })
+    }
+    for (const entry of readdirSync(tmpDir)) {
+      if (entry === '.gitignore') continue
+      cpSync(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
+    }
+
+    // Clean up temp dir
+    rmSync(tmpDir, { recursive: true, force: true })
+
+    // Trigger build
+    runBuild(name).catch(() => {})
+
+    res.json({ ok: true, ref, message: `Source restored to ${ref.slice(0, 7)}, build triggered` })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * GET /shadow/diff?ref1=<hash>&ref2=<hash> — Diff between two shadow repo refs.
+ * ref2 defaults to HEAD if omitted.
+ */
+router.get('/shadow/diff', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { ref1, ref2 = 'HEAD' } = req.query
+
+  if (!ref1) return res.status(400).json({ error: 'ref1 is required' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const repoDir = getShadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) {
+    return res.status(400).json({ error: 'Shadow repo not initialized for this project' })
+  }
+
+  try {
+    const { stdout } = await execAsync(
+      `git diff "${ref1}" "${ref2}"`,
+      { cwd: repoDir, timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
+    )
+    res.json({ diff: stdout, ref1, ref2 })
+  } catch (e) {
+    res.status(500).json({ error: `shadow diff failed: ${e.message}` })
+  }
+})
 
 /**
  * GET /source-diff?ref1=<hash>&ref2=<hash> — Git diff of source files between two refs.

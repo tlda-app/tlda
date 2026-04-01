@@ -2065,12 +2065,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'doc_version',
-      description: 'List recent build/git versions for a document, or find the version nearest to a given timestamp. Returns a timeline of build snapshots and git commits with their hashes and timestamps.',
+      description: 'List recent shadow-repo versions for a document, or find the active version at a given timestamp. Each build commits source files to a per-project shadow git repo.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version nearest to this time. Omit to list all recent versions.' },
+          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version active at that time (latest commit before). Omit to list all recent versions.' },
           limit: { type: 'number', description: 'Max entries to return (default: 20)' },
         },
         required: ['doc'],
@@ -2078,25 +2078,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'doc_checkout',
-      description: 'Revert a document to a specific historical version by source git commit ref. Triggers a rebuild at that ref (cached if already built), then updates the sentinel shape with the commit hash tagged as a rollback. The sentinel shape change is logged in the changelog so the timeline reflects the revert.',
+      description: 'Revert a document to a specific historical version from the shadow repo. Accepts a git hash or a time string (ISO, unix ms, or relative like "20 minutes ago"). Extracts source at that ref, pushes to the server, and triggers a rebuild.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref: { type: 'string', description: 'Git commit hash (full or short) to revert to' },
+          ref: { type: 'string', description: 'Shadow repo git hash, or a time string (ISO, "20 minutes ago", etc.)' },
         },
         required: ['doc', 'ref'],
       },
     },
     {
       name: 'doc_diff',
-      description: 'Show the source git diff between two versions of a document. Compares .tex and .bib files at two commit refs. ref2 defaults to HEAD (current).',
+      description: 'Show the source diff between two versions of a document using the shadow repo. ref2 defaults to HEAD (latest shadow commit).',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref1: { type: 'string', description: 'Base commit hash to diff from' },
-          ref2: { type: 'string', description: 'Target commit hash (default: HEAD / current)' },
+          ref1: { type: 'string', description: 'Base shadow-repo commit hash to diff from' },
+          ref2: { type: 'string', description: 'Target shadow-repo commit hash (default: HEAD / latest)' },
         },
         required: ['doc', 'ref1'],
       },
@@ -3566,31 +3566,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const doc = args?.doc;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
-      const { entries } = await serverFetch(`/api/projects/${doc}/history`);
-      const limit = args?.limit || 20;
       const ts = args?.timestamp;
+      const limit = args?.limit || 20;
 
       if (ts) {
-        // Find nearest entry to the given timestamp
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const e of entries) {
-          const dist = Math.abs(e.timestamp - ts);
-          if (dist < nearestDist) { nearestDist = dist; nearest = e; }
-        }
-        if (!nearest) return { content: [{ type: 'text', text: 'No history found' }] };
-        return { content: [{ type: 'text', text: JSON.stringify(nearest, null, 2) }] };
+        // Find the active version at that time
+        const { version } = await serverFetch(`/api/projects/${doc}/history/shadow?timestamp=${ts}`);
+        if (!version) return { content: [{ type: 'text', text: 'No version found at that time' }] };
+        const date = new Date(version.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        return { content: [{ type: 'text', text: `${date}  ${version.hash.slice(0, 7)}  ${version.message}` }] };
       }
 
-      const recent = entries.slice(0, limit);
-      const lines = recent.map(e => {
-        const date = new Date(e.timestamp).toISOString().replace('T', ' ').slice(0, 19);
-        const hash = e.commitHash ? ` [${e.commitHash.slice(0, 7)}]` : '';
-        const msg = e.commitMessage ? ` — ${e.commitMessage}` : '';
-        const built = e.built === false ? ' (not built)' : '';
-        return `${date}  ${e.type}${hash}${msg}${built}  id=${e.id}`;
+      const { versions } = await serverFetch(`/api/projects/${doc}/history/shadow?limit=${limit}`);
+      if (!versions || versions.length === 0) return { content: [{ type: 'text', text: 'No shadow repo history. Versions are recorded after each build.' }] };
+
+      const lines = versions.map(v => {
+        const date = new Date(v.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        return `${date}  ${v.hash.slice(0, 7)}  ${v.message}`;
       });
-      return { content: [{ type: 'text', text: lines.join('\n') || 'No history' }] };
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3598,55 +3592,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'doc_checkout') {
     const doc = args?.doc;
-    const ref = args?.ref;
+    let ref = args?.ref;
     if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
     try {
-      // Trigger build at the given ref (returns 202 if building, or cached status)
-      const buildRes = await serverFetch(`/api/projects/${doc}/history/git/${ref}/build`, {
+      // If ref looks like a time (contains ':' or words like 'ago'), resolve to a hash first
+      const isTimeRef = /\d{4}-\d{2}|ago|minutes?|hours?|days?|:/.test(ref);
+      let resolvedHash = ref;
+
+      if (isTimeRef) {
+        // Try to parse as unix ms if it's all digits
+        const timeArg = /^\d+$/.test(ref) ? ref : encodeURIComponent(ref);
+        const endpoint = /^\d+$/.test(ref)
+          ? `/api/projects/${doc}/history/shadow?timestamp=${ref}`
+          : `/api/projects/${doc}/history/shadow/at?time=${timeArg}`;
+        const { version } = await serverFetch(endpoint);
+        if (!version) return { content: [{ type: 'text', text: `No version found for time: ${ref}` }], isError: true };
+        resolvedHash = version.hash;
+      }
+
+      // Checkout: restores source to this ref and triggers build
+      await serverFetch(`/api/projects/${doc}/history/shadow/${resolvedHash}/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
-      }).catch(e => ({ status: 'error', error: e.message }));
-
-      if (buildRes.status === 'error') {
-        return { content: [{ type: 'text', text: `Build failed: ${buildRes.error}` }], isError: true };
-      }
-
-      // If already cached or built, update sentinel immediately
-      let statusInfo = buildRes;
-      if (buildRes.status === 'building') {
-        // Poll until done (timeout 3min)
-        const deadline = Date.now() + 180_000;
-        while (Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, 3000));
-          statusInfo = await serverFetch(`/api/projects/${doc}/history/git/${ref}/status`);
-          if (statusInfo.status === 'cached') break;
-        }
-        if (statusInfo.status !== 'cached') {
-          return { content: [{ type: 'text', text: `Build timed out or failed for ref ${ref}` }], isError: true };
-        }
-      }
-
-      // Update sentinel shape to point to this ref (tagged as rollback)
-      const sentinel = {
-        id: 'shape:doc-version--sentinel',
-        typeName: 'shape',
-        type: 'doc-version',
-        x: 0, y: 0, rotation: 0,
-        index: 'a0',
-        parentId: 'page:page',
-        isLocked: true,
-        opacity: 0,
-        meta: { revertedTo: ref, revertedAt: Date.now() },
-        props: { w: 1, h: 1, commitHash: ref, timestamp: Date.now() },
-      };
-      await serverFetch(`/api/projects/${doc}/shapes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sentinel),
       });
 
-      return { content: [{ type: 'text', text: `Checked out ${ref} for ${doc}. Built: ${statusInfo.pages} pages. Sentinel updated (revertedTo: ${ref}).` }] };
+      // Wait for build to complete (poll build status)
+      const deadline = Date.now() + 180_000;
+      let buildDone = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000));
+        const status = await serverFetch(`/api/projects/${doc}`);
+        if (status.buildStatus === 'success' || status.buildStatus === 'failed') {
+          buildDone = true;
+          break;
+        }
+      }
+
+      const result = isTimeRef
+        ? `Checked out ${doc} at ${ref} (shadow ref ${resolvedHash.slice(0, 7)}).`
+        : `Checked out ${doc} at shadow ref ${resolvedHash.slice(0, 7)}.`;
+
+      return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3658,7 +3645,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const ref2 = args?.ref2 || 'HEAD';
     if (!doc || !ref1) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref1' }], isError: true };
     try {
-      const { diff } = await serverFetch(`/api/projects/${doc}/history/source-diff?ref1=${encodeURIComponent(ref1)}&ref2=${encodeURIComponent(ref2)}`);
+      const { diff } = await serverFetch(`/api/projects/${doc}/history/shadow/diff?ref1=${encodeURIComponent(ref1)}&ref2=${encodeURIComponent(ref2)}`);
       if (!diff || diff.trim() === '') {
         return { content: [{ type: 'text', text: `No source changes between ${ref1.slice(0, 7)} and ${ref2 === 'HEAD' ? 'HEAD' : ref2.slice(0, 7)}` }] };
       }
