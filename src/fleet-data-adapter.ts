@@ -140,6 +140,7 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
     let unsubThinking: (() => void) | null = null
     let unsubMessages: (() => void) | null = null
     let unsubStatus: (() => void) | null = null
+    let unsubSync: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
     const pendingRemoval = new Set<string>()
@@ -221,6 +222,25 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
         }
         // 'tool_call' — agent is working, don't touch thinking state
       })
+
+      // Server state sync — clear agents not in the server's authoritative set
+      unsubSync = subscribe('thinking-sync', null, (serverSet: Set<string>) => {
+        setThinking(prev => {
+          let changed = false
+          const next = new Map(prev)
+          for (const id of next.keys()) {
+            if (!serverSet.has(id)) {
+              next.delete(id)
+              pendingRemoval.delete(id)
+              const ft = fallbackTimers.get(id)
+              if (ft) { clearTimeout(ft); fallbackTimers.delete(id) }
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
+      })
+
     })
 
     return () => {
@@ -228,6 +248,7 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
       unsubThinking?.()
       unsubMessages?.()
       unsubStatus?.()
+      unsubSync?.()
       for (const t of fallbackTimers.values()) clearTimeout(t)
       fallbackTimers.clear()
       setThinking(new Map())
@@ -247,6 +268,7 @@ export function useFleetCompacting(dnfFilter?: string[][] | null): Map<string, n
 
   useEffect(() => {
     let unsub: (() => void) | null = null
+    let unsubSync: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
@@ -266,11 +288,24 @@ export function useFleetCompacting(dnfFilter?: string[][] | null): Map<string, n
           return next
         })
       })
+
+      // Server state sync — clear agents not in the server's authoritative set
+      unsubSync = subscribe('compacting-sync', null, (serverSet: Set<string>) => {
+        setCompacting(prev => {
+          let changed = false
+          const next = new Map(prev)
+          for (const id of next.keys()) {
+            if (!serverSet.has(id)) { next.delete(id); changed = true }
+          }
+          return changed ? next : prev
+        })
+      })
     })
 
     return () => {
       cancelled = true
       unsub?.()
+      unsubSync?.()
       setCompacting(new Map())
     }
   }, [filterKey])

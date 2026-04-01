@@ -613,6 +613,22 @@ function FleetChatComponent({ shape }: { shape: any }) {
     if (wasAtBottom) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
 
+  // When textarea grows (multi-line input), keep chat scrolled to bottom
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    let prevHeight = ta.offsetHeight
+    const ro = new ResizeObserver(() => {
+      const newHeight = ta.offsetHeight
+      if (newHeight > prevHeight && chatLogRef.current) {
+        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+      }
+      prevHeight = newHeight
+    })
+    ro.observe(ta)
+    return () => ro.disconnect()
+  }, [])
+
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
     for (const a of agents) {
