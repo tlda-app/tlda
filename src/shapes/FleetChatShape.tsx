@@ -27,7 +27,7 @@ import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from 'fleet-dashboard/js/voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
-import { useFleetAgents, useFleetTimeline, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -234,9 +234,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
 
-  // Live data from fleet-data.mjs via SSE — single unified timeline
+  // Live data from fleet-data.mjs via SSE
   const agents = useFleetAgents()
-  const timelineEvents = useFleetTimeline(dnfFilter)
+  const liveEvents = useFleetEvents(dnfFilter)
   const tasks = useFleetTasks()
   const thinkingAgents = useFleetThinking(dnfFilter)
   const compactingAgents = useFleetCompacting(dnfFilter)
@@ -246,21 +246,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
 
-  // Merge older (scrollback) events with live timeline
+  // Merge older (scrollback) events with live events
   const events = useMemo(() => {
-    if (olderEvents.length === 0) return timelineEvents
-    // Deduplicate older events against timeline
-    const seen = new Set<string>()
-    for (const e of timelineEvents) {
-      if (e._dbId) seen.add(`db:${e._dbId}`)
-      seen.add(`${e.timestamp}:${e.from}`)
-    }
-    const unique = olderEvents.filter((e: any) => {
-      if (e._dbId && seen.has(`db:${e._dbId}`)) return false
-      return !seen.has(`${e.timestamp}:${e.from}`)
-    })
-    return [...unique, ...timelineEvents]
-  }, [timelineEvents, olderEvents])
+    if (olderEvents.length === 0) return liveEvents
+    // Deduplicate by _dbId or timestamp+from
+    const seen = new Set(liveEvents.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
+    const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
+    return [...unique, ...liveEvents]
+  }, [liveEvents, olderEvents])
 
   // Reset older events when filter changes
   const filterKey = JSON.stringify(filter)
