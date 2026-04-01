@@ -16,7 +16,6 @@ import {
   fetchHistory,
   loadBefore,
   matchesFilter,
-  resolveFilter,
   // @ts-ignore — vanilla JS module
 } from 'fleet-dashboard/js/fleet-data.mjs'
 
@@ -57,30 +56,6 @@ export function useFleetAgents(): any[] {
   return agents
 }
 
-/** Lightweight agent count — only re-renders when the count changes (e.g., agents first load). */
-function useFleetAgentCount(): number {
-  const [count, setCount] = useState(0)
-
-  useEffect(() => {
-    let unsub: (() => void) | null = null
-    let cancelled = false
-
-    ensureInit().then(() => {
-      if (cancelled) return
-      setCount(getAgents().length)
-      unsub = subscribe('agents', null, () => {
-        setCount(getAgents().length)
-      })
-    })
-
-    return () => {
-      cancelled = true
-      unsub?.()
-    }
-  }, [])
-
-  return count
-}
 
 export function useFleetTasks(): any[] {
   const [tasks, setTasks] = useState<any[]>([])
@@ -143,51 +118,6 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
   return events
 }
 
-/**
- * Subscribe to fleet activity events, optionally filtered.
- * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
- */
-export function useFleetActivity(dnfFilter?: string[][] | null): any[] {
-  const [events, setEvents] = useState<any[]>([])
-  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
-  // Re-run when agents load — resolveFilter depends on the agents list
-  const agentCount = useFleetAgentCount()
-
-  useEffect(() => {
-    let unsub: (() => void) | null = null
-    let cancelled = false
-    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
-
-    ensureInit().then(async () => {
-      if (cancelled) return
-      if (!filter) return // activity requires a filter
-
-      // Seed from history: resolve filter to agent IDs, fetch activity for the first one
-      const agentIds = [...resolveFilter(filter)]
-      if (agentIds.length > 0) {
-        try {
-          const history = await fetchHistory(agentIds[0], 500)
-          if (!cancelled) {
-            setEvents(history.filter((e: any) => e._activity))
-          }
-        } catch (e) {
-          console.error('[useFleetActivity] history seed failed:', e)
-        }
-      }
-
-      unsub = subscribe('activity', filter, (event: any) => {
-        setEvents(prev => [...prev, event])
-      })
-    })
-
-    return () => {
-      cancelled = true
-      unsub?.()
-    }
-  }, [filterKey, agentCount])
-
-  return events
-}
 
 /**
  * Subscribe to thinking/status events for agents matching the filter.
