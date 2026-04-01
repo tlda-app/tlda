@@ -21,7 +21,7 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
   // without losing filters the user has set by dragging agents.
   const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   const existingChatFilters = existing
-    .filter(s => s.type === 'fleet-chat')
+    .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
