@@ -1177,8 +1177,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 {' '}<span className="thinking-text">compacting…</span>
                 {' '}<ElapsedTime startMs={startTs} />
               </div>
-            )
-          })}
+            ))}
         </div>
 
         {/* Doc-link hover preview — positioned relative to shape container */}
