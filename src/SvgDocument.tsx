@@ -836,9 +836,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             }
           }
 
-          // Follow system dark/light mode preference
-          editor.user.updateUserPreferences({ colorScheme: 'system' })
-
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
           editor.setStyleForNextShapes(DefaultSizeStyle, 's')
