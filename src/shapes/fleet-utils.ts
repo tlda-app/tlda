@@ -34,8 +34,8 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
     return tb - ta
   })
   const [agent1, agent2] = sorted.slice(0, 2)
-  const name1 = (agent1?.friendly_name || agent1?.id) as string | undefined
-  const name2 = (agent2?.friendly_name || agent2?.id) as string | undefined
+  const name1 = agent1?.friendly_name as string | undefined
+  const name2 = agent2?.friendly_name as string | undefined
   const filter1: [string, string][][] = existingChatFilters[0] ?? (name1 ? [[['from', name1]], [['to', name1]]] : [])
   const filter2: [string, string][][] = existingChatFilters[1] ?? (name2 ? [[['from', name2]], [['to', name2]]] : [])
 

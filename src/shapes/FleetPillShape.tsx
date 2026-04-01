@@ -131,7 +131,7 @@ export function dropPillOnTarget(
           ? filterDropPreview.toPreview
           : filterDropPreview.fromPreview
       if (preview) {
-        editor.updateShape({
+        createEditor.updateShape({
           id: hitShape.id,
           type: 'fleet-chat' as any,
           props: { filter: preview },
@@ -164,7 +164,7 @@ export function dropPillOnTarget(
         ]
       }
     }
-    editor.updateShape({
+    createEditor.updateShape({
       id: hitShape.id,
       type: 'fleet-chat' as any,
       props: { ...hitShape.props, filter: newFilter },

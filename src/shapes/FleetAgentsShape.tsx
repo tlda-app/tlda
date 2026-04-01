@@ -411,7 +411,7 @@ function AgentRow({
       <span
         className="fleet-agents-col-name fleet-agents-pill"
         style={{ color, opacity: nameOpacity }}
-        onPointerDown={(e) => onStartDrag(e, 'agent', agent.id, name, color)}
+        onPointerDown={(e) => onStartDrag(e, 'agent', name, name, color)}
       >
         {name}
       </span>
