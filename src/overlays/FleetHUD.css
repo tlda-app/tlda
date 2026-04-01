@@ -28,9 +28,10 @@
 }
 
 /* Expanded HUD — full overlay with fleet shapes, positioned by JS */
+/* z-index 300: above canvas content but below TLDraw toolbar (1000) and ToC panel (999) */
 .fleet-hud-wrap {
   position: fixed;
-  z-index: 999;
+  z-index: 300;
   pointer-events: none;
 }
 
