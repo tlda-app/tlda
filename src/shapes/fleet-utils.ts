@@ -17,11 +17,16 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
 export function createFleetLayout(editor: Editor, agents: any[]) {
-  // Wipe existing fleet shapes
+  // Preserve existing chat filters before nuking — so Fleet button restores geometry
+  // without losing filters the user has set by dragging agents.
   const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+  const existingChatFilters = existing
+    .filter(s => s.type === 'fleet-chat')
+    .map(s => (s as any).props?.filter as [string, string][][] | undefined)
+
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-  // Pick 2 most recently active non-human agents for filter pre-fill
+  // Fall back to most-recently-active agents only if no existing filter to restore
   const nonHuman = agents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
   const sorted = [...nonHuman].sort((a: any, b: any) => {
     const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
@@ -31,8 +36,8 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
   const [agent1, agent2] = sorted.slice(0, 2)
   const name1 = (agent1?.friendly_name || agent1?.id) as string | undefined
   const name2 = (agent2?.friendly_name || agent2?.id) as string | undefined
-  const filter1: [string, string][][] = name1 ? [[['from', name1]], [['to', name1]]] : []
-  const filter2: [string, string][][] = name2 ? [[['from', name2]], [['to', name2]]] : []
+  const filter1: [string, string][][] = existingChatFilters[0] ?? (name1 ? [[['from', name1]], [['to', name1]]] : [])
+  const filter2: [string, string][][] = existingChatFilters[1] ?? (name2 ? [[['from', name2]], [['to', name2]]] : [])
 
   const leftW = 340
   const gap = 10
