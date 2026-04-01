@@ -1003,9 +1003,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {/* The dot */}
             <div
+              onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 e.stopPropagation()
-                setDotClicked(c => !c)
+                editor.updateShape({
+                  id: shape.id,
+                  type: shape.type,
+                  props: { collapsed: false },
+                })
               }}
               style={{
                 width: 10,
