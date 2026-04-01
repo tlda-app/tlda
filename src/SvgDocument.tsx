@@ -154,7 +154,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   useSignalInit(document.name)
 
   const editorRef = useRef<Editor | null>(null)
-  const sessionRestoredRef = useRef(false)
+  const restoredEditorRef = useRef<Editor | null>(null)
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
@@ -166,7 +166,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
   const panelsLocalRef = useRef(true)
-  const [editorMounted, setEditorMounted] = useState(false)
+  const [editorMounted, setEditorMounted] = useState(0)
   useEffect(() => { panelsLocalRef.current = panelsLocal }, [panelsLocal])
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
@@ -759,7 +759,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
-          setEditorMounted(true)
+          setEditorMounted(v => v + 1)
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
@@ -910,10 +910,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
           // Restore session after constraints and Yjs sync settle,
           // then start watching for changes.
-          // Guard: onMount fires multiple times (React Strict Mode double-invokes
-          // TLDraw's layout effect on every commit). Only restore+watch once.
-          if (!sessionRestoredRef.current) {
-            sessionRestoredRef.current = true
+          // Guard: track which editor was restored. Skips React Strict Mode
+          // double-invokes (same editor), but re-runs when a new editor is
+          // created (e.g. after Vite HMR causes useSync to return a new store).
+          if (restoredEditorRef.current !== editor) {
+            restoredEditorRef.current = editor
             const session = loadSession()
             setTimeout(() => {
               if (session?.pageId) {
