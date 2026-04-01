@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useCallback, useRef, useMemo, useContext } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext } from 'react'
 
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
@@ -383,9 +383,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const ref = refStore.get(token)
-      // Display: strip the "type:" prefix, show just the label
+      // Display: strip the "type:" prefix and any #uid suffix, show just the label
       const colonIdx = inner.indexOf(':')
-      const display = colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner
+      const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[a-z0-9]+$/, '')
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -596,11 +596,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages — only if user was already at bottom
+  const prevScrollHeight = useRef(0)
   useEffect(() => {
-    if (chatLogRef.current) {
-      chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-    }
+    const el = chatLogRef.current
+    if (!el) return
+    const onScroll = () => { prevScrollHeight.current = el.scrollHeight }
+    prevScrollHeight.current = el.scrollHeight
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+  useLayoutEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
+    if (wasAtBottom) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
 
   const agentNames = useMemo(() => {

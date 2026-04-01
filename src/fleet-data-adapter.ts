@@ -138,9 +138,12 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
 
   useEffect(() => {
     let unsubThinking: (() => void) | null = null
+    let unsubMessages: (() => void) | null = null
     let unsubStatus: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
+    const pendingRemoval = new Set<string>()
+    const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
       if (cancelled || !filter) return
@@ -151,29 +154,82 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
 
       unsubThinking = subscribe('thinking', null, (data: any) => {
         if (!inFilter(data.agent)) return
-        setThinking(prev => {
-          const next = new Map(prev)
-          if (data.thinking) next.set(data.agent, Date.now())
-          else next.delete(data.agent)
-          return next
-        })
+        if (data.thinking) {
+          pendingRemoval.delete(data.agent)
+          const ft = fallbackTimers.get(data.agent)
+          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
+          setThinking(prev => {
+            const next = new Map(prev)
+            next.set(data.agent, Date.now())
+            return next
+          })
+        } else {
+          // Don't remove yet — wait for the message to arrive (fallback: 3s)
+          pendingRemoval.add(data.agent)
+          fallbackTimers.set(data.agent, setTimeout(() => {
+            fallbackTimers.delete(data.agent)
+            pendingRemoval.delete(data.agent)
+            setThinking(prev => {
+              const next = new Map(prev)
+              next.delete(data.agent)
+              return next
+            })
+          }, 3000))
+        }
       })
 
-      unsubStatus = subscribe('status', null, (data: any) => {
-        if (!inFilter(data.agent)) return
+      // When a message arrives from an agent with pending removal, clear their thinking indicator
+      function clearPending(agentId: string) {
+        pendingRemoval.delete(agentId)
+        const ft = fallbackTimers.get(agentId)
+        if (ft) { clearTimeout(ft); fallbackTimers.delete(agentId) }
         setThinking(prev => {
           const next = new Map(prev)
-          if (data.state === 'thinking') { if (!next.has(data.agent)) next.set(data.agent, Date.now()) }
-          else next.delete(data.agent)
+          next.delete(agentId)
           return next
         })
+      }
+      unsubMessages = subscribe('messages', null, (event: any) => {
+        if (!event) return
+        const from = event.from || event.agent
+        if (from && pendingRemoval.has(from)) clearPending(from)
+      })
+
+      // Status events: only 'idle' should clear thinking. 'tool_call' happens mid-thought.
+      unsubStatus = subscribe('status', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        if (data.state === 'thinking') {
+          pendingRemoval.delete(data.agent)
+          const ft = fallbackTimers.get(data.agent)
+          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
+          setThinking(prev => {
+            const next = new Map(prev)
+            if (!next.has(data.agent)) next.set(data.agent, Date.now())
+            return next
+          })
+        } else if (data.state === 'idle') {
+          pendingRemoval.add(data.agent)
+          fallbackTimers.set(data.agent, setTimeout(() => {
+            fallbackTimers.delete(data.agent)
+            pendingRemoval.delete(data.agent)
+            setThinking(prev => {
+              const next = new Map(prev)
+              next.delete(data.agent)
+              return next
+            })
+          }, 3000))
+        }
+        // 'tool_call' — agent is working, don't touch thinking state
       })
     })
 
     return () => {
       cancelled = true
       unsubThinking?.()
+      unsubMessages?.()
       unsubStatus?.()
+      for (const t of fallbackTimers.values()) clearTimeout(t)
+      fallbackTimers.clear()
       setThinking(new Map())
     }
   }, [filterKey])
