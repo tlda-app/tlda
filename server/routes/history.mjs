@@ -9,6 +9,9 @@
 import { Router } from 'express'
 import { join } from 'path'
 import { existsSync, readdirSync } from 'fs'
+import { exec as execCb } from 'child_process'
+import { promisify } from 'util'
+const execAsync = promisify(execCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import { readProject, outputDir } from '../lib/project-store.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
@@ -363,5 +366,32 @@ function cleanExtractedText(text) {
     .replace(/  +/g, ' ')
     .trim()
 }
+
+/**
+ * GET /source-diff?ref1=<hash>&ref2=<hash> — Git diff of source files between two refs.
+ * ref2 defaults to HEAD if omitted.
+ * Returns { diff: string, ref1, ref2 }.
+ */
+router.get('/source-diff', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { ref1, ref2 = 'HEAD' } = req.query
+
+  if (!ref1) return res.status(400).json({ error: 'ref1 is required' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.sourceDir) return res.status(400).json({ error: 'Project has no sourceDir' })
+  if (!existsSync(project.sourceDir)) return res.status(400).json({ error: 'sourceDir not found' })
+
+  try {
+    const { stdout } = await execAsync(
+      `git diff "${ref1}" "${ref2}" -- "*.tex" "*.bib"`,
+      { cwd: project.sourceDir, timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
+    )
+    res.json({ diff: stdout, ref1, ref2 })
+  } catch (e) {
+    res.status(500).json({ error: `git diff failed: ${e.message}` })
+  }
+})
 
 export default router

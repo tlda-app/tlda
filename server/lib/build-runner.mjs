@@ -27,7 +27,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal } from './sync-rooms.mjs'
+import { broadcastSignal, putShape } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
@@ -825,6 +825,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
     emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
 
+    // Update doc-version sentinel shape with source git commit hash (non-blocking)
+    updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
+      ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+    })
+
     status.building = false
     status.phase = 'done'
     status.completedAt = new Date().toISOString()
@@ -893,4 +898,44 @@ function signalReload(name, pages) {
   } catch (e) {
     console.error(`[build:${name}] Failed to send reload signal: ${e.message}`)
   }
+}
+
+/**
+ * Update the doc-version sentinel shape in the Yjs room with the current
+ * source git commit hash. Fire-and-forget — call without await.
+ */
+async function updateDocVersionSentinel(name, srcDir) {
+  let commitHash = 'unknown'
+  if (srcDir && existsSync(srcDir)) {
+    try {
+      const { stdout } = await execAsync('git rev-parse HEAD', { cwd: srcDir, timeout: 5000 })
+      commitHash = stdout.trim()
+    } catch {
+      // Not a git repo, or no commits yet — leave as 'unknown'
+    }
+  }
+
+  const docName = `doc-${name}`
+  const sentinel = {
+    id: 'shape:doc-version--sentinel',
+    typeName: 'shape',
+    type: 'doc-version',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    index: 'a0',
+    parentId: 'page:page',
+    isLocked: true,
+    opacity: 0,
+    meta: {},
+    props: {
+      w: 1,
+      h: 1,
+      commitHash,
+      timestamp: Date.now(),
+    },
+  }
+
+  await putShape(docName, sentinel)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)}`)
 }

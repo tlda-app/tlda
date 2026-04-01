@@ -2063,6 +2063,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'text'],
       },
     },
+    {
+      name: 'doc_version',
+      description: 'List recent build/git versions for a document, or find the version nearest to a given timestamp. Returns a timeline of build snapshots and git commits with their hashes and timestamps.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version nearest to this time. Omit to list all recent versions.' },
+          limit: { type: 'number', description: 'Max entries to return (default: 20)' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'doc_checkout',
+      description: 'Revert a document to a specific historical version by source git commit ref. Triggers a rebuild at that ref (cached if already built), then updates the sentinel shape with the commit hash tagged as a rollback. The sentinel shape change is logged in the changelog so the timeline reflects the revert.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref: { type: 'string', description: 'Git commit hash (full or short) to revert to' },
+        },
+        required: ['doc', 'ref'],
+      },
+    },
+    {
+      name: 'doc_diff',
+      description: 'Show the source git diff between two versions of a document. Compares .tex and .bib files at two commit refs. ref2 defaults to HEAD (current).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref1: { type: 'string', description: 'Base commit hash to diff from' },
+          ref2: { type: 'string', description: 'Target commit hash (default: HEAD / current)' },
+        },
+        required: ['doc', 'ref1'],
+      },
+    },
   ],
 }));
 
@@ -3519,6 +3557,115 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       await createShapeRest(doc, shape);
       return { content: [{ type: 'text', text: `Response bar placed: ${shapeId} for highlight ${hlId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_version') {
+    const doc = args?.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const { entries } = await serverFetch(`/api/projects/${doc}/history`);
+      const limit = args?.limit || 20;
+      const ts = args?.timestamp;
+
+      if (ts) {
+        // Find nearest entry to the given timestamp
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (const e of entries) {
+          const dist = Math.abs(e.timestamp - ts);
+          if (dist < nearestDist) { nearestDist = dist; nearest = e; }
+        }
+        if (!nearest) return { content: [{ type: 'text', text: 'No history found' }] };
+        return { content: [{ type: 'text', text: JSON.stringify(nearest, null, 2) }] };
+      }
+
+      const recent = entries.slice(0, limit);
+      const lines = recent.map(e => {
+        const date = new Date(e.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        const hash = e.commitHash ? ` [${e.commitHash.slice(0, 7)}]` : '';
+        const msg = e.commitMessage ? ` — ${e.commitMessage}` : '';
+        const built = e.built === false ? ' (not built)' : '';
+        return `${date}  ${e.type}${hash}${msg}${built}  id=${e.id}`;
+      });
+      return { content: [{ type: 'text', text: lines.join('\n') || 'No history' }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_checkout') {
+    const doc = args?.doc;
+    const ref = args?.ref;
+    if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
+    try {
+      // Trigger build at the given ref (returns 202 if building, or cached status)
+      const buildRes = await serverFetch(`/api/projects/${doc}/history/git/${ref}/build`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }).catch(e => ({ status: 'error', error: e.message }));
+
+      if (buildRes.status === 'error') {
+        return { content: [{ type: 'text', text: `Build failed: ${buildRes.error}` }], isError: true };
+      }
+
+      // If already cached or built, update sentinel immediately
+      let statusInfo = buildRes;
+      if (buildRes.status === 'building') {
+        // Poll until done (timeout 3min)
+        const deadline = Date.now() + 180_000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 3000));
+          statusInfo = await serverFetch(`/api/projects/${doc}/history/git/${ref}/status`);
+          if (statusInfo.status === 'cached') break;
+        }
+        if (statusInfo.status !== 'cached') {
+          return { content: [{ type: 'text', text: `Build timed out or failed for ref ${ref}` }], isError: true };
+        }
+      }
+
+      // Update sentinel shape to point to this ref (tagged as rollback)
+      const sentinel = {
+        id: 'shape:doc-version--sentinel',
+        typeName: 'shape',
+        type: 'doc-version',
+        x: 0, y: 0, rotation: 0,
+        index: 'a0',
+        parentId: 'page:page',
+        isLocked: true,
+        opacity: 0,
+        meta: { revertedTo: ref, revertedAt: Date.now() },
+        props: { w: 1, h: 1, commitHash: ref, timestamp: Date.now() },
+      };
+      await serverFetch(`/api/projects/${doc}/shapes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sentinel),
+      });
+
+      return { content: [{ type: 'text', text: `Checked out ${ref} for ${doc}. Built: ${statusInfo.pages} pages. Sentinel updated (revertedTo: ${ref}).` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_diff') {
+    const doc = args?.doc;
+    const ref1 = args?.ref1;
+    const ref2 = args?.ref2 || 'HEAD';
+    if (!doc || !ref1) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref1' }], isError: true };
+    try {
+      const { diff } = await serverFetch(`/api/projects/${doc}/history/source-diff?ref1=${encodeURIComponent(ref1)}&ref2=${encodeURIComponent(ref2)}`);
+      if (!diff || diff.trim() === '') {
+        return { content: [{ type: 'text', text: `No source changes between ${ref1.slice(0, 7)} and ${ref2 === 'HEAD' ? 'HEAD' : ref2.slice(0, 7)}` }] };
+      }
+      // Truncate very long diffs
+      const lines = diff.split('\n');
+      const truncated = lines.length > 200 ? lines.slice(0, 200).join('\n') + `\n\n[... ${lines.length - 200} more lines truncated]` : diff;
+      return { content: [{ type: 'text', text: truncated }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

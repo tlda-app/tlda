@@ -218,6 +218,18 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'doc-version': {
+    props: {
+      w: T.number,
+      h: T.number,
+      commitHash: T.string,
+      timestamp: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.doc-version',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
