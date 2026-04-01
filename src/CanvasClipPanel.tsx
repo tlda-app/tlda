@@ -319,6 +319,28 @@ export function CanvasClipPanel({
     return () => el.removeEventListener('wheel', onWheel, { capture: true })
   }, [editor, lockCamera, mainEditor])
 
+  // Right-click pass-through: prevent TLDraw from entering selection mode on right-click
+  // so the browser's native context menu works on HTML content inside fleet shapes.
+  // Uses capture-phase listeners so they fire before TLDraw's own handlers on inner elements.
+  // stopPropagation on contextmenu prevents main canvas from seeing it; no preventDefault
+  // so the browser still shows the native menu.
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button === 2) e.stopPropagation()
+    }
+    const onContextMenu = (e: Event) => {
+      e.stopPropagation()
+    }
+    el.addEventListener('pointerdown', onPointerDown, { capture: true })
+    el.addEventListener('contextmenu', onContextMenu, { capture: true })
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      el.removeEventListener('contextmenu', onContextMenu, { capture: true })
+    }
+  }, [])
+
   // Clear selection when clicking outside the panel (e.g. on the main canvas).
   // The panel's own tldraw editor doesn't see events outside its container,
   // so resize handles would otherwise stay stuck.
