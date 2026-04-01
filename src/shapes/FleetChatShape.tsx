@@ -27,7 +27,7 @@ import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from 'fleet-dashboard/js/voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetActivity, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTimeline, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -119,6 +119,18 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   indicator() {
     return null
   }
+}
+
+// --- Elapsed time display (isolated to avoid re-rendering entire chat) ---
+function ElapsedTime({ startMs }: { startMs: number }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const secs = Math.floor((Date.now() - startMs) / 1000)
+  const str = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`
+  return <span className="thinking-elapsed">({str})</span>
 }
 
 // --- Nick color system (matches dashboard) ---
@@ -222,34 +234,33 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
 
-  // Live data from fleet-data.mjs via SSE
+  // Live data from fleet-data.mjs via SSE — single unified timeline
   const agents = useFleetAgents()
-  const liveEvents = useFleetEvents(dnfFilter)
-  const activityEvents = useFleetActivity(dnfFilter)
+  const timelineEvents = useFleetTimeline(dnfFilter)
   const tasks = useFleetTasks()
   const thinkingAgents = useFleetThinking(dnfFilter)
   const compactingAgents = useFleetCompacting(dnfFilter)
-  const [tick, setTick] = useState(0)
-  useEffect(() => {
-    if (thinkingAgents.size === 0 && compactingAgents.size === 0) return
-    const id = setInterval(() => setTick(t => t + 1), 1000)
-    return () => clearInterval(id)
-  }, [thinkingAgents.size, compactingAgents.size])
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
 
-  // Merge older (scrollback) events with live events + activity events
+  // Merge older (scrollback) events with live timeline
   const events = useMemo(() => {
-    const all = [...liveEvents, ...activityEvents]
-    if (olderEvents.length === 0) return all
-    // Deduplicate by _dbId or timestamp+from
-    const seen = new Set(all.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
-    const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
-    return [...unique, ...all]
-  }, [liveEvents, activityEvents, olderEvents])
+    if (olderEvents.length === 0) return timelineEvents
+    // Deduplicate older events against timeline
+    const seen = new Set<string>()
+    for (const e of timelineEvents) {
+      if (e._dbId) seen.add(`db:${e._dbId}`)
+      seen.add(`${e.timestamp}:${e.from}`)
+    }
+    const unique = olderEvents.filter((e: any) => {
+      if (e._dbId && seen.has(`db:${e._dbId}`)) return false
+      return !seen.has(`${e.timestamp}:${e.from}`)
+    })
+    return [...unique, ...timelineEvents]
+  }, [timelineEvents, olderEvents])
 
   // Reset older events when filter changes
   const filterKey = JSON.stringify(filter)
@@ -1153,33 +1164,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
           )}
-          {[...thinkingAgents.entries()].map(([agentId, startTs]) => {
-            const elapsed = Date.now() - startTs
-            const secs = Math.floor(elapsed / 1000)
-            const timeStr = secs >= 60
-              ? `${Math.floor(secs / 60)}m ${secs % 60}s`
-              : `${secs}s`
-            void tick
-            return (
+          {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
               <div key={agentId} className="chat-line chat-thinking">
                 <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
                 {' '}<span className="thinking-text">thinking…</span>
-                {' '}<span className="thinking-elapsed">({timeStr})</span>
+                {' '}<ElapsedTime startMs={startTs} />
               </div>
-            )
-          })}
-          {[...compactingAgents.entries()].map(([agentId, startTs]) => {
-            const elapsed = Date.now() - startTs
-            const secs = Math.floor(elapsed / 1000)
-            const timeStr = secs >= 60
-              ? `${Math.floor(secs / 60)}m ${secs % 60}s`
-              : `${secs}s`
-            void tick
-            return (
+            ))}
+          {[...compactingAgents.entries()].map(([agentId, startTs]) => (
               <div key={`compact-${agentId}`} className="chat-line chat-thinking">
                 <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
                 {' '}<span className="thinking-text">compacting…</span>
-                {' '}<span className="thinking-elapsed">({timeStr})</span>
+                {' '}<ElapsedTime startMs={startTs} />
               </div>
             )
           })}
