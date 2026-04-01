@@ -1703,27 +1703,37 @@ body.phone-mode .phone-page-indicator.visible {
   transition: opacity 0.1s ease-in;
 }
 
+/* Page/figure background — themed via CSS, not inline styles */
+.svg-page-background {
+  width: 100%;
+  height: 100%;
+  background: white;
+}
+
+.tl-theme__dark .svg-page-background {
+  background: #0f0f1a;
+}
+
 /* Warm / sepia reading mode */
 body.warm-mode .tl-container {
   background: #f5f0e8 !important;
-}
-
-body.warm-mode [data-shape-id] svg {
-  filter: sepia(0.15) saturate(0.9) brightness(0.97);
 }
 
 body.warm-mode .tl-background {
   background: #f5f0e8 !important;
 }
 
-/* Warm mode on dark: low-blue warm dark */
-body.warm-mode .tl-theme__dark .tl-container,
-body.warm-mode .tl-theme__dark .tl-background {
-  background: #1a1814 !important;
+body.warm-mode .svg-page-background {
+  background: #f5f0e8;
 }
 
-body.warm-mode .tl-theme__dark [data-shape-id] svg {
-  filter: sepia(0.1) saturate(0.85) brightness(0.95) invert(0.88) hue-rotate(180deg);
+body.warm-mode [data-shape-type="fleet-search"] input,
+body.warm-mode [data-shape-type="fleet-chat"] textarea {
+  background: rgba(0, 0, 0, 0.05) !important;
+}
+
+body.warm-mode [data-shape-id] svg {
+  filter: sepia(0.15) saturate(0.9) brightness(0.97);
 }
 
 /* ==================== Fleet Tab ==================== */

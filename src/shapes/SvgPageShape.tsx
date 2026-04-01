@@ -218,10 +218,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
 }
 
 function SvgPageBackground({ shape: _shape }: { shape: any }) {
-  const editor = useEditor()
-  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
-  const fill = isDark ? '#0f0f1a' : 'white'
-  return <div style={{ width: '100%', height: '100%', backgroundColor: fill }} />
+  return <div className="svg-page-background" />
 }
 
 /** Apply text tinting to SVG text elements within change regions.

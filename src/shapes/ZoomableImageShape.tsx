@@ -50,7 +50,7 @@ export class ZoomableImageShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   backgroundComponent(_shape: any) {
-    return <div style={{ width: '100%', height: '100%', backgroundColor: 'white' }} />
+    return <div className="svg-page-background" />
   }
 
   indicator(shape: any) {
