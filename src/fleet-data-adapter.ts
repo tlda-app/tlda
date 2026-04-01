@@ -105,7 +105,16 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
 
       // Subscribe for live updates
       unsub = subscribe('messages', filter, (event: any) => {
-        setEvents(prev => [...prev, event])
+        if (!event) {
+          // null event = re-read (e.g. read-receipt updated existing messages)
+          const all = getEvents()
+          const filtered = filter
+            ? all.filter((e: any) => matchesFilter(filter, e))
+            : [...all]
+          setEvents(filtered)
+        } else {
+          setEvents(prev => [...prev, event])
+        }
       })
     })
 

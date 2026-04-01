@@ -393,15 +393,16 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 
 /* --- Receipt / delivery indicator --- */
 .fleet-chat-shape .chat-receipt {
-  color: var(--text-dim);
   font-size: 10px;
   margin-left: 4px;
-  opacity: 0.4;
+  opacity: 0.35;
 }
-.fleet-chat-shape .chat-receipt.kick-pending,
-.fleet-chat-shape .chat-receipt.signal-pending {
-  opacity: 0.25;
-  filter: grayscale(80%);
+.fleet-chat-shape .chat-receipt.chat-delivered {
+  color: var(--text-dim);
+}
+.fleet-chat-shape .chat-receipt.chat-read {
+  color: var(--text-dim);
+  opacity: 0.5;
 }
 
 /* --- CC separator --- */
