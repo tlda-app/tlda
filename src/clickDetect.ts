@@ -109,8 +109,8 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   let noiseFloor = 1e-4          // initial estimate, will converge quickly
   let prevEnergy = 0
   const NOISE_FLOOR_ALPHA = 0.005  // slow rise — noise floor tracks ambient, not transients
-  const TRIGGER_RATIO = 4.0        // fire when energy is 4x the noise floor
-  const ATTACK_RATIO = 2.5         // also require a sharp rise frame-over-frame
+  const TRIGGER_RATIO = 2.0        // fire when energy is 2x the noise floor
+  const ATTACK_RATIO = 2.0         // also require a sharp rise frame-over-frame
   let debugLogTimer = 0
 
   function poll() {

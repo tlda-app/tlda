@@ -13,27 +13,35 @@ import { useEffect } from 'react'
 import type { Editor } from 'tldraw'
 import { createClickDetector } from '../clickDetect'
 
-// Track real mouse position globally — more reliable than editor.inputs which
-// depends on which tldraw instance last saw the pointer.
+// Track real mouse position + last movement time globally.
 let _mouseX = window.innerWidth / 2
 let _mouseY = window.innerHeight / 2
-document.addEventListener('mousemove', (e) => { _mouseX = e.clientX; _mouseY = e.clientY }, { passive: true })
+let _lastMoveTime = 0
+const STILLNESS_MS = 250  // cursor must be still for this long before a click registers
+document.addEventListener('mousemove', (e) => {
+  _mouseX = e.clientX; _mouseY = e.clientY; _lastMoveTime = performance.now()
+}, { passive: true })
 
 export function useClickActions(editor: Editor) {
   useEffect(() => {
     const cd = createClickDetector()
 
+    const isCursorStill = () => performance.now() - _lastMoveTime > STILLNESS_MS
+
     cd.on('click', () => {
+      if (!isCursorStill()) return
       flashAt(_mouseX, _mouseY, '#60a5fa')
       dispatchPointerClick(editor, _mouseX, _mouseY)
     })
 
     cd.on('dblclick', () => {
+      if (!isCursorStill()) return
       flashAt(_mouseX, _mouseY, '#a78bfa')
       dispatchContextualDblClick(editor, _mouseX, _mouseY)
     })
 
     cd.on('enter', () => {
+      if (!isCursorStill()) return
       flashAt(_mouseX, _mouseY, '#34d399')
       dispatchEnter(editor, _mouseX, _mouseY)
     })
