@@ -714,10 +714,11 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .code-block-copy {
   margin-left: auto;
   cursor: pointer;
-  opacity: 0.4;
-  font-size: 13px;
+  opacity: 0.6;
+  font-size: 14px;
   user-select: none;
   transition: opacity 0.1s, color 0.1s;
+  padding: 0 2px;
 }
 .fleet-chat-shape .code-block-copy:hover {
   opacity: 1;
@@ -900,7 +901,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   border-radius: 3px;
   overflow: hidden;
 }
-.fleet-chat-shape .code-block-header {
+.fleet-chat-shape .chat-activity-card .code-block-header {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -918,7 +919,6 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   max-height: calc(10 * 1.4em);
   overflow: hidden;
 }
-.fleet-chat-shape .code-block-copy { display: none; }
 
 /* --- Document reference links --- */
 .fleet-chat-shape .doc-link {

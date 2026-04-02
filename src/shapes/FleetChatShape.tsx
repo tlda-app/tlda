@@ -835,10 +835,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // Code block header
+      // Code block header (but not the copy button — let that through to onClick)
       if (!drag) {
         const codeHeader = target.closest('.code-block-header') as HTMLElement
-        if (codeHeader) {
+        if (codeHeader && !target.closest('.code-block-copy')) {
           const wrap = codeHeader.closest('.code-block-wrap')
           const code = wrap?.querySelector('pre code')
           if (code) {
