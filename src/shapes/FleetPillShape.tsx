@@ -51,6 +51,10 @@ export const filterDropPreview = {
 
 const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
 
+/** Ghost slot state — updated by drag handlers (page coords), read by FleetDropGhost */
+export const dropGhostState: { slot: { x: number; y: number; w: number; h: number } | null } = { slot: null }
+export const dropGhostBus = new EventTarget()
+
 /**
  * Compute the empty grid slot at (dropX, dropY) defined by surrounding fleet shapes.
  * Returns { x, y, w, h } to fill, or null if no meaningful slot is found.

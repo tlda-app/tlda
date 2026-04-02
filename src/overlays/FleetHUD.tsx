@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { computeDropSlot } from '../shapes/FleetPillShape'
+import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
@@ -48,33 +48,15 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
   const [ghost, setGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
   useEffect(() => {
-    const updateGhost = () => {
-      const pills = mainEditor.getCurrentPageShapes()
-        .filter(s => (s as any).type === 'fleet-pill')
-      if (pills.length === 0) { setGhost(null); return }
-
-      const pill = pills[0] as any
-      const pb = mainEditor.getShapePageBounds(pill.id)
-      if (!pb) { setGhost(null); return }
-
-      const slot = computeDropSlot(mainEditor, null, pb.x + pb.w / 2, pb.y + pb.h / 2)
+    const handler = () => {
+      const slot = dropGhostState.slot
       if (!slot) { setGhost(null); return }
-
       const tl = mainEditor.pageToScreen({ x: slot.x, y: slot.y })
       const br = mainEditor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
       setGhost({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
     }
-
-    const unsub = mainEditor.store.listen(({ changes }) => {
-      const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
-      const relevant =
-        Object.values(changes.added).some(isPill) ||
-        Object.values(changes.updated).some(([, to]) => isPill(to)) ||
-        Object.values(changes.removed).some(isPill)
-      if (relevant) updateGhost()
-    }, { source: 'all', scope: 'document' })
-
-    return () => { unsub(); setGhost(null) }
+    dropGhostBus.addEventListener('change', handler)
+    return () => { dropGhostBus.removeEventListener('change', handler); setGhost(null) }
   }, [mainEditor])
 
   if (!ghost) return null

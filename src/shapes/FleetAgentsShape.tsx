@@ -16,7 +16,7 @@ import {
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
-import { dropPillOnTarget } from './FleetPillShape'
+import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
 
 
 const DEFAULT_W = 340
@@ -171,6 +171,11 @@ function usePillDrag() {
           x: pagePos.x - pw / 2,
           y: pagePos.y - ph / 2,
         })
+        // Publish slot for ghost preview (uses main editor for page coords)
+        const mainEditor = (window as any).__tldraw_editor__
+        const targetEditor = mainEditor || editor
+        dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
+        dropGhostBus.dispatchEvent(new CustomEvent('change'))
       }
     }
 
@@ -181,6 +186,10 @@ function usePillDrag() {
       dragRef.current = null
 
       if (!drag.started || !drag.pillId) return
+
+      // Clear ghost before drop
+      dropGhostState.slot = null
+      dropGhostBus.dispatchEvent(new CustomEvent('change'))
 
       const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
       dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
