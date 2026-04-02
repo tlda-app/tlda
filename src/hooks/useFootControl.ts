@@ -101,10 +101,20 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     const offClick = click.on('click', () => {
       const x = clickX(), y = clickY()
       if (isDomDragging) {
-        console.log('[foot-control] dom-drop at', x, y, '— dispatching pointerup to document')
+        console.log('[foot-control] dom-drop at', x, y)
         flashAt(x, y, '#f97316')
-        document.dispatchEvent(new PointerEvent('pointerup', {
+        const dropTarget = document.elementFromPoint(x, y)
+        // Dispatch to element, then bubble via window — covers both capture and bubble handlers
+        dropTarget?.dispatchEvent(new PointerEvent('pointermove', {
           bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+        }))
+        dropTarget?.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        window.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: false, clientX: x, clientY: y,
           pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
         }))
         isDomDragging = false
@@ -249,8 +259,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (isDomDragging) {
         console.log('[foot-control] space-dom-drop at', x, y)
         flashAt(x, y, '#f97316')
-        document.dispatchEvent(new PointerEvent('pointerup', {
+        const dropTarget = document.elementFromPoint(x, y)
+        dropTarget?.dispatchEvent(new PointerEvent('pointermove', {
           bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+        }))
+        dropTarget?.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        window.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: false, clientX: x, clientY: y,
           pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
         }))
         isDomDragging = false
@@ -396,30 +415,30 @@ function isOverHud(x: number, y: number): boolean {
 
 function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
   const el = document.elementFromPoint(x, y)
-  if (!isDown) {
-    // On pointer_up: check if something interactive is at the click position
-    const interactive = findInteractiveHtml(el)
-    if (interactive) {
-      // Use DOM events for HTML interactive elements (HUD buttons, toolbar, inputs, etc.)
+  const interactive = findInteractiveHtml(el)
+
+  // Interactive HTML elements (toolbar, HUD buttons, inputs): handle via DOM events only.
+  // Never send pointer_down/up to the tldraw canvas for these — it leaves the editor in a
+  // stuck "pointer down on canvas" state which causes visual cycling and spurious drags.
+  if (interactive) {
+    if (!isDown) {
       interactive.focus?.()
       interactive.click?.()
-      return
     }
-    // Route to HUD inner editor via DOM events
-    if (isOverHud(x, y)) {
-      el?.dispatchEvent(new PointerEvent('pointerup', {
-        bubbles: true, cancelable: true, clientX: x, clientY: y,
-        pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
-      }))
-      return
-    }
-  } else if (isOverHud(x, y)) {
-    el?.dispatchEvent(new PointerEvent('pointerdown', {
+    // isDown: do nothing — click() on up is sufficient; no pointerdown needed
+    return
+  }
+
+  // HUD inner editor: DOM pointer events
+  if (isOverHud(x, y)) {
+    el?.dispatchEvent(new PointerEvent(isDown ? 'pointerdown' : 'pointerup', {
       bubbles: true, cancelable: true, clientX: x, clientY: y,
-      pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+      pointerType: 'mouse', isPrimary: true, pointerId: 1,
+      button: 0, buttons: isDown ? 1 : 0,
     }))
     return
   }
+
   editor.dispatch({ type: 'pointer', target: 'canvas', name: isDown ? 'pointer_down' : 'pointer_up', ...tlPtr(x, y) })
 }
 
@@ -434,10 +453,13 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldr
   }
 
   // Try DOM element first — catches React onPointerDown handlers (e.g. agent label spans)
-  // that live inside tldraw shapes but handle their own drag
+  // that live inside tldraw shapes but handle their own drag.
+  // Exclude standard interactive elements (toolbar buttons, sliders, etc.) — those aren't
+  // draggable in the fleet-agent-label sense, and treating them as DOM drags causes cycling.
   const el = document.elementFromPoint(x, y)
   const isTldrawCanvas = el?.closest('.tl-canvas') && !el?.closest('[data-shape-id]')
-  if (el && !isTldrawCanvas) {
+  const isStandardInteractive = !!findInteractiveHtml(el)
+  if (el && !isTldrawCanvas && !isStandardInteractive) {
     el.dispatchEvent(new PointerEvent('pointerdown', {
       bubbles: true, clientX: x, clientY: y,
       pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
