@@ -98,6 +98,18 @@ export function FleetHUD({
     }
   }, [mainEditor])
 
+  // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
+  // main canvas — avoids the "two copies" issue where both the HUD and main
+  // canvas show the same shapes simultaneously.
+  useEffect(() => {
+    if (expanded && fleetBounds) {
+      document.body.classList.add('fleet-hud-open')
+    } else {
+      document.body.classList.remove('fleet-hud-open')
+    }
+    return () => document.body.classList.remove('fleet-hud-open')
+  }, [expanded, fleetBounds])
+
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])

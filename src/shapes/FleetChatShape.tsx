@@ -761,9 +761,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const shapeIdRef = useRef(shape.id)
   shapeIdRef.current = shape.id
 
-  // Track selection state via ref so native capture listeners can read it
+  // Track selection state via ref so native capture listeners can read it.
+  // useValue makes this reactive — component re-renders when selection changes,
+  // keeping isSelectedRef.current fresh. Without this, the ref is always stale
+  // because tldraw doesn't re-render shapes on selection changes.
   const isSelectedRef = useRef(false)
-  isSelectedRef.current = editor.getSelectedShapeIds().includes(shape.id)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
 
   useEffect(() => {
     const logEl = chatLogRef.current
