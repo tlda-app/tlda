@@ -32,6 +32,7 @@ export default defineConfig({
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',
       '/api/recognize': 'http://localhost:5176',
+      '/api/local-image': 'http://localhost:5176',
       // Remaining /api/* → fleet server (state, chat, activity, etc.)
       '/api': 'http://localhost:5199',
       '/docs': 'http://localhost:5176',
@@ -46,6 +47,7 @@ export default defineConfig({
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',
       '/api/recognize': 'http://localhost:5176',
+      '/api/local-image': 'http://localhost:5176',
       '/api': 'http://localhost:5199',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',

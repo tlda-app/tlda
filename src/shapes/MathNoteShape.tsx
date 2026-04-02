@@ -23,6 +23,16 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   tokens[idx].attrSet('rel', 'noopener')
   return self.renderToken(tokens, idx, options)
 }
+// Rewrite local image paths through the server so they load in the browser
+md.renderer.rules.image = (tokens, idx, options, _env, self) => {
+  const token = tokens[idx]
+  const src = token.attrGet('src') || ''
+  if (src.startsWith('/') || src.startsWith('~')) {
+    token.attrSet('src', `/api/local-image?path=${encodeURIComponent(src)}`)
+  }
+  token.attrSet('style', 'max-width: 100%')
+  return self.renderToken(tokens, idx, options)
+}
 import { chatInsertBus, refStore } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
@@ -268,6 +278,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           return
         }
       }
+    }
+  }
+
+  override onClick = (shape: any) => {
+    if (shape.props.collapsed) {
+      this.editor.updateShape({
+        id: shape.id,
+        type: shape.type,
+        props: { collapsed: false },
+      })
     }
   }
 
@@ -1003,15 +1023,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {/* The dot */}
             <div
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                e.stopPropagation()
-                editor.updateShape({
-                  id: shape.id,
-                  type: shape.type,
-                  props: { collapsed: false },
-                })
-              }}
               style={{
                 width: 10,
                 height: 10,

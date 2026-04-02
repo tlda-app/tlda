@@ -26,6 +26,7 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
 import { homedir } from 'os'
+import { lookup as mimeLookup } from 'mime-types'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
@@ -87,6 +88,20 @@ app.get('/api/auth/me', (req, res) => {
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
   res.json({ level, presenter: level === 'rw' })
+})
+
+// ---------- Local image serving ----------
+// Serves local filesystem images for math notes (paths starting with / or ~)
+app.get('/api/local-image', requireRead, (req, res) => {
+  const { path: filePath } = req.query
+  if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'Missing path' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  if (!expanded.startsWith('/')) return res.status(400).json({ error: 'Path must be absolute' })
+  if (!existsSync(expanded)) return res.status(404).json({ error: 'Not found' })
+  const mimeType = mimeLookup(expanded) || 'application/octet-stream'
+  res.set('Content-Type', mimeType)
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.sendFile(resolve(expanded))
 })
 
 // ---------- Doc asset serving ----------
