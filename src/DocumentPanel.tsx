@@ -808,7 +808,8 @@ export function SemanticHighlightPill() { return null }
 function VoiceNoteButtonInner() {
   const editor = useEditor()
   const [recording, setRecording] = useState(false)
-  useClickActions(editor)
+  const footMode = new URLSearchParams(window.location.search).has('foot')
+  useClickActions(editor, !footMode)
   const recRef = useRef<any>(null)
   const transcriptRef = useRef('')
 

@@ -75,6 +75,19 @@ export function createFootController(editor: Editor, options: FootControlOptions
   let lastTime: number | null = null
   const listeners: Array<(state: FootControlState) => void> = []
 
+  // Keyboard simulation (fallback when no gamepad connected)
+  // Left/Right → rudder | Up → cursor throttle | Shift+Up → pan throttle
+  const keys = new Set<string>()
+  const onKeyDown = (e: KeyboardEvent) => { if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) { e.preventDefault(); keys.add(e.key + (e.shiftKey ? '+shift' : '')) } }
+  const onKeyUp = (e: KeyboardEvent) => { keys.delete(e.key); keys.delete(e.key + '+shift') }
+
+  function readKeyboardAxes(): { rudder: number; cursor: number; pan: number } {
+    const rudder = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)
+    const pan = keys.has('ArrowUp+shift') ? 1 : keys.has('ArrowDown+shift') ? -1 : 0
+    const cursor = !pan && keys.has('ArrowUp') ? 1 : !pan && keys.has('ArrowDown') ? -1 : 0
+    return { rudder, cursor, pan }
+  }
+
   function applyDeadzone(value: number): number {
     if (Math.abs(value) < deadzone) return 0
     const sign = value > 0 ? 1 : -1
@@ -93,7 +106,7 @@ export function createFootController(editor: Editor, options: FootControlOptions
       }
     }
     state.gamepadConnected = false
-    return { rudder: 0, cursor: 0, pan: 0 }
+    return readKeyboardAxes()
   }
 
   function tick(now: number) {
@@ -129,7 +142,8 @@ export function createFootController(editor: Editor, options: FootControlOptions
     // Pan camera along heading
     if (axes.pan !== 0) {
       const speed = axes.pan * panSpeed * dt
-      editor.pan({ x: -dx * speed, y: -dy * speed })
+      const cam = editor.getCamera()
+      editor.setCamera({ x: cam.x - dx * speed, y: cam.y - dy * speed, z: cam.z })
     }
 
     for (const fn of listeners) fn({ ...state })
@@ -138,17 +152,12 @@ export function createFootController(editor: Editor, options: FootControlOptions
   }
 
   function dispatchCursorMove(x: number, y: number) {
-    const canvas = editor.getContainer()
-    if (!canvas) return
-    canvas.dispatchEvent(new PointerEvent('pointermove', {
-      bubbles: true,
-      cancelable: true,
-      clientX: x,
-      clientY: y,
-      pointerType: 'mouse',
-      isPrimary: true,
-      pointerId: 1,
-    }))
+    editor.dispatch({
+      type: 'pointer', target: 'canvas', name: 'pointer_move',
+      point: { x, y, z: 0.5 },
+      shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false,
+      pointerId: 1, button: 0, isPen: false,
+    })
   }
 
   /** Programmatically set cursor position (for debug sliders) */
@@ -174,6 +183,8 @@ export function createFootController(editor: Editor, options: FootControlOptions
   function start() {
     if (rafId !== null) return
     lastTime = null
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
     rafId = requestAnimationFrame(tick)
   }
 
@@ -182,6 +193,9 @@ export function createFootController(editor: Editor, options: FootControlOptions
       cancelAnimationFrame(rafId)
       rafId = null
     }
+    window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keyup', onKeyUp)
+    keys.clear()
     lastTime = null
   }
 

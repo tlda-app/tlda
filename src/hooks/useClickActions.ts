@@ -22,8 +22,9 @@ document.addEventListener('mousemove', (e) => {
   _mouseX = e.clientX; _mouseY = e.clientY; _lastMoveTime = performance.now()
 }, { passive: true })
 
-export function useClickActions(editor: Editor) {
+export function useClickActions(editor: Editor, enabled = true) {
   useEffect(() => {
+    if (!enabled) return
     const cd = createClickDetector()
 
     const isCursorStill = () => performance.now() - _lastMoveTime > STILLNESS_MS
