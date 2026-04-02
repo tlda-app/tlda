@@ -47,72 +47,18 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     footRef.current = foot
     clickRef.current = click
 
-    // Track mouse position + last-moved source for click routing
+    // Two-cursor model: foot cursor and OS cursor are independent.
+    // OS cursor: shown normally; hidden (cursor:none) when foot pedals are active.
+    // Foot cursor: shown at full opacity when pedals active; fades when mouse takes over.
     let mouseX = window.innerWidth / 2
     let mouseY = window.innerHeight / 2
     let lastHandMove = 0
     let lastFootMove = 0
-    // Previous mouse coords for delta — null until first move (avoids initial teleport)
-    let prevMouseX: number | null = null
-    let prevMouseY: number | null = null
-    // Bubble-phase listener: fires AFTER tldraw processes native events, so our
-    // editor.dispatch override wins without blocking any native events.
-    // In-front-of-canvas elements get all their native pointer events normally.
-    const onPointerMove = (e: PointerEvent) => {
-      if (!e.isTrusted) return
-      if (e.pointerType !== 'mouse') return
-      mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
-      // Apply mouse delta to foot cursor — relative movement, no teleport.
-      if (prevMouseX !== null && prevMouseY !== null) {
-        const dx = e.clientX - prevMouseX
-        const dy = e.clientY - prevMouseY
-        if (dx !== 0 || dy !== 0) {
-          foot.setCursorPos(
-            Math.max(0, Math.min(window.innerWidth, foot.state.cursorX + dx)),
-            Math.max(0, Math.min(window.innerHeight, foot.state.cursorY + dy)),
-          )
-        }
-      }
-      prevMouseX = e.clientX
-      prevMouseY = e.clientY
-      // No stopPropagation — all elements get native events normally
-    }
-    // Reroute wheel events to foot cursor position.
-    // Two-path: tldraw canvas uses editor.dispatch; everything else gets scrollBy
-    // on the nearest scrollable ancestor.
-    const onWheel = (e: WheelEvent) => {
-      if (!e.isTrusted) return
-      e.stopPropagation()
-      e.preventDefault()
-      const cx = foot.state.cursorX
-      const cy = foot.state.cursorY
-      const target = document.elementFromPoint(cx, cy)
-      if (target?.closest('.tl-canvas')) {
-        // Tldraw canvas: dispatch directly through editor state machine
-        editor.dispatch({
-          type: 'wheel', name: 'wheel',
-          delta: { x: e.deltaX, y: e.deltaY, z: 0 },
-          point: { x: cx, y: cy, z: 0.5 },
-          shiftKey: e.shiftKey, altKey: e.altKey,
-          ctrlKey: e.ctrlKey, metaKey: e.metaKey,
-          accelKey: e.ctrlKey || e.metaKey,
-        } as any)
-      } else {
-        // DOM element: find nearest scrollable ancestor and scroll it
-        let el: Element | null = target
-        while (el && el !== document.documentElement) {
-          const s = getComputedStyle(el)
-          if (['auto', 'scroll'].includes(s.overflowY) || ['auto', 'scroll'].includes(s.overflow)) {
-            el.scrollBy(e.deltaX, e.deltaY)
-            return
-          }
-          el = el.parentElement
-        }
-        window.scrollBy(e.deltaX, e.deltaY)
-      }
-    }
-    window.addEventListener('pointermove', onPointerMove)
-    window.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
+    // Dynamic cursor-hide style — toggled based on active input
+    const cursorHideStyle = document.createElement('style')
+    cursorHideStyle.id = 'fc-cursor-hide'
+    document.head.appendChild(cursorHideStyle)
 
     // Route clicks to whichever cursor moved most recently
     const clickX = () => lastFootMove >= lastHandMove ? foot.state.cursorX : mouseX
@@ -200,6 +146,32 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     `
     document.body.appendChild(cursorEl)
 
+    // setActiveInput / mouse listener — defined here so rayEl + cursorEl are in scope
+    let mouseIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+    function setActiveInput(which: 'foot' | 'mouse') {
+      if (which === 'foot') {
+        cursorHideStyle.textContent = '*, *::before, *::after { cursor: none !important; }'
+      } else {
+        cursorHideStyle.textContent = ''
+        rayEl.style.opacity = '0.08'
+        cursorEl.style.opacity = '0.08'
+      }
+    }
+
+    // Track mouse movement to switch to mouse mode — no capture, no interception
+    const onPointerMove = (e: PointerEvent) => {
+      if (!e.isTrusted) return
+      if (e.pointerType !== 'mouse') return
+      mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
+      setActiveInput('mouse')
+      if (mouseIdleTimer) clearTimeout(mouseIdleTimer)
+      mouseIdleTimer = setTimeout(() => {
+        if (performance.now() - lastFootMove < 3000) setActiveInput('foot')
+      }, 1500)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+
     // tldraw container — we read --tl-cursor from computed style (unaffected by cursor: none override)
     const tldrawContainerEl = document.querySelector('.tl-container') as HTMLElement | null
 
@@ -221,6 +193,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       const isMoving = Math.abs(s.rudderAxis) > 0.05 || Math.abs(s.cursorAxis) > 0.05 || Math.abs(s.panAxis) > 0.05
       if (isMoving) {
         lastFootMove = performance.now()
+        setActiveInput('foot')
         rayEl.style.opacity = '0.85'
         cursorEl.style.opacity = '1'
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
@@ -287,24 +260,18 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
-    // Hide all cursors — the meteor is the only cursor indicator in foot mode
-    const cursorStyle = document.createElement('style')
-    cursorStyle.id = 'fc-cursor-hide'
-    cursorStyle.textContent = '*, *::before, *::after { cursor: none !important; }'
-    document.head.appendChild(cursorStyle)
-
     foot.start()
     click.start().catch(err => console.warn('[foot-control] mic access denied:', err))
 
     return () => {
-      cursorStyle.remove()
+      cursorHideStyle.remove()
       foot.stop()
       click.stop()
       offClick(); offDbl(); offEnter()
       window.removeEventListener('pointermove', onPointerMove)
-      window.removeEventListener('wheel', onWheel, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
+      if (mouseIdleTimer) clearTimeout(mouseIdleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
       rayEl.remove()
       cursorEl.remove()
