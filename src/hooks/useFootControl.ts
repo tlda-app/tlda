@@ -65,8 +65,11 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
         }))
       }
 
-      // Drive tldraw editor state machine (skip for HUD/clip panels — handled by bubbled DOM events)
-      if (!el?.closest('.fleet-hud-wrap, .clip-panel')) {
+      // Drive tldraw editor state machine only when foot cursor is on the actual canvas.
+      // Skip for HUD/clip panels AND for any interactive HTML element — sending pointer_move
+      // to the editor state machine while hovering toolbar causes visual cycling.
+      const isOverInteractive = !!findInteractiveHtml(el)
+      if (!el?.closest('.fleet-hud-wrap, .clip-panel') && !isOverInteractive) {
         editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
       }
     }
@@ -395,6 +398,8 @@ function dispatchPointerMove(editor: Editor, x: number, y: number) {
 }
 
 const INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="link"], [role="textbox"]'
+// Non-draggable subset: elements that respond to .click() but shouldn't start pointer drags
+const NON_DRAGGABLE_SELECTOR = 'button, a, [role="button"], [role="link"]'
 
 function findInteractiveHtml(el: Element | null): HTMLElement | null {
   if (!el) return null
@@ -415,17 +420,16 @@ function isOverHud(x: number, y: number): boolean {
 
 function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
   const el = document.elementFromPoint(x, y)
-  const interactive = findInteractiveHtml(el)
+  const nonDraggable = el?.closest(NON_DRAGGABLE_SELECTOR) as HTMLElement | null
 
-  // Interactive HTML elements (toolbar, HUD buttons, inputs): handle via DOM events only.
-  // Never send pointer_down/up to the tldraw canvas for these — it leaves the editor in a
-  // stuck "pointer down on canvas" state which causes visual cycling and spurious drags.
-  if (interactive) {
+  // Buttons/links: handle via .click() only, never via editor dispatch.
+  // Sending pointer_down to the tldraw canvas for these leaves the editor in a stuck
+  // "pointer down on canvas" state that causes visual cycling.
+  if (nonDraggable) {
     if (!isDown) {
-      interactive.focus?.()
-      interactive.click?.()
+      nonDraggable.focus?.()
+      nonDraggable.click?.()
     }
-    // isDown: do nothing — click() on up is sufficient; no pointerdown needed
     return
   }
 
@@ -458,8 +462,8 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldr
   // draggable in the fleet-agent-label sense, and treating them as DOM drags causes cycling.
   const el = document.elementFromPoint(x, y)
   const isTldrawCanvas = el?.closest('.tl-canvas') && !el?.closest('[data-shape-id]')
-  const isStandardInteractive = !!findInteractiveHtml(el)
-  if (el && !isTldrawCanvas && !isStandardInteractive) {
+  const isNonDraggable = !!el?.closest(NON_DRAGGABLE_SELECTOR)
+  if (el && !isTldrawCanvas && !isNonDraggable) {
     el.dispatchEvent(new PointerEvent('pointerdown', {
       bubbles: true, clientX: x, clientY: y,
       pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
