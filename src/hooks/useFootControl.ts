@@ -55,16 +55,14 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     // Previous mouse coords for delta — null until first move (avoids initial teleport)
     let prevMouseX: number | null = null
     let prevMouseY: number | null = null
-    // Intercept pointer events in capture phase — fires before all other handlers.
-    // pointermove: handle ourselves then stop so native event never reaches tldraw.
-    // pointerenter/leave: stop propagation to suppress JS tooltip timers (CSS :hover
-    // still works via OS cursor, so button visual states are unaffected).
+    // Bubble-phase listener: fires AFTER tldraw processes native events, so our
+    // editor.dispatch override wins without blocking any native events.
+    // In-front-of-canvas elements get all their native pointer events normally.
     const onPointerMove = (e: PointerEvent) => {
-      if (!e.isTrusted) return  // let synthetic events (drag threshold, HUD routing) through
+      if (!e.isTrusted) return
       if (e.pointerType !== 'mouse') return
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
       // Apply mouse delta to foot cursor — relative movement, no teleport.
-      // Mouse acts as a second relative input device alongside the pedals.
       if (prevMouseX !== null && prevMouseY !== null) {
         const dx = e.clientX - prevMouseX
         const dy = e.clientY - prevMouseY
@@ -77,16 +75,11 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       }
       prevMouseX = e.clientX
       prevMouseY = e.clientY
-      e.stopPropagation()
+      // No stopPropagation — all elements get native events normally
     }
-    const onPointerEnterLeave = (e: PointerEvent) => {
-      if (!e.isTrusted) return
-      if (e.pointerType !== 'mouse') return
-      e.stopPropagation()
-    }
-    // Intercept wheel events and re-route to foot cursor position.
+    // Reroute wheel events to foot cursor position.
     // Two-path: tldraw canvas uses editor.dispatch; everything else gets scrollBy
-    // on the nearest scrollable ancestor. Avoids tldraw intercepting all DOM wheel events.
+    // on the nearest scrollable ancestor.
     const onWheel = (e: WheelEvent) => {
       if (!e.isTrusted) return
       e.stopPropagation()
@@ -118,9 +111,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
         window.scrollBy(e.deltaX, e.deltaY)
       }
     }
-    window.addEventListener('pointermove', onPointerMove, { capture: true })
-    window.addEventListener('pointerenter', onPointerEnterLeave, { capture: true })
-    window.addEventListener('pointerleave', onPointerEnterLeave, { capture: true })
+    window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
     // Route clicks to whichever cursor moved most recently
@@ -310,9 +301,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       foot.stop()
       click.stop()
       offClick(); offDbl(); offEnter()
-      window.removeEventListener('pointermove', onPointerMove, { capture: true })
-      window.removeEventListener('pointerenter', onPointerEnterLeave, { capture: true })
-      window.removeEventListener('pointerleave', onPointerEnterLeave, { capture: true })
+      window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('wheel', onWheel, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
