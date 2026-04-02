@@ -52,7 +52,10 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     let mouseY = window.innerHeight / 2
     let lastHandMove = 0
     let lastFootMove = 0
-    const onMouseMove = (e: MouseEvent) => { mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now() }
+    const onMouseMove = (e: MouseEvent) => {
+      mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
+      foot.setCursorPos(e.clientX, e.clientY)
+    }
     window.addEventListener('mousemove', onMouseMove, { passive: true })
 
     // Route clicks to whichever cursor moved most recently

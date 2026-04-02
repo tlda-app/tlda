@@ -165,11 +165,16 @@ export function createFootController(editor: Editor, options: FootControlOptions
     })
   }
 
-  /** Programmatically set cursor position (for debug sliders) */
+  /** Programmatically set cursor position (for debug sliders or mouse passthrough) */
   function setCursorPos(x: number, y: number) {
     state.cursorX = x
     state.cursorY = y
-    dispatchCursorMove(x, y)
+    if (options.onCursorMove) {
+      options.onCursorMove(x, y)
+    } else {
+      dispatchCursorMove(x, y)
+    }
+    for (const fn of listeners) fn({ ...state })
   }
 
   /** Set heading directly (for debug sliders) */
