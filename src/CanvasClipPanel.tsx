@@ -70,9 +70,9 @@ export function CanvasClipPanel({
     onEditorMount?.(editor)
   }, [editor, onEditorMount])
 
-  // Snapping disabled in HUD — the copy store has 100+ shapes (PDF pages,
-  // highlights, etc.) that all act as snap targets, making drag unusable.
-  // TODO: re-enable once we can filter snap targets to fleet shapes only.
+  // Snapping in HUD: non-fleet shapes are already locked (lockNonFleetUnlockFleet),
+  // and tldraw's snap manager excludes locked shapes from snap targets. So enabling
+  // isSnapMode: true gives us fleet-shapes-only snapping for free.
 
   // Create copy store from main editor's document records
   const store = useMemo(() => {
@@ -446,6 +446,9 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
+            if (lockCamera) {
+              ed.user.updateUserPreferences({ isSnapMode: true })
+            }
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected
