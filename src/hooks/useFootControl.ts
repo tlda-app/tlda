@@ -84,20 +84,39 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (e.pointerType !== 'mouse') return
       e.stopPropagation()
     }
-    // Intercept wheel events and re-fire at foot cursor position.
-    // Without this, scrolling uses the OS cursor location, not the visible foot cursor.
+    // Intercept wheel events and re-route to foot cursor position.
+    // Two-path: tldraw canvas uses editor.dispatch; everything else gets scrollBy
+    // on the nearest scrollable ancestor. Avoids tldraw intercepting all DOM wheel events.
     const onWheel = (e: WheelEvent) => {
       if (!e.isTrusted) return
       e.stopPropagation()
       e.preventDefault()
-      const target = document.elementFromPoint(foot.state.cursorX, foot.state.cursorY)
-      if (!target) return
-      target.dispatchEvent(new WheelEvent('wheel', {
-        bubbles: true, cancelable: true,
-        clientX: foot.state.cursorX, clientY: foot.state.cursorY,
-        deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode,
-        ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
-      }))
+      const cx = foot.state.cursorX
+      const cy = foot.state.cursorY
+      const target = document.elementFromPoint(cx, cy)
+      if (target?.closest('.tl-canvas')) {
+        // Tldraw canvas: dispatch directly through editor state machine
+        editor.dispatch({
+          type: 'wheel', name: 'wheel',
+          delta: { x: e.deltaX, y: e.deltaY, z: 0 },
+          point: { x: cx, y: cy, z: 0.5 },
+          shiftKey: e.shiftKey, altKey: e.altKey,
+          ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+          accelKey: e.ctrlKey || e.metaKey,
+        } as any)
+      } else {
+        // DOM element: find nearest scrollable ancestor and scroll it
+        let el: Element | null = target
+        while (el && el !== document.documentElement) {
+          const s = getComputedStyle(el)
+          if (['auto', 'scroll'].includes(s.overflowY) || ['auto', 'scroll'].includes(s.overflow)) {
+            el.scrollBy(e.deltaX, e.deltaY)
+            return
+          }
+          el = el.parentElement
+        }
+        window.scrollBy(e.deltaX, e.deltaY)
+      }
     }
     window.addEventListener('pointermove', onPointerMove, { capture: true })
     window.addEventListener('pointerenter', onPointerEnterLeave, { capture: true })
