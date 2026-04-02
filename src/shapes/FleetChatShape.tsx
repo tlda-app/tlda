@@ -1809,8 +1809,11 @@ function FilterOverlay({
   const toHighlightIdx = toGroupIdx >= 0 ? toGroupIdx : (toPreview && toPreview.length > filter.length ? toPreview.length - 1 : -1)
   const fromHighlightIdx = fromGroupIdx >= 0 ? fromGroupIdx : (fromPreview && fromPreview.length > filter.length ? fromPreview.length - 1 : -1)
 
-  // Publish preview state so dropPillOnTarget can apply the right filter on release
-  useEffect(() => {
+  // Publish preview state so dropPillOnTarget can apply the right filter on release.
+  // useLayoutEffect (not useEffect) — runs before the browser paint so filterDropPreview
+  // is always current when pointerup fires. useEffect runs after paint, creating a window
+  // where the preview is visible but activePaneRole is still null/stale.
+  useLayoutEffect(() => {
     if (pillOver) {
       const replacePreview: [string, string][][] = [[['to', pillOver.value]], [['from', pillOver.value]]]
       filterDropPreview.shapeId = shapeId
