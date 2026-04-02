@@ -58,12 +58,14 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     // pointerenter/leave: stop propagation to suppress JS tooltip timers (CSS :hover
     // still works via OS cursor, so button visual states are unaffected).
     const onPointerMove = (e: PointerEvent) => {
+      if (!e.isTrusted) return  // let synthetic events (drag threshold, HUD routing) through
       if (e.pointerType !== 'mouse') return
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
       foot.setCursorPos(e.clientX, e.clientY)
       e.stopPropagation()
     }
     const onPointerEnterLeave = (e: PointerEvent) => {
+      if (!e.isTrusted) return
       if (e.pointerType !== 'mouse') return
       e.stopPropagation()
     }
