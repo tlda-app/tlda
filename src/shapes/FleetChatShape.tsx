@@ -53,6 +53,16 @@ initTrackpad({
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 
+// Wrap fenced code blocks with .code-block-wrap and a copy button (GitHub-style)
+md.renderer.rules.fence = (tokens, idx) => {
+  const token = tokens[idx]
+  const lang = token.info.trim()
+  const code = token.content
+  const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
+}
+
 function tldaRenderMarkdown(escapedHtml: string): string {
   // Input is esc()'d — unescape for markdown-it
   let text = escapedHtml
@@ -440,6 +450,20 @@ function FleetChatComponent({ shape }: { shape: any }) {
     // Also check for annotation chip clicks
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
+
+    // Copy button on code blocks
+    const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
+    if (copyBtn) {
+      const pre = copyBtn.closest('.code-block-wrap')?.querySelector('pre')
+      if (pre) {
+        navigator.clipboard.writeText(pre.textContent || '').then(() => {
+          copyBtn.textContent = '✓'
+          copyBtn.classList.add('code-block-copy-success')
+          setTimeout(() => { copyBtn.textContent = '⎘'; copyBtn.classList.remove('code-block-copy-success') }, 1500)
+        })
+      }
+      return
+    }
 
     const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
     if (!target || !doc) return

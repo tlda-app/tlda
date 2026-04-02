@@ -717,6 +717,14 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   opacity: 0.4;
   font-size: 13px;
   user-select: none;
+  transition: opacity 0.1s, color 0.1s;
+}
+.fleet-chat-shape .code-block-copy:hover {
+  opacity: 1;
+}
+.fleet-chat-shape .code-block-copy-success {
+  opacity: 1;
+  color: var(--green, #4caf50);
 }
 .fleet-chat-shape .code-block-wrap pre {
   margin-top: 0;
