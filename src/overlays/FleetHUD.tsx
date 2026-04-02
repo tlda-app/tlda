@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
+import { computeDropSlot } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
@@ -40,6 +41,49 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
     w: maxX - minX + PAD * 2,
     h: maxY - minY + PAD * 2,
   }
+}
+
+/** Ghost rect shown over the empty slot when dragging a pill over bare canvas */
+function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
+  const [ghost, setGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+
+  useEffect(() => {
+    const updateGhost = () => {
+      const pills = mainEditor.getCurrentPageShapes()
+        .filter(s => (s as any).type === 'fleet-pill')
+      if (pills.length === 0) { setGhost(null); return }
+
+      const pill = pills[0] as any
+      const pb = mainEditor.getShapePageBounds(pill.id)
+      if (!pb) { setGhost(null); return }
+
+      const slot = computeDropSlot(mainEditor, null, pb.x + pb.w / 2, pb.y + pb.h / 2)
+      if (!slot) { setGhost(null); return }
+
+      const tl = mainEditor.pageToScreen({ x: slot.x, y: slot.y })
+      const br = mainEditor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
+      setGhost({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
+    }
+
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
+      const relevant =
+        Object.values(changes.added).some(isPill) ||
+        Object.values(changes.updated).some(([, to]) => isPill(to)) ||
+        Object.values(changes.removed).some(isPill)
+      if (relevant) updateGhost()
+    }, { source: 'all', scope: 'document' })
+
+    return () => { unsub(); setGhost(null) }
+  }, [mainEditor])
+
+  if (!ghost) return null
+  return (
+    <div
+      className="fleet-drop-ghost"
+      style={{ left: ghost.x, top: ghost.y, width: ghost.w, height: ghost.h }}
+    />
+  )
 }
 
 export function FleetHUD({
@@ -142,18 +186,23 @@ export function FleetHUD({
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
+  const ghost = <FleetDropGhost mainEditor={mainEditor} />
+
   // Collapsed: just the pill
   if (!expanded) {
     return (
-      <div className="fleet-pill-container">
-        <span
-          className="fleet-pill"
-          onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
-          onPointerDown={e => e.stopPropagation()}
-        >
-          {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
-        </span>
-      </div>
+      <>
+        {ghost}
+        <div className="fleet-pill-container">
+          <span
+            className="fleet-pill"
+            onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
+            onPointerDown={e => e.stopPropagation()}
+          >
+            {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
+          </span>
+        </div>
+      </>
     )
   }
 
@@ -165,27 +214,30 @@ export function FleetHUD({
   const panelWidth = fleetBounds.w * zoom
   const adjustedTop = (window.innerHeight - panelHeight) / 2
   return (
-    <div className="fleet-hud-wrap" ref={hudRef} style={{ left: hudRight - panelWidth, top: adjustedTop }}>
-      <div className="fleet-hud-controls">
-        <button
-          className="fleet-hud-close"
-          onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
-          title="Collapse"
-        >
-          ×
-        </button>
+    <>
+      {ghost}
+      <div className="fleet-hud-wrap" ref={hudRef} style={{ left: hudRight - panelWidth, top: adjustedTop }}>
+        <div className="fleet-hud-controls">
+          <button
+            className="fleet-hud-close"
+            onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
+            title="Collapse"
+          >
+            ×
+          </button>
+        </div>
+        <CanvasClipPanel
+          mainEditor={mainEditor}
+          bounds={fleetBounds}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={licenseKey}
+          panelWidth={panelWidth}
+          maxHeightFraction={1}
+          lockCamera={true}
+          className="fleet-hud"
+        />
       </div>
-      <CanvasClipPanel
-        mainEditor={mainEditor}
-        bounds={fleetBounds}
-        shapeUtils={shapeUtils}
-        tools={tools}
-        licenseKey={licenseKey}
-        panelWidth={panelWidth}
-        maxHeightFraction={1}
-        lockCamera={true}
-        className="fleet-hud"
-      />
-    </div>
+    </>
   )
 }

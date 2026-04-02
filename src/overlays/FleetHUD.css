@@ -28,10 +28,11 @@
 }
 
 /* Expanded HUD — full overlay with fleet shapes, positioned by JS */
-/* z-index 300: above canvas content but below TLDraw toolbar (1000) and ToC panel (999) */
+/* z-index 999: must match or exceed tldraw UI chrome since stacking contexts
+   prevent z-index competition across boundaries anyway */
 .fleet-hud-wrap {
   position: fixed;
-  z-index: 300;
+  z-index: 999;
   pointer-events: none;
 }
 
@@ -100,6 +101,20 @@ body.fleet-hud-open .tl-canvas .fleet-shape {
 body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   visibility: visible;
   pointer-events: all;
+}
+
+/* Ghost rect shown when dragging a pill over an empty grid slot */
+.fleet-drop-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 298;
+  border: 2px dashed rgba(120, 120, 200, 0.5);
+  border-radius: 6px;
+  background: rgba(100, 100, 200, 0.06);
+}
+html[data-theme="dark"] .fleet-drop-ghost {
+  border-color: rgba(160, 140, 255, 0.45);
+  background: rgba(120, 100, 220, 0.08);
 }
 
 /* Dark mode */
