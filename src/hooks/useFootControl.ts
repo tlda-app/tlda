@@ -227,10 +227,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
+    // Hide all cursors — the meteor is the only cursor indicator in foot mode
+    const cursorStyle = document.createElement('style')
+    cursorStyle.id = 'fc-cursor-hide'
+    cursorStyle.textContent = '*, *::before, *::after { cursor: none !important; }'
+    document.head.appendChild(cursorStyle)
+
     foot.start()
     click.start().catch(err => console.warn('[foot-control] mic access denied:', err))
 
     return () => {
+      cursorStyle.remove()
       foot.stop()
       click.stop()
       offClick(); offDbl(); offEnter()
