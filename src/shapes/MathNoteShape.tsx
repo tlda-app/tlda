@@ -7,6 +7,7 @@ import {
   useValue,
   stopEventPropagation,
   DefaultColorStyle,
+  AssetRecordType,
 } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
@@ -23,12 +24,18 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   tokens[idx].attrSet('rel', 'noopener')
   return self.renderToken(tokens, idx, options)
 }
-// Rewrite local image paths through the server so they load in the browser
+// Cache: local path → data URL (populated from tldraw asset store or fresh fetch)
+const localImageCache = new Map<string, string>()
+// Regex to find local image paths in markdown text
+const LOCAL_IMG_RE = /!\[[^\]]*\]\(((?:~\/|\/)[^)]+)\)/g
+
+// Rewrite local image paths: use cached data URL if available, else server URL
 md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   const token = tokens[idx]
   const src = token.attrGet('src') || ''
   if (src.startsWith('/') || src.startsWith('~')) {
-    token.attrSet('src', `/api/local-image?path=${encodeURIComponent(src)}`)
+    const cached = localImageCache.get(src)
+    token.attrSet('src', cached || `/api/local-image?path=${encodeURIComponent(src)}`)
   }
   token.attrSet('style', 'max-width: 100%')
   return self.renderToken(tokens, idx, options)
@@ -120,7 +127,7 @@ function hasMath(text: string): boolean {
 }
 
 function hasMarkdown(text: string): boolean {
-  return /^#{1,3}\s|^\s*[-*]\s|\*\*|`[^`]+`|```/.test(text) || text.includes('\n')
+  return /^#{1,3}\s|^\s*[-*]\s|\*\*|`[^`]+`|```|!\[/.test(text) || text.includes('\n')
 }
 
 export const NOTE_COLORS: Record<string, string> = {
@@ -315,6 +322,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
+    const [imgVersion, setImgVersion] = useState(0)
 
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
@@ -322,14 +330,44 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
 
-    // Memoize KaTeX + markdown rendering — only re-parse when text actually changes
+    // Lazy image registration: fetch local images, store as tldraw assets + module cache
+    useEffect(() => {
+      const text = shape.props.text || ''
+      LOCAL_IMG_RE.lastIndex = 0
+      const paths = new Set<string>()
+      let m: RegExpExecArray | null
+      while ((m = LOCAL_IMG_RE.exec(text)) !== null) paths.add(m[1])
+      if (paths.size === 0) return
+      let registered = false
+      Promise.all([...paths].map(async (path) => {
+        if (localImageCache.has(path)) return
+        const assetId = AssetRecordType.createId('local-' + encodeURIComponent(path))
+        const existing = editor.getAsset(assetId)
+        if (existing) { localImageCache.set(path, (existing.props as any).src); registered = true; return }
+        try {
+          const resp = await fetch(`/api/local-image?path=${encodeURIComponent(path)}`)
+          if (!resp.ok) return
+          const blob = await resp.blob()
+          const dataUrl = await new Promise<string>((res, rej) => {
+            const r = new FileReader(); r.onloadend = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(blob)
+          })
+          localImageCache.set(path, dataUrl)
+          editor.createAssets([{ id: assetId, typeName: 'asset', type: 'image', meta: {},
+            props: { w: 0, h: 0, mimeType: blob.type || 'image/png', src: dataUrl, name: path, isAnimated: false } }])
+          registered = true
+        } catch { /* server URL fallback stays */ }
+      })).then(() => { if (registered) setImgVersion(v => v + 1) })
+    }, [shape.props.text, editor])
+
+    // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(
       () => {
         const t = shape.props.text || ''
         if (hasMath(t) || hasMarkdown(t)) return renderMarkdownMath(t)
         return null
       },
-      [shape.props.text],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [shape.props.text, imgVersion],
     )
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
