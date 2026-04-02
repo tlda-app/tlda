@@ -152,6 +152,11 @@ function usePillDrag() {
           props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
         })
         drag.pillId = pillId as unknown as string
+        // Reset tldraw's state machine — it saw our pointerdown but will never see pointerup
+        // (we stopImmediatePropagation those). editor.cancel() resets it without cancelling
+        // the real pointer stream (unlike dispatching a DOM pointercancel, which stops all
+        // further real pointer events for this pointerId and leaves the pill stuck).
+        editor.cancel()
         return
       }
 

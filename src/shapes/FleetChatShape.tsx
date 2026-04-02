@@ -761,6 +761,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const shapeIdRef = useRef(shape.id)
   shapeIdRef.current = shape.id
 
+  // Track selection state via ref so native capture listeners can read it
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = editor.getSelectedShapeIds().includes(shape.id)
+
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
@@ -772,6 +776,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
+
+      // When the shape is selected in tldraw (handles visible), let tldraw handle
+      // the pointer so the user can drag the whole shape to move/resize it.
+      if (isSelectedRef.current) return
 
       const names = agentNamesRef.current
 
@@ -956,6 +964,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
           },
         })
         drag.pillId = pillId as unknown as string
+        // Reset tldraw's state machine via API — avoids cancelling the real pointer stream.
+        editor.cancel()
       }
       if (drag.pillId) {
         const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
