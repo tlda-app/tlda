@@ -27,17 +27,46 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
   useEffect(() => {
     if (!enabled || !editor) return
 
-    // Smart cursor move: route to HUD inner editor or main editor based on position
+    // Track interactive element under foot cursor for enter/leave events.
+    // pointerenter doesn't bubble, so we dispatch to the interactive ancestor
+    // (e.g. the <button>, not the <img> inside it) so Radix tooltip triggers fire.
+    let prevFootInteractive: Element | null = null
+
+    // Smart cursor move: dispatch DOM hover events + tldraw editor events
     const onCursorMove = (x: number, y: number) => {
       const el = document.elementFromPoint(x, y)
-      if (el?.closest('.fleet-hud-wrap, .clip-panel')) {
+      // Use interactive ancestor for enter/leave (pointerenter doesn't bubble)
+      const interactive = findInteractiveHtml(el) ?? el
+
+      if (interactive !== prevFootInteractive) {
+        if (prevFootInteractive) {
+          prevFootInteractive.dispatchEvent(new PointerEvent('pointerleave', {
+            bubbles: false, cancelable: true,
+            clientX: x, clientY: y,
+            pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
+          }))
+        }
+        if (interactive) {
+          interactive.dispatchEvent(new PointerEvent('pointerenter', {
+            bubbles: false, cancelable: true,
+            clientX: x, clientY: y,
+            pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
+          }))
+        }
+        prevFootInteractive = interactive
+      }
+
+      // pointermove to actual element — bubbles up through the tree
+      if (el) {
         el.dispatchEvent(new PointerEvent('pointermove', {
           bubbles: true, cancelable: true,
           clientX: x, clientY: y,
-          pointerType: 'mouse', isPrimary: true, pointerId: 1,
-          button: -1, buttons: 0,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
         }))
-      } else {
+      }
+
+      // Drive tldraw editor state machine (skip for HUD/clip panels — handled by bubbled DOM events)
+      if (!el?.closest('.fleet-hud-wrap, .clip-panel')) {
         editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
       }
     }
