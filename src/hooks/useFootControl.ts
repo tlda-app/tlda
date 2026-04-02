@@ -84,9 +84,25 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (e.pointerType !== 'mouse') return
       e.stopPropagation()
     }
+    // Intercept wheel events and re-fire at foot cursor position.
+    // Without this, scrolling uses the OS cursor location, not the visible foot cursor.
+    const onWheel = (e: WheelEvent) => {
+      if (!e.isTrusted) return
+      e.stopPropagation()
+      e.preventDefault()
+      const target = document.elementFromPoint(foot.state.cursorX, foot.state.cursorY)
+      if (!target) return
+      target.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true,
+        clientX: foot.state.cursorX, clientY: foot.state.cursorY,
+        deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode,
+        ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+      }))
+    }
     window.addEventListener('pointermove', onPointerMove, { capture: true })
     window.addEventListener('pointerenter', onPointerEnterLeave, { capture: true })
     window.addEventListener('pointerleave', onPointerEnterLeave, { capture: true })
+    window.addEventListener('wheel', onWheel, { capture: true, passive: false })
 
     // Route clicks to whichever cursor moved most recently
     const clickX = () => lastFootMove >= lastHandMove ? foot.state.cursorX : mouseX
@@ -278,6 +294,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       window.removeEventListener('pointermove', onPointerMove, { capture: true })
       window.removeEventListener('pointerenter', onPointerEnterLeave, { capture: true })
       window.removeEventListener('pointerleave', onPointerEnterLeave, { capture: true })
+      window.removeEventListener('wheel', onWheel, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
