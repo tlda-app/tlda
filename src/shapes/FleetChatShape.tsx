@@ -782,6 +782,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       // When the shape is selected in tldraw (handles visible), let tldraw handle
       // the pointer so the user can drag the whole shape to move/resize it.
+      // DOM check is synchronous (no React timing issues); isSelectedRef is the
+      // reactive backup for cases where fleet-drag-mode hasn't been set yet.
+      const shapeEl = logEl!.closest('[data-shape-id]')
+      if (shapeEl?.classList.contains('fleet-drag-mode')) return
       if (isSelectedRef.current) return
 
       const names = agentNamesRef.current

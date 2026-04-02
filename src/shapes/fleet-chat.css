@@ -1266,9 +1266,10 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
    Apply to all descendants, not just the container — child elements with
    explicit pointer-events:all (chips, buttons, etc.) would otherwise intercept
    the click and start their own drag handlers instead of letting tldraw move
-   the whole shape. */
-.fleet-drag-mode .tl-html-container,
-.fleet-drag-mode .tl-html-container * {
+   the whole shape. The onPointerDown handler in FleetChatShape checks the
+   fleet-drag-mode class synchronously as a fallback for any children that
+   escape this rule. */
+.fleet-drag-mode .tl-html-container {
   pointer-events: none !important;
 }
 
