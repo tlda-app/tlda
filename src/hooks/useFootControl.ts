@@ -132,17 +132,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     `
     document.body.appendChild(rayEl)
 
-    // Small dot at cursor position
-    const dotEl = document.createElement('div')
-    dotEl.style.cssText = `
+    // Custom cursor element — mirrors current tldraw cursor shape
+    const cursorEl = document.createElement('div')
+    cursorEl.style.cssText = `
       position: fixed; pointer-events: none; z-index: 99999;
-      width: 7px; height: 7px; border-radius: 50%;
-      background: rgba(139,92,246,0.75);
-      transform: translate(-50%, -50%);
       opacity: 0.15;
       transition: opacity 0.4s ease;
     `
-    document.body.appendChild(dotEl)
+    document.body.appendChild(cursorEl)
+
+    // tldraw container — we read --tl-cursor from computed style (unaffected by cursor: none override)
+    const tldrawContainerEl = document.querySelector('.tl-container') as HTMLElement | null
 
     let idleTimer: ReturnType<typeof setTimeout> | null = null
     foot.onStateChange(s => {
@@ -150,21 +150,22 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       rayEl.style.left = s.cursorX + 'px'
       rayEl.style.top = (s.cursorY - 8) + 'px'
       rayEl.style.transform = `rotate(${deg + 180}deg)`
-      dotEl.style.left = s.cursorX + 'px'
-      dotEl.style.top = s.cursorY + 'px'
+
+      // Update cursor element to mirror tldraw's current cursor
+      updateCursorEl(cursorEl, tldrawContainerEl, s.cursorX, s.cursorY)
+
       // Update tail color to match current tool color
       const color = getToolColor(editor)
       const stops = rayEl.querySelectorAll('stop') as NodeListOf<SVGStopElement>
       stops.forEach(stop => { stop.style.stopColor = color })
-      dotEl.style.background = color
 
       const isMoving = Math.abs(s.rudderAxis) > 0.05 || Math.abs(s.cursorAxis) > 0.05 || Math.abs(s.panAxis) > 0.05
       if (isMoving) {
         lastFootMove = performance.now()
         rayEl.style.opacity = '0.85'
-        dotEl.style.opacity = '1'
+        cursorEl.style.opacity = '1'
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
-        idleTimer = setTimeout(() => { rayEl.style.opacity = '0.15'; dotEl.style.opacity = '0.15' }, 600)
+        idleTimer = setTimeout(() => { rayEl.style.opacity = '0.15'; cursorEl.style.opacity = '0.15' }, 600)
         // Feed pointermove to document for DOM drag handlers (e.g. agent labels)
         if (isDomDragging) {
           document.dispatchEvent(new PointerEvent('pointermove', {
@@ -246,7 +247,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (idleTimer) clearTimeout(idleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
       rayEl.remove()
-      dotEl.remove()
+      cursorEl.remove()
       footRef.current = null
       clickRef.current = null
     }
@@ -401,6 +402,118 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldr
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_up', ...tlPtr(x, y) })
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'double_click', ...tlPtr(x, y) })
   return false
+}
+
+// ---------------------------------------------------------------------------
+// Cursor emulation — mirrors tldraw's CSS cursor at the foot cursor position
+// ---------------------------------------------------------------------------
+
+const CURSOR_SVGS: Record<string, { svg: string; hx: number; hy: number }> = {
+  default: {
+    hx: 3, hy: 1,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20"><path d="M3 1 L3 15 L6 12 L8.5 17.5 L10.5 16.5 L8 11 L12 11 Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>`,
+  },
+  crosshair: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><line x1="10" y1="1" x2="10" y2="8" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="10" y1="12" x2="10" y2="19" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="10" x2="8" y2="10" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="12" y1="10" x2="19" y2="10" stroke="black" stroke-width="1.5" stroke-linecap="round"/><circle cx="10" cy="10" r="1.5" fill="black"/></svg>`,
+  },
+  pointer: {
+    hx: 5, hy: 1,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="20" viewBox="0 0 14 20"><path d="M5 1 C4 1 3 2 3 3 L3 12 L1 10 C0 9 0 10 1 11 L5 16 C6 18 8 19 10 19 L11 19 C13 19 14 17 14 15 L14 9 C14 8 13 7 12 7 L11 7 L11 3 C11 2 10 1 9 1 L8 1 L8 3 C8 3 8 3 8 3 L8 3 C8 2 7 1 6 1 L5 1 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  move: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 1 L7 5 L9 5 L9 11 L11 11 L11 5 L13 5 Z M10 19 L7 15 L9 15 L9 11 L11 11 L11 15 L13 15 Z M1 10 L5 7 L5 9 L9 9 L9 11 L5 11 L5 13 Z M19 10 L15 7 L15 9 L11 9 L11 11 L15 11 L15 13 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  text: {
+    hx: 4, hy: 9,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="18" viewBox="0 0 8 18"><line x1="4" y1="0" x2="4" y2="18" stroke="black" stroke-width="1.5"/><line x1="0" y1="0" x2="8" y2="0" stroke="black" stroke-width="1.5"/><line x1="0" y1="18" x2="8" y2="18" stroke="black" stroke-width="1.5"/></svg>`,
+  },
+  grab: {
+    hx: 10, hy: 6,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M7 4 C7 3 6 2 5 2 C4 2 3 3 3 4 L3 11 M7 4 C7 3 8 2 9 2 C10 2 11 3 11 4 L11 9 M11 9 C11 8 12 7 13 7 C14 7 15 8 15 9 L15 13 C15 16 13 18 10 18 L8 18 C5 18 3 16 3 13 L3 11" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 4 L7 9 M9 3 L9 9" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  },
+  grabbing: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M5 9 C5 8 6 7 7 7 L13 7 C14 7 15 8 15 9 L15 13 C15 16 13 18 10 18 L8 18 C5 18 3 16 3 13 L3 9 C3 8 4 7 5 7 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'ew-resize': {
+    hx: 10, hy: 6,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="12" viewBox="0 0 20 12"><path d="M1 6 L5 2 L5 5 L15 5 L15 2 L19 6 L15 10 L15 7 L5 7 L5 10 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'ns-resize': {
+    hx: 6, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="20" viewBox="0 0 12 20"><path d="M6 1 L2 5 L5 5 L5 15 L2 15 L6 19 L10 15 L7 15 L7 5 L10 5 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'nwse-resize': {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M2 2 L9 2 L7 4 L14 11 L16 9 L16 16 L9 16 L11 14 L4 7 L2 9 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'nesw-resize': {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M18 2 L11 2 L13 4 L6 11 L4 9 L4 16 L11 16 L9 14 L16 7 L18 9 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+}
+
+function parseTlCursor(cursorVal: string): { src: string; hx: number; hy: number } | null {
+  // tldraw cursor values look like: url("data:image/svg+xml,...") 12 8, default
+  // Handle double-quoted URL
+  const dbl = cursorVal.match(/url\("(data:[^"]+)"\)\s+(\d+)\s+(\d+)/)
+  if (dbl) return { src: dbl[1], hx: parseInt(dbl[2]), hy: parseInt(dbl[3]) }
+  // Handle single-quoted URL
+  const sgl = cursorVal.match(/url\('(data:[^']+)'\)\s+(\d+)\s+(\d+)/)
+  if (sgl) return { src: sgl[1], hx: parseInt(sgl[2]), hy: parseInt(sgl[3]) }
+  // Unquoted
+  const unq = cursorVal.match(/url\((data:[^\s)]+)\)\s+(\d+)\s+(\d+)/)
+  if (unq) return { src: unq[1], hx: parseInt(unq[2]), hy: parseInt(unq[3]) }
+  return null
+}
+
+let _cursorImgEl: HTMLImageElement | null = null
+let _cursorLastSrc = ''
+
+function updateCursorEl(cursorEl: HTMLElement, containerEl: HTMLElement | null, x: number, y: number) {
+  // Read tldraw's --tl-cursor custom property — resolves to full cursor spec.
+  // getPropertyValue reads the CSS variable even when cursor: none !important is in effect.
+  const tlCursorVal = containerEl
+    ? getComputedStyle(containerEl).getPropertyValue('--tl-cursor').trim()
+    : ''
+
+  const parsed = parseTlCursor(tlCursorVal)
+
+  let src: string
+  let hx: number, hy: number
+
+  if (parsed) {
+    // Re-encode the data URI for use as img src.
+    // tldraw's SVG is partially encoded (%23 for #, but unencoded < > ')
+    // and may contain bare % (e.g. "180%") — use a safe per-sequence decoder.
+    const svgContent = parsed.src.replace(/^data:image\/svg\+xml,/, '')
+    const svgDecoded = svgContent.replace(/%([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    src = 'data:image/svg+xml,' + encodeURIComponent(svgDecoded)
+    hx = parsed.hx
+    hy = parsed.hy
+  } else {
+    // Fall back to our hand-drawn default arrow
+    const entry = CURSOR_SVGS.default
+    src = 'data:image/svg+xml,' + encodeURIComponent(entry.svg)
+    hx = entry.hx; hy = entry.hy
+  }
+
+  cursorEl.style.left = (x - hx) + 'px'
+  cursorEl.style.top = (y - hy) + 'px'
+
+  if (!_cursorImgEl || _cursorImgEl.parentElement !== cursorEl) {
+    _cursorImgEl = document.createElement('img')
+    _cursorImgEl.style.cssText = 'display:block;'
+    cursorEl.innerHTML = ''
+    cursorEl.appendChild(_cursorImgEl)
+    _cursorLastSrc = ''
+  }
+  if (_cursorLastSrc !== src) {
+    _cursorImgEl.src = src
+    _cursorLastSrc = src
+  }
 }
 
 function dispatchEnter(editor: Editor, x: number, y: number) {
