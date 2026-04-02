@@ -52,11 +52,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     let mouseY = window.innerHeight / 2
     let lastHandMove = 0
     let lastFootMove = 0
-    const onMouseMove = (e: MouseEvent) => {
+    // Intercept native pointermove in capture phase — fires before tldraw's handlers.
+    // We handle the event ourselves (update foot cursor state) then stop propagation
+    // so the native event never reaches tldraw. All cursor state in tldraw comes from
+    // our editor.dispatch() calls only, eliminating the position mismatch.
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return  // let touch/pen through
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
       foot.setCursorPos(e.clientX, e.clientY)
+      e.stopPropagation()
     }
-    window.addEventListener('mousemove', onMouseMove, { passive: true })
+    window.addEventListener('pointermove', onPointerMove, { capture: true })
 
     // Route clicks to whichever cursor moved most recently
     const clickX = () => lastFootMove >= lastHandMove ? foot.state.cursorX : mouseX
@@ -245,7 +251,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       foot.stop()
       click.stop()
       offClick(); offDbl(); offEnter()
-      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('pointermove', onPointerMove, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
