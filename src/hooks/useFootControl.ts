@@ -339,15 +339,19 @@ function dispatchPointerMove(editor: Editor, x: number, y: number) {
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
 }
 
+const INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="link"], [role="textbox"]'
+
+function findInteractiveHtml(el: Element | null): HTMLElement | null {
+  if (!el) return null
+  // Check the element and its ancestors — elementFromPoint may return <img> inside <button>
+  const found = el.closest(INTERACTIVE_SELECTOR) as HTMLElement | null
+  if (found) return found
+  if ((el as HTMLElement).isContentEditable) return el as HTMLElement
+  return null
+}
+
 function isInteractiveHtml(el: Element | null): boolean {
-  if (!el) return false
-  const tag = el.tagName.toLowerCase()
-  if (tag === 'button' || tag === 'a' || tag === 'input' || tag === 'textarea' || tag === 'select') return true
-  if ((el as HTMLElement).isContentEditable) return true
-  // Check ancestors for interactive elements (e.g. divs acting as buttons)
-  const role = el.getAttribute('role')
-  if (role === 'button' || role === 'link' || role === 'textbox') return true
-  return false
+  return !!findInteractiveHtml(el)
 }
 
 function isOverHud(x: number, y: number): boolean {
@@ -358,10 +362,11 @@ function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
   const el = document.elementFromPoint(x, y)
   if (!isDown) {
     // On pointer_up: check if something interactive is at the click position
-    if (isInteractiveHtml(el)) {
-      // Use DOM events for HTML interactive elements (HUD buttons, inputs, etc.)
-      ;(el as HTMLElement).focus?.()
-      ;(el as HTMLElement).click?.()
+    const interactive = findInteractiveHtml(el)
+    if (interactive) {
+      // Use DOM events for HTML interactive elements (HUD buttons, toolbar, inputs, etc.)
+      interactive.focus?.()
+      interactive.click?.()
       return
     }
     // Route to HUD inner editor via DOM events
