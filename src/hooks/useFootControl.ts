@@ -35,8 +35,10 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     // Smart cursor move: dispatch DOM hover events + tldraw editor events
     const onCursorMove = (x: number, y: number) => {
       const el = document.elementFromPoint(x, y)
-      // Use interactive ancestor for enter/leave (pointerenter doesn't bubble)
-      const interactive = findInteractiveHtml(el) ?? el
+      // Use interactive ancestor for enter/leave (pointerenter doesn't bubble).
+      // null when not over an interactive element — prevents cycling on bare canvas
+      // where elementFromPoint returns a different child element every frame.
+      const interactive = findInteractiveHtml(el)
 
       if (interactive !== prevFootInteractive) {
         if (prevFootInteractive) {
@@ -369,10 +371,13 @@ function getTarget(editor: Editor, x: number, y: number): Element | null {
   return document.elementFromPoint(x, y)
 }
 
+const TEXT_INPUT_TYPES = new Set(['text', 'email', 'password', 'search', 'tel', 'url', 'number', ''])
+
 function isTextInput(el: Element | null): boolean {
   if (!el) return false
   const tag = el.tagName.toLowerCase()
-  if (tag === 'input' || tag === 'textarea') return true
+  if (tag === 'input') return TEXT_INPUT_TYPES.has((el as HTMLInputElement).type.toLowerCase())
+  if (tag === 'textarea') return true
   if ((el as HTMLElement).isContentEditable) return true
   return false
 }
