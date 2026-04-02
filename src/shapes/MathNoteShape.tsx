@@ -38,6 +38,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
     token.attrSet('src', cached || `/api/local-image?path=${encodeURIComponent(src)}`)
   }
   token.attrSet('style', 'max-width: 100%')
+  token.attrSet('draggable', 'false')
   return self.renderToken(tokens, idx, options)
 }
 import { chatInsertBus, refStore } from './FleetPillShape'
