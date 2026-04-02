@@ -29,6 +29,7 @@ export interface FootControlOptions {
   cursorSpeed?: number   // viewport px/sec per full throttle (default: 600)
   panSpeed?: number      // viewport px/sec per full throttle (default: 600)
   deadzone?: number      // axis deadzone (default: 0.05)
+  onCursorMove?: (x: number, y: number) => void  // override cursor dispatch (default: editor.dispatch)
 }
 
 export interface FootControlState {
@@ -136,7 +137,11 @@ export function createFootController(editor: Editor, options: FootControlOptions
       const speed = axes.cursor * cursorSpeed * dt
       state.cursorX = Math.max(0, Math.min(window.innerWidth, state.cursorX + dx * speed))
       state.cursorY = Math.max(0, Math.min(window.innerHeight, state.cursorY + dy * speed))
-      dispatchCursorMove(state.cursorX, state.cursorY)
+      if (options.onCursorMove) {
+        options.onCursorMove(state.cursorX, state.cursorY)
+      } else {
+        dispatchCursorMove(state.cursorX, state.cursorY)
+      }
     }
 
     // Pan camera along heading

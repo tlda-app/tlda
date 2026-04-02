@@ -11,6 +11,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { Editor } from 'tldraw'
+import { DefaultColorStyle } from 'tldraw'
 import { createFootController } from '../footControl'
 import { createClickDetector } from '../clickDetect'
 
@@ -26,7 +27,22 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
   useEffect(() => {
     if (!enabled || !editor) return
 
-    const foot = createFootController(editor)
+    // Smart cursor move: route to HUD inner editor or main editor based on position
+    const onCursorMove = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)
+      if (el?.closest('.fleet-hud-wrap, .clip-panel')) {
+        el.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, cancelable: true,
+          clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1,
+          button: -1, buttons: 0,
+        }))
+      } else {
+        editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
+      }
+    }
+
+    const foot = createFootController(editor, { onCursorMove })
     const click = createClickDetector()
     footRef.current = foot
     clickRef.current = click
@@ -93,40 +109,62 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       dispatchEnter(editor, x, y)
     })
 
-    // Visible arrow cursor — shows heading direction, rotates as heading changes
-    const cursorEl = document.createElement('div')
-    cursorEl.style.cssText = `
-      position: fixed; pointer-events: none; z-index: 99998;
-      width: 28px; height: 28px;
-      transform-origin: center center;
+    // Tapering ray — cone that narrows to nothing in the heading direction
+    const rayEl = document.createElement('div')
+    rayEl.style.cssText = `
+      position: fixed; pointer-events: none; z-index: 99997;
+      width: 350px; height: 16px;
+      transform-origin: 0 50%;
+      opacity: 0.15;
+      transition: opacity 0.4s ease;
     `
-    cursorEl.innerHTML = `
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <filter id="fc-shadow">
-          <feDropShadow dx="0" dy="1" stdDeviation="1" flood-opacity="0.3"/>
-        </filter>
-        <g filter="url(#fc-shadow)">
-          <polygon points="14,3 22,22 14,18 6,22" fill="rgba(139,92,246,0.7)" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
-        </g>
+    rayEl.innerHTML = `
+      <svg width="350" height="16" viewBox="0 0 350 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="fc-ray-fade" x1="0" y1="0" x2="350" y2="0" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="rgb(139,92,246)" stop-opacity="0.55"/>
+            <stop offset="50%" stop-color="rgb(139,92,246)" stop-opacity="0.15"/>
+            <stop offset="100%" stop-color="rgb(139,92,246)" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon points="0,3 350,8 0,13" fill="url(#fc-ray-fade)"/>
       </svg>
     `
-    cursorEl.style.opacity = '0.15'
-    cursorEl.style.transition = 'opacity 0.4s ease'
-    document.body.appendChild(cursorEl)
+    document.body.appendChild(rayEl)
+
+    // Small dot at cursor position
+    const dotEl = document.createElement('div')
+    dotEl.style.cssText = `
+      position: fixed; pointer-events: none; z-index: 99999;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: rgba(139,92,246,0.75);
+      transform: translate(-50%, -50%);
+      opacity: 0.15;
+      transition: opacity 0.4s ease;
+    `
+    document.body.appendChild(dotEl)
 
     let idleTimer: ReturnType<typeof setTimeout> | null = null
     foot.onStateChange(s => {
-      const deg = s.heading * 180 / Math.PI + 90  // SVG arrow points up by default
-      cursorEl.style.left = (s.cursorX - 14) + 'px'
-      cursorEl.style.top = (s.cursorY - 14) + 'px'
-      cursorEl.style.transform = `rotate(${deg}deg)`
+      const deg = s.heading * 180 / Math.PI
+      rayEl.style.left = s.cursorX + 'px'
+      rayEl.style.top = (s.cursorY - 8) + 'px'
+      rayEl.style.transform = `rotate(${deg + 180}deg)`
+      dotEl.style.left = s.cursorX + 'px'
+      dotEl.style.top = s.cursorY + 'px'
+      // Update tail color to match current tool color
+      const color = getToolColor(editor)
+      const stops = rayEl.querySelectorAll('stop') as NodeListOf<SVGStopElement>
+      stops.forEach(stop => { stop.style.stopColor = color })
+      dotEl.style.background = color
 
       const isMoving = Math.abs(s.rudderAxis) > 0.05 || Math.abs(s.cursorAxis) > 0.05 || Math.abs(s.panAxis) > 0.05
       if (isMoving) {
         lastFootMove = performance.now()
-        cursorEl.style.opacity = '0.5'
+        rayEl.style.opacity = '0.85'
+        dotEl.style.opacity = '1'
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
-        idleTimer = setTimeout(() => { cursorEl.style.opacity = '0.15' }, 600)
+        idleTimer = setTimeout(() => { rayEl.style.opacity = '0.15'; dotEl.style.opacity = '0.15' }, 600)
         // Feed pointermove to document for DOM drag handlers (e.g. agent labels)
         if (isDomDragging) {
           document.dispatchEvent(new PointerEvent('pointermove', {
@@ -200,7 +238,8 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
-      cursorEl.remove()
+      rayEl.remove()
+      dotEl.remove()
       footRef.current = null
       clickRef.current = null
     }
@@ -218,6 +257,26 @@ function flashAt(x: number, y: number, color: string) {
   }
   document.body.appendChild(el)
   el.addEventListener('animationend', () => el.remove())
+}
+
+// Map tldraw color names to CSS colors for the tail indicator
+const TLDRAW_COLOR_CSS: Record<string, string> = {
+  black: '#1d1d1d', grey: '#9b9b9b', white: '#f9f9f9',
+  red: '#e03131', 'light-red': '#ff9b9b',
+  orange: '#e67c00', 'light-orange': '#ffa94d',
+  yellow: '#f4b400',
+  green: '#099268', 'light-green': '#62df64',
+  blue: '#4465e9', 'light-blue': '#7ac3f4',
+  violet: '#7b5ea7', 'light-violet': '#b4a0ff',
+}
+
+function getToolColor(editor: Editor): string {
+  try {
+    const name = editor.getStyleForNextShape(DefaultColorStyle)
+    return TLDRAW_COLOR_CSS[name] ?? '#9b9b9b'
+  } catch {
+    return '#9b9b9b'
+  }
 }
 
 function getTarget(editor: Editor, x: number, y: number): Element | null {
@@ -263,16 +322,34 @@ function isInteractiveHtml(el: Element | null): boolean {
   return false
 }
 
+function isOverHud(x: number, y: number): boolean {
+  return !!document.elementFromPoint(x, y)?.closest('.fleet-hud-wrap, .clip-panel')
+}
+
 function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
+  const el = document.elementFromPoint(x, y)
   if (!isDown) {
     // On pointer_up: check if something interactive is at the click position
-    const el = document.elementFromPoint(x, y)
     if (isInteractiveHtml(el)) {
       // Use DOM events for HTML interactive elements (HUD buttons, inputs, etc.)
       ;(el as HTMLElement).focus?.()
       ;(el as HTMLElement).click?.()
       return
     }
+    // Route to HUD inner editor via DOM events
+    if (isOverHud(x, y)) {
+      el?.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true, cancelable: true, clientX: x, clientY: y,
+        pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+      }))
+      return
+    }
+  } else if (isOverHud(x, y)) {
+    el?.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, clientX: x, clientY: y,
+      pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+    }))
+    return
   }
   editor.dispatch({ type: 'pointer', target: 'canvas', name: isDown ? 'pointer_down' : 'pointer_up', ...tlPtr(x, y) })
 }
