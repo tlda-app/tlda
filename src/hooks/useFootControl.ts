@@ -31,13 +31,16 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     const onCursorMove = (x: number, y: number) => {
       const el = document.elementFromPoint(x, y)
       if (el?.closest('.fleet-hud-wrap, .clip-panel')) {
+        // HUD inner editor — route via DOM events
         el.dispatchEvent(new PointerEvent('pointermove', {
           bubbles: true, cancelable: true,
           clientX: x, clientY: y,
           pointerType: 'mouse', isPrimary: true, pointerId: 1,
           button: -1, buttons: 0,
         }))
-      } else {
+      } else if (el?.closest('.tl-canvas')) {
+        // Only dispatch to tldraw canvas when cursor is actually over the canvas,
+        // not toolbar or other UI — prevents edge-scroll and tooltip jitter
         editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
       }
     }
