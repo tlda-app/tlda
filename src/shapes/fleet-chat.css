@@ -1262,8 +1262,13 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
    are disabled so clicks fall through to tldraw's canvas for drag/resize.
    ============================================================================= */
 
-/* Drag mode — BrowseIdle adds this class to the shape wrapper when selected */
-.fleet-drag-mode .tl-html-container {
+/* Drag mode — BrowseIdle adds this class to the shape wrapper when selected.
+   Apply to all descendants, not just the container — child elements with
+   explicit pointer-events:all (chips, buttons, etc.) would otherwise intercept
+   the click and start their own drag handlers instead of letting tldraw move
+   the whole shape. */
+.fleet-drag-mode .tl-html-container,
+.fleet-drag-mode .tl-html-container * {
   pointer-events: none !important;
 }
 
