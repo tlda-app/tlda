@@ -53,16 +53,23 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     let lastHandMove = 0
     let lastFootMove = 0
     // Intercept native pointermove in capture phase — fires before tldraw's handlers.
-    // We handle the event ourselves (update foot cursor state) then stop propagation
-    // so the native event never reaches tldraw. All cursor state in tldraw comes from
-    // our editor.dispatch() calls only, eliminating the position mismatch.
+    // Intercept pointer events in capture phase — fires before all other handlers.
+    // pointermove: handle ourselves then stop so native event never reaches tldraw.
+    // pointerenter/leave: stop propagation to suppress JS tooltip timers (CSS :hover
+    // still works via OS cursor, so button visual states are unaffected).
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerType !== 'mouse') return  // let touch/pen through
+      if (e.pointerType !== 'mouse') return
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
       foot.setCursorPos(e.clientX, e.clientY)
       e.stopPropagation()
     }
+    const onPointerEnterLeave = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return
+      e.stopPropagation()
+    }
     window.addEventListener('pointermove', onPointerMove, { capture: true })
+    window.addEventListener('pointerenter', onPointerEnterLeave, { capture: true })
+    window.addEventListener('pointerleave', onPointerEnterLeave, { capture: true })
 
     // Route clicks to whichever cursor moved most recently
     const clickX = () => lastFootMove >= lastHandMove ? foot.state.cursorX : mouseX
@@ -252,6 +259,8 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       click.stop()
       offClick(); offDbl(); offEnter()
       window.removeEventListener('pointermove', onPointerMove, { capture: true })
+      window.removeEventListener('pointerenter', onPointerEnterLeave, { capture: true })
+      window.removeEventListener('pointerleave', onPointerEnterLeave, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       if (idleTimer) clearTimeout(idleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
