@@ -60,8 +60,9 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     const onPointerMove = (e: PointerEvent) => {
       if (!e.isTrusted) return  // let synthetic events (drag threshold, HUD routing) through
       if (e.pointerType !== 'mouse') return
+      // Track mouse position for click routing but don't drive the foot cursor —
+      // accidental mouse nudges would yank the cursor off its foot-controlled position
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
-      foot.setCursorPos(e.clientX, e.clientY)
       e.stopPropagation()
     }
     const onPointerEnterLeave = (e: PointerEvent) => {
