@@ -52,7 +52,9 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     let mouseY = window.innerHeight / 2
     let lastHandMove = 0
     let lastFootMove = 0
-    // Intercept native pointermove in capture phase — fires before tldraw's handlers.
+    // Previous mouse coords for delta — null until first move (avoids initial teleport)
+    let prevMouseX: number | null = null
+    let prevMouseY: number | null = null
     // Intercept pointer events in capture phase — fires before all other handlers.
     // pointermove: handle ourselves then stop so native event never reaches tldraw.
     // pointerenter/leave: stop propagation to suppress JS tooltip timers (CSS :hover
@@ -60,9 +62,21 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     const onPointerMove = (e: PointerEvent) => {
       if (!e.isTrusted) return  // let synthetic events (drag threshold, HUD routing) through
       if (e.pointerType !== 'mouse') return
-      // Track mouse position for click routing but don't drive the foot cursor —
-      // accidental mouse nudges would yank the cursor off its foot-controlled position
       mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
+      // Apply mouse delta to foot cursor — relative movement, no teleport.
+      // Mouse acts as a second relative input device alongside the pedals.
+      if (prevMouseX !== null && prevMouseY !== null) {
+        const dx = e.clientX - prevMouseX
+        const dy = e.clientY - prevMouseY
+        if (dx !== 0 || dy !== 0) {
+          foot.setCursorPos(
+            Math.max(0, Math.min(window.innerWidth, foot.state.cursorX + dx)),
+            Math.max(0, Math.min(window.innerHeight, foot.state.cursorY + dy)),
+          )
+        }
+      }
+      prevMouseX = e.clientX
+      prevMouseY = e.clientY
       e.stopPropagation()
     }
     const onPointerEnterLeave = (e: PointerEvent) => {
