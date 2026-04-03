@@ -826,8 +826,19 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               lineHeight: 1.4,
               color: '#1a1a1a',
             }}
-            dangerouslySetInnerHTML={{ __html: renderedHtml }}
-          />
+          >
+            <style>{`
+              .math-note-prose table { border-collapse: collapse; width: 100%; }
+              .math-note-prose table td, .math-note-prose table th { border: 1px solid rgba(0,0,0,0.15); padding: 4px 8px; }
+              .math-note-prose p { margin: 0 0 0.6em; }
+              .math-note-prose p:last-child { margin-bottom: 0; }
+            `}</style>
+            <div
+              className="math-note-prose"
+              style={{ maxWidth: '72ch', margin: '0 auto' }}
+              dangerouslySetInnerHTML={{ __html: renderedHtml }}
+            />
+          </div>
         )
       } else {
         textContent = (
