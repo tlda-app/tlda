@@ -70,7 +70,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const [currentMs, setCurrentMs] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [playSpeed, setPlaySpeed] = useState(1)
-  const [speedText, setSpeedText] = useState('1')
+  const [speedText, setSpeedText] = useState('1x')
 
   const rafRef = useRef<number | null>(null)
   const lastRafTime = useRef<number | null>(null)
@@ -295,8 +295,8 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
               onFocus={e => { setSpeedText(String(playSpeed)); e.target.select() }}
               onBlur={() => {
                 const v = parseFloat(speedText)
-                if (!isNaN(v) && v > 0) { setPlaySpeed(v); setSpeedText(String(v)) }
-                else setSpeedText(String(playSpeed))
+                if (!isNaN(v) && v > 0) { setPlaySpeed(v); setSpeedText(`${v}x`) }
+                else setSpeedText(`${playSpeed}x`)
               }}
               onKeyDown={e => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
