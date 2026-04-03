@@ -264,12 +264,15 @@ export function dropPillOnTarget(
     const displayName = pill?.props?.displayName || 'file'
 
     if (docValue.startsWith('tlda:')) {
-      // tlda-card with full URL → create inline-doc shape using relative path
-      // (keep same-origin so the proxy forwards the auth cookie)
-      let url = docValue.slice(5)
+      // tlda-card URL is /?doc=name — use SPA URL directly in the inline-doc iframe
+      const fullUrl = docValue.slice(5)
+      let docName = displayName
+      let embedUrl = fullUrl
       try {
-        const parsed = new URL(url)
-        url = parsed.pathname + parsed.search
+        const u = new URL(fullUrl)
+        docName = u.searchParams.get('doc') || displayName
+        if (!u.searchParams.has('embed')) u.searchParams.set('embed', '1')
+        embedUrl = u.toString()
       } catch {}
       createEditor.createShape({
         id: createShapeId(),
@@ -280,8 +283,8 @@ export function dropPillOnTarget(
         props: {
           w: 800,
           h: 1000,
-          url,
-          title: displayName,
+          url: embedUrl,
+          title: docName,
         },
       })
     } else if (docValue.startsWith('file:')) {
@@ -336,7 +339,7 @@ export function dropPillOnTarget(
         props: {
           w: 800,
           h: 1000,
-          url: `/docs/${docName}/`,
+          url: `http://localhost:5176/?doc=${encodeURIComponent(docName)}&embed=1`,
           title: displayName || docName,
         },
       })

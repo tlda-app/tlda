@@ -33,6 +33,7 @@ import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
+import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import './fleet-chat.css'
 
@@ -467,10 +468,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/localhost:\d+[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
-        const safeUrl = url.replace(/"/g, '&quot;')
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const id = 'tlda-' + btoa(url).slice(0, 16)
-        return `<div class="tlda-card" data-tlda-src="${safeUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${safeUrl}" target="_blank" class="doc-open-link">open ↗</a></div><div class="tlda-iframe-slot"></div></div>`
+        // Add embed=1 then append auth token
+        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
+        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
+        const openUrl = url.replace(/"/g, '&quot;')
+        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
       }
     )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
