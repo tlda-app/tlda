@@ -39,6 +39,7 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
+const FLEET_API = 'http://localhost:5199'
 
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
@@ -257,6 +258,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
+  // Esc interrupt: track last Esc timestamp for soft/hard distinction
+  const lastEscRef = useRef<number>(0)
+  // Keep sendTargets accessible from native event listener without re-registering
+  const sendTargetsRef = useRef<string[]>([])
 
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
@@ -770,6 +775,33 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('load', onImgLoad, true)
   }, [])
 
+  // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
+  // synthetic keydown for Escape, so we attach directly at the target element.
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    function onEscKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (ta!.value !== '') return
+      const targets = sendTargetsRef.current
+      if (targets.length === 0) return
+      e.preventDefault()
+      const now = Date.now()
+      const agent = targets[0]
+      if (now - lastEscRef.current < 500) {
+        // Hard interrupt: Esc twice within 500ms
+        lastEscRef.current = 0
+        fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+      } else {
+        // Soft interrupt: single Esc
+        lastEscRef.current = now
+        fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+      }
+    }
+    ta.addEventListener('keydown', onEscKey)
+    return () => ta.removeEventListener('keydown', onEscKey)
+  }, [])
+
   // When textarea grows (multi-line input), keep chat scrolled to bottom
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
@@ -844,6 +876,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     return [...seen]
   }, [filterKey])
+  sendTargetsRef.current = sendTargets
 
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
