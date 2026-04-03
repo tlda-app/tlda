@@ -1460,6 +1460,216 @@ function getPort() {
   try { return new URL(getServer()).port || '5176' } catch { return '5176' }
 }
 
+async function cmdDoctor() {
+  const { execSync, spawnSync } = await import('child_process')
+  const ok  = (msg) => console.log(green('✓') + ' ' + msg)
+  const fail = (msg, fix) => {
+    console.log(red('✗') + ' ' + msg)
+    if (fix) console.log('  ' + dim(fix))
+  }
+  const warn = (msg, fix) => {
+    const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s
+    console.log(yellow('!') + ' ' + msg)
+    if (fix) console.log('  ' + dim(fix))
+  }
+
+  let issues = 0
+
+  // 1. Node version
+  const nodeVer = process.versions.node
+  const [major] = nodeVer.split('.').map(Number)
+  if (major >= 18) {
+    ok(`Node ${nodeVer}`)
+  } else {
+    fail(`Node ${nodeVer} (need ≥18)`, 'brew install node')
+    issues++
+  }
+
+  // 2. LaTeX tools
+  const checkBin = (bin) => {
+    try { execSync(`which ${bin}`, { stdio: 'pipe' }); return true } catch { return false }
+  }
+  if (checkBin('latexmk')) {
+    ok('latexmk found')
+  } else {
+    fail('latexmk not found', 'brew install --cask mactex-no-gui  (or: brew install basictex)')
+    issues++
+  }
+  if (checkBin('dvisvgm')) {
+    ok('dvisvgm found')
+  } else {
+    fail('dvisvgm not found', 'Included in MacTeX. If using BasicTeX: tlmgr install dvisvgm')
+    issues++
+  }
+
+  // 3. Server
+  const serverUrl = getServer()
+  let serverRunning = false
+  try {
+    const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
+    serverRunning = res.ok
+  } catch {}
+
+  if (serverRunning) {
+    ok(`Server running at ${serverUrl}`)
+  } else {
+    console.log(red('✗') + ' Server not running — starting it...')
+    try {
+      // Check launchd
+      const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
+      const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
+      if (hasLaunchd) {
+        try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
+        try { execSync('launchctl kickstart -k gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+      } else {
+        const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+        const serverScript = join(ctdRoot, 'server', 'unified-server.mjs')
+        const { spawn: cpSpawn } = await import('child_process')
+        const { openSync: fsOpenSync } = await import('fs')
+        const logFd = fsOpenSync(LOGFILE, 'a')
+        const child = cpSpawn(process.execPath, [serverScript], {
+          detached: true, stdio: ['ignore', logFd, logFd],
+          env: { ...process.env, PORT: getPort() }
+        })
+        child.unref()
+      }
+      // Wait for it
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        try {
+          const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(1000) })
+          if (res.ok) { serverRunning = true; break }
+        } catch {}
+      }
+      if (serverRunning) {
+        ok(`Server started at ${serverUrl}`)
+      } else {
+        fail('Server failed to start', `Check log: tlda server log`)
+        issues++
+      }
+    } catch (e) {
+      fail(`Server failed to start: ${e.message}`, 'tlda server log')
+      issues++
+    }
+  }
+
+  // 4. launchd (auto-restart on login)
+  {
+    const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
+    if (existsSync(PLIST)) {
+      ok('launchd service installed (server auto-restarts)')
+    } else {
+      warn('launchd service not installed (server won\'t restart after a crash or login)', 'tlda server install')
+    }
+  }
+
+  // 5. Watch-all
+  let watchRunning = false
+  if (existsSync(WATCH_ALL_PIDFILE)) {
+    const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); watchRunning = true } catch {}
+  }
+  if (watchRunning) {
+    ok('watch-all running')
+  } else {
+    console.log(red('✗') + ' watch-all not running — starting it...')
+    try {
+      const ctdScript = fileURLToPath(import.meta.url)
+      const { spawn: cpSpawn } = await import('child_process')
+      const { openSync: fsOpenSync } = await import('fs')
+      if (!existsSync(dirname(WATCH_ALL_LOGFILE))) mkdirSync(dirname(WATCH_ALL_LOGFILE), { recursive: true })
+      const logFd = fsOpenSync(WATCH_ALL_LOGFILE, 'a')
+      const child = cpSpawn(process.execPath, [ctdScript, 'watch-all', 'run'], {
+        detached: true, stdio: ['ignore', logFd, logFd]
+      })
+      child.unref()
+      await new Promise(r => setTimeout(r, 1000))
+      if (existsSync(WATCH_ALL_PIDFILE)) {
+        ok('watch-all started')
+      } else {
+        fail('watch-all failed to start', `Check log: tlda watch-all log`)
+        issues++
+      }
+    } catch (e) {
+      fail(`watch-all failed to start: ${e.message}`, 'tlda watch-all log')
+      issues++
+    }
+  }
+
+  // 6. MCP server configured
+  {
+    const mcpConfigs = [
+      join(homedir(), '.claude', 'settings.json'),
+      join(homedir(), '.config', 'claude', 'settings.json'),
+      // project-level .mcp.json — look up from cwd
+      join(process.cwd(), '.mcp.json'),
+    ]
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const mcpEntry = join(ctdRoot, 'mcp-server', 'index.mjs')
+
+    let mcpFound = false
+    for (const cfgPath of mcpConfigs) {
+      if (!existsSync(cfgPath)) continue
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+        const servers = cfg.mcpServers || {}
+        for (const s of Object.values(servers)) {
+          const args = s.args || []
+          if (args.some(a => String(a).includes('mcp-server'))) {
+            mcpFound = true; break
+          }
+        }
+      } catch {}
+      if (mcpFound) break
+    }
+
+    if (mcpFound) {
+      ok('MCP server configured in Claude settings')
+    } else {
+      fail('MCP server not found in Claude settings')
+      console.log()
+      console.log('  Add this to your project .mcp.json or ~/.claude/settings.json:')
+      console.log()
+      console.log('  ' + cyan(JSON.stringify({
+        mcpServers: {
+          'tldraw-feedback': {
+            type: 'stdio',
+            command: process.execPath,
+            args: [mcpEntry],
+            env: { TLDA_SERVER: serverUrl }
+          }
+        }
+      }, null, 2).split('\n').join('\n  ')))
+      console.log()
+      issues++
+    }
+  }
+
+  // 7. Projects with build errors (only if server is running)
+  if (serverRunning) {
+    try {
+      const data = await api('GET', '/api/projects', null, { timeoutMs: 5000 })
+      const errored = (data.projects || []).filter(p => p.buildStatus === 'error')
+      if (errored.length === 0) {
+        ok('No projects with build errors')
+      } else {
+        for (const p of errored) {
+          fail(`Project "${p.name}" has build errors`, `tlda errors ${p.name}`)
+          issues++
+        }
+      }
+    } catch {}
+  }
+
+  console.log()
+  if (issues === 0) {
+    console.log(green(bold('All checks passed.')))
+  } else {
+    console.log(red(bold(`${issues} issue${issues === 1 ? '' : 's'} found.`)))
+    process.exit(1)
+  }
+}
+
 
 
 async function cmdServer(action) {
@@ -1943,6 +2153,7 @@ async function main() {
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
+      case 'doctor': await cmdDoctor(); break
       default:
         console.log(`tlda — tlda CLI
 
@@ -1966,6 +2177,7 @@ Commands:
   preview <name> [page ...]  Rasterize SVG pages to PNG
   remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
+  doctor         Check and fix common setup issues
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.
