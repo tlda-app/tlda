@@ -613,6 +613,64 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [doc, refResolver, w])
 
+  // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
+  // anywhere on the chat shape before tldraw can create a canvas image shape.
+  useEffect(() => {
+    const el = shapeContainerRef.current
+    if (!el) return
+
+    function onDragOver(e: DragEvent) {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    async function onDrop(e: DragEvent) {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.stopPropagation()
+      const files = [...(e.dataTransfer.files || [])]
+      if (!files.length) return
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          const assetRecord = {
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any
+          const mainEd = (window as any).__tldraw_editor__ || editor
+          mainEd.store.put([assetRecord])
+          if (mainEd !== editor) editor.store.put([assetRecord])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+        } else {
+          let content = ''
+          try { content = await file.text() } catch {}
+          const uid = Date.now().toString(36).slice(-4)
+          const token = `«file:${file.name}#${uid}»`
+          refStore.set(token, { type: 'file', label: file.name, content })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+        }
+      }
+    }
+
+    el.addEventListener('dragover', onDragOver, true)
+    el.addEventListener('drop', onDrop, true)
+    return () => {
+      el.removeEventListener('dragover', onDragOver, true)
+      el.removeEventListener('drop', onDrop, true)
+    }
+  }, [shape.id, editor])
+
   // Hover events on annotation ref-chips → dispatch to AnnotationViewer
   const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
