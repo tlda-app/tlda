@@ -20,23 +20,6 @@ const PILL_H = 18
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
 
-/** Stash for reference chip content — keyed by token string, value is hover content */
-export interface RefStoreEntry {
-  type: string
-  label: string
-  content: string
-  // Annotation-specific fields
-  color?: string
-  canvasBounds?: { x: number; y: number; w: number; h: number }
-  shapeId?: string
-  highlightShapeId?: string
-  file?: string
-  lineno?: number
-  screenshotRef?: string
-}
-export const refStore = new Map<string, RefStoreEntry>()
-// Expose for dev/testing — agents populate via browser console
-;(window as any).__refStore = refStore
 
 /**
  * Module-level state for filter overlay drop preview.
@@ -155,18 +138,10 @@ export function dropPillOnTarget(
       const pillType = pill?.props?.pillType || 'ref'
       // Use the source shape ID as the uid when available — embeds the tldraw shape ID
       // in the token so chips can be resolved live via editor.getShape() after reload.
-      // Fall back to timestamp uid for chips with no canvas shape (file drops, etc.).
       const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
         ? pill.props.value : undefined
       const uid = sourceShapeId || Date.now().toString(36).slice(-4)
       const token = `«${pillType}:${displayName}#${uid}»`
-      // Only write to refStore for chips without a backing shape (file/image drops).
-      // Shape-backed chips (annotation, highlight) resolve live via editor.getShape().
-      if (!sourceShapeId) {
-        const entry: RefStoreEntry = { type: pillType, label: displayName, content }
-        if (pill?.props?.color) entry.color = pill.props.color
-        refStore.set(token, entry)
-      }
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
@@ -225,7 +200,7 @@ export function dropPillOnTarget(
     }))
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
-    // File chip pill dropped on canvas → create collapsed math-note with content from refStore
+    // File chip pill dropped on canvas → create collapsed math-note
     const pill = editor.getShape(pillId) as any
     const noteContent = content || pill?.props?.displayName || ''
     createEditor.createShape({
