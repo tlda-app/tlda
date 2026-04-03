@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
+import { refStore, chatInsertBus } from './shapes/FleetPillShape'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -127,33 +128,157 @@ export function CanvasClipPanel({
     // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
     // In lockCamera mode (HUD), only sync fleet shapes back — non-fleet shapes (PDF pages,
     // highlights, etc.) are read-only in the HUD and should never propagate changes to main.
+    //
+    // Important: use source:'user' (not 'all') and skip mergeRemoteChanges so that
+    // fleet shape position/size updates reach the TLSyncClient and are persisted to the
+    // server. mergeRemoteChanges marks writes as source:'remote', which the sync client
+    // ignores — causing HUD moves to be lost on reload. Using source:'user' also
+    // naturally breaks the feedback loop: main echoes changes back to HUD via
+    // mergeRemoteChanges (source:'remote'), which this listener never sees.
     const isFleetShape = (r: any) =>
       r.typeName === 'shape' && FLEET_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
-      mainEditor.store.mergeRemoteChanges(() => {
-        for (const record of Object.values(changes.added)) {
-          if (isPill(record)) continue
-          if (!isDocRecord(record)) continue
-          if (lockCamera && !isFleetShape(record)) continue
-          mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
-        }
-        for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to)) continue
-          if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
-          if (lockCamera && !isFleetShape(to)) continue
-          mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
-        }
-        for (const record of Object.values(changes.removed)) {
-          if (isPill(record)) continue
-          if (!isDocRecord(record)) continue
-          if (lockCamera && !isFleetShape(record)) continue
-          try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
-        }
-      })
-    }, { source: 'all', scope: 'document' })
+      for (const record of Object.values(changes.added)) {
+        if (isPill(record)) continue
+        if (!isDocRecord(record)) continue
+        if (lockCamera && !isFleetShape(record)) continue
+        mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
+      }
+      for (const [, to] of Object.values(changes.updated)) {
+        if (isPill(to)) continue
+        if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
+        if (lockCamera && !isFleetShape(to)) continue
+        mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
+      }
+      for (const record of Object.values(changes.removed)) {
+        if (isPill(record)) continue
+        if (!isDocRecord(record)) continue
+        if (lockCamera && !isFleetShape(record)) continue
+        try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
+      }
+    }, { source: 'user', scope: 'document' })
 
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
+
+  // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
+  // files dropped over a fleet-chat shape are routed to that chat's input instead
+  // of creating canvas image shapes. Falls back to tldraw's default for drops on
+  // empty canvas.
+  useEffect(() => {
+    if (!editor || !lockCamera) return
+    const originalHandler = (editor as any).externalContentHandlers.files
+    editor.registerExternalContentHandler('files', async (info) => {
+      const point = info.point
+      const allChats = editor.getCurrentPageShapes()
+        .filter(s => (s as any).type === 'fleet-chat')
+      let hitChat: any = null
+      if (point) {
+        for (const chat of allChats) {
+          const bounds = editor.getShapePageBounds(chat.id)
+          if (bounds &&
+            point.x >= bounds.x && point.x <= bounds.x + bounds.w &&
+            point.y >= bounds.y && point.y <= bounds.y + bounds.h) {
+            hitChat = chat
+            break
+          }
+        }
+      }
+      if (!hitChat) {
+        // Not over a fleet-chat — fall back to tldraw's default (creates image shape on canvas)
+        originalHandler?.(info)
+        return
+      }
+      // Route each file to the chat input
+      for (const file of info.files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          // Store as tldraw asset in main editor (synced to server → persistent across refresh)
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          mainEditor.store.put([{
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          // Also populate refStore for immediate same-session render
+          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        } else {
+          const fileUid = Date.now().toString(36).slice(-4)
+          let content = ''
+          try { content = await file.text() } catch {}
+          const token = `«file:${file.name}#${fileUid}»`
+          refStore.set(token, { type: 'file', label: file.name, content })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        }
+      }
+    })
+    // Override url handler to intercept data:image/ URLs dragged from chat img elements.
+    // tldraw's default url handler tries to create a bookmark, but data: URLs aren't
+    // valid bookmark URLs → validation crash. Instead, convert the data URL to a File
+    // and handle it as an image drop.
+    const originalUrlHandler = (editor as any).externalContentHandlers.url
+    editor.registerExternalContentHandler('url', async (info) => {
+      const { url, point } = info
+      if (url?.startsWith('data:image/')) {
+        try {
+          const res = await fetch(url)
+          const blob = await res.blob()
+          const ext = blob.type.split('/')[1] || 'png'
+          const file = new File([blob], `image.${ext}`, { type: blob.type })
+          await editor.putExternalContent({ type: 'files', files: [file], point })
+        } catch {}
+        return
+      }
+      // Silently drop file:// and other non-http URLs that can't be bookmarks
+      if (!url?.startsWith('http://') && !url?.startsWith('https://')) return
+      originalUrlHandler?.(info)
+    })
+
+    return () => {
+      // Restore originals on unmount
+      ;(editor as any).externalContentHandlers.files = originalHandler
+      ;(editor as any).externalContentHandlers.url = originalUrlHandler
+    }
+  }, [editor, lockCamera])
+
+  // Also override the MAIN editor's url handler to intercept data:image/ URLs.
+  // When an <img> is dragged from the chat stream and dropped on the main canvas,
+  // the browser puts a text/uri-list with the data: URL into the drag transfer.
+  // tldraw's default url handler tries to create a bookmark → schema crash.
+  // This converts the data URL to a File and re-dispatches as a files drop.
+  useEffect(() => {
+    const originalMainUrlHandler = (mainEditor as any).externalContentHandlers.url
+    mainEditor.registerExternalContentHandler('url', async (info) => {
+      const { url, point } = info
+      if (url?.startsWith('data:image/')) {
+        try {
+          const res = await fetch(url)
+          const blob = await res.blob()
+          const ext = blob.type.split('/')[1] || 'png'
+          const file = new File([blob], `image.${ext}`, { type: blob.type })
+          await mainEditor.putExternalContent({ type: 'files', files: [file], point })
+        } catch {}
+        return
+      }
+      if (!url?.startsWith('http://') && !url?.startsWith('https://')) return
+      originalMainUrlHandler?.(info)
+    })
+    return () => {
+      ;(mainEditor as any).externalContentHandlers.url = originalMainUrlHandler
+    }
+  }, [mainEditor])
 
   // Apply camera constraints when bounds change
   // Use clip bounds for initial position, full page extent for scroll range

@@ -273,6 +273,33 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const chatLogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Reactive map of image asset ID → src URL (populated from tldraw store).
+  // Image chips use this for persistence: assets survive refresh, refStore doesn't.
+  const [imageSrcs, setImageSrcs] = useState<Map<string, string>>(() => {
+    const map = new Map<string, string>()
+    for (const record of editor.store.allRecords()) {
+      const r = record as any
+      if (r.typeName === 'asset' && r.type === 'image' && r.props?.src) {
+        map.set(r.id, r.props.src)
+      }
+    }
+    return map
+  })
+  useEffect(() => {
+    return editor.store.listen(({ changes }) => {
+      const added = Object.values(changes.added).filter((r: any) => r.typeName === 'asset' && r.type === 'image')
+      if (!added.length) return
+      setImageSrcs(prev => {
+        const next = new Map(prev)
+        for (const r of added) {
+          const a = r as any
+          if (a.props?.src) next.set(a.id, a.props.src)
+        }
+        return next
+      })
+    }, { source: 'all', scope: 'document' })
+  }, [editor])
+
   // Build context and render messages
   const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
 
@@ -395,13 +422,28 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const ref = refStore.get(token)
       // Display: strip the "type:" prefix and any #uid suffix, show just the label
       const colonIdx = inner.indexOf(':')
-      const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[a-z0-9]+$/, '')
+      const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
+      const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
-      // Annotation chips use AnnotationViewer on hover — skip the CSS tooltip
-      const preview = (!isAnnotation && content) ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
+      const isImage = typePrefix === 'img'
+
+      // Images render as block-level, not as chips
+      if (isImage) {
+        // Try tldraw asset (persistent across refresh), fall back to refStore (same-session)
+        const uid = inner.split('#')[1] || ''
+        const src = imageSrcs.get('asset:' + uid) || content
+        if (src) {
+          const nameEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          return `<img src="${src}" alt="${nameEsc}" style="display:block;width:75%;max-width:100%;border-radius:4px;margin:4px 0;" />`
+        }
+        // Asset not yet loaded — render placeholder chip
+        return `<span class="ref-chip ref-chip-image">${displayEsc}</span>`
+      }
+
+      const preview = !isAnnotation && content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
       const colorDot = isAnnotation && ref?.color
         ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
         : ''
@@ -425,7 +467,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions, refStoreReady])
+  }, [renderedHtml, doc, labelRegions, refStoreReady, imageSrcs])
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -636,6 +678,22 @@ function FleetChatComponent({ shape }: { shape: any }) {
     const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
     if (wasAtBottom) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
+
+  // After images inside the log load, they expand the scroll height. Scroll to
+  // bottom if we were close enough that we should follow new content.
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+    function onImgLoad(e: Event) {
+      if ((e.target as HTMLElement).tagName !== 'IMG') return
+      const el = logEl!
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
+        el.scrollTop = el.scrollHeight
+      }
+    }
+    logEl.addEventListener('load', onImgLoad, true)
+    return () => logEl.removeEventListener('load', onImgLoad, true)
+  }, [])
 
   // When textarea grows (multi-line input), keep chat scrolled to bottom
   useEffect(() => {
@@ -1397,31 +1455,46 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 const files = [...(e.dataTransfer?.files || [])]
                 if (files.length > 0) {
                   for (const file of files) {
-                    if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
-                      // Text file → read contents, insert as code block
+                    const uid = Date.now().toString(36).slice(-4)
+                    if (file.type.startsWith('image/')) {
+                      // Image → read as base64 data URL, store as tldraw asset (persistent), insert chip
+                      const dataUrl = await new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader()
+                        reader.onload = () => resolve(reader.result as string)
+                        reader.onerror = reject
+                        reader.readAsDataURL(file)
+                      })
+                      const assetId = `asset:img-${Date.now().toString(36)}`
+                      const assetRecord = {
+                        id: assetId as any, typeName: 'asset', type: 'image',
+                        props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+                        meta: {},
+                      } as any
+                      // Put in main editor (persisted to server) and HUD editor (immediate imageSrcs update)
+                      const mainEd = (window as any).__tldraw_editor__ || editor
+                      mainEd.store.put([assetRecord])
+                      if (mainEd !== editor) editor.store.put([assetRecord])
+                      const assetUid = assetId.slice('asset:'.length)
+                      const token = `«img:${file.name}#${assetUid}»`
+                      // Also populate refStore for immediate same-session render before store propagation
+                      refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
+                      const pos = ta.selectionStart || ta.value.length
+                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.dispatchEvent(new Event('input', { bubbles: true }))
+                    } else if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
+                      // Text/code file → read contents, insert as file chip
                       const text = await file.text()
-                      const ext = file.name.split('.').pop() || ''
-                      const _block = `\`\`\`${ext}\n${text}\n\`\`\``; void _block
-                      const token = `«file:${file.name}»`
+                      const token = `«file:${file.name}#${uid}»`
                       refStore.set(token, { type: 'file', label: file.name, content: text })
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else if (file.type.startsWith('image/')) {
-                      // Image → upload to fleet dashboard, insert markdown
-                      try {
-                        const buf = await file.arrayBuffer()
-                        const res = await fetch('/api/upload', { method: 'POST', body: buf })
-                        const data = await res.json()
-                        if (data.url) {
-                          const pos = ta.selectionStart || ta.value.length
-                          ta.value = ta.value.slice(0, pos) + `![${file.name}](${data.url})` + ta.value.slice(pos)
-                          ta.dispatchEvent(new Event('input', { bubbles: true }))
-                        }
-                      } catch {}
                     } else {
-                      // Other file → insert path reference
-                      const token = `«file:${file.name}»`
+                      // Other file → try to read as text; fall back to name-only chip
+                      let content = ''
+                      try { content = await file.text() } catch {}
+                      const token = `«file:${file.name}#${uid}»`
+                      refStore.set(token, { type: 'file', label: file.name, content })
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))

@@ -144,13 +144,15 @@ function usePillDrag() {
         const ph = measureEl.offsetHeight
         document.body.removeChild(measureEl)
         const pillId = createShapeId()
-        editor.createShape({
-          id: pillId,
-          type: 'fleet-pill' as any,
-          x: pagePos.x - pw / 2,
-          y: pagePos.y - ph / 2,
-          props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
-        })
+        editor.run(() => {
+          editor.createShape({
+            id: pillId,
+            type: 'fleet-pill' as any,
+            x: pagePos.x - pw / 2,
+            y: pagePos.y - ph / 2,
+            props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
+          })
+        }, { history: 'ignore' })
         drag.pillId = pillId as unknown as string
         // Reset tldraw's state machine — it saw our pointerdown but will never see pointerup
         // (we stopImmediatePropagation those). editor.cancel() resets it without cancelling
@@ -165,12 +167,14 @@ function usePillDrag() {
         const pillShape = editor.getShape(drag.pillId as any) as any
         const pw = pillShape?.props?.w || 70
         const ph = pillShape?.props?.h || 18
-        editor.updateShape({
-          id: drag.pillId as any,
-          type: 'fleet-pill' as any,
-          x: pagePos.x - pw / 2,
-          y: pagePos.y - ph / 2,
-        })
+        editor.run(() => {
+          editor.updateShape({
+            id: drag.pillId as any,
+            type: 'fleet-pill' as any,
+            x: pagePos.x - pw / 2,
+            y: pagePos.y - ph / 2,
+          })
+        }, { history: 'ignore' })
         // Publish slot for ghost preview (uses main editor for page coords)
         const mainEditor = (window as any).__tldraw_editor__
         const targetEditor = mainEditor || editor
@@ -193,7 +197,9 @@ function usePillDrag() {
 
       const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
       dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
-      try { editor.deleteShapes([drag.pillId as any]) } catch {}
+      editor.run(() => {
+        try { editor.deleteShapes([drag.pillId as any]) } catch {}
+      }, { history: 'ignore' })
     }
 
     document.addEventListener('pointermove', onMove, { capture: true })
