@@ -920,7 +920,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -1013,12 +1013,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc card → drag as doc reference
+      // MD file card or shared-doc ref-chip → drag as doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card') as HTMLElement
+        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || filePath.split('/').pop() || 'file'
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
           drag = {
             pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
             displayName: name, color: '#9370db', content: filePath,

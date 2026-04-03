@@ -1,4 +1,5 @@
 import { getAgents, getAgent, getPreambleMacros } from './fleet-data.mjs'
+import { myTldaUrl, isTldaUrl } from './tldaUrl.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -348,7 +349,7 @@ export function renderMarkdown(html) {
     const project = m ? m[1] : '';
     const shapeId = m ? m[2] : '';
     const openUrl = project
-      ? `http://localhost:5176/?doc=${encodeURIComponent(project)}${shapeId ? '&focus=' + encodeURIComponent(shapeId) : ''}`
+      ? `${myTldaUrl()}/?doc=${encodeURIComponent(project)}${shapeId ? '&focus=' + encodeURIComponent(shapeId) : ''}`
       : '';
     return ph(`<div class="tlda-embed">
       <div class="tlda-embed-source">${esc(source)}</div>
@@ -480,8 +481,9 @@ export function renderMarkdown(html) {
       return segment
     }
     if (_inCode) return segment
-    return segment.replace(/\bhttps?:\/\/localhost:51(?:73|74|75|76)\/?[^\s<>"')\]]*\?doc=[^\s<>"')\]]+/g, url => {
+    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]*\?(?:[^\s<>"')\]]*&)?doc=[^\s<>"')\]]+/g, url => {
       try {
+        if (!isTldaUrl(url)) return url
         const u = new URL(url)
         const docName = u.searchParams.get('doc') || 'doc'
         return `<span class="md-file-card" data-doc="${esc(docName)}" draggable="true"><span class="md-file-chip">${esc(docName)}</span></span>`
