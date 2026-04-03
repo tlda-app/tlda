@@ -157,11 +157,14 @@ export function dropPillOnTarget(
           ? filterDropPreview.toPreview
           : filterDropPreview.fromPreview
       if (preview) {
+        const wasLocked = hitShape.isLocked
+        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
         createEditor.updateShape({
           id: hitShape.id,
           type: 'fleet-chat' as any,
           props: { filter: preview },
         })
+        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
 
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
@@ -190,11 +193,14 @@ export function dropPillOnTarget(
         ]
       }
     }
+    const wasLocked = hitShape.isLocked
+    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
     createEditor.updateShape({
       id: hitShape.id,
       type: 'fleet-chat' as any,
       props: { ...hitShape.props, filter: newFilter },
     })
+    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))
