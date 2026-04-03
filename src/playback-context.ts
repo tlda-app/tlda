@@ -9,6 +9,18 @@
  * calls notifyPlaybackUpdated() when currentMs changes, forcing re-render.
  */
 
+export interface TimewarpRegion {
+  start_ms: number
+  end_ms: number
+  speed: number
+  description?: string
+}
+
+export interface Timewarp {
+  name: string
+  regions: TimewarpRegion[]
+}
+
 export interface PlaybackData {
   /** All events from the recording (unfiltered) */
   events: PlaybackEvent[]
@@ -21,6 +33,10 @@ export interface PlaybackData {
   /** Recording metadata */
   title: string
   created: string
+  /** All available timewarps (named cuts) from this recording's edits */
+  timewarps?: Timewarp[]
+  /** Active timewarp (null = no speed mapping, use baseSpeed directly) */
+  activeTimewarp?: Timewarp | null
 }
 
 export interface PlaybackEvent {
@@ -122,6 +138,34 @@ export function getPlaybackAgents(data: PlaybackData): any[] {
     last_seen: new Date().toISOString(),
     labels: [],
   }))
+}
+
+/**
+ * Get the effective playback speed at a given time position.
+ * If an activeTimewarp is set, looks up the region speed and multiplies by baseSpeed.
+ * Jump regions (>100x) are handled by the caller (snap to region end).
+ */
+export function getEffectiveSpeed(
+  timewarp: Timewarp | null | undefined,
+  t: number,
+  baseSpeed: number,
+): number {
+  if (!timewarp || !timewarp.regions.length) return baseSpeed
+  for (const r of timewarp.regions) {
+    if (t >= r.start_ms && t < r.end_ms) return r.speed * baseSpeed
+  }
+  return baseSpeed
+}
+
+/**
+ * Extract all timewarps from a recording's edits array.
+ * Edits with op: 'timewarp' carry a timewarp sub-object.
+ */
+export function extractTimewarps(edits: any[]): Timewarp[] {
+  if (!Array.isArray(edits)) return []
+  return edits
+    .filter((e: any) => e.op === 'timewarp' && e.timewarp)
+    .map((e: any) => e.timewarp as Timewarp)
 }
 
 /**
