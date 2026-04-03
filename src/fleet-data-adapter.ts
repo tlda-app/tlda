@@ -12,12 +12,15 @@ import {
   getEvents,
   getAgents,
   getTasks,
+  getUnreadCountsForHuman,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
   matchesFilter,
+  respawnAgent as _respawnAgent,
+  spawnAgent as _spawnAgent,
   // @ts-ignore — vanilla JS module
-} from 'fleet-dashboard/js/fleet-data.mjs'
+} from './fleet/fleet-data.mjs'
 
 // --- Lazy initialization ---
 
@@ -85,6 +88,8 @@ export function useFleetTasks(): any[] {
  * Subscribe to fleet chat events, optionally filtered.
  * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
+const MAX_LOCAL_EVENTS = 500
+
 export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
   const [events, setEvents] = useState<any[]>([])
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
@@ -96,12 +101,12 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      // Seed with initial events from the store (server cap raised to 1000)
+      // Seed with initial events from the store
       const all = getEvents()
       const filtered = filter
         ? all.filter((e: any) => matchesFilter(filter, e))
         : [...all]
-      setEvents(filtered)
+      setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
       // Subscribe for live updates
       unsub = subscribe('messages', filter, (event: any) => {
@@ -111,9 +116,12 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
           const filtered = filter
             ? all.filter((e: any) => matchesFilter(filter, e))
             : [...all]
-          setEvents(filtered)
+          setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
         } else {
-          setEvents(prev => [...prev, event])
+          setEvents(prev => {
+            const next = [...prev, event]
+            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
+          })
         }
       })
     })
@@ -325,7 +333,37 @@ export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   return data.results || data || []
 }
 
+/**
+ * Returns a map of agentId → unread count for messages from that agent to the human.
+ * Updates live when messages arrive or read receipts come in.
+ */
+export function useFleetUnreadCounts(): Record<string, number> {
+  const [counts, setCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setCounts(getUnreadCountsForHuman())
+      unsub = subscribe('messages', null, () => {
+        setCounts(getUnreadCountsForHuman())
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return counts
+}
+
 // --- Write API (re-exported) ---
 
 export const sendMessage = _sendMessage
+export const respawnAgent = _respawnAgent
+export const spawnAgent = _spawnAgent
 export { loadBefore, fetchHistory }

@@ -11,6 +11,13 @@
   background-color: #0f0f1a !important;
 }
 
+/* Raise tlui-layout above the fleet HUD (z-index 999, position: fixed).
+   tlui-layout's contain:strict means internal z-indexes are local to its stacking
+   context — setting z-index on __bottom alone never helped against the HUD. */
+.tlui-layout {
+  z-index: 1000 !important;
+}
+
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
   z-index: 1000 !important;

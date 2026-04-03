@@ -11,6 +11,8 @@ import {
   createShapeId,
 } from 'tldraw'
 import type { Editor, TLShape, TLShapeId } from 'tldraw'
+// @ts-ignore — vanilla JS module
+import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -18,23 +20,6 @@ const PILL_H = 18
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
 
-/** Stash for reference chip content — keyed by token string, value is hover content */
-export interface RefStoreEntry {
-  type: string
-  label: string
-  content: string
-  // Annotation-specific fields
-  color?: string
-  canvasBounds?: { x: number; y: number; w: number; h: number }
-  shapeId?: string
-  highlightShapeId?: string
-  file?: string
-  lineno?: number
-  screenshotRef?: string
-}
-export const refStore = new Map<string, RefStoreEntry>()
-// Expose for dev/testing — agents populate via browser console
-;(window as any).__refStore = refStore
 
 /**
  * Module-level state for filter overlay drop preview.
@@ -47,6 +32,64 @@ export const filterDropPreview = {
   fromPreview: null as [string, string][][] | null,
   replacePreview: null as [string, string][][] | null,
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
+}
+
+const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+
+/** Ghost slot state — updated by drag handlers (page coords), read by FleetDropGhost */
+export const dropGhostState: { slot: { x: number; y: number; w: number; h: number } | null } = { slot: null }
+export const dropGhostBus = new EventTarget()
+
+/**
+ * Compute the empty grid slot at (dropX, dropY) defined by surrounding fleet shapes.
+ * Returns { x, y, w, h } to fill, or null if no meaningful slot is found.
+ *
+ * Treats all left/right/top/bottom edges of other fleet shapes as grid lines, then
+ * returns the cell those lines define around the drop point — provided it's empty.
+ */
+export function computeDropSlot(
+  editor: Editor,
+  excludeId: TLShapeId | null,
+  dropX: number,
+  dropY: number,
+): { x: number; y: number; w: number; h: number } | null {
+  const others = editor.getCurrentPageShapes()
+    .filter(s => FLEET_SHAPE_TYPES.has((s as any).type) && s.id !== excludeId)
+  if (others.length === 0) return null
+
+  const bounds = others
+    .map(s => editor.getShapePageBounds(s.id))
+    .filter(Boolean) as { x: number; y: number; w: number; h: number }[]
+  if (bounds.length === 0) return null
+
+  // Build grid lines from all fleet shape edges
+  const xs = [...new Set(bounds.flatMap(b => [b.x, b.x + b.w]))].sort((a, b) => a - b)
+  const ys = [...new Set(bounds.flatMap(b => [b.y, b.y + b.h]))].sort((a, b) => a - b)
+
+  const minX = xs[0], maxX = xs[xs.length - 1]
+  const minY = ys[0], maxY = ys[ys.length - 1]
+
+  // Drop point must be inside the existing fleet bounding box
+  if (dropX <= minX || dropX >= maxX || dropY <= minY || dropY >= maxY) return null
+
+  const slotLeft = [...xs].reverse().find(x => x <= dropX) ?? minX
+  const slotRight = xs.find(x => x >= dropX) ?? maxX
+  const slotTop = [...ys].reverse().find(y => y <= dropY) ?? minY
+  const slotBottom = ys.find(y => y >= dropY) ?? maxY
+
+  const w = slotRight - slotLeft
+  const h = slotBottom - slotTop
+  if (w < 50 || h < 50) return null
+
+  // Reject if the slot is significantly occupied by another fleet shape
+  const PAD = 8
+  const occupied = bounds.some(b =>
+    b.x + PAD < slotRight && b.x + b.w - PAD > slotLeft &&
+    b.y + PAD < slotBottom && b.y + b.h - PAD > slotTop
+  )
+  if (occupied) return null
+
+  return { x: slotLeft, y: slotTop, w, h }
 }
 
 /**
@@ -83,39 +126,22 @@ export function dropPillOnTarget(
   if (hitShape && hitShape.type === 'fleet-chat') {
 
     // Content pill → insert reference chip token into target chat's input
-    if (content) {
-      // Build a short token: <<type:label>>
-      // Extract a short label from the value (e.g. "msg:fleet:skip:2026-03-28T09:43:00Z" → "skip 9:43 AM")
+    // Only triggers when dropped on the text input area (bottom 60px of chat)
+    const chatBoundsForContent = editor.getShapePageBounds(hitShape.id)
+    const inTextInput = chatBoundsForContent &&
+      pagePoint.y >= chatBoundsForContent.y + chatBoundsForContent.h - 60
+    // Content pills that miss the text field area → do nothing (don't fall through to filter logic)
+    if (content && !inTextInput) return
+    if (content && inTextInput) {
       const pill = editor.getShape(pillId) as any
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
-      const token = `«${pillType}:${displayName}»`
-      const entry: RefStoreEntry = { type: pillType, label: displayName, content }
-      // Capture annotation metadata from pill shape props
-      if (pill?.props?.color) entry.color = pill.props.color
-      if (pill?.props?.value) {
-        entry.shapeId = pill.props.value
-        const srcShape = editor.getShape(pill.props.value as any) as any
-        if (srcShape) {
-          // Resolve source provenance: shape → highlightId → highlight.meta.sourceAnchor
-          const highlightId = srcShape.props?.highlightId
-          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
-          // Use highlight bounds for canvasBounds/screenshotRef (wider region than dot)
-          const refShape = highlight || srcShape
-          if (highlight) entry.highlightShapeId = highlight.id
-          const refBounds = editor.getShapePageBounds(refShape.id)
-          if (refBounds) {
-            entry.canvasBounds = { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h }
-            entry.screenshotRef = `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}`
-          }
-          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
-          if (anchor) {
-            if (anchor.file) entry.file = anchor.file
-            if (anchor.line != null) entry.lineno = anchor.line
-          }
-        }
-      }
-      refStore.set(token, entry)
+      // Use the source shape ID as the uid when available — embeds the tldraw shape ID
+      // in the token so chips can be resolved live via editor.getShape() after reload.
+      const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
+        ? pill.props.value : undefined
+      const uid = sourceShapeId || Date.now().toString(36).slice(-4)
+      const token = `«${pillType}:${displayName}#${uid}»`
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
@@ -173,13 +199,57 @@ export function dropPillOnTarget(
       detail: { chatId: hitShape.id },
     }))
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
+             (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
+    // File chip pill dropped on canvas → create collapsed math-note
+    const pill = editor.getShape(pillId) as any
+    const noteContent = content || pill?.props?.displayName || ''
+    createEditor.createShape({
+      id: createShapeId(),
+      type: 'math-note' as any,
+      x: pagePoint.x - 5,
+      y: pagePoint.y - 5,
+      isLocked: false,
+      props: {
+        w: 320,
+        h: 50,
+        text: noteContent,
+        color: 'light-violet',
+        autoSize: true,
+        collapsed: true,
+      },
+    })
+  } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc/file pill dropped on canvas → create collapsed math-note with file content
     const pill = editor.getShape(pillId) as any
     const docValue = pill.props.value as string // "file:/path" or "doc:name"
     const displayName = pill?.props?.displayName || 'file'
 
-    if (docValue.startsWith('file:')) {
+    if (docValue.startsWith('tlda:')) {
+      // tlda-card URL is /?doc=name — use SPA URL directly in the inline-doc iframe
+      const fullUrl = docValue.slice(5)
+      let docName = displayName
+      let embedUrl = fullUrl
+      try {
+        const u = new URL(fullUrl)
+        docName = u.searchParams.get('doc') || displayName
+        if (!u.searchParams.has('embed')) u.searchParams.set('embed', '1')
+        embedUrl = u.toString()
+      } catch {}
+      createEditor.createShape({
+        id: createShapeId(),
+        type: 'inline-doc' as any,
+        x: pagePoint.x - 400,
+        y: pagePoint.y - 500,
+        isLocked: false,
+        props: {
+          w: 800,
+          h: 1000,
+          url: embedUrl,
+          title: docName,
+        },
+      })
+    } else if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
         try {
@@ -220,21 +290,19 @@ export function dropPillOnTarget(
         }
       })()
     } else {
-      // doc: prefix — create note with just the name
+      // doc: prefix — create inline-doc shape (renders the tlda document)
       const docName = docValue.startsWith('doc:') ? docValue.slice(4) : docValue
       createEditor.createShape({
         id: createShapeId(),
-        type: 'math-note' as any,
-        x: pagePoint.x - 5,
-        y: pagePoint.y - 5,
+        type: 'inline-doc' as any,
+        x: pagePoint.x - 400,
+        y: pagePoint.y - 500,
         isLocked: false,
         props: {
-          w: 300,
-          h: 50,
-          text: `# ${docName}`,
-          color: 'light-violet',
-          autoSize: true,
-          collapsed: true,
+          w: 800,
+          h: 1000,
+          url: `${myTldaUrl()}/?doc=${encodeURIComponent(docName)}&embed=1`,
+          title: displayName || docName,
         },
       })
     }
@@ -266,16 +334,19 @@ export function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat, always unlocked
+    // Drop on empty canvas → create new fleet-chat, always unlocked.
+    // If the drop lands inside an existing grid layout's empty slot, fill it.
+    const newId = createShapeId()
+    const slot = computeDropSlot(createEditor, null, pagePoint.x, pagePoint.y)
     createEditor.createShape({
-      id: createShapeId(),
+      id: newId,
       type: 'fleet-chat' as any,
-      x: pagePoint.x,
-      y: pagePoint.y,
+      x: slot ? slot.x : pagePoint.x,
+      y: slot ? slot.y : pagePoint.y,
       isLocked: false,
       props: {
-        w: 400,
-        h: 600,
+        w: slot ? slot.w : 400,
+        h: slot ? slot.h : 600,
         filter: [[['to', value]], [['from', value]]],
       },
     })
@@ -312,6 +383,25 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
 
+  // Auto-delete orphaned pills that were created but never dragged
+  override onTranslateStart = (shape: TLShape) => {
+    // Clear any pending auto-delete since the user is actively dragging
+    const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
+    if (timerId) clearTimeout(timerId)
+  }
+
+  onCreate = (shape: TLShape) => {
+    // Auto-delete after 5s if never dragged (accidental grab)
+    if (!(this as any).__autoDeleteTimers) (this as any).__autoDeleteTimers = new Map()
+    const timer = setTimeout(() => {
+      if (this.editor.getShape(shape.id)) {
+        this.editor.deleteShapes([shape.id])
+      }
+    }, 5000)
+    ;(this as any).__autoDeleteTimers.set(shape.id, timer)
+    return shape
+  }
+
   override onTranslateEnd = (_initial: TLShape, current: TLShape) => {
     const editor = this.editor
     const pill = current as any
@@ -341,7 +431,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   component(shape: any) {
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
-    const isDotForm = pillType === 'doc' || pillType === 'annotation'
+    const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {

@@ -7,6 +7,7 @@ import {
   useValue,
   stopEventPropagation,
   DefaultColorStyle,
+  AssetRecordType,
 } from 'tldraw'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
@@ -23,9 +24,25 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   tokens[idx].attrSet('rel', 'noopener')
   return self.renderToken(tokens, idx, options)
 }
-import { chatInsertBus, refStore } from './FleetPillShape'
+// Cache: local path → data URL (populated from tldraw asset store or fresh fetch)
+const localImageCache = new Map<string, string>()
+// Regex to find local image paths in markdown text
+const LOCAL_IMG_RE = /!\[[^\]]*\]\(((?:~\/|\/)[^)]+)\)/g
+
+// Rewrite local image paths: use cached data URL if available, else server URL
+md.renderer.rules.image = (tokens, idx, options, _env, self) => {
+  const token = tokens[idx]
+  const src = token.attrGet('src') || ''
+  if (src.startsWith('/') || src.startsWith('~')) {
+    const cached = localImageCache.get(src)
+    token.attrSet('src', cached || `/api/local-image?path=${encodeURIComponent(src)}`)
+  }
+  token.attrSet('style', 'max-width: 100%')
+  token.attrSet('draggable', 'false')
+  return self.renderToken(tokens, idx, options)
+}
+import { chatInsertBus } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
-import { isDraft, subscribeDrafts, publishDraft } from '../annotationVisibility'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 
 // CodeMirror imports
@@ -111,12 +128,7 @@ function hasMath(text: string): boolean {
 }
 
 function hasMarkdown(text: string): boolean {
-  return /^#{1,3}\s|^\s*[-*]\s|\*\*|`[^`]+`|```/.test(text) || text.includes('\n')
-}
-
-// Chapter-capable: starts with # (h1)
-function isChapterCapable(text: string): boolean {
-  return /^#\s+/.test(text.trim())
+  return /^#{1,3}\s|^\s*[-*]\s|\*\*|`[^`]+`|```|!\[/.test(text) || text.includes('\n')
 }
 
 export const NOTE_COLORS: Record<string, string> = {
@@ -255,12 +267,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           const text = (current.props.text as string) || ''
           const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
           const token = `«annotation:${displayName}»`
-          const noteBounds = this.editor.getShapePageBounds(current.id)
-          refStore.set(token, {
-            type: 'annotation', label: displayName, content: text,
-            shapeId: current.id,
-            canvasBounds: noteBounds ? { x: noteBounds.x, y: noteBounds.y, w: noteBounds.w, h: noteBounds.h } : undefined,
-          })
           const wasLocked = (chat as any).isLocked
           if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
@@ -268,6 +274,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           return
         }
       }
+    }
+  }
+
+  override onClick = (shape: any) => {
+    if (shape.props.collapsed) {
+      this.editor.updateShape({
+        id: shape.id,
+        type: shape.type,
+        props: { collapsed: false },
+      })
     }
   }
 
@@ -297,32 +313,57 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const [replyContext, setReplyContextState] = useState<string | null>(null)
 
     // Refs for sync coordination
-    const tabBarRef = useRef<HTMLDivElement>(null)
     const suppressUpdateRef = useRef(false)
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
-
     const [dotHovered, setDotHovered] = useState(false)
-    const [dotClicked, setDotClicked] = useState(false)
+    const [imgVersion, setImgVersion] = useState(0)
 
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
-    const isDone = shape.props.done === true
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
-    const isDraftNote = useSyncExternalStore(subscribeDrafts, () => isDraft(shape.id))
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
 
-    // Memoize KaTeX + markdown rendering — only re-parse when text actually changes
+    // Lazy image registration: fetch local images, store as tldraw assets + module cache
+    useEffect(() => {
+      const text = shape.props.text || ''
+      LOCAL_IMG_RE.lastIndex = 0
+      const paths = new Set<string>()
+      let m: RegExpExecArray | null
+      while ((m = LOCAL_IMG_RE.exec(text)) !== null) paths.add(m[1])
+      if (paths.size === 0) return
+      let registered = false
+      Promise.all([...paths].map(async (path) => {
+        if (localImageCache.has(path)) return
+        const assetId = AssetRecordType.createId('local-' + encodeURIComponent(path))
+        const existing = editor.getAsset(assetId)
+        if (existing) { localImageCache.set(path, (existing.props as any).src); registered = true; return }
+        try {
+          const resp = await fetch(`/api/local-image?path=${encodeURIComponent(path)}`)
+          if (!resp.ok) return
+          const blob = await resp.blob()
+          const dataUrl = await new Promise<string>((res, rej) => {
+            const r = new FileReader(); r.onloadend = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(blob)
+          })
+          localImageCache.set(path, dataUrl)
+          editor.createAssets([{ id: assetId, typeName: 'asset', type: 'image', meta: {},
+            props: { w: 0, h: 0, mimeType: blob.type || 'image/png', src: dataUrl, name: path, isAnimated: false } }])
+          registered = true
+        } catch { /* server URL fallback stays */ }
+      })).then(() => { if (registered) setImgVersion(v => v + 1) })
+    }, [shape.props.text, editor])
+
+    // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(
       () => {
         const t = shape.props.text || ''
         if (hasMath(t) || hasMarkdown(t)) return renderMarkdownMath(t)
         return null
       },
-      [shape.props.text],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [shape.props.text, imgVersion],
     )
-    const chapterCapable = useMemo(() => isChapterCapable(shape.props.text || ''), [shape.props.text])
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
@@ -395,8 +436,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             const el = contentRef.current
             if (!el) return
             const contentH = el.scrollHeight
-            const tabBarH = tabBarRef.current?.offsetHeight || 0
-            const target = Math.max(40, contentH + tabBarH)
+            const target = Math.max(40, contentH)
             const diff = target - shape.props.h
             if (Math.abs(diff) > 2) {
               if (diff < 0) {
@@ -422,8 +462,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       if (!el) return
       const measure = () => {
         const contentH = el.scrollHeight
-        const tabBarH = tabBarRef.current?.offsetHeight || 0
-        const target = Math.max(40, contentH + tabBarH)
+        const target = Math.max(40, contentH)
         const diff = target - shape.props.h
         if (Math.abs(diff) > 2) {
           if (diff < 0) {
@@ -441,7 +480,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       ro.observe(el)
       measure()
       return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.collapsed])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -870,115 +909,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       )
     }
 
-    const showTabBar = !isEditing
-
-    let tabBar: React.ReactNode = null
-    if (showTabBar) {
-      const doneColor = isDone
-        ? (isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)')
-        : (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)')
-
-      tabBar = (
-        <div
-          ref={tabBarRef}
-          className="math-note-tabbar"
-          style={{
-            display: 'flex',
-            alignItems: 'stretch',
-            flexShrink: 0,
-          }}
-        >
-          {/* Done toggle */}
-          <div
-            className={`note-done-toggle-inline${isDone ? ' note-done-toggle-inline--active' : ''}`}
-            onPointerDown={(e) => {
-              stopEventPropagation(e)
-              const newDone = !isDone
-              editor.updateShape({
-                id: shape.id,
-                type: shape.type,
-                props: { done: newDone },
-              })
-              if (newDone) {
-                const pages = editor.getCurrentPageShapes()
-                  .filter(s => (s.type as string) === 'svg-page')
-                let bestPage: any = null
-                let bestDist = Infinity
-                for (const p of pages) {
-                  const pb = editor.getShapePageBounds(p.id)
-                  if (!pb) continue
-                  const cy = shape.y + (shape.props as any).h / 2
-                  const dist = cy < pb.minY ? pb.minY - cy : cy > pb.maxY ? cy - pb.maxY : 0
-                  if (dist < bestDist) { bestDist = dist; bestPage = p }
-                }
-                if (bestPage) {
-                  const pb = editor.getShapePageBounds(bestPage.id)
-                  if (pb) {
-                    editor.updateShape({
-                      id: shape.id,
-                      type: shape.type,
-                      x: pb.maxX + 20,
-                    } as any)
-                  }
-                }
-              }
-            }}
-            style={{
-              padding: '3px 4px',
-              fontSize: '10px',
-              cursor: 'pointer',
-              userSelect: 'none',
-              pointerEvents: 'all',
-              flexShrink: 0,
-              color: doneColor,
-            }}
-          >
-            {isDone ? '\u2713' : '\u25CB'}
-          </div>
-          {/* Spacer */}
-          <div style={{ flex: 1 }} />
-          {/* Publish button for draft notes */}
-          {isDraftNote && (
-            <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                publishDraft(editor, shape.id)
-              }}
-              style={{
-                padding: '3px 8px',
-                fontSize: '9px',
-                fontFamily: '-apple-system, sans-serif',
-                color: '#2563eb',
-                cursor: 'pointer',
-                userSelect: 'none',
-                pointerEvents: 'all',
-                flexShrink: 0,
-                fontWeight: 500,
-              }}
-            >
-              Publish
-            </div>
-          )}
-          {/* Chapter indicator — drag note to right edge to add as book chapter */}
-          {chapterCapable && (
-            <div
-              style={{
-                padding: '2px 5px',
-                fontSize: '9px',
-                fontFamily: '-apple-system, sans-serif',
-                color: isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.18)',
-                userSelect: 'none',
-                pointerEvents: 'none',
-                flexShrink: 0,
-              }}
-              title="Drag note to right edge to add as book chapter"
-            >
-              {'\u00A7'}
-            </div>
-          )}
-        </div>
-      )
-    }
 
     // Collapsed dot rendering
     const isCollapsed = shape.props.collapsed === true && !isEditing
@@ -1003,7 +933,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           >
             {/* The dot */}
             <div
-              onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 e.stopPropagation()
                 editor.updateShape({
@@ -1019,6 +948,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 backgroundColor: dotColor,
                 cursor: 'pointer',
                 boxShadow: `0 0 0 2px ${dotColor}33`,
+                position: 'relative',
+                zIndex: 10,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1030,8 +961,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 <path d="M10 11v4l4-4h-4z" fill={dotColor} opacity="0.6" />
               </svg>
             </div>
-            {/* Hover or pinned: the actual expanded note */}
-            {(dotHovered || dotClicked) && (
+            {/* Hover preview */}
+            {dotHovered && (
               <div
                 style={{
                   position: 'absolute',
@@ -1044,15 +975,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                   backgroundColor: bgColor,
                   borderRadius: 4,
                   boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
-                  zIndex: 1000,
+                  zIndex: 1,
                   pointerEvents: 'none',
                   display: 'flex',
                   flexDirection: 'column',
                   opacity: 0.95,
                 }}
               >
-                {tabBar}
-                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative', pointerEvents: 'none' }}>
                   {content}
                 </div>
               </div>
@@ -1077,7 +1007,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           transition: 'opacity 0.2s',
         }}
       >
-          {/* Collapse dot — top-right corner inside the note */}
+          {/* Collapse in-place — top-left dot */}
           <div
             onPointerDown={(e) => {
               stopEventPropagation(e)
@@ -1090,7 +1020,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             style={{
               position: 'absolute',
               top: 4,
-              right: 4,
+              left: 4,
               width: 8,
               height: 8,
               borderRadius: '50%',
@@ -1102,9 +1032,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
-            title="Collapse to dot"
+            title="Collapse in place"
           />
-          {tabBar}
           {shape.meta?.friendly_name && (
             <div style={{
               fontSize: 9,
@@ -1121,7 +1050,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           )}
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
-            ...(isDone && !isEditing ? { maxHeight: '28px', opacity: 0.35 } : {}),
           }}>
             {content}
           </div>
@@ -1131,7 +1059,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
   indicator(shape: any) {
     if (shape.props.collapsed) {
-      return null
+      return <circle cx={5} cy={5} r={5} />
     }
     return <rect width={shape.props.w} height={shape.props.h} rx={4} ry={4} />
   }

@@ -1,14 +1,34 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { createReadStream, existsSync } from 'fs'
+import { homedir } from 'os'
+import { resolve } from 'path'
+import { lookup as mimeLookup } from 'mime-types'
+
+// Dev-only plugin: serve local filesystem images for math notes
+const localImagePlugin = {
+  name: 'local-image',
+  configureServer(server: any) {
+    server.middlewares.use('/api/local-image', (req: any, res: any, next: any) => {
+      const url = new URL(req.url, 'http://localhost')
+      const filePath = decodeURIComponent(url.searchParams.get('path') || '')
+      if (!filePath) return next()
+      const expanded = filePath.startsWith('~/') ? resolve(homedir(), filePath.slice(2)) : filePath
+      if (!expanded.startsWith('/') || !existsSync(expanded)) { res.statusCode = 404; res.end('Not found'); return }
+      const mimeType = mimeLookup(expanded) || 'application/octet-stream'
+      res.setHeader('Content-Type', mimeType)
+      res.setHeader('Cache-Control', 'public, max-age=3600')
+      createReadStream(expanded).pipe(res)
+    })
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
-  plugins: [react()],
+  plugins: [react(), localImagePlugin],
   resolve: {
     dedupe: ['react', 'react-dom'],
-    alias: {
-      'fleet-dashboard': '/Users/skip/work/fleet/dashboard',
-    },
   },
   server: {
     host: true,
@@ -32,6 +52,7 @@ export default defineConfig({
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',
       '/api/recognize': 'http://localhost:5176',
+      '/api/local-image': 'http://localhost:5176',
       // Remaining /api/* → fleet server (state, chat, activity, etc.)
       '/api': 'http://localhost:5199',
       '/docs': 'http://localhost:5176',
@@ -46,6 +67,7 @@ export default defineConfig({
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',
       '/api/recognize': 'http://localhost:5176',
+      '/api/local-image': 'http://localhost:5176',
       '/api': 'http://localhost:5199',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',

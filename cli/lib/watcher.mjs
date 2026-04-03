@@ -55,7 +55,7 @@ async function awaitBuild(server, name, authHeaders = {}) {
   }
 }
 
-export async function startWatcher({ dir, name, debounceMs = 200, getServer, getToken }) {
+export async function startWatcher({ dir, name, debounceMs = 200, getServer, getToken, onFatalError }) {
   const server = getServer()
   const token = getToken?.() || null
   const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -137,8 +137,10 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       if (!res.ok) {
         const text = await res.text()
         if (res.status === 401 || res.status === 403) {
-          console.error(`[watch] Authentication failed (${res.status}). Check your token with "tlda config".`)
-          process.exit(1)
+          console.error(`[watch:${name}] Authentication failed (${res.status}). Stopping watcher for this project.`)
+          if (onFatalError) onFatalError(new Error(`auth-${res.status}`))
+          else process.exit(1)
+          return
         }
         console.error(`[watch] Push failed: ${text}`)
       } else {

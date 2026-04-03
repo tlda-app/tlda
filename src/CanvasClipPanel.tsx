@@ -10,8 +10,9 @@
  * buttons and title.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
+import { chatInsertBus } from './shapes/FleetPillShape'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -70,9 +71,9 @@ export function CanvasClipPanel({
     onEditorMount?.(editor)
   }, [editor, onEditorMount])
 
-  // Snapping disabled in HUD — the copy store has 100+ shapes (PDF pages,
-  // highlights, etc.) that all act as snap targets, making drag unusable.
-  // TODO: re-enable once we can filter snap targets to fleet shapes only.
+  // Snapping in HUD: non-fleet shapes are already locked (lockNonFleetUnlockFleet),
+  // and tldraw's snap manager excludes locked shapes from snap targets. So enabling
+  // isSnapMode: true gives us fleet-shapes-only snapping for free.
 
   // Create copy store from main editor's document records
   const store = useMemo(() => {
@@ -127,33 +128,224 @@ export function CanvasClipPanel({
     // Skip shapes that were locally faded for emphasis — don't propagate opacity changes back
     // In lockCamera mode (HUD), only sync fleet shapes back — non-fleet shapes (PDF pages,
     // highlights, etc.) are read-only in the HUD and should never propagate changes to main.
+    //
+    // Important: use source:'user' (not 'all') and skip mergeRemoteChanges so that
+    // fleet shape position/size updates reach the TLSyncClient and are persisted to the
+    // server. mergeRemoteChanges marks writes as source:'remote', which the sync client
+    // ignores — causing HUD moves to be lost on reload. Using source:'user' also
+    // naturally breaks the feedback loop: main echoes changes back to HUD via
+    // mergeRemoteChanges (source:'remote'), which this listener never sees.
     const isFleetShape = (r: any) =>
       r.typeName === 'shape' && FLEET_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
-      mainEditor.store.mergeRemoteChanges(() => {
-        for (const record of Object.values(changes.added)) {
-          if (isPill(record)) continue
-          if (!isDocRecord(record)) continue
-          if (lockCamera && !isFleetShape(record)) continue
-          mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
-        }
-        for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to)) continue
-          if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
-          if (lockCamera && !isFleetShape(to)) continue
-          mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
-        }
-        for (const record of Object.values(changes.removed)) {
-          if (isPill(record)) continue
-          if (!isDocRecord(record)) continue
-          if (lockCamera && !isFleetShape(record)) continue
-          try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
-        }
-      })
-    }, { source: 'all', scope: 'document' })
+      for (const record of Object.values(changes.added)) {
+        if (isPill(record)) continue
+        if (!isDocRecord(record)) continue
+        if (lockCamera && !isFleetShape(record)) continue
+        mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
+      }
+      for (const [, to] of Object.values(changes.updated)) {
+        if (isPill(to)) continue
+        if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
+        if (lockCamera && !isFleetShape(to)) continue
+        mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
+      }
+      for (const record of Object.values(changes.removed)) {
+        if (isPill(record)) continue
+        if (!isDocRecord(record)) continue
+        // In lockCamera mode: allow all shape deletions (fleet and junk shapes).
+        // We block non-fleet UPDATES above to prevent accidental moves, but explicit
+        // user deletions (e.g. eraser) should always propagate back to main.
+        try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
+      }
+    }, { source: 'user', scope: 'document' })
 
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
+
+  // Mirror main editor's active tool to the HUD editor so the single tldraw toolbar
+  // controls both. When the user picks eraser/select in the main toolbar, the HUD
+  // editor switches to the same tool — enabling deletion of fleet shapes (and any
+  // stuck non-fleet shapes) without needing a separate HUD toolbar.
+  const mainToolId = useValue('mainToolId', () => mainEditor.getCurrentToolId(), [mainEditor])
+  useEffect(() => {
+    if (!editor || !lockCamera) return
+    try { editor.setCurrentTool(mainToolId) } catch { /* tool may not exist in HUD */ }
+  }, [editor, mainToolId, lockCamera])
+
+  // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
+  // files dropped over a fleet-chat shape are routed to that chat's input instead
+  // of creating canvas image shapes. Falls back to tldraw's default for drops on
+  // empty canvas.
+  useEffect(() => {
+    if (!editor || !lockCamera) return
+    const originalHandler = (editor as any).externalContentHandlers.files
+    editor.registerExternalContentHandler('files', async (info) => {
+      const point = info.point
+      const allChats = editor.getCurrentPageShapes()
+        .filter(s => (s as any).type === 'fleet-chat')
+      let hitChat: any = null
+      if (point) {
+        for (const chat of allChats) {
+          const bounds = editor.getShapePageBounds(chat.id)
+          if (bounds &&
+            point.x >= bounds.x && point.x <= bounds.x + bounds.w &&
+            point.y >= bounds.y && point.y <= bounds.y + bounds.h) {
+            hitChat = chat
+            break
+          }
+        }
+      }
+      if (!hitChat) {
+        // Not over a fleet-chat — fall back to tldraw's default (creates image shape on canvas)
+        originalHandler?.(info)
+        return
+      }
+      // Route each file to the chat input
+      for (const file of info.files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          // Store as tldraw asset in main editor (synced to server → persistent across refresh)
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          mainEditor.store.put([{
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        } else {
+          const fileUid = Date.now().toString(36).slice(-4)
+          const token = `«file:${file.name}#${fileUid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        }
+      }
+    })
+    // Override url handler to intercept data:image/ URLs dragged from chat img elements.
+    // tldraw's default url handler tries to create a bookmark, but data: URLs aren't
+    // valid bookmark URLs → validation crash. Instead, convert the data URL to a File
+    // and handle it as an image drop.
+    const originalUrlHandler = (editor as any).externalContentHandlers.url
+    editor.registerExternalContentHandler('url', async (info) => {
+      const { url, point } = info
+      if (url?.startsWith('data:image/')) {
+        try {
+          const res = await fetch(url)
+          const blob = await res.blob()
+          const ext = blob.type.split('/')[1] || 'png'
+          const file = new File([blob], `image.${ext}`, { type: blob.type })
+          await editor.putExternalContent({ type: 'files', files: [file], point })
+        } catch {}
+        return
+      }
+      // Silently drop file:// and other non-http URLs that can't be bookmarks
+      if (!url?.startsWith('http://') && !url?.startsWith('https://')) return
+      originalUrlHandler?.(info)
+    })
+
+    return () => {
+      // Restore originals on unmount
+      ;(editor as any).externalContentHandlers.files = originalHandler
+      ;(editor as any).externalContentHandlers.url = originalUrlHandler
+    }
+  }, [editor, lockCamera])
+
+  // Also override the MAIN editor's url handler to intercept data:image/ URLs.
+  // When an <img> is dragged from the chat stream and dropped on the main canvas,
+  // the browser puts a text/uri-list with the data: URL into the drag transfer.
+  // tldraw's default url handler tries to create a bookmark → schema crash.
+  // This converts the data URL to a File and re-dispatches as a files drop.
+  useEffect(() => {
+    const originalMainUrlHandler = (mainEditor as any).externalContentHandlers.url
+    mainEditor.registerExternalContentHandler('url', async (info) => {
+      const { url, point } = info
+      if (url?.startsWith('data:image/')) {
+        try {
+          const res = await fetch(url)
+          const blob = await res.blob()
+          const ext = blob.type.split('/')[1] || 'png'
+          const file = new File([blob], `image.${ext}`, { type: blob.type })
+          await mainEditor.putExternalContent({ type: 'files', files: [file], point })
+        } catch {}
+        return
+      }
+      if (!url?.startsWith('http://') && !url?.startsWith('https://')) return
+      originalMainUrlHandler?.(info)
+    })
+    return () => {
+      ;(mainEditor as any).externalContentHandlers.url = originalMainUrlHandler
+    }
+  }, [mainEditor])
+
+  // Also override the MAIN editor's files handler so OS file drops on the main
+  // canvas get routed to a fleet-chat when the cursor is over one. Without this,
+  // drops from Finder land on the main canvas (not the HUD) and tldraw creates a
+  // canvas shape instead of inserting a chip.
+  useEffect(() => {
+    if (!lockCamera) return
+    const originalMainFilesHandler = (mainEditor as any).externalContentHandlers.files
+    mainEditor.registerExternalContentHandler('files', async (info) => {
+      const point = info.point
+      const allChats = mainEditor.getCurrentPageShapes()
+        .filter((s: any) => s.type === 'fleet-chat')
+      let hitChat: any = null
+      if (point) {
+        for (const chat of allChats) {
+          const bounds = mainEditor.getShapePageBounds(chat.id)
+          if (bounds &&
+            point.x >= bounds.x && point.x <= bounds.x + bounds.w &&
+            point.y >= bounds.y && point.y <= bounds.y + bounds.h) {
+            hitChat = chat
+            break
+          }
+        }
+      }
+      if (!hitChat) {
+        originalMainFilesHandler?.(info)
+        return
+      }
+      for (const file of info.files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          mainEditor.store.put([{
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        } else {
+          const fileUid = Date.now().toString(36).slice(-4)
+          const token = `«file:${file.name}#${fileUid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        }
+      }
+    })
+    return () => {
+      ;(mainEditor as any).externalContentHandlers.files = originalMainFilesHandler
+    }
+  }, [mainEditor, lockCamera])
 
   // Apply camera constraints when bounds change
   // Use clip bounds for initial position, full page extent for scroll range
@@ -446,6 +638,9 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
+            if (lockCamera) {
+              ed.user.updateUserPreferences({ isSnapMode: true })
+            }
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected
@@ -477,14 +672,23 @@ function isDocRecord(record: TLRecord): boolean {
 }
 
 
-/** For lockCamera (HUD): unlock fleet shapes, lock everything else.
- *  Prevents tldraw from moving PDF pages/highlights during fleet shape drag. */
+// Shape types that should always be locked in the HUD (never accidentally moveable).
+// svg-page = PDF pages; highlight/draw/dot-annotation = annotation shapes managed separately.
+const HUD_ALWAYS_LOCKED = new Set(['svg-page', 'highlight', 'draw', 'dot-annotation'])
+
+/** For lockCamera (HUD): unlock fleet shapes and unknown/junk shapes (so the eraser
+ *  can delete them), lock only intentional non-fleet shapes like PDF pages and annotations. */
 function lockNonFleetUnlockFleet(record: TLRecord): TLRecord {
   if (record.typeName !== 'shape') return record
   if (FLEET_TYPES.has((record as any).type)) {
     return { ...record, isLocked: false } as TLRecord
   }
-  return { ...record, isLocked: true } as TLRecord
+  // Always lock PDF pages and annotation shapes — they shouldn't be moveable in HUD
+  if (HUD_ALWAYS_LOCKED.has((record as any).type)) {
+    return { ...record, isLocked: true } as TLRecord
+  }
+  // Unknown/junk shapes: leave unlocked so the eraser can select and delete them
+  return { ...record, isLocked: false } as TLRecord
 }
 
 /** Re-lock fleet shapes when syncing back to main store. */

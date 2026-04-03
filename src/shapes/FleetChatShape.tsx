@@ -18,25 +18,30 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from 'fleet-dashboard/js/chat-render.mjs'
+import { renderChatLine, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
+import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
-import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
+import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from 'fleet-dashboard/js/voice.mjs'
 // @ts-ignore — vanilla JS module
-import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
+// @ts-ignore — vanilla JS module
+import { initTrackpad } from '../fleet/trackpad.mjs'
+// @ts-ignore — vanilla JS module
+import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
+import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
+const FLEET_API = 'http://localhost:5199'
 
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
@@ -52,6 +57,16 @@ initTrackpad({
 // --- Markdown renderer using markdown-it + KaTeX ---
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
+
+// Wrap fenced code blocks with .code-block-wrap and a copy button (GitHub-style)
+md.renderer.rules.fence = (tokens, idx) => {
+  const token = tokens[idx]
+  const lang = token.info.trim()
+  const code = token.content
+  const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
+}
 
 function tldaRenderMarkdown(escapedHtml: string): string {
   // Input is esc()'d — unescape for markdown-it
@@ -179,27 +194,6 @@ function makeCtx(agents: any[], tasks: any[]) {
   }
 }
 
-/** Extract annotation metadata from «...» tokens in text for message attachments */
-function extractRefAttachments(text: string): Record<string, any>[] | undefined {
-  const attachments: Record<string, any>[] = []
-  const tokenRe = /«(.+?)»/g
-  let m
-  while ((m = tokenRe.exec(text)) !== null) {
-    const token = `«${m[1]}»`
-    const ref = refStore.get(token)
-    if (!ref) continue
-    const att: Record<string, any> = { token, type: ref.type, label: ref.label, content: ref.content }
-    if (ref.color) att.color = ref.color
-    if (ref.canvasBounds) att.canvasBounds = ref.canvasBounds
-    if (ref.shapeId) att.shapeId = ref.shapeId
-    if (ref.highlightShapeId) att.highlightShapeId = ref.highlightShapeId
-    if (ref.file) att.file = ref.file
-    if (ref.lineno != null) att.lineno = ref.lineno
-    if (ref.screenshotRef) att.screenshotRef = ref.screenshotRef
-    attachments.push(att)
-  }
-  return attachments.length > 0 ? attachments : undefined
-}
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
@@ -245,6 +239,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
+  // Esc interrupt: track last Esc timestamp for soft/hard distinction
+  const lastEscRef = useRef<number>(0)
+  // Keep sendTargets accessible from native event listener without re-registering
+  const sendTargetsRef = useRef<string[]>([])
 
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
@@ -263,6 +261,33 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const chatLogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Reactive map of image asset ID → src URL (populated from tldraw store).
+  // Image chips use tldraw asset IDs for persistence — assets survive page reload.
+  const [imageSrcs, setImageSrcs] = useState<Map<string, string>>(() => {
+    const map = new Map<string, string>()
+    for (const record of editor.store.allRecords()) {
+      const r = record as any
+      if (r.typeName === 'asset' && r.type === 'image' && r.props?.src) {
+        map.set(r.id, r.props.src)
+      }
+    }
+    return map
+  })
+  useEffect(() => {
+    return editor.store.listen(({ changes }) => {
+      const added = Object.values(changes.added).filter((r: any) => r.typeName === 'asset' && r.type === 'image')
+      if (!added.length) return
+      setImageSrcs(prev => {
+        const next = new Map(prev)
+        for (const r of added) {
+          const a = r as any
+          if (a.props?.src) next.set(a.id, a.props.src)
+        }
+        return next
+      })
+    }, { source: 'all', scope: 'document' })
+  }, [editor])
+
   // Build context and render messages
   const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
 
@@ -279,68 +304,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
         return ta - tb
       })
 
-    // Populate refStore from annotation attachments BEFORE render
-    // (must happen synchronously so renderedHtml can find entries)
-    for (const m of sorted) {
-      const atts = (m as any).attachments || (m as any).metadata?.attachments
-      if (!atts || !Array.isArray(atts)) continue
-      for (const a of atts) {
-        if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
-          refStore.set(a.token, {
-            type: 'annotation',
-            label: a.label,
-            content: a.content,
-            color: a.color,
-            canvasBounds: a.canvasBounds,
-            shapeId: a.shapeId,
-            highlightShapeId: a.highlightShapeId,
-            file: a.file,
-            lineno: a.lineno,
-          })
-        }
-      }
-    }
-
     return sorted
   }, [events])
 
-  // Fetch annotation attachments from server (fleet-data.mjs may not propagate metadata.attachments)
-  const [refStoreReady, setRefStoreReady] = useState(false)
-  useEffect(() => {
-    // Check for unresolved annotation tokens in messages
-    const unresolvedTokens = chatMessages
-      .filter((m: any) => m.text && /«annotation:.+?»/.test(m.text))
-      .filter((m: any) => {
-        const tokens = m.text.match(/«[^»]+»/g) || []
-        return tokens.some((t: string) => !refStore.has(t))
-      })
-    if (!unresolvedTokens.length) return
-    // Fetch recent events with metadata from the server
-    fetch('/api/chat/history?limit=100')
-      .then(r => r.json())
-      .then(data => {
-        const events = data.events || []
-        let populated = 0
-        for (const e of events) {
-          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata
-          const atts = meta?.attachments
-          if (!atts || !Array.isArray(atts)) continue
-          for (const a of atts) {
-            if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
-              refStore.set(a.token, {
-                type: 'annotation', label: a.label, content: a.content,
-                color: a.color, canvasBounds: a.canvasBounds,
-                shapeId: a.shapeId, highlightShapeId: a.highlightShapeId,
-                file: a.file, lineno: a.lineno,
-              })
-              populated++
-            }
-          }
-        }
-        if (populated > 0) setRefStoreReady(r => !r) // toggle to trigger re-render
-      })
-      .catch(() => {})
-  }, [chatMessages])
 
   const renderedHtml = useMemo(() => {
     // Group consecutive activity events from the same agent into cards
@@ -372,7 +338,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return parts.join('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, refStoreReady])
+  }, [chatMessages, ctx])
 
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
@@ -382,16 +348,56 @@ function FleetChatComponent({ shape }: { shape: any }) {
     // and the regex can't match the original token)
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
-      const ref = refStore.get(token)
       // Display: strip the "type:" prefix and any #uid suffix, show just the label
       const colonIdx = inner.indexOf(':')
-      const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[a-z0-9]+$/, '')
+      const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
+      const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
+      // Extract embedded shape ID (format: «type:label#shape:xxx»)
+      const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
+      const embeddedShapeId = shapeIdMatch?.[1]
+      let ref: any = undefined
+      // For shape-backed chips, resolve metadata live from the tldraw store
+      if (embeddedShapeId) {
+        const srcShape = editor.getShape(embeddedShapeId as any) as any
+        if (srcShape) {
+          const highlightId = srcShape.props?.highlightId
+          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
+          const refShape = highlight || srcShape
+          const refBounds = editor.getShapePageBounds(refShape.id)
+          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
+          ref = {
+            type: typePrefix || 'annotation',
+            label: display,
+            content: srcShape.props?.text || '',
+            color: srcShape.props?.color,
+            canvasBounds: refBounds ? { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h } : undefined,
+            shapeId: embeddedShapeId,
+            highlightShapeId: highlight?.id,
+            screenshotRef: refBounds ? `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}` : undefined,
+            file: anchor?.file,
+            lineno: anchor?.line,
+          }
+        }
+      }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
-      // Annotation chips use AnnotationViewer on hover — skip the CSS tooltip
-      const preview = (!isAnnotation && content) ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
+      const isImage = typePrefix === 'img'
+
+      // Images render as block-level, not as chips
+      if (isImage) {
+        const uid = inner.split('#')[1] || ''
+        const src = imageSrcs.get('asset:' + uid) || content
+        if (src) {
+          const nameEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          return `<img src="${src}" alt="${nameEsc}" style="display:block;width:75%;max-width:100%;border-radius:4px;margin:4px 0;" />`
+        }
+        // Asset not yet loaded — render placeholder chip
+        return `<span class="ref-chip ref-chip-image">${displayEsc}</span>`
+      }
+
+      const preview = !isAnnotation && content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
       const colorDot = isAnnotation && ref?.color
         ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
         : ''
@@ -405,9 +411,25 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const highlightAttr = isAnnotation && ref?.highlightShapeId ? ` data-highlight-ref="${ref.highlightShapeId}"` : ''
       const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
+      const tokenAttr = ` data-token="${token.replace(/"/g, '&quot;')}"`
 
-      return `<span class="${cls}"${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
+      return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
+    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
+    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    html = html.replace(
+      /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
+      (_match, url, docName) => {
+        if (!isTldaUrl(url)) return _match
+        const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        const id = 'tlda-' + btoa(url).slice(0, 16)
+        // Add embed=1 then append auth token
+        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
+        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
+        const openUrl = url.replace(/"/g, '&quot;')
+        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
+      }
+    )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
@@ -415,7 +437,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions, refStoreReady])
+  }, [renderedHtml, doc, labelRegions, imageSrcs, editor])
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -440,6 +462,20 @@ function FleetChatComponent({ shape }: { shape: any }) {
     // Also check for annotation chip clicks
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
+
+    // Copy button on code blocks
+    const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
+    if (copyBtn) {
+      const pre = copyBtn.closest('.code-block-wrap')?.querySelector('pre')
+      if (pre) {
+        navigator.clipboard.writeText(pre.textContent || '').then(() => {
+          copyBtn.textContent = '✓'
+          copyBtn.classList.add('code-block-copy-success')
+          setTimeout(() => { copyBtn.textContent = '⎘'; copyBtn.classList.remove('code-block-copy-success') }, 1500)
+        })
+      }
+      return
+    }
 
     const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
     if (!target || !doc) return
@@ -547,6 +583,62 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [doc, refResolver, w])
 
+  // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
+  // anywhere on the chat shape before tldraw can create a canvas image shape.
+  useEffect(() => {
+    const el = shapeContainerRef.current
+    if (!el) return
+
+    function onDragOver(e: DragEvent) {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    async function onDrop(e: DragEvent) {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.stopPropagation()
+      const files = [...(e.dataTransfer.files || [])]
+      if (!files.length) return
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          const assetRecord = {
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any
+          const mainEd = (window as any).__tldraw_editor__ || editor
+          mainEd.store.put([assetRecord])
+          if (mainEd !== editor) editor.store.put([assetRecord])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+        } else {
+          let content = ''
+          try { content = await file.text() } catch {}
+          const uid = Date.now().toString(36).slice(-4)
+          const token = `«file:${file.name}#${uid}»`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+        }
+      }
+    }
+
+    el.addEventListener('dragover', onDragOver, true)
+    el.addEventListener('drop', onDrop, true)
+    return () => {
+      el.removeEventListener('dragover', onDragOver, true)
+      el.removeEventListener('drop', onDrop, true)
+    }
+  }, [shape.id, editor])
+
   // Hover events on annotation ref-chips → dispatch to AnnotationViewer
   const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -612,6 +704,49 @@ function FleetChatComponent({ shape }: { shape: any }) {
     const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
     if (wasAtBottom) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
+
+  // After images inside the log load, they expand the scroll height. Scroll to
+  // bottom if we were close enough that we should follow new content.
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+    function onImgLoad(e: Event) {
+      if ((e.target as HTMLElement).tagName !== 'IMG') return
+      const el = logEl!
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
+        el.scrollTop = el.scrollHeight
+      }
+    }
+    logEl.addEventListener('load', onImgLoad, true)
+    return () => logEl.removeEventListener('load', onImgLoad, true)
+  }, [])
+
+  // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
+  // synthetic keydown for Escape, so we attach directly at the target element.
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    function onEscKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (ta!.value !== '') return
+      const targets = sendTargetsRef.current
+      if (targets.length === 0) return
+      e.preventDefault()
+      const now = Date.now()
+      const agent = targets[0]
+      if (now - lastEscRef.current < 500) {
+        // Hard interrupt: Esc twice within 500ms
+        lastEscRef.current = 0
+        fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+      } else {
+        // Soft interrupt: single Esc
+        lastEscRef.current = now
+        fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+      }
+    }
+    ta.addEventListener('keydown', onEscKey)
+    return () => ta.removeEventListener('keydown', onEscKey)
+  }, [])
 
   // When textarea grows (multi-line input), keep chat scrolled to bottom
   useEffect(() => {
@@ -687,6 +822,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     return [...seen]
   }, [filterKey])
+  sendTargetsRef.current = sendTargets
 
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
@@ -737,6 +873,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const shapeIdRef = useRef(shape.id)
   shapeIdRef.current = shape.id
 
+  // Track selection state via ref so native capture listeners can read it.
+  // useValue makes this reactive — component re-renders when selection changes,
+  // keeping isSelectedRef.current fresh. Without this, the ref is always stale
+  // because tldraw doesn't re-render shapes on selection changes.
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
@@ -749,10 +892,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
 
+      // When the shape is selected in tldraw (handles visible), let tldraw handle
+      // the pointer so the user can drag the whole shape to move/resize it.
+      if (isSelectedRef.current) return
+
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -811,10 +958,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // Code block header
+      // Code block header (but not the copy button — let that through to onClick)
       if (!drag) {
         const codeHeader = target.closest('.code-block-header') as HTMLElement
-        if (codeHeader) {
+        if (codeHeader && !target.closest('.code-block-copy')) {
           const wrap = codeHeader.closest('.code-block-wrap')
           const code = wrap?.querySelector('pre code')
           if (code) {
@@ -845,12 +992,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc card → drag as doc reference
+      // MD file card or shared-doc ref-chip → drag as doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card') as HTMLElement
+        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || filePath.split('/').pop() || 'file'
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
           drag = {
             pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
             displayName: name, color: '#9370db', content: filePath,
@@ -862,10 +1009,11 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (!drag) {
         const tldaCard = target.closest('.tlda-card') as HTMLElement
         if (tldaCard) {
-          const tldaId = tldaCard.dataset.tldaId || ''
-          const docName = tldaCard.querySelector('.doc-name')?.textContent || tldaId
+          const tldaSrc = tldaCard.dataset.tldaSrc || ''
+          const docName = tldaCard.querySelector('.doc-name')?.textContent || ''
+          // Use 'tlda:URL' to carry the full src URL for inline-doc creation
           drag = {
-            pillId: null, pillType: 'doc' as any, value: `doc:${docName}`,
+            pillId: null, pillType: 'doc' as any, value: `tlda:${tldaSrc}`,
             displayName: docName, color: '#9370db', content: docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
@@ -881,15 +1029,34 @@ function FleetChatComponent({ shape }: { shape: any }) {
           const clone = refChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-loc, .ref-chip-dot, .ref-chip-preview').forEach(el => el.remove())
           const label = clone.textContent?.trim() || 'note'
-          // Reconstruct the token to look up content from refStore
-          const token = `«annotation:${label}»`
-          const ref = refStore.get(token)
+          // Use the stored token (contains embedded shapeId for new chips)
+          const token = refChip.dataset.token || `«annotation:${label}»`
+          const embShapeId = token.match(/#(shape:[^»]+)»/)?.[1]
+          const srcShape = embShapeId ? editor.getShape(embShapeId as any) as any : null
           const dotEl = refChip.querySelector('.ref-chip-dot') as HTMLElement | null
-          const chipColor = dotEl?.style.background || ref?.color || '#3b82f6'
+          const chipColor = dotEl?.style.background || srcShape?.props?.color || '#3b82f6'
           drag = {
             pillId: null, pillType: 'annotation' as any, value: token,
             displayName: label, color: chipColor,
-            content: ref?.content || label,
+            content: srcShape?.props?.text || label,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // File ref-chip → drag as note (creates collapsed math-note on canvas drop)
+      if (!drag) {
+        const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
+        if (fileChip) {
+          const token = fileChip.dataset.token || ''
+          const clone = fileChip.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
+          const label = clone.textContent?.trim() || 'file'
+          drag = {
+            pillId: null, pillType: 'file' as any, value: token,
+            displayName: label, color: '#9370db',
+            content: label,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -932,6 +1099,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
           },
         })
         drag.pillId = pillId as unknown as string
+        // Reset tldraw's state machine via API — avoids cancelling the real pointer stream.
+        editor.cancel()
       }
       if (drag.pillId) {
         const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
@@ -945,7 +1114,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       // Membrane handoff: when pointer leaves the chat, move the pill
       // from the panel editor to the main editor (and vice versa)
-      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation'
+      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation' || drag.pillType === 'file'
       if (drag.started && isMembraneType && drag.pillId) {
         const mainEditor = (window as any).__tldraw_editor__ as any
         const chatEl = logEl!.closest('[data-shape-id]') as HTMLElement | null
@@ -1166,6 +1335,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           style={{
             flex: 1,
             overflowY: 'auto',
+            overflowX: 'hidden',
             padding: '4px 0',
           }}
           onScroll={handleScroll}
@@ -1290,8 +1460,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const atts = extractRefAttachments(text)
-                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
+                      for (const t of sendTargets) sendMessage(t, text, {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1306,8 +1475,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const atts = extractRefAttachments(text)
-                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
+                      for (const t of sendTargets) sendMessage(t, text, {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1360,31 +1528,40 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 const files = [...(e.dataTransfer?.files || [])]
                 if (files.length > 0) {
                   for (const file of files) {
-                    if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
-                      // Text file → read contents, insert as code block
-                      const text = await file.text()
-                      const ext = file.name.split('.').pop() || ''
-                      const _block = `\`\`\`${ext}\n${text}\n\`\`\``; void _block
-                      const token = `«file:${file.name}»`
-                      refStore.set(token, { type: 'file', label: file.name, content: text })
+                    const uid = Date.now().toString(36).slice(-4)
+                    if (file.type.startsWith('image/')) {
+                      // Image → read as base64 data URL, store as tldraw asset (persistent), insert chip
+                      const dataUrl = await new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader()
+                        reader.onload = () => resolve(reader.result as string)
+                        reader.onerror = reject
+                        reader.readAsDataURL(file)
+                      })
+                      const assetId = `asset:img-${Date.now().toString(36)}`
+                      const assetRecord = {
+                        id: assetId as any, typeName: 'asset', type: 'image',
+                        props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+                        meta: {},
+                      } as any
+                      // Put in main editor (persisted to server) and HUD editor (immediate imageSrcs update)
+                      const mainEd = (window as any).__tldraw_editor__ || editor
+                      mainEd.store.put([assetRecord])
+                      if (mainEd !== editor) editor.store.put([assetRecord])
+                      const assetUid = assetId.slice('asset:'.length)
+                      const token = `«img:${file.name}#${assetUid}»`
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else if (file.type.startsWith('image/')) {
-                      // Image → upload to fleet dashboard, insert markdown
-                      try {
-                        const buf = await file.arrayBuffer()
-                        const res = await fetch('/api/upload', { method: 'POST', body: buf })
-                        const data = await res.json()
-                        if (data.url) {
-                          const pos = ta.selectionStart || ta.value.length
-                          ta.value = ta.value.slice(0, pos) + `![${file.name}](${data.url})` + ta.value.slice(pos)
-                          ta.dispatchEvent(new Event('input', { bubbles: true }))
-                        }
-                      } catch {}
+                    } else if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
+                      // Text/code file → read contents, insert as file chip
+                      const text = await file.text()
+                      const token = `«file:${file.name}#${uid}»`
+                      const pos = ta.selectionStart || ta.value.length
+                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.dispatchEvent(new Event('input', { bubbles: true }))
                     } else {
-                      // Other file → insert path reference
-                      const token = `«file:${file.name}»`
+                      // Other file → name-only chip
+                      const token = `«file:${file.name}#${uid}»`
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1772,8 +1949,11 @@ function FilterOverlay({
   const toHighlightIdx = toGroupIdx >= 0 ? toGroupIdx : (toPreview && toPreview.length > filter.length ? toPreview.length - 1 : -1)
   const fromHighlightIdx = fromGroupIdx >= 0 ? fromGroupIdx : (fromPreview && fromPreview.length > filter.length ? fromPreview.length - 1 : -1)
 
-  // Publish preview state so dropPillOnTarget can apply the right filter on release
-  useEffect(() => {
+  // Publish preview state so dropPillOnTarget can apply the right filter on release.
+  // useLayoutEffect (not useEffect) — runs before the browser paint so filterDropPreview
+  // is always current when pointerup fires. useEffect runs after paint, creating a window
+  // where the preview is visible but activePaneRole is still null/stale.
+  useLayoutEffect(() => {
     if (pillOver) {
       const replacePreview: [string, string][][] = [[['to', pillOver.value]], [['from', pillOver.value]]]
       filterDropPreview.shapeId = shapeId
