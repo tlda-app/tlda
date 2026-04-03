@@ -35,7 +35,10 @@ import {
   updatePlayback,
   unregisterPlayback,
   getLayoutKeyframe,
+  getEffectiveSpeed,
+  extractTimewarps,
   type PlaybackData,
+  type Timewarp,
 } from '../playback-context'
 import './PlaybackFrameShape.css'
 
@@ -87,6 +90,10 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const [playSpeed, setPlaySpeed] = useState(1)
   const [speedText, setSpeedText] = useState('1x')
 
+  // Timewarp state (named cuts from recording edits)
+  const [timewarps, setTimewarps] = useState<Timewarp[]>([])
+  const [activeTimewarp, setActiveTimewarp] = useState<Timewarp | null>(null)
+
   const rafRef = useRef<number | null>(null)
   const lastRafTime = useRef<number | null>(null)
 
@@ -112,6 +119,12 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
           }
         }
 
+        // Extract named cuts (timewarps) from edits
+        const tws = extractTimewarps(data.edits || [])
+        const autoTw = tws.find((t: Timewarp) => t.name === 'edits') ?? tws[0] ?? null
+        setTimewarps(tws)
+        setActiveTimewarp(autoTw)
+
         const pb: PlaybackData = {
           events: data.events || [],
           agents: agentIds.map((id: string) => ({
@@ -122,6 +135,8 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
           duration_ms: data.duration_ms || 0,
           title: data.title || 'Untitled',
           created: data.created || new Date().toISOString(),
+          timewarps: tws,
+          activeTimewarp: autoTw,
         }
         setPbData(pb)
         updatePlayback(shape.id, pb)
@@ -135,12 +150,12 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     return () => unregisterPlayback(shape.id)
   }, [playbackId, shape.id])
 
-  // Update registry whenever currentMs changes
+  // Update registry whenever currentMs or activeTimewarp changes
   useEffect(() => {
     if (!pbData) return
-    const updated = { ...pbData, currentMs }
+    const updated = { ...pbData, currentMs, activeTimewarp }
     updatePlayback(shape.id, updated)
-  }, [currentMs, pbData, shape.id])
+  }, [currentMs, activeTimewarp, pbData, shape.id])
 
   // Curated mode: apply layout keyframes when currentMs changes
   useEffect(() => {
@@ -169,12 +184,20 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     if (lastRafTime.current === null) {
       lastRafTime.current = now
     }
-    const delta = (now - lastRafTime.current) * playSpeed
+    const wallDelta = now - lastRafTime.current
     lastRafTime.current = now
 
     setCurrentMs(prev => {
       if (!pbData) return prev
-      const next = prev + delta
+      const effSpeed = getEffectiveSpeed(activeTimewarp, prev, playSpeed)
+      let next: number
+      // Jump regions (>100x): snap to region end instantly
+      if (effSpeed > 100 && activeTimewarp) {
+        const region = activeTimewarp.regions.find(r => prev >= r.start_ms && prev < r.end_ms)
+        next = region ? Math.min(region.end_ms, pbData.duration_ms) : Math.min(prev + wallDelta * effSpeed, pbData.duration_ms)
+      } else {
+        next = Math.min(prev + wallDelta * effSpeed, pbData.duration_ms)
+      }
       if (next >= pbData.duration_ms) {
         setIsPlaying(false)
         return pbData.duration_ms
@@ -182,7 +205,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
       return next
     })
     rafRef.current = requestAnimationFrame(tick)
-  }, [playSpeed, pbData])
+  }, [playSpeed, activeTimewarp, pbData])
 
   useEffect(() => {
     if (isPlaying) {
@@ -319,6 +342,22 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
               {new Date(pbData.created).toLocaleDateString()} · {formatDuration(duration)}
               {mode === 'curated' && <span className="pbf-mode-badge">curated</span>}
             </span>
+          )}
+          {pbData && timewarps.length > 0 && (
+            <select
+              className="pbf-cut-select"
+              value={activeTimewarp?.name ?? '__none__'}
+              onChange={e => {
+                const tw = timewarps.find(t => t.name === e.target.value) ?? null
+                setActiveTimewarp(tw)
+              }}
+              title="Playback cut (timewarp)"
+            >
+              <option value="__none__">raw</option>
+              {timewarps.map(tw => (
+                <option key={tw.name} value={tw.name}>{tw.name}</option>
+              ))}
+            </select>
           )}
           {pbData && (
             <button
