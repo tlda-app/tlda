@@ -85,6 +85,8 @@ export function useFleetTasks(): any[] {
  * Subscribe to fleet chat events, optionally filtered.
  * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
+const MAX_LOCAL_EVENTS = 500
+
 export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
   const [events, setEvents] = useState<any[]>([])
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
@@ -96,12 +98,12 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      // Seed with initial events from the store (server cap raised to 1000)
+      // Seed with initial events from the store
       const all = getEvents()
       const filtered = filter
         ? all.filter((e: any) => matchesFilter(filter, e))
         : [...all]
-      setEvents(filtered)
+      setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
       // Subscribe for live updates
       unsub = subscribe('messages', filter, (event: any) => {
@@ -111,9 +113,12 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
           const filtered = filter
             ? all.filter((e: any) => matchesFilter(filter, e))
             : [...all]
-          setEvents(filtered)
+          setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
         } else {
-          setEvents(prev => [...prev, event])
+          setEvents(prev => {
+            const next = [...prev, event]
+            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
+          })
         }
       })
     })
