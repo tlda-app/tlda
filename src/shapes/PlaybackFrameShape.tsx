@@ -209,6 +209,34 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     setIsPlaying(false)
   }
 
+  // Populate: create FleetChatShape + FleetAgentsShape as children if not already present
+  function handlePopulate() {
+    const children = editor.getCurrentPageShapes().filter(
+      (s: any) => s.parentId === shape.id
+    )
+    const hasChat = children.some((s: any) => s.type === 'fleet-chat')
+    const hasAgents = children.some((s: any) => s.type === 'fleet-agents')
+
+    if (!hasChat) {
+      editor.createShape({
+        type: 'fleet-chat',
+        parentId: shape.id,
+        x: 0,
+        y: HEADER_H + SCRUBBER_H,
+        props: { w, h: 600, filter: [] },
+      })
+    }
+    if (!hasAgents) {
+      editor.createShape({
+        type: 'fleet-agents',
+        parentId: shape.id,
+        x: w + 8,
+        y: HEADER_H + SCRUBBER_H,
+        props: { w: 340, h: 400 },
+      })
+    }
+  }
+
   const title = loading ? 'Loading…' : error ? `Error: ${error}` : (pbData?.title ?? 'Set playbackId in props')
 
   return (
@@ -231,6 +259,13 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
               {new Date(pbData.created).toLocaleDateString()} · {formatDuration(duration)}
               {mode === 'curated' && <span className="pbf-mode-badge">curated</span>}
             </span>
+          )}
+          {pbData && (
+            <button
+              className="pbf-btn pbf-populate"
+              onClick={handlePopulate}
+              title="Add chat + agents shapes inside this frame"
+            >＋HUD</button>
           )}
         </div>
 

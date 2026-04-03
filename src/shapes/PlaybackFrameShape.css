@@ -116,6 +116,25 @@
   opacity: 0.75;
 }
 
+.pbf-populate {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 3px;
+  padding: 2px 6px;
+  opacity: 0.5;
+}
+
+.pbf-populate:hover {
+  opacity: 1;
+  background: rgba(0,0,0,0.05);
+}
+
+.tl-theme__dark .pbf-populate {
+  border-color: rgba(255,255,255,0.15);
+}
+
 .pbf-speed {
   font-size: 10px;
   border: 1px solid rgba(0,0,0,0.12);
