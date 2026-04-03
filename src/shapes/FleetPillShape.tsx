@@ -153,35 +153,20 @@ export function dropPillOnTarget(
       const pill = editor.getShape(pillId) as any
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
-      // Include short unique suffix so repeated chips from the same agent don't collide in refStore
-      const uid = Date.now().toString(36).slice(-4)
+      // Use the source shape ID as the uid when available — embeds the tldraw shape ID
+      // in the token so chips can be resolved live via editor.getShape() after reload.
+      // Fall back to timestamp uid for chips with no canvas shape (file drops, etc.).
+      const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
+        ? pill.props.value : undefined
+      const uid = sourceShapeId || Date.now().toString(36).slice(-4)
       const token = `«${pillType}:${displayName}#${uid}»`
-      const entry: RefStoreEntry = { type: pillType, label: displayName, content }
-      // Capture annotation metadata from pill shape props
-      if (pill?.props?.color) entry.color = pill.props.color
-      if (pill?.props?.value) {
-        entry.shapeId = pill.props.value
-        const srcShape = editor.getShape(pill.props.value as any) as any
-        if (srcShape) {
-          // Resolve source provenance: shape → highlightId → highlight.meta.sourceAnchor
-          const highlightId = srcShape.props?.highlightId
-          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
-          // Use highlight bounds for canvasBounds/screenshotRef (wider region than dot)
-          const refShape = highlight || srcShape
-          if (highlight) entry.highlightShapeId = highlight.id
-          const refBounds = editor.getShapePageBounds(refShape.id)
-          if (refBounds) {
-            entry.canvasBounds = { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h }
-            entry.screenshotRef = `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}`
-          }
-          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
-          if (anchor) {
-            if (anchor.file) entry.file = anchor.file
-            if (anchor.line != null) entry.lineno = anchor.line
-          }
-        }
+      // Only write to refStore for chips without a backing shape (file/image drops).
+      // Shape-backed chips (annotation, highlight) resolve live via editor.getShape().
+      if (!sourceShapeId) {
+        const entry: RefStoreEntry = { type: pillType, label: displayName, content }
+        if (pill?.props?.color) entry.color = pill.props.color
+        refStore.set(token, entry)
       }
-      refStore.set(token, entry)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
