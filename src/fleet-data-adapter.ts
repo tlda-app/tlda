@@ -17,7 +17,7 @@ import {
   loadBefore,
   matchesFilter,
   // @ts-ignore — vanilla JS module
-} from 'fleet-dashboard/js/fleet-data.mjs'
+} from './fleet/fleet-data.mjs'
 
 // --- Lazy initialization ---
 

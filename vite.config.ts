@@ -29,9 +29,6 @@ export default defineConfig({
   plugins: [react(), localImagePlugin],
   resolve: {
     dedupe: ['react', 'react-dom'],
-    alias: {
-      'fleet-dashboard': '/Users/skip/work/fleet/dashboard',
-    },
   },
   server: {
     host: true,

@@ -18,16 +18,16 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from 'fleet-dashboard/js/chat-render.mjs'
+import { renderChatLine, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup } from 'fleet-dashboard/js/activity-render.mjs'
+import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
-import { highlightSyntax, langFromFilePath } from 'fleet-dashboard/js/utils.mjs'
+import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { initTrackpad } from 'fleet-dashboard/js/trackpad.mjs'
+import { initTrackpad } from '../fleet/trackpad.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
