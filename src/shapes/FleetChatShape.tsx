@@ -43,6 +43,46 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = 'http://localhost:5199'
 
+// Upload a markdown file, rewriting local image refs to stable URLs for any
+// companion image files present in the same drop event.
+async function uploadMarkdownWithImages(mdFile: File, companions: File[]): Promise<string> {
+  const text = await mdFile.text()
+  // Find local image paths: ![alt](path) where path is not http
+  const localPathRe = /!\[[^\]]*\]\(([^)]+)\)/g
+  const localPaths = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = localPathRe.exec(text)) !== null) {
+    if (!m[1].startsWith('http')) localPaths.add(m[1])
+  }
+  // Upload companions that match a local path by filename
+  const urlMap = new Map<string, string>()
+  for (const localPath of localPaths) {
+    const base = localPath.split('/').pop() || localPath
+    const match = companions.find(f => f.name === base)
+    if (!match) continue
+    try {
+      const fd = new FormData()
+      fd.append('file', match, match.name)
+      const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+      if (!r.ok) continue
+      const { url } = await r.json()
+      urlMap.set(localPath, `${FLEET_API}${url}`)
+    } catch {}
+  }
+  // Rewrite markdown and upload
+  let rewritten = text
+  for (const [orig, stable] of urlMap) {
+    rewritten = rewritten.split(`](${orig})`).join(`](${stable})`)
+  }
+  const rewrittenFile = new File([new Blob([rewritten], { type: 'text/markdown' })], mdFile.name, { type: 'text/markdown' })
+  const fd = new FormData()
+  fd.append('file', rewrittenFile, rewrittenFile.name)
+  const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+  if (!r.ok) throw new Error(`markdown upload failed: ${r.status}`)
+  const { url, name } = await r.json()
+  return `[${name}](${FLEET_API}${url})`
+}
+
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
@@ -604,14 +644,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (!files.length) return
       for (const file of files) {
         try {
-          const formData = new FormData()
-          formData.append('file', file, file.name)
-          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-          const { url, name } = await resp.json()
-          const link = file.type.startsWith('image/')
-            ? `![${name}](${FLEET_API}${url})`
-            : `[${name}](${FLEET_API}${url})`
+          let link: string
+          if (file.name.endsWith('.md') || file.type === 'text/markdown') {
+            link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
+          } else {
+            const formData = new FormData()
+            formData.append('file', file, file.name)
+            const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+            if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+            const { url, name } = await resp.json()
+            link = file.type.startsWith('image/')
+              ? `![${name}](${FLEET_API}${url})`
+              : `[${name}](${FLEET_API}${url})`
+          }
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
         } catch (err) {
           console.error('[fleet-chat] file upload failed:', err)
@@ -1518,14 +1563,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 if (files.length > 0) {
                   for (const file of files) {
                     try {
-                      const formData = new FormData()
-                      formData.append('file', file, file.name)
-                      const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-                      if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                      const { url, name } = await resp.json()
-                      const link = file.type.startsWith('image/')
-                        ? `![${name}](${FLEET_API}${url})`
-                        : `[${name}](${FLEET_API}${url})`
+                      let link: string
+                      if (file.name.endsWith('.md') || file.type === 'text/markdown') {
+                        link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
+                      } else {
+                        const formData = new FormData()
+                        formData.append('file', file, file.name)
+                        const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+                        if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                        const { url, name } = await resp.json()
+                        link = file.type.startsWith('image/')
+                          ? `![${name}](${FLEET_API}${url})`
+                          : `[${name}](${FLEET_API}${url})`
+                      }
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
