@@ -41,7 +41,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   token.attrSet('draggable', 'false')
   return self.renderToken(tokens, idx, options)
 }
-import { chatInsertBus, refStore } from './FleetPillShape'
+import { chatInsertBus } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 
@@ -267,12 +267,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           const text = (current.props.text as string) || ''
           const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
           const token = `«annotation:${displayName}»`
-          const noteBounds = this.editor.getShapePageBounds(current.id)
-          refStore.set(token, {
-            type: 'annotation', label: displayName, content: text,
-            shapeId: current.id,
-            canvasBounds: noteBounds ? { x: noteBounds.x, y: noteBounds.y, w: noteBounds.w, h: noteBounds.h } : undefined,
-          })
           const wasLocked = (chat as any).isLocked
           if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))

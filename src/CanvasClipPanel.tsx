@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
-import { refStore, chatInsertBus } from './shapes/FleetPillShape'
+import { chatInsertBus } from './shapes/FleetPillShape'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -219,17 +219,12 @@ export function CanvasClipPanel({
           } as any])
           const assetUid = assetId.slice('asset:'.length)
           const token = `«img:${file.name}#${assetUid}»`
-          // Also populate refStore for immediate same-session render
-          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', {
             detail: { chatId: hitChat.id, text: token },
           }))
         } else {
           const fileUid = Date.now().toString(36).slice(-4)
-          let content = ''
-          try { content = await file.text() } catch {}
           const token = `«file:${file.name}#${fileUid}»`
-          refStore.set(token, { type: 'file', label: file.name, content })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', {
             detail: { chatId: hitChat.id, text: token },
           }))
@@ -335,16 +330,12 @@ export function CanvasClipPanel({
           } as any])
           const assetUid = assetId.slice('asset:'.length)
           const token = `«img:${file.name}#${assetUid}»`
-          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', {
             detail: { chatId: hitChat.id, text: token },
           }))
         } else {
           const fileUid = Date.now().toString(36).slice(-4)
-          let content = ''
-          try { content = await file.text() } catch {}
           const token = `«file:${file.name}#${fileUid}»`
-          refStore.set(token, { type: 'file', label: file.name, content })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', {
             detail: { chatId: hitChat.id, text: token },
           }))
