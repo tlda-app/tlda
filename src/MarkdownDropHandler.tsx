@@ -54,6 +54,8 @@ export function MarkdownDropHandler() {
 
   useEffect(() => {
     function handleDragOver(e: DragEvent) {
+      // If over a fleet-chat shape, let it handle the dragover.
+      if ((e.target as HTMLElement | null)?.closest('.fleet-chat-shape')) return
       // Can't access filenames during dragover (browser security).
       // Allow any file drop and filter to .md in handleDrop.
       const items = e.dataTransfer?.items
@@ -68,6 +70,10 @@ export function MarkdownDropHandler() {
     }
 
     function handleDrop(e: DragEvent) {
+      // If the drop target is inside a fleet-chat shape, let the shape's own
+      // capture handler deal with it — don't create an inline-doc.
+      if ((e.target as HTMLElement | null)?.closest('.fleet-chat-shape')) return
+
       const files = e.dataTransfer?.files
       if (!files || files.length === 0) return
 

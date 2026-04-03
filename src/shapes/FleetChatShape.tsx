@@ -1320,6 +1320,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
           style={{
             flex: 1,
             overflowY: 'auto',
+            overflowX: 'hidden',
             padding: '4px 0',
           }}
           onScroll={handleScroll}
