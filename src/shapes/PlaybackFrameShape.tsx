@@ -28,6 +28,7 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  compact,
 } from 'tldraw'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
@@ -346,6 +347,24 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+
+  // Allow shapes to be dragged into this frame (reparenting)
+  override onDragShapesIn(shape: any, draggingShapes: any[], { initialParentIds, initialIndices }: any) {
+    const { editor } = this
+    if (draggingShapes.every((s: any) => s.parentId === shape.id)) return
+    if (draggingShapes.some((s: any) => editor.hasAncestor(shape, s.id))) return
+    editor.reparentShapes(draggingShapes, shape.id)
+  }
+
+  override onDragShapesOut(shape: any, draggingShapes: any[], info: any) {
+    const { editor } = this
+    if (!info.nextDraggingOverShapeId) {
+      editor.reparentShapes(
+        draggingShapes.filter((s: any) => s.parentId === shape.id),
+        editor.getCurrentPageId()
+      )
+    }
+  }
 
   component(shape: any) {
     return <PlaybackFrameComponent shape={shape} />
