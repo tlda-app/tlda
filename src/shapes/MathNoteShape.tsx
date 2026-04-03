@@ -486,7 +486,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       ro.observe(el)
       measure()
       return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w])
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.collapsed])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {

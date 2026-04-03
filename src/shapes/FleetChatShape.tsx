@@ -458,9 +458,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const highlightAttr = isAnnotation && ref?.highlightShapeId ? ` data-highlight-ref="${ref.highlightShapeId}"` : ''
       const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
+      const tokenAttr = ` data-token="${token.replace(/"/g, '&quot;')}"`
 
-      return `<span class="${cls}"${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
+      return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
+    // Convert tlda localhost URLs (with ?doc=) to tlda-card widgets.
+    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    html = html.replace(
+      /<a\s[^>]*href="(https?:\/\/localhost:\d+[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
+      (_match, url, docName) => {
+        const safeUrl = url.replace(/"/g, '&quot;')
+        const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        const id = 'tlda-' + btoa(url).slice(0, 16)
+        return `<div class="tlda-card" data-tlda-src="${safeUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${safeUrl}" target="_blank" class="doc-open-link">open ↗</a></div><div class="tlda-iframe-slot"></div></div>`
+      }
+    )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
@@ -904,7 +916,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -1014,10 +1026,11 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (!drag) {
         const tldaCard = target.closest('.tlda-card') as HTMLElement
         if (tldaCard) {
-          const tldaId = tldaCard.dataset.tldaId || ''
-          const docName = tldaCard.querySelector('.doc-name')?.textContent || tldaId
+          const tldaSrc = tldaCard.dataset.tldaSrc || ''
+          const docName = tldaCard.querySelector('.doc-name')?.textContent || ''
+          // Use 'tlda:URL' to carry the full src URL for inline-doc creation
           drag = {
-            pillId: null, pillType: 'doc' as any, value: `doc:${docName}`,
+            pillId: null, pillType: 'doc' as any, value: `tlda:${tldaSrc}`,
             displayName: docName, color: '#9370db', content: docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
@@ -1041,6 +1054,25 @@ function FleetChatComponent({ shape }: { shape: any }) {
           drag = {
             pillId: null, pillType: 'annotation' as any, value: token,
             displayName: label, color: chipColor,
+            content: ref?.content || label,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // File ref-chip → drag as note (creates collapsed math-note on canvas drop)
+      if (!drag) {
+        const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
+        if (fileChip) {
+          const token = fileChip.dataset.token || ''
+          const ref = token ? refStore.get(token) : undefined
+          const clone = fileChip.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
+          const label = ref?.label || clone.textContent?.trim() || 'file'
+          drag = {
+            pillId: null, pillType: 'file' as any, value: token,
+            displayName: label, color: '#9370db',
             content: ref?.content || label,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
@@ -1099,7 +1131,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       // Membrane handoff: when pointer leaves the chat, move the pill
       // from the panel editor to the main editor (and vice versa)
-      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation'
+      const isMembraneType = drag.pillType === 'doc' || drag.pillType === 'annotation' || drag.pillType === 'file'
       if (drag.started && isMembraneType && drag.pillId) {
         const mainEditor = (window as any).__tldraw_editor__ as any
         const chatEl = logEl!.closest('[data-shape-id]') as HTMLElement | null

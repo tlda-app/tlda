@@ -237,13 +237,54 @@ export function dropPillOnTarget(
       detail: { chatId: hitShape.id },
     }))
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
+             (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
+    // File chip pill dropped on canvas → create collapsed math-note with content from refStore
+    const pill = editor.getShape(pillId) as any
+    const noteContent = content || pill?.props?.displayName || ''
+    createEditor.createShape({
+      id: createShapeId(),
+      type: 'math-note' as any,
+      x: pagePoint.x - 5,
+      y: pagePoint.y - 5,
+      isLocked: false,
+      props: {
+        w: 320,
+        h: 50,
+        text: noteContent,
+        color: 'light-violet',
+        autoSize: true,
+        collapsed: true,
+      },
+    })
+  } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc/file pill dropped on canvas → create collapsed math-note with file content
     const pill = editor.getShape(pillId) as any
     const docValue = pill.props.value as string // "file:/path" or "doc:name"
     const displayName = pill?.props?.displayName || 'file'
 
-    if (docValue.startsWith('file:')) {
+    if (docValue.startsWith('tlda:')) {
+      // tlda-card with full URL → create inline-doc shape using relative path
+      // (keep same-origin so the proxy forwards the auth cookie)
+      let url = docValue.slice(5)
+      try {
+        const parsed = new URL(url)
+        url = parsed.pathname + parsed.search
+      } catch {}
+      createEditor.createShape({
+        id: createShapeId(),
+        type: 'inline-doc' as any,
+        x: pagePoint.x - 400,
+        y: pagePoint.y - 500,
+        isLocked: false,
+        props: {
+          w: 800,
+          h: 1000,
+          url,
+          title: displayName,
+        },
+      })
+    } else if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
         try {
@@ -284,21 +325,19 @@ export function dropPillOnTarget(
         }
       })()
     } else {
-      // doc: prefix — create note with just the name
+      // doc: prefix — create inline-doc shape (renders the tlda document)
       const docName = docValue.startsWith('doc:') ? docValue.slice(4) : docValue
       createEditor.createShape({
         id: createShapeId(),
-        type: 'math-note' as any,
-        x: pagePoint.x - 5,
-        y: pagePoint.y - 5,
+        type: 'inline-doc' as any,
+        x: pagePoint.x - 400,
+        y: pagePoint.y - 500,
         isLocked: false,
         props: {
-          w: 300,
-          h: 50,
-          text: `# ${docName}`,
-          color: 'light-violet',
-          autoSize: true,
-          collapsed: true,
+          w: 800,
+          h: 1000,
+          url: `/docs/${docName}/`,
+          title: displayName || docName,
         },
       })
     }
@@ -427,7 +466,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   component(shape: any) {
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
-    const isDotForm = pillType === 'doc' || pillType === 'annotation'
+    const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
