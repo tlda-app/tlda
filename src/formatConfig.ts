@@ -51,6 +51,7 @@ const SVG_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'playback-frame',
 ]
 
 const HTML_TOOLS = [
@@ -69,6 +70,7 @@ const HTML_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'playback-frame',
 ]
 
 const SVG_CONFIG: FormatConfig = {

@@ -36,6 +36,7 @@ import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
+import { PlaybackTool } from './tools/PlaybackTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -585,7 +586,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, PlaybackTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -655,6 +656,17 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         </svg>) as any,
         label: 'Browse',
         onSelect: () => _editor.setCurrentTool('select'),
+      }
+      // Register playback-frame tool (kbd 'p')
+      tools['playback-frame'] = {
+        id: 'playback-frame',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="3" width="14" height="12" rx="2" />
+          <polygon points="7,7 7,11 12,9" fill="currentColor" stroke="none" />
+        </svg>) as any,
+        label: 'Playback',
+        kbd: 'p',
+        onSelect: () => _editor.setCurrentTool('playback-frame'),
       }
       return tools
     },
