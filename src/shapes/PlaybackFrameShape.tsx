@@ -68,6 +68,19 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Recording picker — fetched when no playbackId set
+  const [recordings, setRecordings] = useState<any[] | null>(null)
+  const [recLoading, setRecLoading] = useState(false)
+
+  useEffect(() => {
+    if (playbackId) return
+    setRecLoading(true)
+    fetch(`${FLEET_API}/api/playbacks`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setRecordings(Array.isArray(data) ? data : (data.playbacks ?? [])); setRecLoading(false) })
+      .catch(() => { setRecordings([]); setRecLoading(false) })
+  }, [playbackId])
+
   // Scrubber state (local — not synced to Yjs)
   const [currentMs, setCurrentMs] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -243,7 +256,48 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const hasChildren = editor.getSortedChildIdsForParent(shape.id).length > 0
   const contentH = h - CHROME_H
 
-  const title = loading ? 'Loading…' : error ? `Error: ${error}` : (pbData?.title ?? 'Set playbackId in props')
+  const title = loading ? 'Loading…' : error ? `Error: ${error}` : (pbData?.title ?? '')
+
+  // Recording picker — shown when no playbackId set
+  if (!playbackId) {
+    return (
+      <HTMLContainer
+        id={shape.id}
+        style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}
+      >
+        <div
+          className="pbf-picker"
+          onPointerDown={stopEventPropagation}
+          onPointerMove={stopEventPropagation}
+          onWheel={stopEventPropagation}
+          style={{ width: w, height: h }}
+        >
+          <div className="pbf-picker-header">📼 Choose a recording</div>
+          {recLoading && <div className="pbf-picker-empty">Loading…</div>}
+          {!recLoading && recordings?.length === 0 && (
+            <div className="pbf-picker-empty">No recordings found</div>
+          )}
+          {!recLoading && recordings && recordings.length > 0 && (
+            <div className="pbf-picker-list">
+              {recordings.map((rec: any) => (
+                <button
+                  key={rec.id}
+                  className="pbf-picker-item"
+                  onClick={() => editor.updateShape({ id: shape.id, type: 'playback-frame', props: { playbackId: rec.id } })}
+                >
+                  <span className="pbf-picker-name">{rec.title || rec.id}</span>
+                  <span className="pbf-picker-meta">
+                    {rec.created ? new Date(rec.created).toLocaleDateString() : ''}
+                    {rec.duration_ms ? ` · ${Math.round(rec.duration_ms / 60000)}m` : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </HTMLContainer>
+    )
+  }
 
   return (
     <HTMLContainer

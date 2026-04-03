@@ -205,6 +205,91 @@
   cursor: default;
 }
 
+/* Recording picker — shown when no playbackId */
+.pbf-picker {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background, #fff);
+  border: 1.5px solid rgba(0,0,0,0.15);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+}
+
+.tl-theme__dark .pbf-picker {
+  background: #1a1a1a;
+  border-color: rgba(255,255,255,0.12);
+}
+
+.pbf-picker-header {
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  background: rgba(0,0,0,0.03);
+  flex-shrink: 0;
+}
+
+.tl-theme__dark .pbf-picker-header {
+  background: rgba(255,255,255,0.04);
+  border-bottom-color: rgba(255,255,255,0.08);
+}
+
+.pbf-picker-empty {
+  padding: 16px 10px;
+  color: #999;
+  font-size: 11px;
+}
+
+.pbf-picker-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.pbf-picker-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: inherit;
+  font-family: inherit;
+  transition: background 0.1s;
+}
+
+.pbf-picker-item:hover {
+  background: rgba(0,0,0,0.04);
+}
+
+.tl-theme__dark .pbf-picker-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.pbf-picker-name {
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pbf-picker-meta {
+  font-size: 10px;
+  color: #999;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* Drop zone — shown below chrome when frame has no children */
 .pbf-drop-zone {
   border: 1.5px dashed rgba(0,0,0,0.12);

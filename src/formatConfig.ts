@@ -55,6 +55,7 @@ const SVG_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'playback-frame',
 ]
 
 const HTML_TOOLS = [
@@ -77,6 +78,7 @@ const HTML_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'playback-frame',
 ]
 
 const SVG_CONFIG: FormatConfig = {
