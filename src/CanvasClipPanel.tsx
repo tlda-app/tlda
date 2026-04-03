@@ -280,6 +280,70 @@ export function CanvasClipPanel({
     }
   }, [mainEditor])
 
+  // Also override the MAIN editor's files handler so OS file drops on the main
+  // canvas get routed to a fleet-chat when the cursor is over one. Without this,
+  // drops from Finder land on the main canvas (not the HUD) and tldraw creates a
+  // canvas shape instead of inserting a chip.
+  useEffect(() => {
+    if (!lockCamera) return
+    const originalMainFilesHandler = (mainEditor as any).externalContentHandlers.files
+    mainEditor.registerExternalContentHandler('files', async (info) => {
+      const point = info.point
+      const allChats = mainEditor.getCurrentPageShapes()
+        .filter((s: any) => s.type === 'fleet-chat')
+      let hitChat: any = null
+      if (point) {
+        for (const chat of allChats) {
+          const bounds = mainEditor.getShapePageBounds(chat.id)
+          if (bounds &&
+            point.x >= bounds.x && point.x <= bounds.x + bounds.w &&
+            point.y >= bounds.y && point.y <= bounds.y + bounds.h) {
+            hitChat = chat
+            break
+          }
+        }
+      }
+      if (!hitChat) {
+        originalMainFilesHandler?.(info)
+        return
+      }
+      for (const file of info.files) {
+        if (file.type.startsWith('image/')) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          const assetId = `asset:img-${Date.now().toString(36)}`
+          mainEditor.store.put([{
+            id: assetId as any, typeName: 'asset', type: 'image',
+            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
+            meta: {},
+          } as any])
+          const assetUid = assetId.slice('asset:'.length)
+          const token = `«img:${file.name}#${assetUid}»`
+          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        } else {
+          const fileUid = Date.now().toString(36).slice(-4)
+          let content = ''
+          try { content = await file.text() } catch {}
+          const token = `«file:${file.name}#${fileUid}»`
+          refStore.set(token, { type: 'file', label: file.name, content })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+            detail: { chatId: hitChat.id, text: token },
+          }))
+        }
+      }
+    })
+    return () => {
+      ;(mainEditor as any).externalContentHandlers.files = originalMainFilesHandler
+    }
+  }, [mainEditor, lockCamera])
+
   // Apply camera constraints when bounds change
   // Use clip bounds for initial position, full page extent for scroll range
   const initialBoundsRef = useRef(true)
