@@ -118,7 +118,8 @@ export function getPlaybackAgents(data: PlaybackData): any[] {
     friendly_name: a.friendly_name ?? null,
     dead: false,
     human: a.id === 'fleet:skip' || a.id.includes('skip'),
-    last_seen: new Date(data.created).toISOString(),
+    // Use current time so FleetAgentsShape treats them as alive (not stale)
+    last_seen: new Date().toISOString(),
     labels: [],
   }))
 }
