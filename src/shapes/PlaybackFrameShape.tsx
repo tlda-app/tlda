@@ -41,9 +41,10 @@ import './PlaybackFrameShape.css'
 
 const FLEET_API = 'http://localhost:5199'
 const DEFAULT_W = 500
-const DEFAULT_H = 80   // frame is mostly the chrome; content comes from child shapes
 const SCRUBBER_H = 64
 const HEADER_H = 36
+const CHROME_H = HEADER_H + SCRUBBER_H   // 100px
+const DEFAULT_H = CHROME_H + 640         // generous content area below chrome
 
 // --- Helpers ---
 
@@ -239,6 +240,9 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     }
   }
 
+  const hasChildren = editor.getSortedChildIdsForParent(shape.id).length > 0
+  const contentH = h - CHROME_H
+
   const title = loading ? 'Loading…' : error ? `Error: ${error}` : (pbData?.title ?? 'Set playbackId in props')
 
   return (
@@ -319,6 +323,14 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
           />
         </div>
       </div>
+
+      {/* Content area — drop zone below chrome, visual only */}
+      {!hasChildren && (
+        <div
+          className="pbf-drop-zone"
+          style={{ width: w, height: contentH }}
+        />
+      )}
     </HTMLContainer>
   )
 }
@@ -337,7 +349,7 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   getDefaultProps() {
     return {
       w: DEFAULT_W,
-      h: HEADER_H + SCRUBBER_H,
+      h: DEFAULT_H,
       playbackId: '',
       mode: 'free',
     }
