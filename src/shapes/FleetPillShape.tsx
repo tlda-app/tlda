@@ -20,6 +20,9 @@ const PILL_H = 18
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
 
+/** Stores rich content for «token» references (images, files, annotations) */
+export const refStore = new Map<string, { type: string; label: string; content?: string; shapeId?: any; canvasBounds?: { x: number; y: number; w: number; h: number } }>()
+
 
 /**
  * Module-level state for filter overlay drop preview.

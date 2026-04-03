@@ -12,10 +12,13 @@ import {
   getEvents,
   getAgents,
   getTasks,
+  getUnreadCountsForHuman,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
   matchesFilter,
+  respawnAgent as _respawnAgent,
+  spawnAgent as _spawnAgent,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 
@@ -330,7 +333,37 @@ export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   return data.results || data || []
 }
 
+/**
+ * Returns a map of agentId → unread count for messages from that agent to the human.
+ * Updates live when messages arrive or read receipts come in.
+ */
+export function useFleetUnreadCounts(): Record<string, number> {
+  const [counts, setCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setCounts(getUnreadCountsForHuman())
+      unsub = subscribe('messages', null, () => {
+        setCounts(getUnreadCountsForHuman())
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return counts
+}
+
 // --- Write API (re-exported) ---
 
 export const sendMessage = _sendMessage
+export const respawnAgent = _respawnAgent
+export const spawnAgent = _spawnAgent
 export { loadBefore, fetchHistory }

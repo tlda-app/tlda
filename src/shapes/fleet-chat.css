@@ -999,13 +999,18 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 
 .fleet-agents-shape .fleet-agents-footer {
   height: 20px;
-  padding: 0 8px;
+  padding: 0 6px 0 8px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   border-top: 1px solid rgba(128, 128, 128, 0.08);
   font-size: 9px;
   opacity: 0.4;
   flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+.fleet-agents-shape:hover .fleet-agents-footer {
+  opacity: 0.7;
 }
 
 /* --- Agent row --- */
@@ -1126,6 +1131,51 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-agents-shape .fleet-agents-respawn-btn:hover {
   border-color: rgba(128,128,128,0.4);
   color: rgba(128,128,128,0.7);
+}
+
+/* --- Unread dot --- */
+
+.fleet-agents-shape .fleet-agents-unread-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 4px;
+  background: transparent;
+  transition: background 0.2s;
+}
+.fleet-agents-shape .fleet-agents-unread-dot.active {
+  background: #7a9ec8;
+}
+
+/* --- Respawnable agent name --- */
+
+.fleet-agents-shape .fleet-agents-col-name.respawnable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+/* --- Spawn buttons --- */
+
+.fleet-agents-shape .fleet-agents-spawn-btns {
+  display: flex;
+  gap: 3px;
+}
+.fleet-agents-shape .fleet-agents-spawn-btn {
+  background: none;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  font-size: 8px;
+  padding: 0 4px;
+  line-height: 14px;
+  cursor: pointer;
+  opacity: 0.5;
+}
+.fleet-agents-shape .fleet-agents-spawn-btn:hover {
+  opacity: 1;
+  border-color: rgba(128,128,128,0.4);
 }
 
 /* --- Reference chips (dropped from drag) --- */

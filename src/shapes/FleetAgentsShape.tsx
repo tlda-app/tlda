@@ -15,7 +15,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
 
 
@@ -261,9 +261,10 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   }, [activeTasks])
 
   // Categorize and sort agents
-  const { aliveAgents, staleAgents } = useMemo(() => {
+  const { aliveAgents, staleAgents, deadAgents } = useMemo(() => {
     const alive: any[] = []
     const stale: any[] = []
+    const dead: any[] = []
     for (const a of agents) {
       if (a.human) continue
       const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
@@ -271,14 +272,17 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       const cat = agentCategory(a)
       if (cat === 'alive') alive.push(enriched)
       else if (cat === 'stale') stale.push(enriched)
-      // dead agents not shown
+      else dead.push(enriched)
     }
     alive.sort((a: any, b: any) => b._ts - a._ts)
     stale.sort((a: any, b: any) => b._ts - a._ts)
-    return { aliveAgents: alive, staleAgents: stale }
+    dead.sort((a: any, b: any) => b._ts - a._ts)
+    return { aliveAgents: alive, staleAgents: stale, deadAgents: dead }
   }, [agents])
 
   const [showStale, setShowStale] = useState(false)
+  const [showDead, setShowDead] = useState(false)
+  const unreadCounts = useFleetUnreadCounts()
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -341,6 +345,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         <div
           className="fleet-agents-header"
         >
+          <span className="fleet-agents-unread-dot" />
           <span className="fleet-agents-col-name">Agent</span>
           <span className="fleet-agents-col-seen">Seen</span>
           <span className="fleet-agents-col-task">Task</span>
@@ -349,7 +354,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
 
         {/* Agent rows — scrollable */}
         <div className="fleet-agents-body">
-          {aliveAgents.length === 0 && staleAgents.length === 0 ? (
+          {aliveAgents.length === 0 && staleAgents.length === 0 && deadAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : (
             <>
@@ -358,6 +363,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                   key={agent.id}
                   agent={agent}
                   task={getTaskForAgent(agent.id)}
+                  unreadCount={unreadCounts[agent.id] || 0}
                   onStartDrag={startDrag}
                 />
               ))}
@@ -383,7 +389,38 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                       key={agent.id}
                       agent={agent}
                       task={getTaskForAgent(agent.id)}
+                      unreadCount={unreadCounts[agent.id] || 0}
                       dimmed
+                      onStartDrag={startDrag}
+                    />
+                  ))}
+                </>
+              )}
+
+              {deadAgents.length > 0 && (
+                <>
+                  <div
+                    className="fleet-agents-section-header"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onPointerUp={(e) => {
+                      e.stopPropagation()
+                      setShowDead(!showDead)
+                    }}
+                  >
+                    <span className="fleet-agents-section-toggle">
+                      {showDead ? '▾' : '▸'}
+                    </span>
+                    <span>dead</span>
+                    <span className="fleet-agents-section-count">({deadAgents.length})</span>
+                  </div>
+                  {showDead && deadAgents.map((agent: any) => (
+                    <AgentRow
+                      key={agent.id}
+                      agent={agent}
+                      task={getTaskForAgent(agent.id)}
+                      unreadCount={unreadCounts[agent.id] || 0}
+                      dimmed
+                      canRespawn
                       onStartDrag={startDrag}
                     />
                   ))}
@@ -395,8 +432,22 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
 
         {/* Footer */}
         <div className="fleet-agents-footer">
-          {aliveAgents.length} online
-          {staleAgents.length > 0 && <span style={{ marginLeft: 6 }}>· {staleAgents.length} stale</span>}
+          <span>
+            {aliveAgents.length} online
+            {staleAgents.length > 0 && <span style={{ marginLeft: 6 }}>· {staleAgents.length} stale</span>}
+          </span>
+          <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
+            <button
+              className="fleet-agents-spawn-btn"
+              title="Spawn Sonnet agent"
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6') }}
+            >+S</button>
+            <button
+              className="fleet-agents-spawn-btn"
+              title="Spawn Opus agent"
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6') }}
+            >+O</button>
+          </span>
         </div>
       </div>
     </HTMLContainer>
@@ -407,11 +458,15 @@ function AgentRow({
   agent,
   task,
   dimmed,
+  canRespawn,
+  unreadCount,
   onStartDrag,
 }: {
   agent: any
   task: any
   dimmed?: boolean
+  canRespawn?: boolean
+  unreadCount: number
   onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 }) {
   const taskDesc = task?.title || task?.description || ''
@@ -425,13 +480,19 @@ function AgentRow({
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}`}>
-      {/* Status dot — removed, activity shown via name opacity */}
+      {/* Unread dot */}
+      <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
-      {/* Agent name — draggable, opacity reflects activity */}
+      {/* Agent name — draggable (or respawn click for dead agents) */}
       <span
-        className="fleet-agents-col-name fleet-agents-pill"
+        className={`fleet-agents-col-name fleet-agents-pill${canRespawn ? ' respawnable' : ''}`}
         style={{ color, opacity: nameOpacity }}
-        onPointerDown={(e) => onStartDrag(e, 'agent', name, name, color)}
+        onPointerDown={(e) => {
+          if (canRespawn) { e.stopPropagation(); return }
+          onStartDrag(e, 'agent', name, name, color)
+        }}
+        onPointerUp={canRespawn ? (e) => { e.stopPropagation(); respawnAgent(agent.id) } : undefined}
+        title={canRespawn ? 'Click to respawn' : undefined}
       >
         {name}
       </span>
