@@ -31,7 +31,7 @@ import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
@@ -194,27 +194,6 @@ function makeCtx(agents: any[], tasks: any[]) {
   }
 }
 
-/** Extract annotation metadata from «...» tokens in text for message attachments */
-function extractRefAttachments(text: string): Record<string, any>[] | undefined {
-  const attachments: Record<string, any>[] = []
-  const tokenRe = /«(.+?)»/g
-  let m
-  while ((m = tokenRe.exec(text)) !== null) {
-    const token = `«${m[1]}»`
-    const ref = refStore.get(token)
-    if (!ref) continue
-    const att: Record<string, any> = { token, type: ref.type, label: ref.label, content: ref.content }
-    if (ref.color) att.color = ref.color
-    if (ref.canvasBounds) att.canvasBounds = ref.canvasBounds
-    if (ref.shapeId) att.shapeId = ref.shapeId
-    if (ref.highlightShapeId) att.highlightShapeId = ref.highlightShapeId
-    if (ref.file) att.file = ref.file
-    if (ref.lineno != null) att.lineno = ref.lineno
-    if (ref.screenshotRef) att.screenshotRef = ref.screenshotRef
-    attachments.push(att)
-  }
-  return attachments.length > 0 ? attachments : undefined
-}
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
@@ -283,7 +262,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
-  // Image chips use this for persistence: assets survive refresh, refStore doesn't.
+  // Image chips use tldraw asset IDs for persistence — assets survive page reload.
   const [imageSrcs, setImageSrcs] = useState<Map<string, string>>(() => {
     const map = new Map<string, string>()
     for (const record of editor.store.allRecords()) {
@@ -325,68 +304,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
         return ta - tb
       })
 
-    // Populate refStore from annotation attachments BEFORE render
-    // (must happen synchronously so renderedHtml can find entries)
-    for (const m of sorted) {
-      const atts = (m as any).attachments || (m as any).metadata?.attachments
-      if (!atts || !Array.isArray(atts)) continue
-      for (const a of atts) {
-        if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
-          refStore.set(a.token, {
-            type: 'annotation',
-            label: a.label,
-            content: a.content,
-            color: a.color,
-            canvasBounds: a.canvasBounds,
-            shapeId: a.shapeId,
-            highlightShapeId: a.highlightShapeId,
-            file: a.file,
-            lineno: a.lineno,
-          })
-        }
-      }
-    }
-
     return sorted
   }, [events])
 
-  // Fetch annotation attachments from server (fleet-data.mjs may not propagate metadata.attachments)
-  const [refStoreReady, setRefStoreReady] = useState(false)
-  useEffect(() => {
-    // Check for unresolved annotation tokens in messages
-    const unresolvedTokens = chatMessages
-      .filter((m: any) => m.text && /«annotation:.+?»/.test(m.text))
-      .filter((m: any) => {
-        const tokens = m.text.match(/«[^»]+»/g) || []
-        return tokens.some((t: string) => !refStore.has(t))
-      })
-    if (!unresolvedTokens.length) return
-    // Fetch recent events with metadata from the server
-    fetch('/api/chat/history?limit=100')
-      .then(r => r.json())
-      .then(data => {
-        const events = data.events || []
-        let populated = 0
-        for (const e of events) {
-          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata
-          const atts = meta?.attachments
-          if (!atts || !Array.isArray(atts)) continue
-          for (const a of atts) {
-            if (a.type === 'annotation' && a.token && !refStore.has(a.token)) {
-              refStore.set(a.token, {
-                type: 'annotation', label: a.label, content: a.content,
-                color: a.color, canvasBounds: a.canvasBounds,
-                shapeId: a.shapeId, highlightShapeId: a.highlightShapeId,
-                file: a.file, lineno: a.lineno,
-              })
-              populated++
-            }
-          }
-        }
-        if (populated > 0) setRefStoreReady(r => !r) // toggle to trigger re-render
-      })
-      .catch(() => {})
-  }, [chatMessages])
 
   const renderedHtml = useMemo(() => {
     // Group consecutive activity events from the same agent into cards
@@ -418,7 +338,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return parts.join('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, refStoreReady])
+  }, [chatMessages, ctx])
 
   // Post-process HTML to add clickable doc links
   const linkedHtml = useMemo(() => {
@@ -428,11 +348,37 @@ function FleetChatComponent({ shape }: { shape: any }) {
     // and the regex can't match the original token)
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
-      const ref = refStore.get(token)
       // Display: strip the "type:" prefix and any #uid suffix, show just the label
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
+      // Extract embedded shape ID (format: «type:label#shape:xxx»)
+      const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
+      const embeddedShapeId = shapeIdMatch?.[1]
+      let ref: any = undefined
+      // For shape-backed chips, resolve metadata live from the tldraw store
+      if (embeddedShapeId) {
+        const srcShape = editor.getShape(embeddedShapeId as any) as any
+        if (srcShape) {
+          const highlightId = srcShape.props?.highlightId
+          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
+          const refShape = highlight || srcShape
+          const refBounds = editor.getShapePageBounds(refShape.id)
+          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
+          ref = {
+            type: typePrefix || 'annotation',
+            label: display,
+            content: srcShape.props?.text || '',
+            color: srcShape.props?.color,
+            canvasBounds: refBounds ? { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h } : undefined,
+            shapeId: embeddedShapeId,
+            highlightShapeId: highlight?.id,
+            screenshotRef: refBounds ? `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}` : undefined,
+            file: anchor?.file,
+            lineno: anchor?.line,
+          }
+        }
+      }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -441,7 +387,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       // Images render as block-level, not as chips
       if (isImage) {
-        // Try tldraw asset (persistent across refresh), fall back to refStore (same-session)
         const uid = inner.split('#')[1] || ''
         const src = imageSrcs.get('asset:' + uid) || content
         if (src) {
@@ -492,7 +437,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions, refStoreReady, imageSrcs])
+  }, [renderedHtml, doc, labelRegions, imageSrcs, editor])
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -675,14 +620,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
           if (mainEd !== editor) editor.store.put([assetRecord])
           const assetUid = assetId.slice('asset:'.length)
           const token = `«img:${file.name}#${assetUid}»`
-          refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
         } else {
           let content = ''
           try { content = await file.text() } catch {}
           const uid = Date.now().toString(36).slice(-4)
           const token = `«file:${file.name}#${uid}»`
-          refStore.set(token, { type: 'file', label: file.name, content })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
         }
       }
@@ -1086,15 +1029,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
           const clone = refChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-loc, .ref-chip-dot, .ref-chip-preview').forEach(el => el.remove())
           const label = clone.textContent?.trim() || 'note'
-          // Reconstruct the token to look up content from refStore
-          const token = `«annotation:${label}»`
-          const ref = refStore.get(token)
+          // Use the stored token (contains embedded shapeId for new chips)
+          const token = refChip.dataset.token || `«annotation:${label}»`
+          const embShapeId = token.match(/#(shape:[^»]+)»/)?.[1]
+          const srcShape = embShapeId ? editor.getShape(embShapeId as any) as any : null
           const dotEl = refChip.querySelector('.ref-chip-dot') as HTMLElement | null
-          const chipColor = dotEl?.style.background || ref?.color || '#3b82f6'
+          const chipColor = dotEl?.style.background || srcShape?.props?.color || '#3b82f6'
           drag = {
             pillId: null, pillType: 'annotation' as any, value: token,
             displayName: label, color: chipColor,
-            content: ref?.content || label,
+            content: srcShape?.props?.text || label,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -1106,14 +1050,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
         if (fileChip) {
           const token = fileChip.dataset.token || ''
-          const ref = token ? refStore.get(token) : undefined
           const clone = fileChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
-          const label = ref?.label || clone.textContent?.trim() || 'file'
+          const label = clone.textContent?.trim() || 'file'
           drag = {
             pillId: null, pillType: 'file' as any, value: token,
             displayName: label, color: '#9370db',
-            content: ref?.content || label,
+            content: label,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -1517,8 +1460,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const atts = extractRefAttachments(text)
-                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
+                      for (const t of sendTargets) sendMessage(t, text, {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1533,8 +1475,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const atts = extractRefAttachments(text)
-                      for (const t of sendTargets) sendMessage(t, text, atts ? { attachments: atts } : {})
+                      for (const t of sendTargets) sendMessage(t, text, {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1608,8 +1549,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       if (mainEd !== editor) editor.store.put([assetRecord])
                       const assetUid = assetId.slice('asset:'.length)
                       const token = `«img:${file.name}#${assetUid}»`
-                      // Also populate refStore for immediate same-session render before store propagation
-                      refStore.set(token, { type: 'image', label: file.name, content: dataUrl })
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1617,16 +1556,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       // Text/code file → read contents, insert as file chip
                       const text = await file.text()
                       const token = `«file:${file.name}#${uid}»`
-                      refStore.set(token, { type: 'file', label: file.name, content: text })
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
                     } else {
-                      // Other file → try to read as text; fall back to name-only chip
-                      let content = ''
-                      try { content = await file.text() } catch {}
+                      // Other file → name-only chip
                       const token = `«file:${file.name}#${uid}»`
-                      refStore.set(token, { type: 'file', label: file.name, content })
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
