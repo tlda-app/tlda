@@ -11,6 +11,8 @@ import {
   createShapeId,
 } from 'tldraw'
 import type { Editor, TLShape, TLShapeId } from 'tldraw'
+// @ts-ignore — vanilla JS module
+import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -339,7 +341,7 @@ export function dropPillOnTarget(
         props: {
           w: 800,
           h: 1000,
-          url: `http://localhost:5176/?doc=${encodeURIComponent(docName)}&embed=1`,
+          url: `${myTldaUrl()}/?doc=${encodeURIComponent(docName)}&embed=1`,
           title: displayName || docName,
         },
       })

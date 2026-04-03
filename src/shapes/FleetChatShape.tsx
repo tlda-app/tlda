@@ -28,6 +28,8 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from '../fleet/trackpad.mjs'
+// @ts-ignore — vanilla JS module
+import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, refStore, filterDropPreview } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
@@ -468,11 +470,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda localhost URLs (with ?doc=) to tlda-card widgets.
+    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
     // Handles both raw URLs and already-linkified <a href="..."> anchors.
     html = html.replace(
-      /<a\s[^>]*href="(https?:\/\/localhost:\d+[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
+      /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
+        if (!isTldaUrl(url)) return _match
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const id = 'tlda-' + btoa(url).slice(0, 16)
         // Add embed=1 then append auth token
@@ -953,7 +956,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const names = agentNamesRef.current
 
       // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
+      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
@@ -1046,12 +1049,12 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc card → drag as doc reference
+      // MD file card or shared-doc ref-chip → drag as doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card') as HTMLElement
+        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || filePath.split('/').pop() || 'file'
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
           drag = {
             pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
             displayName: name, color: '#9370db', content: filePath,

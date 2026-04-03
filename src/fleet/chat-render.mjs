@@ -247,7 +247,7 @@ export function renderChatLine(m, ctx) {
       const parts = (a.source || '').split(':')
       const docName = parts.slice(3).join(':') || parts[parts.length - 1] || 'doc'
       const filePath = a.path || ''
-      return `<span class="md-file-card" data-path="${esc(filePath)}" data-doc="${esc(docName)}" draggable="true"><span class="md-file-chip">${esc(docName)}</span></span>`
+      return `<span class="ref-chip" data-path="${esc(filePath)}" data-doc="${esc(docName)}" draggable="true">${esc(docName)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''
