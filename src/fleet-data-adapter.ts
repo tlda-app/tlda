@@ -21,6 +21,12 @@ import {
   spawnAgent as _spawnAgent,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
+import {
+  getPlaybackData,
+  subscribePlayback,
+  getPlaybackChatEvents,
+  getPlaybackAgents,
+} from './playback-context'
 
 // --- Lazy initialization ---
 
@@ -35,35 +41,66 @@ function ensureInit(): Promise<void> {
 
 // --- Hooks ---
 
-export function useFleetAgents(): any[] {
+export function useFleetAgents(frameId?: string): any[] {
   const [agents, setAgents] = useState<any[]>([])
 
   useEffect(() => {
-    let unsub: (() => void) | null = null
+    let liveUnsub: (() => void) | null = null
+    let playbackUnsub: (() => void) | null = null
     let cancelled = false
+    let isPlaybackMode = false
 
-    ensureInit().then(() => {
+    function setupLive() {
       if (cancelled) return
-      setAgents([...getAgents()])
-      unsub = subscribe('agents', null, () => {
+      ensureInit().then(() => {
+        if (cancelled || isPlaybackMode) return
         setAgents([...getAgents()])
+        liveUnsub = subscribe('agents', null, () => {
+          setAgents([...getAgents()])
+        })
       })
-    })
+    }
+
+    if (frameId && frameId.startsWith('shape:')) {
+      const pb = getPlaybackData(frameId)
+      if (pb) {
+        isPlaybackMode = true
+        setAgents(getPlaybackAgents(pb))
+      } else {
+        setupLive()
+      }
+
+      playbackUnsub = subscribePlayback(frameId, () => {
+        const pb = getPlaybackData(frameId)
+        if (pb) {
+          isPlaybackMode = true
+          liveUnsub?.()
+          liveUnsub = null
+          setAgents(getPlaybackAgents(pb))
+        }
+      })
+    } else {
+      setupLive()
+    }
 
     return () => {
       cancelled = true
-      unsub?.()
+      liveUnsub?.()
+      playbackUnsub?.()
     }
-  }, [])
+  }, [frameId])
 
   return agents
 }
 
 
-export function useFleetTasks(): any[] {
+export function useFleetTasks(frameId?: string): any[] {
   const [tasks, setTasks] = useState<any[]>([])
 
   useEffect(() => {
+    // Playback mode: no task data (tasks not in recording)
+    if (frameId && getPlaybackData(frameId)) return
+
     let unsub: (() => void) | null = null
     let cancelled = false
 
@@ -79,7 +116,7 @@ export function useFleetTasks(): any[] {
       cancelled = true
       unsub?.()
     }
-  }, [])
+  }, [frameId])
 
   return tasks
 }
@@ -90,47 +127,93 @@ export function useFleetTasks(): any[] {
  */
 const MAX_LOCAL_EVENTS = 500
 
-export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
+export function useFleetEvents(dnfFilter?: string[][] | null, frameId?: string): any[] {
   const [events, setEvents] = useState<any[]>([])
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
+  // Single effect handles both playback and live modes.
+  // If frameId is a shape ID: subscribe to the playback registry first.
+  // When registry data arrives, switch to playback events.
+  // If no registry data, fall through to live SSE.
   useEffect(() => {
-    let unsub: (() => void) | null = null
+    let liveUnsub: (() => void) | null = null
+    let playbackUnsub: (() => void) | null = null
+    let liveUnsync: (() => void) | null = null
     let cancelled = false
+    let isPlaybackMode = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
-    ensureInit().then(() => {
+    function setupLive() {
       if (cancelled) return
-      // Seed with initial events from the store
-      const all = getEvents()
-      const filtered = filter
-        ? all.filter((e: any) => matchesFilter(filter, e))
-        : [...all]
-      setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
+      ensureInit().then(() => {
+        // If playback data arrived while we were waiting for init, don't start live
+        if (cancelled || isPlaybackMode) return
+        const all = getEvents()
+        const filtered = filter
+          ? all.filter((e: any) => matchesFilter(filter, e))
+          : [...all]
+        setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
-      // Subscribe for live updates
-      unsub = subscribe('messages', filter, (event: any) => {
-        if (!event) {
-          // null event = re-read (e.g. read-receipt updated existing messages)
-          const all = getEvents()
-          const filtered = filter
-            ? all.filter((e: any) => matchesFilter(filter, e))
-            : [...all]
-          setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
-        } else {
-          setEvents(prev => {
-            const next = [...prev, event]
-            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
-          })
+        liveUnsub = subscribe('messages', filter, (event: any) => {
+          if (!event) {
+            const all = getEvents()
+            const filtered = filter
+              ? all.filter((e: any) => matchesFilter(filter, e))
+              : [...all]
+            setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
+          } else {
+            setEvents(prev => {
+              const next = [...prev, event]
+              return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
+            })
+          }
+        })
+      })
+    }
+
+    function setupPlayback(pb: ReturnType<typeof getPlaybackData>) {
+      if (!pb) return false
+      isPlaybackMode = true
+      // Tear down live subscription if it was running
+      liveUnsub?.()
+      liveUnsub = null
+      setEvents(getPlaybackChatEvents(pb, filter))
+      return true
+    }
+
+    // If frameId looks like a shape (not a page), check the playback registry
+    if (frameId && frameId.startsWith('shape:')) {
+      // Try to use playback data immediately if already registered
+      const pb = getPlaybackData(frameId)
+      if (!setupPlayback(pb)) {
+        // Not registered yet — start live while waiting
+        setupLive()
+      }
+
+      // Subscribe to registry: when PlaybackFrame loads, switch sources
+      playbackUnsub = subscribePlayback(frameId, () => {
+        const pb = getPlaybackData(frameId)
+        if (pb) {
+          // Cancel live, switch to playback
+          liveUnsub?.()
+          liveUnsub = null
+          liveUnsync?.()
+          liveUnsync = null
+          setEvents(getPlaybackChatEvents(pb, filter))
+          isPlaybackMode = true
         }
       })
-    })
+    } else {
+      setupLive()
+    }
 
     return () => {
       cancelled = true
-      unsub?.()
+      liveUnsub?.()
+      liveUnsync?.()
+      playbackUnsub?.()
     }
-  }, [filterKey])
+  }, [frameId, filterKey])
 
   return events
 }
@@ -140,11 +223,14 @@ export function useFleetEvents(dnfFilter?: string[][] | null): any[] {
  * Subscribe to thinking/status events for agents matching the filter.
  * Returns a Map of agentId → timestamp when thinking started (ms).
  */
-export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, number> {
+export function useFleetThinking(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
   const [thinking, setThinking] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
   useEffect(() => {
+    // Playback mode: no live thinking indicators
+    if (frameId && getPlaybackData(frameId)) return
+
     let unsubThinking: (() => void) | null = null
     let unsubMessages: (() => void) | null = null
     let unsubStatus: (() => void) | null = null
@@ -270,11 +356,14 @@ export function useFleetThinking(dnfFilter?: string[][] | null): Map<string, num
  * Subscribe to compacting events for agents matching the filter.
  * Returns a Map of agentId → timestamp when compacting started (ms).
  */
-export function useFleetCompacting(dnfFilter?: string[][] | null): Map<string, number> {
+export function useFleetCompacting(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
   const [compacting, setCompacting] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
   useEffect(() => {
+    // Playback mode: no live compacting indicators
+    if (frameId && getPlaybackData(frameId)) return
+
     let unsub: (() => void) | null = null
     let unsubSync: (() => void) | null = null
     let cancelled = false

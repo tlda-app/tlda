@@ -232,8 +232,9 @@ function usePillDrag() {
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
-  const agents = useFleetAgents()
-  const tasks = useFleetTasks()
+  const frameId = shape.parentId as string | undefined
+  const agents = useFleetAgents(frameId)
+  const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
 
   // Build task lookup: agent id → active task
