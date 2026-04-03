@@ -204,3 +204,28 @@
   opacity: 0.3;
   cursor: default;
 }
+
+/* Drop zone — shown below chrome when frame has no children */
+.pbf-drop-zone {
+  border: 1.5px dashed rgba(0,0,0,0.12);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(0,0,0,0.2);
+  font-size: 11px;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  user-select: none;
+  pointer-events: none;
+}
+
+.pbf-drop-zone::after {
+  content: 'drag shapes here';
+  letter-spacing: 0.04em;
+}
+
+.tl-theme__dark .pbf-drop-zone {
+  border-color: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.15);
+}
