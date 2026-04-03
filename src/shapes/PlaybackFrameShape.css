@@ -137,17 +137,30 @@
 
 .pbf-speed {
   font-size: 10px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
   border: 1px solid rgba(0,0,0,0.12);
   border-radius: 3px;
-  padding: 1px 2px;
+  padding: 1px 4px;
+  width: 3.5em;
   background: transparent;
-  cursor: pointer;
   color: inherit;
+  text-align: center;
+  outline: none;
+}
+
+.pbf-speed:focus {
+  border-color: rgba(0,0,0,0.3);
+  background: rgba(0,0,0,0.04);
 }
 
 .tl-theme__dark .pbf-speed {
   border-color: rgba(255,255,255,0.15);
   background: rgba(255,255,255,0.05);
+}
+
+.tl-theme__dark .pbf-speed:focus {
+  border-color: rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.08);
 }
 
 .pbf-time {

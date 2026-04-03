@@ -70,6 +70,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const [currentMs, setCurrentMs] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [playSpeed, setPlaySpeed] = useState(1)
+  const [speedText, setSpeedText] = useState('1')
 
   const rafRef = useRef<number | null>(null)
   const lastRafTime = useRef<number | null>(null)
@@ -285,20 +286,22 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
             >
               {isPlaying ? '⏸' : '▶'}
             </button>
-            <select
+            <input
               className="pbf-speed"
-              value={playSpeed}
-              onChange={e => setPlaySpeed(Number(e.target.value))}
-            >
-              <option value={0.25}>0.25×</option>
-              <option value={0.5}>0.5×</option>
-              <option value={1}>1×</option>
-              <option value={2}>2×</option>
-              <option value={5}>5×</option>
-              <option value={10}>10×</option>
-              <option value={50}>50×</option>
-              <option value={100}>100×</option>
-            </select>
+              type="text"
+              value={speedText}
+              title="Playback speed (e.g. 0.5, 2, 10)"
+              onChange={e => setSpeedText(e.target.value)}
+              onFocus={e => { setSpeedText(String(playSpeed)); e.target.select() }}
+              onBlur={() => {
+                const v = parseFloat(speedText)
+                if (!isNaN(v) && v > 0) { setPlaySpeed(v); setSpeedText(String(v)) }
+                else setSpeedText(String(playSpeed))
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              }}
+            />
             <span className="pbf-time">
               {formatDuration(currentMs)} / {formatDuration(duration)}
             </span>
