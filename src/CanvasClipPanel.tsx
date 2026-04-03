@@ -10,7 +10,7 @@
  * buttons and title.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { refStore, chatInsertBus } from './shapes/FleetPillShape'
 import './CanvasClipPanel.css'
@@ -153,13 +153,25 @@ export function CanvasClipPanel({
       for (const record of Object.values(changes.removed)) {
         if (isPill(record)) continue
         if (!isDocRecord(record)) continue
-        if (lockCamera && !isFleetShape(record)) continue
+        // In lockCamera mode: allow all shape deletions (fleet and junk shapes).
+        // We block non-fleet UPDATES above to prevent accidental moves, but explicit
+        // user deletions (e.g. eraser) should always propagate back to main.
         try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
       }
     }, { source: 'user', scope: 'document' })
 
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
+
+  // Mirror main editor's active tool to the HUD editor so the single tldraw toolbar
+  // controls both. When the user picks eraser/select in the main toolbar, the HUD
+  // editor switches to the same tool — enabling deletion of fleet shapes (and any
+  // stuck non-fleet shapes) without needing a separate HUD toolbar.
+  const mainToolId = useValue('mainToolId', () => mainEditor.getCurrentToolId(), [mainEditor])
+  useEffect(() => {
+    if (!editor || !lockCamera) return
+    try { editor.setCurrentTool(mainToolId) } catch { /* tool may not exist in HUD */ }
+  }, [editor, mainToolId, lockCamera])
 
   // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
   // files dropped over a fleet-chat shape are routed to that chat's input instead
@@ -669,14 +681,23 @@ function isDocRecord(record: TLRecord): boolean {
 }
 
 
-/** For lockCamera (HUD): unlock fleet shapes, lock everything else.
- *  Prevents tldraw from moving PDF pages/highlights during fleet shape drag. */
+// Shape types that should always be locked in the HUD (never accidentally moveable).
+// svg-page = PDF pages; highlight/draw/dot-annotation = annotation shapes managed separately.
+const HUD_ALWAYS_LOCKED = new Set(['svg-page', 'highlight', 'draw', 'dot-annotation'])
+
+/** For lockCamera (HUD): unlock fleet shapes and unknown/junk shapes (so the eraser
+ *  can delete them), lock only intentional non-fleet shapes like PDF pages and annotations. */
 function lockNonFleetUnlockFleet(record: TLRecord): TLRecord {
   if (record.typeName !== 'shape') return record
   if (FLEET_TYPES.has((record as any).type)) {
     return { ...record, isLocked: false } as TLRecord
   }
-  return { ...record, isLocked: true } as TLRecord
+  // Always lock PDF pages and annotation shapes — they shouldn't be moveable in HUD
+  if (HUD_ALWAYS_LOCKED.has((record as any).type)) {
+    return { ...record, isLocked: true } as TLRecord
+  }
+  // Unknown/junk shapes: leave unlocked so the eraser can select and delete them
+  return { ...record, isLocked: false } as TLRecord
 }
 
 /** Re-lock fleet shapes when syncing back to main store. */
