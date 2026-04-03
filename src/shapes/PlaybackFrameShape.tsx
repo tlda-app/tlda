@@ -1,52 +1,53 @@
 /**
- * PlaybackFrameShape — tldraw canvas shape that replays a fleet event stream.
+ * PlaybackFrameShape — tldraw frame shape that replays a fleet event stream.
  *
- * Shows chat messages and markers from a recorded playback session with a
- * scrubber UI. Events are time-filtered to the current scrubber position.
+ * This shape acts as a container (frame) for other tldraw shapes — primarily
+ * FleetChatShape and FleetAgentsShape. Those child shapes read from a saved
+ * event recording instead of the live WebSocket because PlaybackFrameShape
+ * registers itself in the playback-context registry, and fleet-data-adapter
+ * hooks check that registry before falling through to live SSE data.
+ *
+ * Architecture:
+ *   1. User places PlaybackFrameShape on canvas, sets playbackId prop
+ *   2. User adds FleetChatShape (or other fleet shapes) as tldraw children
+ *      (parentId = PlaybackFrame's shape ID)
+ *   3. This shape fetches the recording, registers in playback-context
+ *   4. As scrubber advances, updatePlayback() is called → subscriber callbacks
+ *      fire → FleetChatShape re-renders with time-filtered events
+ *   5. Curated mode: layout keyframe events reposition children via
+ *      editor.store.mergeRemoteChanges() (ephemeral, not synced to Yjs)
  *
  * Props:
- *   playbackId — fleet playback UUID (from GET /api/playbacks)
+ *   playbackId — fleet playback UUID
  *   mode       — 'free' | 'curated'
- *                'free': viewer positions shapes; scrubber controls time
- *                'curated': layout keyframes from the event stream reposition
- *                           shapes automatically as time advances
- *   w, h       — dimensions
+ *   w, h       — frame dimensions (includes scrubber chrome height)
  */
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
   stopEventPropagation,
+  useEditor,
 } from 'tldraw'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import {
+  updatePlayback,
+  unregisterPlayback,
+  getLayoutKeyframe,
+  type PlaybackData,
+} from '../playback-context'
 import './PlaybackFrameShape.css'
 
 const FLEET_API = 'http://localhost:5199'
-const DEFAULT_W = 480
-const DEFAULT_H = 600
-
-// --- Types ---
-
-interface PlaybackEvent {
-  t: number        // ms from start
-  type: string     // 'chat' | 'marker' | 'stroke' | 'delegate' | 'task_done' | ...
-  source: string
-  sourceId?: string
-  data: Record<string, any>
-}
-
-interface PlaybackMeta {
-  id: string
-  title: string
-  created: string
-  duration_ms: number
-  time_range: { start: string | null; end: string | null }
-  tags?: string[]
-}
+const DEFAULT_W = 500
+const DEFAULT_H = 80   // frame is mostly the chrome; content comes from child shapes
+const SCRUBBER_H = 64
+const HEADER_H = 36
 
 // --- Helpers ---
 
 function formatDuration(ms: number): string {
+  if (!ms || ms < 0) return '0:00'
   const totalSec = Math.floor(ms / 1000)
   const h = Math.floor(totalSec / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
@@ -55,48 +56,25 @@ function formatDuration(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function formatShortId(id: string): string {
-  return id ? id.slice(-8) : '?'
-}
-
-function agentShortName(id: string): string {
-  // fleet:6b402e4f → 6b402e4f
-  return id?.replace('fleet:', '').slice(0, 8) ?? '?'
-}
-
-const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060', '#c87a7a']
-const nickMap = new Map<string, string>()
-let nickIdx = 0
-function nickColor(id: string): string {
-  if (!id) return NICK_COLORS[0]
-  if (!nickMap.has(id)) {
-    nickMap.set(id, NICK_COLORS[nickIdx % NICK_COLORS.length])
-    nickIdx++
-  }
-  return nickMap.get(id)!
-}
-
 // --- Component ---
 
 function PlaybackFrameComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
   const { playbackId, mode, w, h } = shape.props
 
-  const [meta, setMeta] = useState<PlaybackMeta | null>(null)
-  const [events, setEvents] = useState<PlaybackEvent[]>([])
-  const [loading, setLoading] = useState(true)
+  const [pbData, setPbData] = useState<PlaybackData | null>(null)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Scrubber state
+  // Scrubber state (local — not synced to Yjs)
   const [currentMs, setCurrentMs] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [playSpeed, setPlaySpeed] = useState(1)
 
   const rafRef = useRef<number | null>(null)
   const lastRafTime = useRef<number | null>(null)
-  const feedRef = useRef<HTMLDivElement | null>(null)
-  const prevEventCount = useRef(0)
 
-  // Fetch playback data
+  // Fetch recording on playbackId change
   useEffect(() => {
     if (!playbackId) return
     setLoading(true)
@@ -110,22 +88,65 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
         return r.json()
       })
       .then(data => {
-        setMeta({
-          id: data.id,
-          title: data.title,
-          created: data.created,
-          duration_ms: data.duration_ms,
-          time_range: data.time_range,
-          tags: data.tags,
-        })
-        setEvents(data.events || [])
+        // Build agent list from sources
+        const agentIds: string[] = []
+        for (const src of data.sources || []) {
+          for (const id of src.agents || []) {
+            if (!agentIds.includes(id)) agentIds.push(id)
+          }
+        }
+
+        const pb: PlaybackData = {
+          events: data.events || [],
+          agents: agentIds.map((id: string) => ({
+            id,
+            friendly_name: null,
+          })),
+          currentMs: 0,
+          duration_ms: data.duration_ms || 0,
+          title: data.title || 'Untitled',
+          created: data.created || new Date().toISOString(),
+        }
+        setPbData(pb)
+        updatePlayback(shape.id, pb)
         setLoading(false)
       })
       .catch(e => {
         setError(e.message)
         setLoading(false)
       })
-  }, [playbackId])
+
+    return () => unregisterPlayback(shape.id)
+  }, [playbackId, shape.id])
+
+  // Update registry whenever currentMs changes
+  useEffect(() => {
+    if (!pbData) return
+    const updated = { ...pbData, currentMs }
+    updatePlayback(shape.id, updated)
+  }, [currentMs, pbData, shape.id])
+
+  // Curated mode: apply layout keyframes when currentMs changes
+  useEffect(() => {
+    if (mode !== 'curated' || !pbData) return
+    const layout = getLayoutKeyframe({ ...pbData, currentMs })
+    if (!layout) return
+
+    // Apply layout positions ephemerally (mergeRemoteChanges = not pushed to Yjs)
+    editor.store.mergeRemoteChanges(() => {
+      for (const [childId, pos] of Object.entries(layout)) {
+        const child = editor.getShape(childId as any)
+        if (child && child.parentId === shape.id) {
+          editor.updateShape({ id: childId as any, type: child.type, x: pos.x, y: pos.y })
+        }
+      }
+    })
+  }, [currentMs, mode, pbData, shape.id, editor])
+
+  // Unregister on unmount
+  useEffect(() => {
+    return () => unregisterPlayback(shape.id)
+  }, [shape.id])
 
   // RAF-based playback tick
   const tick = useCallback((now: number) => {
@@ -136,15 +157,16 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     lastRafTime.current = now
 
     setCurrentMs(prev => {
+      if (!pbData) return prev
       const next = prev + delta
-      if (meta && next >= meta.duration_ms) {
+      if (next >= pbData.duration_ms) {
         setIsPlaying(false)
-        return meta.duration_ms
+        return pbData.duration_ms
       }
       return next
     })
     rafRef.current = requestAnimationFrame(tick)
-  }, [playSpeed, meta])
+  }, [playSpeed, pbData])
 
   useEffect(() => {
     if (isPlaying) {
@@ -165,33 +187,15 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     }
   }, [isPlaying, tick])
 
-  // Auto-scroll feed when new events appear
-  const visibleEvents = useMemo(
-    () => events.filter(e => e.t <= currentMs && (e.type === 'chat' || e.type === 'marker')),
-    [events, currentMs]
-  )
-
-  useEffect(() => {
-    if (visibleEvents.length !== prevEventCount.current) {
-      prevEventCount.current = visibleEvents.length
-      if (feedRef.current) {
-        feedRef.current.scrollTop = feedRef.current.scrollHeight
-      }
-    }
-  }, [visibleEvents.length])
-
-  const duration = meta?.duration_ms ?? 0
+  const duration = pbData?.duration_ms ?? 0
 
   function handleSeek(e: React.ChangeEvent<HTMLInputElement>) {
-    const val = Number(e.target.value)
-    setCurrentMs(val)
-    if (isPlaying) {
-      lastRafTime.current = null
-    }
+    setCurrentMs(Number(e.target.value))
+    if (isPlaying) lastRafTime.current = null
   }
 
   function handlePlayPause() {
-    if (!meta || duration === 0) return
+    if (!pbData || duration === 0) return
     if (currentMs >= duration) {
       setCurrentMs(0)
       setIsPlaying(true)
@@ -205,84 +209,30 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     setIsPlaying(false)
   }
 
-  // Curated mode: find current section from layout keyframes
-  // (markers with style 'note' or 'section' act as chapter markers)
-  const currentMarker = useMemo(() => {
-    if (mode !== 'curated') return null
-    const visible = events.filter(e => e.t <= currentMs && e.type === 'marker')
-    return visible.length > 0 ? visible[visible.length - 1] : null
-  }, [mode, events, currentMs])
-
-  const HEADER_H = 36
-  const SCRUBBER_H = 64
-  const feedH = h - HEADER_H - SCRUBBER_H
+  const title = loading ? 'Loading…' : error ? `Error: ${error}` : (pbData?.title ?? 'Set playbackId in props')
 
   return (
     <HTMLContainer
       id={shape.id}
-      style={{ width: w, height: h, pointerEvents: 'all', overflow: 'hidden', borderRadius: 8 }}
+      style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}
     >
       <div
         className="pbf-root"
         onPointerDown={stopEventPropagation}
         onPointerMove={stopEventPropagation}
         onWheel={stopEventPropagation}
-        style={{ width: w, height: h }}
+        style={{ width: w }}
       >
         {/* Header */}
         <div className="pbf-header" style={{ height: HEADER_H }}>
-          <span className="pbf-title">
-            {loading ? 'Loading…' : error ? 'Error' : (meta?.title ?? 'Playback')}
-          </span>
-          {meta && (
+          <span className="pbf-title">{title}</span>
+          {pbData && (
             <span className="pbf-meta">
-              {new Date(meta.created).toLocaleDateString()} · {formatDuration(duration)}
+              {new Date(pbData.created).toLocaleDateString()} · {formatDuration(duration)}
               {mode === 'curated' && <span className="pbf-mode-badge">curated</span>}
             </span>
           )}
-          {!meta && !loading && !error && (
-            <span className="pbf-hint">drop a playback ID in props</span>
-          )}
         </div>
-
-        {/* Event feed */}
-        <div
-          className="pbf-feed"
-          ref={feedRef}
-          style={{ height: feedH }}
-        >
-          {loading && <div className="pbf-status">Loading playback…</div>}
-          {error && <div className="pbf-status pbf-error">{error}</div>}
-          {!loading && !error && visibleEvents.length === 0 && (
-            <div className="pbf-status">No events yet — press play</div>
-          )}
-          {visibleEvents.map((ev, i) => {
-            if (ev.type === 'marker') {
-              return (
-                <div key={i} className="pbf-marker">
-                  <span className="pbf-marker-text">{ev.data.text}</span>
-                </div>
-              )
-            }
-            // chat
-            const from = ev.data.from || ''
-            const text = ev.data.text || ''
-            const color = nickColor(from)
-            return (
-              <div key={i} className="pbf-chat-line">
-                <span className="pbf-nick" style={{ color }}>{agentShortName(from)}</span>
-                <span className="pbf-text">{text}</span>
-              </div>
-            )
-          })}
-        </div>
-
-        {/* Curated mode: current chapter overlay */}
-        {mode === 'curated' && currentMarker && (
-          <div className="pbf-chapter">
-            {currentMarker.data.text?.split('\n')[0] ?? ''}
-          </div>
-        )}
 
         {/* Scrubber */}
         <div className="pbf-scrubber" style={{ height: SCRUBBER_H }}>
@@ -291,12 +241,12 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
               className="pbf-btn"
               onClick={handleRewind}
               title="Rewind"
-              disabled={!meta || duration === 0}
+              disabled={!pbData || duration === 0}
             >⏮</button>
             <button
               className="pbf-btn pbf-play"
               onClick={handlePlayPause}
-              disabled={!meta || duration === 0}
+              disabled={!pbData || duration === 0}
             >
               {isPlaying ? '⏸' : '▶'}
             </button>
@@ -326,7 +276,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
             step={100}
             value={currentMs}
             onChange={handleSeek}
-            disabled={!meta || duration === 0}
+            disabled={!pbData || duration === 0}
           />
         </div>
       </div>
@@ -348,7 +298,7 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   getDefaultProps() {
     return {
       w: DEFAULT_W,
-      h: DEFAULT_H,
+      h: HEADER_H + SCRUBBER_H,
       playbackId: '',
       mode: 'free',
     }
@@ -364,6 +314,6 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   indicator(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} rx={8} />
+    return <rect width={shape.props.w} height={shape.props.h} rx={4} />
   }
 }

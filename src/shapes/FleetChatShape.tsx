@@ -228,12 +228,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
 
-  // Live data from fleet-data.mjs via SSE
-  const agents = useFleetAgents()
-  const liveEvents = useFleetEvents(dnfFilter)
-  const tasks = useFleetTasks()
-  const thinkingAgents = useFleetThinking(dnfFilter)
-  const compactingAgents = useFleetCompacting(dnfFilter)
+  // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
+  const frameId = shape.parentId as string | undefined
+  const agents = useFleetAgents(frameId)
+  const liveEvents = useFleetEvents(dnfFilter, frameId)
+  const tasks = useFleetTasks(frameId)
+  const thinkingAgents = useFleetThinking(dnfFilter, frameId)
+  const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Input history (up/down arrow navigation like terminal)
