@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 23
+          cache: npm
+
+      - name: Build SPA
+        run: |
+          npm ci
+          npx vite build
+          mkdir -p server/public
+          cp -r dist/* server/public/
+
+      - name: Create release archive
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          # Pack everything except node_modules, dist, .git
+          tar --exclude='./node_modules' \
+              --exclude='./dist' \
+              --exclude='./.git' \
+              --exclude='./.worktrees' \
+              --exclude='./server/data' \
+              --exclude='./server/projects' \
+              -czf /tmp/tlda-${VERSION}.tar.gz .
+          echo "ARCHIVE=/tmp/tlda-${VERSION}.tar.gz" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE }}
+          generate_release_notes: true
