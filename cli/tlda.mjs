@@ -701,7 +701,13 @@ async function watchAllRun() {
       }
 
       console.log(`[watch-all] Watching ${p.sourceDir} → ${p.name}`)
-      const watcher = await startWatcher({ dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken })
+      const watcher = await startWatcher({
+        dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken,
+        onFatalError: (err) => {
+          console.error(`[watch-all] Dropping ${p.name}: ${err.message}`)
+          watchers.delete(p.name)
+        }
+      })
       watchers.set(p.name, watcher)
     }
   }
