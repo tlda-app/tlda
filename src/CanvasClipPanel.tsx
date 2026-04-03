@@ -165,12 +165,28 @@ export function CanvasClipPanel({
 
   // Mirror main editor's active tool to the HUD editor so the single tldraw toolbar
   // controls both. When the user picks eraser/select in the main toolbar, the HUD
-  // editor switches to the same tool — enabling deletion of fleet shapes (and any
-  // stuck non-fleet shapes) without needing a separate HUD toolbar.
+  // editor switches to the same tool — enabling deletion of junk shapes without a
+  // separate HUD toolbar.
+  // When eraser is active: fleet shapes are temporarily locked so they can't be
+  // accidentally erased. Only junk shapes (unlocked by lockNonFleetUnlockFleet) are
+  // erasable. When any other tool is active: fleet shapes are unlocked for dragging.
   const mainToolId = useValue('mainToolId', () => mainEditor.getCurrentToolId(), [mainEditor])
   useEffect(() => {
     if (!editor || !lockCamera) return
     try { editor.setCurrentTool(mainToolId) } catch { /* tool may not exist in HUD */ }
+
+    // Lock fleet shapes when eraser is active to prevent accidental chat deletion
+    const isErasing = mainToolId.startsWith('eraser')
+    editor.run(() => {
+      for (const shape of editor.getCurrentPageShapes()) {
+        const type = (shape as any).type as string
+        if (FLEET_TYPES.has(type)) {
+          if (shape.isLocked !== isErasing) {
+            editor.updateShape({ id: shape.id, type, isLocked: isErasing })
+          }
+        }
+      }
+    }, { history: 'ignore' })
   }, [editor, mainToolId, lockCamera])
 
   // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
