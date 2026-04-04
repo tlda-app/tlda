@@ -1237,6 +1237,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 /* Annotation chips — colored dot, location badge, clickable */
+.fleet-chat-shape .ref-chip-doc {
+  cursor: grab;
+  gap: 3px;
+  background: rgba(99, 160, 219, 0.15);
+  border-color: rgba(99, 160, 219, 0.25);
+  color: var(--accent);
+}
+.fleet-chat-shape .ref-chip-doc:hover {
+  background: rgba(99, 160, 219, 0.25);
+  border-color: rgba(99, 160, 219, 0.45);
+}
+.fleet-chat-shape .ref-chip-doc-icon {
+  font-size: 10px;
+  line-height: 1;
+}
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;
   gap: 3px;

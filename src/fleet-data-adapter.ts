@@ -333,6 +333,16 @@ export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   return data.results || data || []
 }
 
+export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: string; path: string; agent: string; agent_name: string; shared_at: string }>> {
+  try {
+    const res = await fetch(`${DASHBOARD_URL}/api/shared-docs`)
+    if (!res.ok) return []
+    return await res.json()
+  } catch {
+    return []
+  }
+}
+
 /**
  * Returns a map of agentId → unread count for messages from that agent to the human.
  * Updates live when messages arrive or read receipts come in.
