@@ -29,7 +29,8 @@
 /* Fleet shapes — thin borders for visibility */
 .fleet-chat-shape,
 .fleet-agents-shape,
-.fleet-search-shape {
+.fleet-search-shape,
+.cluster-shape {
   background-color: transparent;
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
@@ -1325,4 +1326,236 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 /* Button group — always interactive even in drag mode */
 .fleet-shape .fleet-btn-group {
   pointer-events: auto;
+}
+
+/* --- ClusterShape --- */
+
+.cluster-shape {
+  --bg: #0f0f1a;
+  --surface: #161625;
+  --text: #a8a8c0;
+  --text-dim: #8888a0;
+  --text-bright: #c0c0d4;
+  --border: #1e1e32;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-theme__light .cluster-shape {
+  --bg: #fafafa;
+  --surface: #f0f0f5;
+  --text: #444;
+  --text-dim: #888;
+  --text-bright: #222;
+  --border: #ddd;
+}
+
+.cluster-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  min-height: 20px;
+}
+
+.cluster-title {
+  color: var(--text-bright);
+  font-weight: 600;
+  flex: 1;
+  font-size: 9px;
+}
+
+.cluster-updated {
+  color: var(--text-dim);
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.cluster-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.cluster-refresh-btn:hover {
+  opacity: 1;
+}
+
+.cluster-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.cluster-empty,
+.cluster-error {
+  padding: 10px 8px;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-align: center;
+}
+.cluster-error {
+  color: #e55;
+}
+
+.cluster-row {
+  display: grid;
+  grid-template-columns: 1fr 32px 36px 52px 80px;
+  gap: 0;
+  padding: 2px 8px;
+  align-items: center;
+  min-height: 18px;
+}
+
+.cluster-row-header {
+  color: var(--text-dim);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.cluster-row-job {
+  cursor: pointer;
+  color: var(--text);
+  border-bottom: 1px solid rgba(128,128,128,0.05);
+  transition: background 0.1s;
+}
+.cluster-row-job:hover {
+  background: rgba(255,255,255,0.03);
+}
+.cluster-row-job.expanded {
+  background: rgba(255,255,255,0.04);
+}
+
+.cluster-col-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 4px;
+}
+.cluster-col-run,
+.cluster-col-pend,
+.cluster-col-done {
+  font-size: 8px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.cluster-user {
+  color: var(--text-dim);
+  font-size: 8px;
+  margin-right: 4px;
+}
+
+.cluster-progress-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+  width: 100%;
+}
+.cluster-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #7ab8a0;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.cluster-progress-label {
+  position: absolute;
+  right: 3px;
+  top: -1px;
+  font-size: 6px;
+  color: var(--text-dim);
+  line-height: 8px;
+}
+
+.cluster-log-file {
+  color: var(--text-dim);
+  font-size: 7.5px;
+  margin-bottom: 3px;
+  opacity: 0.6;
+}
+
+.cluster-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  color: var(--text-dim);
+  font-size: 8px;
+  cursor: pointer;
+  opacity: 0.6;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.cluster-section-header:hover {
+  opacity: 1;
+}
+.cluster-section-count {
+  opacity: 0.5;
+}
+
+.cluster-row-done {
+  opacity: 0.4;
+}
+
+.cluster-log-panel {
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid var(--border);
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.cluster-log-loading {
+  color: var(--text-dim);
+  font-size: 8px;
+  padding: 4px 0;
+}
+
+.cluster-log-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+  font-size: 7.5px;
+  line-height: 1.4;
+  font-family: inherit;
+}
+
+.cluster-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 8px;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+}
+.cluster-shape:hover .cluster-footer {
+  opacity: 1;
 }
