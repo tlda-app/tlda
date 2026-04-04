@@ -809,7 +809,7 @@ function VoiceNoteButtonInner() {
   const editor = useEditor()
   const [recording, setRecording] = useState(false)
   const footMode = new URLSearchParams(window.location.search).has('foot')
-  useClickActions(editor, !footMode)
+  useClickActions(editor, footMode)
   const recRef = useRef<any>(null)
   const transcriptRef = useRef('')
 
