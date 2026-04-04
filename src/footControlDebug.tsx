@@ -10,7 +10,7 @@
  * Mount anywhere for testing. Hidden in production builds via the `debug` prop.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import type { FootController, FootControlState } from './footControl'
 import type { ClickDetector } from './clickDetect'
 
@@ -26,7 +26,6 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   const [simRudder, setSimRudder] = useState(0)
   const [simCursor, setSimCursor] = useState(0)
   const [simPan, setSimPan] = useState(0)
-  const frameRef = useRef<number | null>(null)
 
   // Listen for state updates from foot controller
   useEffect(() => {

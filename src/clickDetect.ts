@@ -38,7 +38,6 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   const doubleClickMs = options.doubleClickMs ?? 300
   const cooldownMs = options.cooldownMs ?? 400
   const clickThreshold = options.clickThreshold ?? 0.002
-  const popThreshold = options.popThreshold ?? 0.002
 
   let audioCtx: AudioContext | null = null
   let analyser: AnalyserNode | null = null

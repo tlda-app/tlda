@@ -12,7 +12,7 @@ export class FleetChatTool extends StateNode {
     const id = createShapeId()
     editor.createShape({
       id,
-      type: 'fleet-chat',
+      type: 'fleet-chat' as any,
       x: point.x - W / 2,
       y: point.y,
       props: { w: W, h: H, filter: [] },

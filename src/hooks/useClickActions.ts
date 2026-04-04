@@ -106,7 +106,7 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number) {
   }))
 }
 
-function dispatchEnter(editor: Editor, x: number, y: number) {
+function dispatchEnter(_editor: Editor, x: number, y: number) {
   const focused = document.activeElement
   const target = document.elementFromPoint(x, y)
   const el = (isTextInput(focused) ? focused : isTextInput(target) ? target : document.body) as Element

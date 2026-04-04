@@ -367,7 +367,7 @@ function getToolColor(editor: Editor): string {
   }
 }
 
-function getTarget(editor: Editor, x: number, y: number): Element | null {
+function getTarget(_editor: Editor, x: number, y: number): Element | null {
   return document.elementFromPoint(x, y)
 }
 
@@ -380,13 +380,6 @@ function isTextInput(el: Element | null): boolean {
   if (tag === 'textarea') return true
   if ((el as HTMLElement).isContentEditable) return true
   return false
-}
-
-function isDraggableShape(editor: Editor, x: number, y: number): boolean {
-  // Check if there's a shape under the cursor that supports dragging
-  const pagePoint = editor.screenToPage({ x, y })
-  const shape = editor.getShapeAtPoint(pagePoint)
-  return !!shape
 }
 
 /** Build tldraw pointer event info — replaces getPointerInfo without needing a real DOM event */
@@ -413,10 +406,6 @@ function findInteractiveHtml(el: Element | null): HTMLElement | null {
   if (found) return found
   if ((el as HTMLElement).isContentEditable) return el as HTMLElement
   return null
-}
-
-function isInteractiveHtml(el: Element | null): boolean {
-  return !!findInteractiveHtml(el)
 }
 
 function isOverHud(x: number, y: number): boolean {
@@ -492,7 +481,7 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldr
   // Default: double-click on canvas
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_down', ...tlPtr(x, y) })
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_up', ...tlPtr(x, y) })
-  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'double_click', ...tlPtr(x, y) })
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'double_click' as any, ...tlPtr(x, y) })
   return false
 }
 

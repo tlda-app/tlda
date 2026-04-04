@@ -12,7 +12,7 @@ export class FleetAgentsTool extends StateNode {
     const id = createShapeId()
     editor.createShape({
       id,
-      type: 'fleet-agents',
+      type: 'fleet-agents' as any,
       x: point.x - W / 2,
       y: point.y,
       props: { w: W, h: H },

@@ -12,7 +12,7 @@ export class FleetSearchTool extends StateNode {
     const id = createShapeId()
     editor.createShape({
       id,
-      type: 'fleet-search',
+      type: 'fleet-search' as any,
       x: point.x - W / 2,
       y: point.y,
       props: { w: W, h: H },
