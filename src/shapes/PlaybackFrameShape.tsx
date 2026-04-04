@@ -29,7 +29,7 @@ import {
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   updatePlayback,
   unregisterPlayback,
@@ -73,7 +73,6 @@ function formatDuration(ms: number): string {
  * Jump regions (>100x) shown as near-vertical spikes.
  */
 function SpeedGraph({ regions, duration }: { regions: TimewarpRegion[]; duration: number }) {
-  const W = 300  // will be overridden by width: 100%
   const H = 22
   const GRAPH_H = 16  // drawing area above baseline
 
@@ -207,7 +206,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
           events: data.events || [],
           agents: agentIds.map((id: string) => ({
             id,
-            friendly_name: null,
+            friendly_name: undefined,
           })),
           currentMs: 0,
           duration_ms: data.duration_ms || 0,
@@ -341,7 +340,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
 
     if (!hasChat) {
       editor.createShape({
-        type: 'fleet-chat',
+        type: 'fleet-chat' as any,
         parentId: shape.id,
         x: 0,
         y: contentY,
@@ -350,7 +349,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     }
     if (!hasAgents) {
       editor.createShape({
-        type: 'fleet-agents',
+        type: 'fleet-agents' as any,
         parentId: shape.id,
         x: chatW + 4,
         y: contentY,
@@ -389,7 +388,7 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
                 <button
                   key={rec.id}
                   className="pbf-picker-item"
-                  onClick={() => editor.updateShape({ id: shape.id, type: 'playback-frame', props: { playbackId: rec.id } })}
+                  onClick={() => editor.updateShape({ id: shape.id, type: 'playback-frame' as any, props: { playbackId: rec.id } })}
                 >
                   <span className="pbf-picker-name">{rec.title || rec.id}</span>
                   <span className="pbf-picker-meta">
@@ -594,7 +593,7 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   // Allow shapes to be dragged into this frame (reparenting)
-  override onDragShapesIn(shape: any, draggingShapes: any[], { initialParentIds, initialIndices }: any) {
+  override onDragShapesIn(shape: any, draggingShapes: any[], _info: any) {
     const { editor } = this
     if (draggingShapes.every((s: any) => s.parentId === shape.id)) return
     if (draggingShapes.some((s: any) => editor.hasAncestor(shape, s.id))) return

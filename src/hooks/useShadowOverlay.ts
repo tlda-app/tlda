@@ -275,7 +275,7 @@ function removeOldShapes(
   overlayRef: React.MutableRefObject<ShadowOverlayState | null>,
   shapeIdSetRef: React.MutableRefObject<Set<TLShapeId>>,
   shapeIdsArrayRef: React.MutableRefObject<TLShapeId[]>,
-  document: SvgDocument,
+  _document: SvgDocument,
 ) {
   if (!overlayRef.current) return
   const { shapeIds } = overlayRef.current

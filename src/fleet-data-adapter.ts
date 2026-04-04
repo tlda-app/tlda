@@ -223,7 +223,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
  * Subscribe to thinking/status events for agents matching the filter.
  * Returns a Map of agentId → timestamp when thinking started (ms).
  */
-export function useFleetThinking(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
+export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
   const [thinking, setThinking] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
@@ -356,7 +356,7 @@ export function useFleetThinking(dnfFilter?: string[][] | null, frameId?: string
  * Subscribe to compacting events for agents matching the filter.
  * Returns a Map of agentId → timestamp when compacting started (ms).
  */
-export function useFleetCompacting(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
+export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
   const [compacting, setCompacting] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
