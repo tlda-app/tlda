@@ -256,22 +256,27 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     const hasChat = children.some((s: any) => s.type === 'fleet-chat')
     const hasAgents = children.some((s: any) => s.type === 'fleet-agents')
 
+    // Layout: chat 60%, agents 40%, both inside frame bounds
+    const chatW = Math.floor(w * 0.6)
+    const agentsW = w - chatW - 4
+    const contentY = CHROME_H  // below header + scrubber
+
     if (!hasChat) {
       editor.createShape({
         type: 'fleet-chat',
         parentId: shape.id,
         x: 0,
-        y: HEADER_H + SCRUBBER_H,
-        props: { w, h: 600, filter: [] },
+        y: contentY,
+        props: { w: chatW, h: h - contentY, filter: [] },
       })
     }
     if (!hasAgents) {
       editor.createShape({
         type: 'fleet-agents',
         parentId: shape.id,
-        x: w + 8,
-        y: HEADER_H + SCRUBBER_H,
-        props: { w: 340, h: 400 },
+        x: chatW + 4,
+        y: contentY,
+        props: { w: agentsW, h: h - contentY },
       })
     }
   }
@@ -286,14 +291,14 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     return (
       <HTMLContainer
         id={shape.id}
-        style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}
+        style={{ width: w, height: h, pointerEvents: 'none', overflow: 'visible' }}
       >
         <div
           className="pbf-picker"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
           onWheel={stopEventPropagation}
-          style={{ width: w, height: h }}
+          style={{ width: w, height: h, pointerEvents: 'all' }}
         >
           <div className="pbf-picker-header">📼 Choose a recording</div>
           {recLoading && <div className="pbf-picker-empty">Loading…</div>}
@@ -325,17 +330,15 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   return (
     <HTMLContainer
       id={shape.id}
-      style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}
+      style={{ width: w, height: h, pointerEvents: 'none', overflow: 'visible' }}
     >
       <div
         className="pbf-root"
-        onPointerDown={stopEventPropagation}
-        onPointerMove={stopEventPropagation}
         onWheel={stopEventPropagation}
-        style={{ width: w }}
+        style={{ width: w, pointerEvents: 'none' }}
       >
-        {/* Header */}
-        <div className="pbf-header" style={{ height: HEADER_H }}>
+        {/* Header — pointer-events none so tldraw can detect drag from title area */}
+        <div className="pbf-header" style={{ height: HEADER_H, pointerEvents: 'none' }}>
           <span className="pbf-title">{title}</span>
           {pbData && (
             <span className="pbf-meta">
@@ -351,6 +354,8 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
                 const tw = timewarps.find(t => t.name === e.target.value) ?? null
                 setActiveTimewarp(tw)
               }}
+              onPointerDown={stopEventPropagation}
+              style={{ pointerEvents: 'all' }}
               title="Playback cut (timewarp)"
             >
               <option value="__none__">raw</option>
@@ -363,13 +368,21 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
             <button
               className="pbf-btn pbf-populate"
               onClick={handlePopulate}
+              onPointerDown={stopEventPropagation}
+              style={{ pointerEvents: 'all' }}
               title="Add chat + agents shapes inside this frame"
             >＋HUD</button>
           )}
         </div>
 
-        {/* Scrubber */}
-        <div className="pbf-scrubber" style={{ height: SCRUBBER_H }}>
+        {/* Scrubber — fully interactive, captures all pointer events */}
+        <div
+          className="pbf-scrubber"
+          onPointerDown={stopEventPropagation}
+          onPointerMove={stopEventPropagation}
+          onWheel={stopEventPropagation}
+          style={{ height: SCRUBBER_H, pointerEvents: 'all' }}
+        >
           <div className="pbf-scrubber-controls">
             <button
               className="pbf-btn"
@@ -452,6 +465,17 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+
+  // Clip children to the frame bounds — returns polygon corners in local coords
+  override getClipPath(shape: any) {
+    const { w, h } = shape.props
+    return [
+      { x: 0, y: 0 },
+      { x: w, y: 0 },
+      { x: w, y: h },
+      { x: 0, y: h },
+    ]
+  }
 
   // Allow shapes to be dragged into this frame (reparenting)
   override onDragShapesIn(shape: any, draggingShapes: any[], { initialParentIds, initialIndices }: any) {
