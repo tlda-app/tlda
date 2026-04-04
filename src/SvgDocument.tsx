@@ -84,6 +84,7 @@ import { useSyncedPlayback } from './hooks/useSyncedPlayback'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
+import { useFootControl } from './hooks/useFootControl'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
@@ -302,6 +303,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
+
+  // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
+  const footEnabled = new URLSearchParams(window.location.search).has('foot')
+  useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
 
   useYjsSignals({
     editorRef, document,
