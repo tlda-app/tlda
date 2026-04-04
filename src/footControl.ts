@@ -81,6 +81,9 @@ export function createFootController(editor: Editor, options: FootControlOptions
   // Velocity state for physics model (acceleration + friction)
   let cursorVX = 0, cursorVY = 0
   let panVX = 0, panVY = 0
+  // Response curve: maps normalized axis [0,1] → acceleration multiplier [0,1]
+  // Default = linear (identity). Override via setCurveMap().
+  let curveMap: (x: number) => number = x => x
   const listeners: Array<(state: FootControlState) => void> = []
 
   // Keyboard simulation (fallback when no gamepad connected)
@@ -114,11 +117,14 @@ export function createFootController(editor: Editor, options: FootControlOptions
       if (!gp) continue
       if (!state.gamepadConnected) detectInversion(gp)
       state.gamepadConnected = true
-      return {
-        rudder: applyDeadzone(-(gp.axes[axisMap.rudder] ?? 0)),
-        cursor: applyDeadzone(normalizeThrottle(gp.axes[axisMap.cursorThrottle] ?? 0)),
-        pan:    applyDeadzone(normalizeThrottle(gp.axes[axisMap.panThrottle] ?? 0)),
+      const left  = normalizeThrottle(gp.axes[axisMap.cursorThrottle] ?? 0)
+      const right = normalizeThrottle(gp.axes[axisMap.panThrottle] ?? 0)
+      const rudder = applyDeadzone(-(gp.axes[axisMap.rudder] ?? 0))
+      // Both brakes simultaneously = mild reverse (30% of max forward)
+      if (left > 0.2 && right > 0.2) {
+        return { rudder, cursor: -0.3, pan: 0 }
       }
+      return { rudder, cursor: curveMap(applyDeadzone(left)), pan: curveMap(applyDeadzone(right)) }
     }
     state.gamepadConnected = false
     return readKeyboardAxes()
@@ -245,7 +251,9 @@ export function createFootController(editor: Editor, options: FootControlOptions
     lastTime = null
   }
 
-  return { start, stop, state, setCursorPos, setHeading, onStateChange }
+  function setCurveMap(fn: (x: number) => number) { curveMap = fn }
+
+  return { start, stop, state, setCursorPos, setHeading, onStateChange, setCurveMap }
 }
 
 export type FootController = ReturnType<typeof createFootController>
