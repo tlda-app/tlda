@@ -230,6 +230,16 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'cluster': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.cluster',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
