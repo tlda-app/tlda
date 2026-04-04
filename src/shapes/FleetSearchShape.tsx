@@ -14,6 +14,7 @@ import {
 } from 'tldraw'
 import { useState, useCallback, useRef } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents } from '../fleet-data-adapter'
+import { appendToken } from '../authToken'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -256,7 +257,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
                   onPointerDown={(e) => {
                     stopEventPropagation(e)
                     // Open doc in tlda viewer
-                    window.open(`http://localhost:5176/?doc=${encodeURIComponent(d.doc)}&token=c5e4726ab77972fc7312f3a703f9cf1c`, '_blank')
+                    window.open(appendToken(`${window.location.origin}/?doc=${encodeURIComponent(d.doc)}`), '_blank')
                   }}
                 >
                   <span style={{ fontSize: 12 }}>📄</span>
