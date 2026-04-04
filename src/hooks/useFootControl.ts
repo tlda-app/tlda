@@ -228,7 +228,8 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
 
     function setActiveInput(which: 'foot' | 'mouse') {
       if (which === 'foot') {
-        cursorHideStyle.textContent = '*, *::before, *::after { cursor: none !important; }'
+        // Scope to .tl-container only — global cursor:none suppresses CSS :hover on doc-panel
+        cursorHideStyle.textContent = '.tl-container, .tl-container *, .tl-container *::before, .tl-container *::after { cursor: none !important; }'
       } else {
         cursorHideStyle.textContent = ''
         rayEl.style.opacity = '0.08'

@@ -58,7 +58,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
 
   return (
     <div style={{
-      position: 'fixed', bottom: 16, right: 16, zIndex: 9999,
+      position: 'fixed', top: 16, left: 16, zIndex: 9999,
       background: 'rgba(0,0,0,0.85)', color: '#e5e7eb',
       padding: '12px 16px', borderRadius: 8, fontSize: 12,
       fontFamily: 'monospace', width: 280,
