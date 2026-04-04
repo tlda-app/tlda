@@ -154,6 +154,8 @@ let _inputListener = null    // cleanup ref for manual-edit listener
 let _fadeTimer = null
 let _lastTapTime = 0
 let _singleTapTimer = null
+let _audioCaptureRetries = 0
+let _watchdogTimer = null
 
 // Active chat target — set by the chat component on focus
 let _activeTextarea = null   // HTMLTextAreaElement
@@ -313,6 +315,10 @@ function _setupRecognition() {
   _recognition.lang = 'en-US'
 
   _recognition.onresult = (e) => {
+    // Reset watchdog — we're hearing speech
+    clearTimeout(_watchdogTimer)
+    _watchdogTimer = setTimeout(watchdogRestart, 8000)
+
     // Only process results from resultIndex onward (new/changed results).
     // Finalized results accumulate in _finalTranscript so we don't replay
     // old text that the user may have deleted from the textarea.
@@ -332,11 +338,30 @@ function _setupRecognition() {
     if (e.error === 'no-speech') return
     if (e.error === 'aborted') return  // normal during restart
     console.warn('voice: speech recognition error', e.error)
-    // audio-capture = mic held by another tab/process. Don't retry — just stop.
+    // audio-capture = mic held by another tab/process. Auto-retry with backoff.
     if (e.error === 'audio-capture') {
-      stopRecording()
-      showHud('mic busy — tap to retry', '#c8956a')
-      fadeHud(3000)
+      if (_audioCaptureRetries < 3) {
+        _audioCaptureRetries++
+        const retryDelay = 500 * Math.pow(2, _audioCaptureRetries - 1)
+        showHud(`mic busy — retrying (${_audioCaptureRetries}/3)…`, '#c8956a')
+        setTimeout(() => {
+          if (!_recording) return
+          _setupRecognition()
+          try {
+            _recognition.start()
+            _watchdogTimer = setTimeout(watchdogRestart, 8000)
+          } catch (err) {
+            console.warn('voice: audio-capture retry failed', err)
+            stopRecording()
+            showHud('mic failed — reload tab', '#c87070')
+            fadeHud(5000)
+          }
+        }, retryDelay)
+      } else {
+        stopRecording()
+        showHud('mic failed — reload tab', '#c87070')
+        fadeHud(5000)
+      }
       return
     }
     // Retry network errors only
@@ -370,6 +395,17 @@ function _setupRecognition() {
   }
 }
 
+function watchdogRestart() {
+  if (!_recording) return
+  _setupRecognition()
+  try {
+    _recognition.start()
+    _watchdogTimer = setTimeout(watchdogRestart, 8000)
+  } catch (err) {
+    console.warn('voice: watchdog restart failed', err)
+  }
+}
+
 function startRecording() {
   if (_recording || !SpeechRecognition) return
 
@@ -384,6 +420,7 @@ function startRecording() {
   _micChannel?.postMessage('mic-start')
 
   _recording = true
+  _audioCaptureRetries = 0
   _interimTranscript = ''
   _finalTranscript = _activeTextarea?.value || ''  // start from current textarea content
 
@@ -395,6 +432,7 @@ function startRecording() {
     _setupRecognition()
     try {
       _recognition.start()
+      _watchdogTimer = setTimeout(watchdogRestart, 8000)
     } catch (err) {
       console.warn('voice: could not start recognition', err)
       _recording = false
@@ -404,7 +442,7 @@ function startRecording() {
   }
 
   if (_micChannel) {
-    setTimeout(doStart, 150)  // give other tabs time to process mic-start
+    setTimeout(doStart, 300)  // give other tabs time to process mic-start
   } else {
     doStart()
   }
@@ -413,6 +451,8 @@ function startRecording() {
 function stopRecording() {
   if (!_recording) return
   _recording = false
+  clearTimeout(_watchdogTimer)
+  _watchdogTimer = null
 
   if (_recognition) {
     _recognition.onresult = null  // prevent late results from re-filling textarea
