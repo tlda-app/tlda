@@ -85,6 +85,7 @@ import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
+import { FootControlDebug } from './footControlDebug'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
@@ -306,7 +307,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
   const footEnabled = new URLSearchParams(window.location.search).has('foot')
-  useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
+  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
 
   useYjsSignals({
     editorRef, document,
@@ -801,6 +802,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
 
   return (
+    <>
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
@@ -1161,6 +1163,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
+    {footEnabled && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    </>
   )
 }
 

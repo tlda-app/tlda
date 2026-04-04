@@ -24,20 +24,15 @@ export type ClickEvent = 'click' | 'dblclick' | 'enter'
 
 export interface ClickDetectorOptions {
   doubleClickMs?: number   // window for double-click detection (default: 300)
-  cooldownMs?: number      // ignore events within this window after a detected event (default: 100)
-  clickThreshold?: number  // amplitude threshold for tongue click (default: 0.002)
-  popThreshold?: number    // amplitude threshold for lip pop (default: 0.002)
+  cooldownMs?: number      // ignore events within this window after a detected event (default: 400)
 }
 
 // Tongue click: energy concentrated in high frequencies (>2kHz), very fast attack
-// Lip pop: energy concentrated in low frequencies (<800Hz), slightly slower
 const TONGUE_CLICK_LOW_BAND = 2000   // Hz, lower bound of tongue click detection
-const LIP_POP_HIGH_BAND = 800        // Hz, upper bound of lip pop detection
 
 export function createClickDetector(options: ClickDetectorOptions = {}) {
   const doubleClickMs = options.doubleClickMs ?? 300
   const cooldownMs = options.cooldownMs ?? 400
-  const clickThreshold = options.clickThreshold ?? 0.002
 
   let audioCtx: AudioContext | null = null
   let analyser: AnalyserNode | null = null
@@ -83,13 +78,6 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     }
   }
 
-  function handleLipPop() {
-    const now = performance.now()
-    if (now - lastEventTime < cooldownMs) return
-    lastEventTime = now
-    emit('enter')
-  }
-
   function getBandEnergy(data: Float32Array, sampleRate: number, lowHz: number, highHz: number): number {
     const binWidth = sampleRate / (data.length * 2)
     const lowBin = Math.floor(lowHz / binWidth)
@@ -104,12 +92,12 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   }
 
   // Adaptive noise floor: slow EMA of quiet-frame energy.
-  // Threshold = noiseFloor * TRIGGER_RATIO. Self-calibrates to mic/room.
+  // Threshold = noiseFloor * triggerRatio. Self-calibrates to mic/room.
   let noiseFloor = 1e-4          // initial estimate, will converge quickly
   let prevEnergy = 0
   const NOISE_FLOOR_ALPHA = 0.005  // slow rise — noise floor tracks ambient, not transients
-  const TRIGGER_RATIO = 1.4        // fire when energy is 1.4x the noise floor
-  const ATTACK_RATIO = 1.5         // also require a sharp rise frame-over-frame
+  let triggerRatio = 3.0           // mutable — adjustable via setTriggerRatio()
+  const ATTACK_RATIO = 1.5         // require a sharp rise frame-over-frame
   let debugLogTimer = 0
 
   function poll() {
@@ -124,29 +112,21 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     // Total broadband RMS energy (rough, in linear)
     const totalEnergy = getBandEnergy(data, sampleRate, 100, nyquist * 0.9)
 
-    // Adaptive threshold: 4x the current noise floor estimate
-    const adaptiveThreshold = Math.max(noiseFloor * TRIGGER_RATIO, clickThreshold)
+    // Adaptive threshold: purely relative to noise floor (no hard minimum — lapel mics have low amplitude)
+    const adaptiveThreshold = noiseFloor * triggerRatio
 
     // Transient detection: sharp rise AND above adaptive threshold
     const isTransient = totalEnergy > adaptiveThreshold && totalEnergy > prevEnergy * ATTACK_RATIO
 
     if (isTransient) {
-      // High-band energy for tongue click detection
       const highEnergy = getBandEnergy(data, sampleRate, TONGUE_CLICK_LOW_BAND, nyquist * 0.9)
-      // Low-band energy for lip pop detection
-      const lowEnergy = getBandEnergy(data, sampleRate, 100, LIP_POP_HIGH_BAND)
-
       const highRatio = highEnergy / (totalEnergy + 1e-10)
-      const lowRatio = lowEnergy / (totalEnergy + 1e-10)
 
-      if (highRatio > 0.4) {
+      if (highRatio > 0.15) {
         console.log('[click-detect] tongue click — energy:', totalEnergy.toFixed(4), 'floor:', noiseFloor.toFixed(4), 'highRatio:', highRatio.toFixed(2))
         handleTongueClick()
-      } else if (lowRatio > 0.5) {
-        console.log('[click-detect] lip pop — energy:', totalEnergy.toFixed(4), 'floor:', noiseFloor.toFixed(4), 'lowRatio:', lowRatio.toFixed(2))
-        handleLipPop()
       } else {
-        console.log('[click-detect] transient unclassified — energy:', totalEnergy.toFixed(4), 'highRatio:', highRatio.toFixed(2), 'lowRatio:', lowRatio.toFixed(2))
+        console.log('[click-detect] transient unclassified — energy:', totalEnergy.toFixed(4), 'highRatio:', highRatio.toFixed(2))
       }
       // Don't update noise floor on transient frames
     } else {
@@ -158,7 +138,7 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
 
     debugLogTimer++
     if (debugLogTimer >= 120) {  // ~2s at 60fps
-      console.log('[click-detect] noise floor:', noiseFloor.toFixed(5), '| adaptive threshold:', (noiseFloor * TRIGGER_RATIO).toFixed(5))
+      console.log('[click-detect] noise floor:', noiseFloor.toFixed(5), '| adaptive threshold:', (noiseFloor * triggerRatio).toFixed(5))
       debugLogTimer = 0
     }
 
@@ -200,7 +180,10 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     }
   }
 
-  return { start, stop, on }
+  function setTriggerRatio(r: number) { triggerRatio = Math.max(1.1, r) }
+  function getTriggerRatio() { return triggerRatio }
+
+  return { start, stop, on, setTriggerRatio, getTriggerRatio }
 }
 
 export type ClickDetector = ReturnType<typeof createClickDetector>

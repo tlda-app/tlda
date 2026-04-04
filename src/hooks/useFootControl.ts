@@ -9,7 +9,7 @@
  * Enable/disable via the `enabled` option (e.g. behind a settings toggle).
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Editor } from 'tldraw'
 import { DefaultColorStyle } from 'tldraw'
 import { createFootController } from '../footControl'
@@ -23,6 +23,8 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
   const { enabled } = options
   const footRef = useRef<ReturnType<typeof createFootController> | null>(null)
   const clickRef = useRef<ReturnType<typeof createClickDetector> | null>(null)
+  const [footInstance, setFootInstance] = useState<ReturnType<typeof createFootController> | null>(null)
+  const [clickInstance, setClickInstance] = useState<ReturnType<typeof createClickDetector> | null>(null)
 
   useEffect(() => {
     if (!enabled || !editor) return
@@ -31,6 +33,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     // pointerenter doesn't bubble, so we dispatch to the interactive ancestor
     // (e.g. the <button>, not the <img> inside it) so Radix tooltip triggers fire.
     let prevFootInteractive: Element | null = null
+    let footPanelOpen = false  // tracks whether foot cursor has the doc-panel open
 
     // Smart cursor move: dispatch DOM hover events + tldraw editor events
     const onCursorMove = (x: number, y: number) => {
@@ -74,12 +77,26 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (!el?.closest('.fleet-hud-wrap, .clip-panel') && !isOverInteractive) {
         editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
       }
+
+      // CSS :hover doesn't respond to synthetic pointer events, so the doc-panel can't
+      // reveal itself when the foot cursor enters the right-edge zone. Add/remove the
+      // doc-panel-open class based on foot cursor position instead.
+      const panelEl = document.querySelector('.doc-panel') as HTMLElement | null
+      if (panelEl) {
+        const inZone = x >= panelEl.getBoundingClientRect().left
+        if (inZone !== footPanelOpen) {
+          footPanelOpen = inZone
+          panelEl.classList.toggle('doc-panel-open', inZone)
+        }
+      }
     }
 
     const foot = createFootController(editor, { onCursorMove })
     const click = createClickDetector()
     footRef.current = foot
     clickRef.current = click
+    setFootInstance(foot)
+    setClickInstance(click)
 
     // Two-cursor model: foot cursor and OS cursor are independent.
     // OS cursor: shown normally; hidden (cursor:none) when foot pedals are active.
@@ -101,6 +118,8 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     // Drag state: double-click starts drag, single click drops
     let isDragging = false      // tldraw shape drag via editor.dispatch
     let isDomDragging = false   // HTML element drag via DOM pointer events
+    let domDragTarget: Element | null = null  // element that started the DOM drag
+    let prevDragX = 0           // last X used to compute arrow-key steps for ARIA sliders
 
     // Wire click events to tldraw
     const offClick = click.on('click', () => {
@@ -123,6 +142,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
           pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
         }))
         isDomDragging = false
+        domDragTarget = null
         return
       }
       if (isDragging) {
@@ -136,7 +156,12 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       }
       console.log('[foot-control] click at', x, y)
       flashAt(x, y, '#60a5fa')
-      dispatchPointerMove(editor, x, y)
+      // Skip pointer_move to tldraw when clicking interactive elements (buttons, links).
+      // Sending pointer_move at toolbar coordinates after the cursor has moved causes cycling —
+      // tldraw sees a momentary "cursor at button" event that flips tool/cursor state.
+      if (!findInteractiveHtml(document.elementFromPoint(x, y))) {
+        dispatchPointerMove(editor, x, y)
+      }
       dispatchClick(editor, x, y, true)
       dispatchClick(editor, x, y, false)
     })
@@ -147,9 +172,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       const pagePoint = editor.screenToPage({ x, y })
       const shape = editor.getShapeAtPoint(pagePoint) ?? editor.getShapeAtPoint(pagePoint, { hitInside: true, margin: 0 })
       console.log('[foot-control] dblclick at', x, y, '→ shape:', shape?.type, shape?.id)
+      const domEl = document.elementFromPoint(x, y)
       const dragResult = dispatchContextualDblClick(editor, x, y)
       isDragging = dragResult === 'tldraw'
       isDomDragging = dragResult === 'dom'
+      if (isDomDragging) {
+        domDragTarget = domEl
+        prevDragX = x
+        // Focus slider (ARIA or native range) so it accepts keyboard events
+        const sliderEl = (domEl?.closest('[role="slider"]') || domEl?.closest('input[type="range"]')) as HTMLElement | null
+        sliderEl?.focus()
+      }
       console.log('[foot-control] drag:', dragResult)
     })
     const offEnter = click.on('enter', () => {
@@ -244,10 +277,28 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
         idleTimer = setTimeout(() => { rayEl.style.opacity = '0.15'; cursorEl.style.opacity = '0.15' }, 600)
         // Feed pointermove to document for DOM drag handlers (e.g. agent labels)
         if (isDomDragging) {
-          document.dispatchEvent(new PointerEvent('pointermove', {
-            bubbles: true, clientX: s.cursorX, clientY: s.cursorY,
-            pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
-          }))
+          const ariaSlider = domDragTarget?.closest('[role="slider"]') as HTMLElement | null
+          const nativeRange = domDragTarget?.closest('input[type="range"]') as HTMLElement | null
+          const sliderEl = ariaSlider || nativeRange
+          if (sliderEl) {
+            // ARIA sliders (tldraw custom slider) and native range inputs both respond to
+            // ArrowLeft/ArrowRight keyboard events when focused. One step per ~6px of travel.
+            const dx = s.cursorX - prevDragX
+            const steps = Math.trunc(Math.abs(dx) / 6)
+            if (steps > 0) {
+              const key = dx > 0 ? 'ArrowRight' : 'ArrowLeft'
+              for (let i = 0; i < steps; i++) {
+                sliderEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, code: key }))
+                sliderEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key, code: key }))
+              }
+              prevDragX = s.cursorX
+            }
+          } else {
+            document.dispatchEvent(new PointerEvent('pointermove', {
+              bubbles: true, clientX: s.cursorX, clientY: s.cursorY,
+              pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+            }))
+          }
         }
       }
     })
@@ -278,6 +329,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
           pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
         }))
         isDomDragging = false
+        domDragTarget = null
         return
       }
       if (isDragging) {
@@ -295,9 +347,16 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
         console.log('[foot-control] double-space drag-start at', x, y)
         flashAt(x, y, '#a78bfa')
         dispatchPointerMove(editor, x, y)
+        const domElSpace = document.elementFromPoint(x, y)
         const dragResult = dispatchContextualDblClick(editor, x, y)
         isDragging = dragResult === 'tldraw'
         isDomDragging = dragResult === 'dom'
+        if (isDomDragging) {
+          domDragTarget = domElSpace
+          prevDragX = x
+          const sliderEl = (domElSpace?.closest('[role="slider"]') || domElSpace?.closest('input[type="range"]')) as HTMLElement | null
+          sliderEl?.focus()
+        }
         console.log('[foot-control] drag:', dragResult)
         return
       }
@@ -326,12 +385,17 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       if (idleTimer) clearTimeout(idleTimer)
       if (mouseIdleTimer) clearTimeout(mouseIdleTimer)
       if (spacePendingTimer) clearTimeout(spacePendingTimer)
+      document.querySelector('.doc-panel')?.classList.remove('doc-panel-open')
       rayEl.remove()
       cursorEl.remove()
       footRef.current = null
       clickRef.current = null
+      setFootInstance(null)
+      setClickInstance(null)
     }
   }, [enabled, editor])
+
+  return { footInstance, clickInstance }
 }
 
 function flashAt(x: number, y: number, color: string) {
@@ -395,7 +459,7 @@ function dispatchPointerMove(editor: Editor, x: number, y: number) {
   editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
 }
 
-const INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="link"], [role="textbox"]'
+const INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [contenteditable]'
 // Non-draggable subset: elements that respond to .click() but shouldn't start pointer drags
 const NON_DRAGGABLE_SELECTOR = 'button, a, [role="button"], [role="link"]'
 
@@ -404,16 +468,35 @@ function findInteractiveHtml(el: Element | null): HTMLElement | null {
   // Check the element and its ancestors — elementFromPoint may return <img> inside <button>
   const found = el.closest(INTERACTIVE_SELECTOR) as HTMLElement | null
   if (found) return found
+  // Track HighlighterSlider zone for enter/leave — pointerenter/leave make slider dots appear
+  const zone = el.closest('.desktop-hl-zone') as HTMLElement | null
+  if (zone) return zone
   if ((el as HTMLElement).isContentEditable) return el as HTMLElement
   return null
 }
 
 function isOverHud(x: number, y: number): boolean {
-  return !!document.elementFromPoint(x, y)?.closest('.fleet-hud-wrap, .clip-panel')
+  return !!document.elementFromPoint(x, y)?.closest('.fleet-hud-wrap, .clip-panel, .desktop-hl-zone')
 }
 
 function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
   const el = document.elementFromPoint(x, y)
+
+  // Text inputs / contenteditable: focus + synthetic click.
+  // Untrusted pointer events don't auto-focus — must call .focus() explicitly.
+  // elementFromPoint may return a wrapper div — .closest() climbs up to find the real input.
+  const textInput = el
+    ? (isTextInput(el) ? el as HTMLElement
+      : el.closest('input, textarea, [contenteditable="true"], [contenteditable=""]') as HTMLElement | null)
+    : null
+  if (textInput) {
+    if (!isDown) {
+      textInput.focus?.()
+      textInput.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+    }
+    return
+  }
+
   const nonDraggable = el?.closest(NON_DRAGGABLE_SELECTOR) as HTMLElement | null
 
   // Buttons/links: handle via .click() only, never via editor dispatch.
@@ -455,7 +538,9 @@ function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldr
   // Exclude standard interactive elements (toolbar buttons, sliders, etc.) — those aren't
   // draggable in the fleet-agent-label sense, and treating them as DOM drags causes cycling.
   const el = document.elementFromPoint(x, y)
-  const isTldrawCanvas = el?.closest('.tl-canvas') && !el?.closest('[data-shape-id]')
+  // Exclude .desktop-hl-zone from isTldrawCanvas — it lives inside .tl-canvas but is a DOM
+  // widget that handles its own pointer events (HighlighterSlider zone)
+  const isTldrawCanvas = el?.closest('.tl-canvas') && !el?.closest('[data-shape-id]') && !el?.closest('.desktop-hl-zone')
   const isNonDraggable = !!el?.closest(NON_DRAGGABLE_SELECTOR)
   if (el && !isTldrawCanvas && !isNonDraggable) {
     el.dispatchEvent(new PointerEvent('pointerdown', {

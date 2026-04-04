@@ -26,9 +26,10 @@ export interface AxisMap {
 export interface FootControlOptions {
   axisMap?: Partial<AxisMap>
   headingRate?: number   // radians/sec per full axis deflection (default: 2π)
-  cursorSpeed?: number   // viewport px/sec per full throttle (default: 600)
-  panSpeed?: number      // viewport px/sec per full throttle (default: 600)
+  cursorSpeed?: number   // terminal velocity px/sec at full throttle (default: 600)
+  panSpeed?: number      // terminal velocity px/sec at full throttle (default: 600)
   deadzone?: number      // axis deadzone (default: 0.05)
+  friction?: number      // velocity damping coefficient (default: 8). Higher = snappier stop. Controls time-to-stop after release: 0.5s at 8.
   onCursorMove?: (x: number, y: number) => void  // override cursor dispatch (default: editor.dispatch)
 }
 
@@ -43,9 +44,9 @@ export interface FootControlState {
 }
 
 const DEFAULT_AXIS_MAP: AxisMap = {
-  rudder: 0,
-  cursorThrottle: 2,
-  panThrottle: 5,
+  rudder: 2,
+  cursorThrottle: 0,
+  panThrottle: 1,
 }
 
 const DEFAULT_OPTIONS = {
@@ -53,6 +54,7 @@ const DEFAULT_OPTIONS = {
   cursorSpeed: 600,
   panSpeed: 600,
   deadzone: 0.05,
+  friction: 8,               // velocity decays to ~1% in ~0.6s after pedal release
 }
 
 export function createFootController(editor: Editor, options: FootControlOptions = {}) {
@@ -61,6 +63,7 @@ export function createFootController(editor: Editor, options: FootControlOptions
   const cursorSpeed = options.cursorSpeed ?? DEFAULT_OPTIONS.cursorSpeed
   const panSpeed = options.panSpeed ?? DEFAULT_OPTIONS.panSpeed
   const deadzone = options.deadzone ?? DEFAULT_OPTIONS.deadzone
+  const friction = options.friction ?? DEFAULT_OPTIONS.friction
 
   const state: FootControlState = {
     heading: -Math.PI / 2,  // start pointing up
@@ -74,6 +77,10 @@ export function createFootController(editor: Editor, options: FootControlOptions
 
   let rafId: number | null = null
   let lastTime: number | null = null
+  let throttlesInverted = false  // true when axes rest at 1.0 and press toward -1 (e.g. T-Pedals)
+  // Velocity state for physics model (acceleration + friction)
+  let cursorVX = 0, cursorVY = 0
+  let panVX = 0, panVY = 0
   const listeners: Array<(state: FootControlState) => void> = []
 
   // Keyboard simulation (fallback when no gamepad connected)
@@ -95,15 +102,22 @@ export function createFootController(editor: Editor, options: FootControlOptions
     return sign * (Math.abs(value) - deadzone) / (1 - deadzone)
   }
 
+  function normalizeThrottle(raw: number): number {
+    // Inverted axes (e.g. T-Pedals): rest=1, pressed=-1 → map to 0..1
+    if (throttlesInverted) return (1 - raw) / 2
+    return raw
+  }
+
   function readAxes(): { rudder: number; cursor: number; pan: number } {
     const gamepads = navigator.getGamepads()
     for (const gp of gamepads) {
       if (!gp) continue
+      if (!state.gamepadConnected) detectInversion(gp)
       state.gamepadConnected = true
       return {
-        rudder: applyDeadzone(gp.axes[axisMap.rudder] ?? 0),
-        cursor: applyDeadzone(gp.axes[axisMap.cursorThrottle] ?? 0),
-        pan: applyDeadzone(gp.axes[axisMap.panThrottle] ?? 0),
+        rudder: applyDeadzone(-(gp.axes[axisMap.rudder] ?? 0)),
+        cursor: applyDeadzone(normalizeThrottle(gp.axes[axisMap.cursorThrottle] ?? 0)),
+        pan:    applyDeadzone(normalizeThrottle(gp.axes[axisMap.panThrottle] ?? 0)),
       }
     }
     state.gamepadConnected = false
@@ -132,11 +146,16 @@ export function createFootController(editor: Editor, options: FootControlOptions
     const dx = Math.cos(state.heading)
     const dy = Math.sin(state.heading)
 
-    // Move cursor along heading
-    if (axes.cursor !== 0) {
-      const speed = axes.cursor * cursorSpeed * dt
-      state.cursorX = Math.max(0, Math.min(window.innerWidth, state.cursorX + dx * speed))
-      state.cursorY = Math.max(0, Math.min(window.innerHeight, state.cursorY + dy * speed))
+    // Cursor physics: pedal → acceleration; friction proportional to velocity.
+    // Terminal velocity at full throttle = cursorSpeed. Time constant = 1/friction.
+    const cursorAccel = axes.cursor * cursorSpeed * friction
+    cursorVX += (dx * cursorAccel - cursorVX * friction) * dt
+    cursorVY += (dy * cursorAccel - cursorVY * friction) * dt
+    // Snap to zero when pedal released and nearly stopped (prevents micro-drift)
+    if (axes.cursor === 0 && Math.abs(cursorVX) < 2 && Math.abs(cursorVY) < 2) { cursorVX = 0; cursorVY = 0 }
+    if (cursorVX !== 0 || cursorVY !== 0) {
+      state.cursorX = Math.max(0, Math.min(window.innerWidth, state.cursorX + cursorVX * dt))
+      state.cursorY = Math.max(0, Math.min(window.innerHeight, state.cursorY + cursorVY * dt))
       if (options.onCursorMove) {
         options.onCursorMove(state.cursorX, state.cursorY)
       } else {
@@ -144,11 +163,14 @@ export function createFootController(editor: Editor, options: FootControlOptions
       }
     }
 
-    // Pan camera along heading
-    if (axes.pan !== 0) {
-      const speed = axes.pan * panSpeed * dt
+    // Pan physics: same model
+    const panAccel = axes.pan * panSpeed * friction
+    panVX += (dx * panAccel - panVX * friction) * dt
+    panVY += (dy * panAccel - panVY * friction) * dt
+    if (axes.pan === 0 && Math.abs(panVX) < 2 && Math.abs(panVY) < 2) { panVX = 0; panVY = 0 }
+    if (panVX !== 0 || panVY !== 0) {
       const cam = editor.getCamera()
-      editor.setCamera({ x: cam.x - dx * speed, y: cam.y - dy * speed, z: cam.z })
+      editor.setCamera({ x: cam.x - panVX * dt, y: cam.y - panVY * dt, z: cam.z })
     }
 
     for (const fn of listeners) fn({ ...state })
@@ -190,9 +212,22 @@ export function createFootController(editor: Editor, options: FootControlOptions
     }
   }
 
+  function detectInversion(gp: Gamepad) {
+    const cursor0 = gp.axes[axisMap.cursorThrottle] ?? 0
+    const pan0    = gp.axes[axisMap.panThrottle] ?? 0
+    throttlesInverted = cursor0 > 0.8 || pan0 > 0.8
+    console.log(`[foot-control] throttlesInverted=${throttlesInverted} (cursor0=${cursor0.toFixed(2)}, pan0=${pan0.toFixed(2)})`)
+  }
+
+  const onGamepadConnected = (e: GamepadEvent) => detectInversion(e.gamepad)
+
   function start() {
     if (rafId !== null) return
     lastTime = null
+    // Detect inversion now if gamepad is already connected, and on future connects
+    const gps = navigator.getGamepads()
+    for (const gp of gps) { if (gp) { detectInversion(gp); break } }
+    window.addEventListener('gamepadconnected', onGamepadConnected)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     rafId = requestAnimationFrame(tick)
@@ -203,6 +238,7 @@ export function createFootController(editor: Editor, options: FootControlOptions
       cancelAnimationFrame(rafId)
       rafId = null
     }
+    window.removeEventListener('gamepadconnected', onGamepadConnected)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
     keys.clear()
