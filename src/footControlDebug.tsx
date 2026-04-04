@@ -103,7 +103,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
             click sensitivity (trigger ratio: {sensitivity.toFixed(1)}×)
             <span style={{ color: '#4b5563', marginLeft: 6 }}>← loose · tight →</span>
           </div>
-          <input type="range" min={1.5} max={8} step={0.1} value={sensitivity}
+          <input type="range" min={1.5} max={50} step={0.5} value={sensitivity}
             style={{ width: '100%' }}
             onChange={e => {
               const v = parseFloat(e.target.value)
