@@ -240,6 +240,18 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'playback-frame': {
+    props: {
+      w: T.number,
+      h: T.number,
+      playbackId: T.string,
+      mode: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.playback-frame',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
