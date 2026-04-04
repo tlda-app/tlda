@@ -27,8 +27,6 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   const [simRudder, setSimRudder] = useState(0)
   const [simCursor, setSimCursor] = useState(0)
   const [simPan, setSimPan] = useState(0)
-  const [recentClick, setRecentClick] = useState(false)
-  const recentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!footController) return
@@ -38,13 +36,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   useEffect(() => {
     if (!clickDetector) return
     setSensitivity(clickDetector.getTriggerRatio())
-    const flash = () => {
-      setRecentClick(true)
-      if (recentTimer.current) clearTimeout(recentTimer.current)
-      recentTimer.current = setTimeout(() => setRecentClick(false), 300)
-    }
     const addEvent = (label: string) => () => {
-      flash()
       setEvents(prev => [`${new Date().toLocaleTimeString()}: ${label}`, ...prev.slice(0, 19)])
     }
     const off1 = clickDetector.on('click', addEvent('click'))
@@ -82,11 +74,10 @@ export function FootControlDebug({ footController, clickDetector, visible = true
         padding: '6px 12px', borderRadius: 20, fontSize: 12,
         fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 8,
         boxShadow: '0 2px 12px rgba(0,0,0,0.4)', cursor: 'pointer', userSelect: 'none',
-        border: recentClick ? '1px solid #60a5fa' : '1px solid transparent',
-        transition: 'border-color 0.15s',
+        border: '1px solid #1f2937',
       }} onClick={() => setCollapsed(false)}>
         <span style={{ color: gamepadOk ? '#4ade80' : '#6b7280' }}>⬡</span>
-        <span style={{ color: micActive ? (recentClick ? '#60a5fa' : '#4ade80') : '#6b7280' }}>◎</span>
+        <span style={{ color: micActive ? '#4ade80' : '#6b7280' }}>◎</span>
         <span style={{ color: '#6b7280', fontSize: 10 }}>foot</span>
       </div>
     )
@@ -119,7 +110,6 @@ export function FootControlDebug({ footController, clickDetector, visible = true
         <span style={{ color: micActive ? '#4ade80' : '#6b7280', fontSize: 11 }}>
           {micActive ? '◎ mic on' : '◎ mic off'}
         </span>
-        {recentClick && <span style={{ color: '#60a5fa', fontSize: 11 }}>● click</span>}
       </div>
 
       {/* Mic control */}
