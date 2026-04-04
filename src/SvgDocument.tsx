@@ -79,6 +79,8 @@ import { useSyncedPlayback } from './hooks/useSyncedPlayback'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
+import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
@@ -291,6 +293,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Spatial timeline overlay — activity scatter plot
   const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
+
+  // Shadow history scrubber
+  const {
+    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+  } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
@@ -569,7 +577,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     buildWarnings,
     timelineActive,
     onToggleTimeline: toggleTimeline,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline])
+    shadowHistoryVisible: shadowVisible,
+    onToggleShadowHistory: toggleShadowOverlay,
+    shadowHistoryVersionCount: shadowVersions.length,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions.length])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -712,6 +723,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={LICENSE_KEY}
+        />
+      )}
+      {shadowVisible && (
+        <ShadowHistoryOverlay
+          versions={shadowVersions}
+          activeIdx={shadowActiveIdx}
+          loading={shadowLoading}
+          onScrub={handleShadowScrub}
+          onClose={hideShadowOverlay}
         />
       )}
       <div className="build-pills-row">
