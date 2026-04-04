@@ -566,15 +566,31 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   override canBind = () => false
   override hideRotateHandle = () => true
 
-  // Clip children to the frame bounds — returns polygon corners in local coords
-  override getClipPath(shape: any) {
-    const { w, h } = shape.props
-    return [
-      { x: 0, y: 0 },
-      { x: w, y: 0 },
-      { x: w, y: h },
-      { x: 0, y: h },
-    ]
+  // Scale-to-fit: when the frame is resized, scale all child shapes proportionally.
+  // Children y-positions are measured from CHROME_H (the content start), so the
+  // chrome area stays fixed and only the content area scales.
+  override onResize(shape: any, info: any) {
+    const { editor } = this
+    const { scaleX, scaleY } = info
+    const children = editor.getSortedChildIdsForParent(shape.id)
+      .map((id: any) => editor.getShape(id))
+      .filter(Boolean)
+
+    if (children.length > 0) {
+      editor.updateShapes(children.map((child: any) => ({
+        id: child.id,
+        type: child.type,
+        x: child.x * scaleX,
+        y: CHROME_H + (child.y - CHROME_H) * scaleY,
+        props: {
+          ...child.props,
+          w: Math.max(10, child.props.w * Math.abs(scaleX)),
+          h: Math.max(10, child.props.h * Math.abs(scaleY)),
+        },
+      })))
+    }
+
+    return super.onResize(shape, info)
   }
 
   // Allow shapes to be dragged into this frame (reparenting)
