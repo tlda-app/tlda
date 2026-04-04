@@ -247,7 +247,22 @@ export function renderChatLine(m, ctx) {
       const parts = (a.source || '').split(':')
       const docName = parts.slice(3).join(':') || parts[parts.length - 1] || 'doc'
       const filePath = a.path || ''
-      return `<span class="ref-chip" data-path="${esc(filePath)}" data-doc="${esc(docName)}" draggable="true">${esc(docName)}</span>`
+      // Extract title from explicit field or first heading in content
+      let title = a.title || ''
+      if (!title && a.text) {
+        const m = a.text.match(/^#\s+(.+)$/m)
+        if (m) title = m[1].trim()
+      }
+      if (!title) title = docName
+      // Determine file type from path extension
+      const ext = filePath.split('.').pop()?.toLowerCase() || ''
+      const isImage = /^(png|jpg|jpeg|gif|svg|webp)$/.test(ext)
+      // Image shared-docs: render inline at 75% width
+      if (isImage && a.url) {
+        return `<img class="chat-image chat-image-shared-doc" src="${esc(a.url)}" alt="${esc(title)}" title="${esc(title)}">`
+      }
+      const icon = isImage ? '🖼' : ext === 'pdf' ? '📕' : '📄'
+      return `<span class="ref-chip ref-chip-doc" data-path="${esc(filePath)}" data-doc="${esc(docName)}" data-title="${esc(title)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(title)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''

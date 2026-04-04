@@ -1113,10 +1113,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const docName = mdCard.dataset.doc || ''
+          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
+          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
+          const value = docName ? `doc:${docName}` : `file:${filePath}`
           drag = {
-            pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
-            displayName: name, color: '#9370db', content: filePath,
+            pillId: null, pillType: 'doc' as any, value,
+            displayName: name, color: '#63a0db', content: filePath || docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }

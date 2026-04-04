@@ -13,7 +13,8 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useCallback, useRef } from 'react'
-import { searchFleet, useFleetAgents } from '../fleet-data-adapter'
+import { searchFleet, fetchSharedDocs, useFleetAgents } from '../fleet-data-adapter'
+import { appendToken } from '../authToken'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -71,6 +72,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
   const agents = useFleetAgents()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
+  const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -86,13 +88,20 @@ function FleetSearchComponent({ shape }: { shape: any }) {
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults([])
+      setDocResults([])
       setSearched(false)
       return
     }
     setLoading(true)
     setSearched(true)
-    const res = await searchFleet(q.trim(), 50)
+    const [res, allDocs] = await Promise.all([
+      searchFleet(q.trim(), 50),
+      fetchSharedDocs(),
+    ])
     setResults(res)
+    // Filter shared docs by title match
+    const ql = q.trim().toLowerCase()
+    setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
     setLoading(false)
   }, [])
 
@@ -214,9 +223,59 @@ function FleetSearchComponent({ shape }: { shape: any }) {
               searching…
             </div>
           )}
-          {!loading && searched && results.length === 0 && (
+          {!loading && searched && results.length === 0 && docResults.length === 0 && (
             <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
               no results
+            </div>
+          )}
+          {/* Shared docs section */}
+          {docResults.length > 0 && (
+            <>
+              <div style={{ padding: '4px 10px 2px', fontSize: 9, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(128,128,128,0.06)' }}>
+                Docs
+              </div>
+              {docResults.map((d: any, i: number) => (
+                <div
+                  key={`doc-${i}`}
+                  className="ref-chip ref-chip-doc"
+                  style={{
+                    padding: '5px 10px',
+                    borderBottom: '1px solid rgba(128, 128, 128, 0.06)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    borderRadius: 0,
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottomColor: 'rgba(128,128,128,0.06)',
+                    borderBottomWidth: 1,
+                    borderBottomStyle: 'solid',
+                  }}
+                  onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(99, 160, 219, 0.08)' }}
+                  onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
+                  onPointerDown={(e) => {
+                    stopEventPropagation(e)
+                    // Open doc in tlda viewer
+                    window.open(appendToken(`${window.location.origin}/?doc=${encodeURIComponent(d.doc)}`), '_blank')
+                  }}
+                >
+                  <span style={{ fontSize: 12 }}>📄</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 500, opacity: 0.8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {d.title || d.doc}
+                    </div>
+                    <div style={{ fontSize: 9, opacity: 0.4 }}>
+                      {d.agent_name || d.agent} · {d.shared_at ? new Date(d.shared_at).toLocaleDateString() : ''}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+          {results.length > 0 && (
+            <div style={{ padding: '4px 10px 2px', fontSize: 9, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(128,128,128,0.06)' }}>
+              Messages
             </div>
           )}
           {!loading && !searched && (
@@ -288,7 +347,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           opacity: 0.4,
           flexShrink: 0,
         }}>
-          {searched ? `${results.length} result${results.length !== 1 ? 's' : ''}` : ''}
+          {searched ? `${results.length + docResults.length} result${results.length + docResults.length !== 1 ? 's' : ''}${docResults.length > 0 ? ` · ${docResults.length} doc${docResults.length !== 1 ? 's' : ''}` : ''}` : ''}
         </div>
       </div>
     </HTMLContainer>
