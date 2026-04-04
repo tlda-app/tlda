@@ -16,6 +16,29 @@
 //   langFromFilePath: (path) => string,
 // }
 
+import katex from 'katex'
+
+// KaTeX macros parsed from balancing-act/preamble.tex
+const PREAMBLE_MACROS = {
+  '\\E': '\\operatorname{E}',
+  '\\Var': '\\operatorname{Var}',
+  '\\argmin': '\\operatorname*{argmin}',
+  '\\norm': '\\left\\lVert #1 \\right\\rVert',
+  '\\inner': '\\left\\langle #1 \\right\\rangle',
+  '\\abs': '\\left\\lvert #1 \\right\\rvert',
+  '\\smallinner': '\\langle #1 \\rangle',
+  '\\smallnorm': '\\lVert #1 \\rVert',
+  '\\smallabs': '\\lvert #1 \\rvert',
+  '\\td': '\\tilde',
+  '\\one': '1',
+  '\\R': '\\mathbb{R}',
+  '\\hgamma': '\\hat{\\gamma}',
+  '\\hlambda': '\\hat{\\lambda}',
+  '\\estimand': '\\psi',
+  '\\F': '\\mathcal{F}',
+  '\\Fr': '\\mathcal{F}_r',
+}
+
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -160,9 +183,13 @@ export function renderEditDiff(input, ctx) {
     }
     const rendered = str.split('\n').map(line => {
       const trimmed = line.trim()
-      if (/^\\(begin|end|label|item|section|subsection)\b/.test(trimmed)) return `<code>${esc(line)}</code>`
+      if (/^\\(begin|end|label|item|section|subsection|usepackage|documentclass)\b/.test(trimmed)) return `<code>${esc(line)}</code>`
       if (/\\[a-zA-Z]/.test(trimmed) && !/^%/.test(trimmed)) {
-        try { return renderMarkdown('$$' + esc(line) + '$$') } catch { return `<code>${esc(line)}</code>` }
+        try {
+          return katex.renderToString(trimmed, { displayMode: true, throwOnError: true, macros: PREAMBLE_MACROS })
+        } catch {
+          return `<span class="diff-tex-raw">${esc(line)}</span>`
+        }
       }
       return esc(line) || '&nbsp;'
     }).join('<br>')

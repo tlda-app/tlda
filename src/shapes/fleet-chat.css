@@ -893,6 +893,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 .fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
 .fleet-chat-shape .diff-side code { font-size: 10px; }
+.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: 10px; }
 
 /* --- Code cards (inside activity) --- */
 .fleet-chat-shape .code-block-wrap {
