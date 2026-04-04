@@ -252,6 +252,17 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'terminal': {
+    props: {
+      w: T.number,
+      h: T.number,
+      agentId: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.terminal',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({
