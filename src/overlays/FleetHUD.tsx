@@ -1,6 +1,12 @@
 /**
  * FleetHUD — toggle pill in bottom-left that expands to show fleet shapes
  * region (chat + agents) via CanvasClipPanel.
+ *
+ * Two repositioning mechanisms:
+ *   1. Controls bar drag (always available): grab the ⊞/× bar to move the whole HUD.
+ *      Y → screenYOffset (persisted), X → canvas shape positions.
+ *   2. Edit shapes mode (⊞ toggle): disables HTML pointer-events so tldraw's
+ *      select tool can drag individual fleet shapes. Click ⊞ again to exit.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
@@ -68,105 +74,6 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
   )
 }
 
-/**
- * Ephemeral layout overlay — bounding-box handle around the entire fleet HUD.
- * Drag to reposition all fleet shapes as a group. Esc or click outside cancels.
- *
- * Coordinate system:
- *   - Horizontal: canvas coordinates — dragging left/right updates shape canvas X.
- *   - Vertical: screen coordinates — dragging up/down updates the panel's screen Y offset.
- */
-interface FleetGroupOverlayProps {
-  panelLeft: number
-  panelTop: number
-  panelWidth: number
-  panelHeight: number
-  mainEditor: Editor
-  onCommit: (screenDx: number, screenDy: number) => void
-  onCancel: () => void
-}
-
-function FleetGroupOverlay({
-  panelLeft,
-  panelTop,
-  panelWidth,
-  panelHeight,
-  onCommit,
-  onCancel,
-}: FleetGroupOverlayProps) {
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
-  const dragRef = useRef<{ startX: number; startY: number } | null>(null)
-  const overlayRef = useRef<HTMLDivElement>(null)
-  const isDraggingRef = useRef(false)
-
-  // Esc cancels
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown, { capture: true })
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [onCancel])
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    overlayRef.current?.setPointerCapture(e.pointerId)
-    dragRef.current = { startX: e.clientX, startY: e.clientY }
-    isDraggingRef.current = false
-  }
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current) return
-    const dx = e.clientX - dragRef.current.startX
-    const dy = e.clientY - dragRef.current.startY
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDraggingRef.current = true
-    setDragOffset({ x: dx, y: dy })
-  }
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (!dragRef.current) return
-    const dx = e.clientX - dragRef.current.startX
-    const dy = e.clientY - dragRef.current.startY
-    dragRef.current = null
-    setDragOffset({ x: 0, y: 0 })
-    if (isDraggingRef.current) {
-      onCommit(dx, dy)
-    } else {
-      // Tap without drag = exit layout mode
-      onCancel()
-    }
-  }
-
-  return (
-    <>
-      {/* Backdrop — clicking outside the overlay cancels layout mode */}
-      <div
-        className="fleet-layout-backdrop"
-        onPointerDown={(e) => { e.stopPropagation(); onCancel() }}
-      />
-      {/* Bounding-box overlay over the HUD */}
-      <div
-        ref={overlayRef}
-        className="fleet-layout-overlay"
-        style={{
-          left: panelLeft + dragOffset.x,
-          top: panelTop + dragOffset.y,
-          width: panelWidth,
-          height: panelHeight,
-        }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-      >
-        <div className="fleet-layout-overlay-hint">
-          Drag to move · Esc to cancel
-        </div>
-      </div>
-    </>
-  )
-}
-
 export function FleetHUD({
   mainEditor,
   shapeUtils,
@@ -175,19 +82,22 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
-  const [layoutMode, setLayoutMode] = useState(false)
+  // Edit shapes mode: disables HTML content pointer-events so tldraw can drag individual shapes
+  const [editMode, setEditMode] = useState(false)
   // Screen-space Y offset for the HUD panel — vertical positioning in screen coords.
-  // Fleet shapes stay at fixed screen Y regardless of canvas zoom/pan.
   const [screenYOffset, setScreenYOffset] = useState(() =>
     parseFloat(localStorage.getItem('fleet-hud-y-offset') || '0') || 0
   )
+  // Live offset applied during a controls-bar drag (whole-panel move)
+  const [panelDragOffset, setPanelDragOffset] = useState({ x: 0, y: 0 })
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
+  // Controls bar drag state (whole-HUD repositioning)
+  const controlsDragRef = useRef<{ startX: number; startY: number } | null>(null)
+
   // Reactively update fleet bounds when shapes change.
-  // Position updates: freeze during drag, recalculate on pointerup only.
-  // This prevents the auto-zoom panel from resizing mid-drag.
   useEffect(() => {
     setFleetBounds(getFleetBounds(mainEditor))
 
@@ -195,7 +105,6 @@ export function FleetHUD({
       const isFleetChange = (record: any) =>
         record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
 
-      // Immediate: add/remove always recalculates
       const hasAddOrRemove =
         Object.values(changes.added).some(isFleetChange) ||
         Object.values(changes.removed).some(isFleetChange)
@@ -206,7 +115,6 @@ export function FleetHUD({
         return
       }
 
-      // Position/size updates: mark as dragging, recalc on pointerup
       const hasUpdate = Object.values(changes.updated)
         .some(([from, to]) => isFleetChange(from) || isFleetChange(to))
 
@@ -229,9 +137,7 @@ export function FleetHUD({
     }
   }, [mainEditor])
 
-  // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
-  // main canvas — avoids the "two copies" issue where both the HUD and main
-  // canvas show the same shapes simultaneously.
+  // Body class: hide fleet shapes in main canvas when HUD is expanded
   useEffect(() => {
     if (expanded && fleetBounds) {
       document.body.classList.add('fleet-hud-open')
@@ -241,15 +147,24 @@ export function FleetHUD({
     return () => document.body.classList.remove('fleet-hud-open')
   }, [expanded, fleetBounds])
 
-  // Body class for layout mode — CSS disables pointer-events on shape content
+  // Body class: disable HTML pointer-events on shape content in edit mode
+  // so tldraw's select tool can receive events for individual shape dragging.
   useEffect(() => {
-    if (layoutMode) {
+    if (editMode) {
       document.body.classList.add('fleet-layout-active')
     } else {
       document.body.classList.remove('fleet-layout-active')
     }
     return () => document.body.classList.remove('fleet-layout-active')
-  }, [layoutMode])
+  }, [editMode])
+
+  // Esc exits edit mode
+  useEffect(() => {
+    if (!editMode) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setEditMode(false) }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [editMode])
 
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
@@ -280,32 +195,54 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded, fleetBounds])
 
-  // Commit layout drag — moves fleet shapes in canvas X, adjusts screen Y offset.
-  const handleLayoutCommit = useCallback((screenDx: number, screenDy: number) => {
-    setLayoutMode(false)
-    // Horizontal: convert screen pixels → canvas units, update each shape's canvas X
-    const cam = mainEditor.getCamera()
-    const canvasDx = screenDx / cam.z
-    const fleetShapes = mainEditor.getCurrentPageShapes()
-      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-    if (canvasDx !== 0 && fleetShapes.length > 0) {
-      mainEditor.store.put(
-        fleetShapes.map(s => ({ ...s as any, x: (s as any).x + canvasDx }))
-      )
-    }
-    // Vertical: update screen-space Y offset (clamped so HUD stays on screen)
-    if (screenDy !== 0) {
+  // --- Controls bar drag: move whole HUD panel ---
+
+  const onControlsPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Don't intercept clicks on buttons
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    e.stopPropagation()
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    controlsDragRef.current = { startX: e.clientX, startY: e.clientY }
+    setPanelDragOffset({ x: 0, y: 0 })
+  }, [])
+
+  const onControlsPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!controlsDragRef.current) return
+    const dx = e.clientX - controlsDragRef.current.startX
+    const dy = e.clientY - controlsDragRef.current.startY
+    setPanelDragOffset({ x: dx, y: dy })
+  }, [])
+
+  const onControlsPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!controlsDragRef.current) return
+    const dx = e.clientX - controlsDragRef.current.startX
+    const dy = e.clientY - controlsDragRef.current.startY
+    controlsDragRef.current = null
+    setPanelDragOffset({ x: 0, y: 0 })
+
+    // Commit Y: update persistent screenYOffset
+    if (Math.abs(dy) > 2) {
       setScreenYOffset(prev => {
-        const next = prev + screenDy
+        const next = prev + dy
         localStorage.setItem('fleet-hud-y-offset', String(next))
         return next
       })
     }
-  }, [mainEditor])
 
-  const handleLayoutCancel = useCallback(() => {
-    setLayoutMode(false)
-  }, [])
+    // Commit X: move fleet shapes in canvas coordinates
+    if (Math.abs(dx) > 2) {
+      const cam = mainEditor.getCamera()
+      const canvasDx = dx / cam.z
+      const fleetShapes = mainEditor.getCurrentPageShapes()
+        .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+      if (fleetShapes.length > 0) {
+        mainEditor.store.put(
+          fleetShapes.map(s => ({ ...s as any, x: (s as any).x + canvasDx }))
+        )
+      }
+    }
+  }, [mainEditor])
 
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
@@ -331,8 +268,6 @@ export function FleetHUD({
   }
 
   // Expanded: CanvasClipPanel with fleet region
-  // Auto-zoom: fit all fleet shapes within 80% screen height, width follows aspect ratio
-  // Docked to right edge of viewport, vertically centered + screenYOffset
   const panelHeight = window.innerHeight * 0.8
   const zoom = panelHeight / fleetBounds.h
   const panelWidth = fleetBounds.w * zoom
@@ -342,23 +277,24 @@ export function FleetHUD({
   return (
     <>
       {ghost}
-      {layoutMode && (
-        <FleetGroupOverlay
-          panelLeft={panelLeft}
-          panelTop={adjustedTop}
-          panelWidth={panelWidth}
-          panelHeight={panelHeight}
-          mainEditor={mainEditor}
-          onCommit={handleLayoutCommit}
-          onCancel={handleLayoutCancel}
-        />
-      )}
-      <div className="fleet-hud-wrap" ref={hudRef} style={{ left: panelLeft, top: adjustedTop }}>
-        <div className="fleet-hud-controls">
+      <div
+        className="fleet-hud-wrap"
+        ref={hudRef}
+        style={{
+          left: panelLeft + panelDragOffset.x,
+          top: adjustedTop + panelDragOffset.y,
+        }}
+      >
+        <div
+          className={`fleet-hud-controls${editMode ? ' fleet-hud-controls-edit' : ''}`}
+          onPointerDown={onControlsPointerDown}
+          onPointerMove={onControlsPointerMove}
+          onPointerUp={onControlsPointerUp}
+        >
           <button
-            className="fleet-hud-layout"
-            onClick={() => setLayoutMode(m => !m)}
-            title="Move / reposition HUD"
+            className={`fleet-hud-layout${editMode ? ' fleet-hud-layout-active' : ''}`}
+            onClick={() => setEditMode(m => !m)}
+            title={editMode ? 'Exit edit shapes mode' : 'Edit shapes / move HUD'}
           >
             ⊞
           </button>
