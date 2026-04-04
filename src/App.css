@@ -108,6 +108,51 @@
   font-family: system-ui, -apple-system, sans-serif;
 }
 
+.ErrorScreen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  gap: 0.5rem;
+  padding: 2rem;
+  text-align: center;
+}
+
+.error-icon {
+  font-size: 2.5rem;
+  color: #94a3b8;
+  margin-bottom: 0.5rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+}
+
+.error-title {
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: #334155;
+  margin: 0;
+}
+
+.error-message {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin: 0;
+  max-width: 400px;
+}
+
+.error-home-link {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: #3b82f6;
+  text-decoration: none;
+}
+
+.error-home-link:hover {
+  text-decoration: underline;
+}
+
 .PickerScreen {
   font-family: system-ui, -apple-system, sans-serif;
   padding: 2rem;
