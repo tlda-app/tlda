@@ -101,7 +101,7 @@ app.get('/api/local-image', requireRead, (req, res) => {
   const mimeType = mimeLookup(expanded) || 'application/octet-stream'
   res.set('Content-Type', mimeType)
   res.set('Cache-Control', 'public, max-age=3600')
-  res.sendFile(resolve(expanded))
+  res.sendFile(resolve(expanded), { dotfiles: 'allow' })
 })
 
 // ---------- Doc asset serving ----------
@@ -130,7 +130,7 @@ app.use('/docs', (req, res, next) => {
           const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
           if (existsSync(assetPath)) {
             res.set('Cache-Control', 'public, max-age=3600')
-            return res.sendFile(resolve(assetPath))
+            return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
           }
         }
       }
@@ -159,7 +159,7 @@ app.use('/docs', (req, res, next) => {
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
-      return res.sendFile(resolve(histPath))
+      return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
     return res.status(404).json({ error: 'Not found' })
   }
@@ -311,7 +311,7 @@ app.use('/docs', (req, res, next) => {
         // Fall through to sendFile on error
       }
     }
-    return res.sendFile(resolve(projectPath))
+    return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
   }
 
   res.status(404).json({ error: 'Not found' })
