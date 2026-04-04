@@ -43,6 +43,46 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = 'http://localhost:5199'
 
+// Upload a markdown file, rewriting local image refs to stable URLs for any
+// companion image files present in the same drop event.
+async function uploadMarkdownWithImages(mdFile: File, companions: File[]): Promise<string> {
+  const text = await mdFile.text()
+  // Find local image paths: ![alt](path) where path is not http
+  const localPathRe = /!\[[^\]]*\]\(([^)]+)\)/g
+  const localPaths = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = localPathRe.exec(text)) !== null) {
+    if (!m[1].startsWith('http')) localPaths.add(m[1])
+  }
+  // Upload companions that match a local path by filename
+  const urlMap = new Map<string, string>()
+  for (const localPath of localPaths) {
+    const base = localPath.split('/').pop() || localPath
+    const match = companions.find(f => f.name === base)
+    if (!match) continue
+    try {
+      const fd = new FormData()
+      fd.append('file', match, match.name)
+      const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+      if (!r.ok) continue
+      const { url } = await r.json()
+      urlMap.set(localPath, `${FLEET_API}${url}`)
+    } catch {}
+  }
+  // Rewrite markdown and upload
+  let rewritten = text
+  for (const [orig, stable] of urlMap) {
+    rewritten = rewritten.split(`](${orig})`).join(`](${stable})`)
+  }
+  const rewrittenFile = new File([new Blob([rewritten], { type: 'text/markdown' })], mdFile.name, { type: 'text/markdown' })
+  const fd = new FormData()
+  fd.append('file', rewrittenFile, rewrittenFile.name)
+  const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+  if (!r.ok) throw new Error(`markdown upload failed: ${r.status}`)
+  const { url, name } = await r.json()
+  return `[${name}](${FLEET_API}${url})`
+}
+
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
@@ -585,6 +625,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
   // anywhere on the chat shape before tldraw can create a canvas image shape.
+  // Files are uploaded to the fleet server and referenced by stable URL.
   useEffect(() => {
     const el = shapeContainerRef.current
     if (!el) return
@@ -602,31 +643,24 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const files = [...(e.dataTransfer.files || [])]
       if (!files.length) return
       for (const file of files) {
-        if (file.type.startsWith('image/')) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve(reader.result as string)
-            reader.onerror = reject
-            reader.readAsDataURL(file)
-          })
-          const assetId = `asset:img-${Date.now().toString(36)}`
-          const assetRecord = {
-            id: assetId as any, typeName: 'asset', type: 'image',
-            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
-            meta: {},
-          } as any
-          const mainEd = (window as any).__tldraw_editor__ || editor
-          mainEd.store.put([assetRecord])
-          if (mainEd !== editor) editor.store.put([assetRecord])
-          const assetUid = assetId.slice('asset:'.length)
-          const token = `«img:${file.name}#${assetUid}»`
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
-        } else {
-          let content = ''
-          try { content = await file.text() } catch {}
-          const uid = Date.now().toString(36).slice(-4)
-          const token = `«file:${file.name}#${uid}»`
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+        try {
+          let link: string
+          if (file.name.endsWith('.md') || file.type === 'text/markdown') {
+            link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
+          } else {
+            const formData = new FormData()
+            formData.append('file', file, file.name)
+            const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+            if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+            const { url, name } = await resp.json()
+            link = file.type.startsWith('image/')
+              ? `![${name}](${FLEET_API}${url})`
+              : `[${name}](${FLEET_API}${url})`
+          }
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
+        } catch (err) {
+          console.error('[fleet-chat] file upload failed:', err)
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
         }
       }
     }
@@ -1524,46 +1558,31 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 e.stopPropagation()
                 const ta = e.currentTarget
 
-                // External file drops
+                // External file drops — upload to fleet server, insert markdown link
                 const files = [...(e.dataTransfer?.files || [])]
                 if (files.length > 0) {
                   for (const file of files) {
-                    const uid = Date.now().toString(36).slice(-4)
-                    if (file.type.startsWith('image/')) {
-                      // Image → read as base64 data URL, store as tldraw asset (persistent), insert chip
-                      const dataUrl = await new Promise<string>((resolve, reject) => {
-                        const reader = new FileReader()
-                        reader.onload = () => resolve(reader.result as string)
-                        reader.onerror = reject
-                        reader.readAsDataURL(file)
-                      })
-                      const assetId = `asset:img-${Date.now().toString(36)}`
-                      const assetRecord = {
-                        id: assetId as any, typeName: 'asset', type: 'image',
-                        props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
-                        meta: {},
-                      } as any
-                      // Put in main editor (persisted to server) and HUD editor (immediate imageSrcs update)
-                      const mainEd = (window as any).__tldraw_editor__ || editor
-                      mainEd.store.put([assetRecord])
-                      if (mainEd !== editor) editor.store.put([assetRecord])
-                      const assetUid = assetId.slice('asset:'.length)
-                      const token = `«img:${file.name}#${assetUid}»`
+                    try {
+                      let link: string
+                      if (file.name.endsWith('.md') || file.type === 'text/markdown') {
+                        link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
+                      } else {
+                        const formData = new FormData()
+                        formData.append('file', file, file.name)
+                        const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+                        if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                        const { url, name } = await resp.json()
+                        link = file.type.startsWith('image/')
+                          ? `![${name}](${FLEET_API}${url})`
+                          : `[${name}](${FLEET_API}${url})`
+                      }
                       const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
-                      // Text/code file → read contents, insert as file chip
-                      const text = await file.text()
-                      const token = `«file:${file.name}#${uid}»`
+                    } catch (err) {
+                      console.error('[fleet-chat] file upload failed:', err)
                       const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else {
-                      // Other file → name-only chip
-                      const token = `«file:${file.name}#${uid}»`
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
                     }
                   }
