@@ -87,6 +87,15 @@ export function HistoryTab() {
                 >
                   &#9201;
                 </button>
+                {(ctx?.shadowHistoryVersionCount ?? 0) >= 2 && (
+                  <button
+                    className={`history-compare-btn${ctx?.shadowHistoryVisible ? ' active' : ''}`}
+                    onClick={() => ctx?.onToggleShadowHistory?.()}
+                    title="Shadow history scrubber"
+                  >
+                    &#8635;
+                  </button>
+                )}
               </div>
               <span className="snapshot-label">
                 <span className="snapshot-position">{idx + 1}/{entries.length}</span>
