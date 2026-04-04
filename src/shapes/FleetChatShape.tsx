@@ -288,8 +288,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
 
 
-  // DNF filter: [[a,b],[c]] means (a AND b) OR c
-  const dnfFilter = (filter.length > 0 ? filter : null) as string[][] | null
+  // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
+  const dnfFilter = filter.length > 0 ? filter : null
 
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)

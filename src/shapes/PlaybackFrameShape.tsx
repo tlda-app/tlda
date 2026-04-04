@@ -28,7 +28,6 @@ import {
   T,
   stopEventPropagation,
   useEditor,
-  compact,
 } from 'tldraw'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
@@ -37,8 +36,12 @@ import {
   getLayoutKeyframe,
   getEffectiveSpeed,
   extractTimewarps,
+  extractSubs,
+  getCurrentSubtitle,
   type PlaybackData,
   type Timewarp,
+  type SubtitleEntry,
+  type TimewarpRegion,
 } from '../playback-context'
 import './PlaybackFrameShape.css'
 
@@ -59,6 +62,75 @@ function formatDuration(ms: number): string {
   const s = totalSec % 60
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   return `${m}:${String(s).padStart(2, '0')}`
+}
+
+// --- Speed graph ---
+
+/**
+ * SVG line graph showing speed profile over the recording duration.
+ * Rendered as an overlay on top of the range slider.
+ * X = time (0..duration), Y = speed (1x..maxSpeed).
+ * Jump regions (>100x) shown as near-vertical spikes.
+ */
+function SpeedGraph({ regions, duration }: { regions: TimewarpRegion[]; duration: number }) {
+  const W = 300  // will be overridden by width: 100%
+  const H = 22
+  const GRAPH_H = 16  // drawing area above baseline
+
+  if (!duration || duration === 0) return null
+
+  // Build a flat 1x region if no regions provided
+  const allRegions: TimewarpRegion[] = regions.length > 0
+    ? regions
+    : [{ start_ms: 0, end_ms: duration, speed: 1 }]
+
+  const maxSpeed = Math.max(...allRegions.map(r => Math.min(r.speed, 200)), 1)
+
+  // Convert region to SVG points
+  const pts: string[] = []
+  const toX = (ms: number) => (ms / duration) * 100  // percent
+  const toY = (speed: number) => {
+    // Clamp jump regions (>100x) to near top, others log-scaled
+    const clamped = Math.min(speed, maxSpeed)
+    return H - (clamped / maxSpeed) * GRAPH_H
+  }
+
+  // Start at baseline
+  pts.push(`0,${H}`)
+  for (const r of allRegions) {
+    const x1 = toX(r.start_ms)
+    const x2 = toX(r.end_ms)
+    const y = toY(r.speed)
+    pts.push(`${x1}%,${y}`)
+    pts.push(`${x2}%,${y}`)
+  }
+  pts.push(`100%,${H}`)
+  pts.push(`0,${H}`)
+
+  return (
+    <svg
+      className="pbf-speed-graph"
+      viewBox={`0 0 100 ${H}`}
+      preserveAspectRatio="none"
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 0,
+        width: '100%',
+        height: H,
+        pointerEvents: 'none',
+      }}
+    >
+      <polyline
+        points={pts.join(' ')}
+        fill="rgba(99,179,237,0.15)"
+        stroke="rgba(99,179,237,0.6)"
+        strokeWidth="0.5"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  )
 }
 
 // --- Component ---
@@ -94,6 +166,9 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
   const [timewarps, setTimewarps] = useState<Timewarp[]>([])
   const [activeTimewarp, setActiveTimewarp] = useState<Timewarp | null>(null)
 
+  // Subtitle state
+  const [subs, setSubs] = useState<SubtitleEntry[]>([])
+
   const rafRef = useRef<number | null>(null)
   const lastRafTime = useRef<number | null>(null)
 
@@ -120,10 +195,13 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
         }
 
         // Extract named cuts (timewarps) from edits
-        const tws = extractTimewarps(data.edits || [])
+        const tws = extractTimewarps(data.edits || [], data.duration_ms)
         const autoTw = tws.find((t: Timewarp) => t.name === 'edits') ?? tws[0] ?? null
         setTimewarps(tws)
         setActiveTimewarp(autoTw)
+
+        // Extract subtitles
+        setSubs(extractSubs(data.edits || []))
 
         const pb: PlaybackData = {
           events: data.events || [],
@@ -417,18 +495,40 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
               {formatDuration(currentMs)} / {formatDuration(duration)}
             </span>
           </div>
-          <input
-            className="pbf-timeline"
-            type="range"
-            min={0}
-            max={duration || 1}
-            step={100}
-            value={currentMs}
-            onChange={handleSeek}
-            disabled={!pbData || duration === 0}
-          />
+          <div className="pbf-timeline-wrap" style={{ position: 'relative' }}>
+            <SpeedGraph
+              regions={activeTimewarp?.regions ?? []}
+              duration={duration}
+            />
+            <input
+              className="pbf-timeline"
+              type="range"
+              min={0}
+              max={duration || 1}
+              step={100}
+              value={currentMs}
+              onChange={handleSeek}
+              disabled={!pbData || duration === 0}
+            />
+          </div>
         </div>
       </div>
+
+      {/* Subtitle overlay — timed narrative text at bottom of frame */}
+      {(() => {
+        const sub = subs.length > 0 ? getCurrentSubtitle(subs, currentMs) : null
+        return sub ? (
+          <div className="pbf-subtitle" style={{
+            position: 'absolute',
+            bottom: 8,
+            left: 8,
+            right: 8,
+            pointerEvents: 'none',
+          }}>
+            {sub}
+          </div>
+        ) : null
+      })()}
 
       {/* Content area — drop zone below chrome, visual only */}
       {!hasChildren && (

@@ -127,7 +127,7 @@ export function useFleetTasks(frameId?: string): any[] {
  */
 const MAX_LOCAL_EVENTS = 500
 
-export function useFleetEvents(dnfFilter?: string[][] | null, frameId?: string): any[] {
+export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string): any[] {
   const [events, setEvents] = useState<any[]>([])
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
