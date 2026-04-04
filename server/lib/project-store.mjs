@@ -222,6 +222,17 @@ export function writeSourceFile(name, filePath, content) {
 }
 
 /**
+ * Read a source file. Returns the file content as a string, or null if not found.
+ */
+export function readSourceFile(name, filePath) {
+  const dir = sourceDir(name)
+  const full = join(dir, filePath)
+  if (!full.startsWith(dir)) throw new Error('Invalid file path')
+  if (!existsSync(full)) return null
+  return readFileSync(full, 'utf8')
+}
+
+/**
  * Delete a source file. Returns true if the file existed and was removed.
  */
 export function deleteSourceFile(name, filePath) {

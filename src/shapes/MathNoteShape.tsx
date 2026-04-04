@@ -44,6 +44,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 import { chatInsertBus } from './FleetPillShape'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
+import { appendToken } from '../authToken'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -223,6 +224,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     selectedChoice: T.optional(T.number),
     done: T.optional(T.boolean),
     collapsed: T.optional(T.boolean),
+    docName: T.optional(T.string),
+    docView: T.optional(T.boolean),
   }
 
   getDefaultProps() {
@@ -235,7 +238,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }
   }
 
-  override canEdit = (shape: any) => !shape.props.collapsed
+  override canEdit = (shape: any) => !shape.props.collapsed && !shape.props.docView
   override canResize = (shape: any) => !shape.props.collapsed
   override canBind = () => false
   override isAspectRatioLocked = () => false
@@ -319,6 +322,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const [dotHovered, setDotHovered] = useState(false)
     const [imgVersion, setImgVersion] = useState(0)
 
+    const docName = shape.props.docName as string | undefined
+    const showDoc = !!(shape.props.docName && shape.props.docView)
+    // True while this note is pushing content to the doc — prevents echo-back on next poll
+    const pushingToDocRef = useRef(false)
+
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
@@ -353,6 +361,55 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         } catch { /* server URL fallback stays */ }
       })).then(() => { if (registered) setImgVersion(v => v + 1) })
     }, [shape.props.text, editor])
+
+    // note → doc sync: push text to linked doc (debounced 1s)
+    useEffect(() => {
+      if (!docName) return
+      const text = shape.props.text || ''
+      const timer = setTimeout(async () => {
+        pushingToDocRef.current = true
+        try {
+          // Auto-create the doc if it doesn't exist
+          const existsRes = await fetch(`/api/projects/${docName}`)
+          if (!existsRes.ok) {
+            await fetch('/api/projects', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: docName, title: docName, format: 'markdown', mainFile: 'main.md' }),
+            })
+          }
+          await fetch(`/api/projects/${docName}/push`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ path: 'main.md', content: text }] }),
+          })
+        } catch { /* ignore — server may not be running */ }
+        // Hold the suppression flag long enough to skip the next poll cycle
+        setTimeout(() => { pushingToDocRef.current = false }, 2500)
+      }, 1000)
+      return () => clearTimeout(timer)
+    }, [shape.props.text, docName])
+
+    // doc → note sync: poll source file every 3s and apply if changed
+    useEffect(() => {
+      if (!docName) return
+      const shapeId = shape.id
+      const poll = async () => {
+        if (pushingToDocRef.current) return
+        if (editor.getEditingShapeId() === shapeId) return
+        try {
+          const res = await fetch(`/api/projects/${docName}/source/main.md`)
+          if (!res.ok) return
+          const content = await res.text()
+          const current = (editor.getShape(shapeId) as any)?.props?.text ?? ''
+          if (content !== current) {
+            editor.updateShape({ id: shapeId, type: 'math-note' as any, props: { text: content } })
+          }
+        } catch { /* ignore */ }
+      }
+      const interval = setInterval(poll, 3000)
+      return () => clearInterval(interval)
+    }, [docName, shape.id, editor])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(
@@ -1045,6 +1102,44 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
+          {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
+          {docName && (
+            <div
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                editor.updateShape({
+                  id: shape.id,
+                  type: 'math-note' as any,
+                  props: { docView: !shape.props.docView },
+                })
+              }}
+              title={showDoc ? 'Show note' : `Open doc: ${docName}`}
+              style={{
+                position: 'absolute',
+                top: 3,
+                right: 4,
+                width: 16,
+                height: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                opacity: showDoc ? 0.8 : 0.3,
+                transition: 'opacity 0.15s',
+                zIndex: 10,
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = showDoc ? '0.8' : '0.3' }}
+            >
+              {/* tlda logo — stylized "t" document shape */}
+              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor">
+                <rect x="2" y="1" width="13" height="16" rx="2" opacity="0.9"/>
+                <rect x="5" y="5" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
+                <rect x="5" y="8" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
+                <rect x="5" y="11" width="4" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
+              </svg>
+            </div>
+          )}
           {shape.meta?.friendly_name && (
             <div style={{
               fontSize: 9,
@@ -1062,7 +1157,19 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
           }}>
-            {content}
+            {showDoc && docName ? (
+              <iframe
+                src={appendToken(`/?doc=${docName}`)}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none',
+                  display: 'block',
+                  pointerEvents: 'all',
+                }}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
+              />
+            ) : content}
           </div>
       </HTMLContainer>
     )

@@ -29,6 +29,8 @@ const customShapeSchemas = {
       activeTab: T.optional(T.number),
       done: T.optional(T.boolean),
       collapsed: T.optional(T.boolean),
+      docName: T.optional(T.string),
+      docView: T.optional(T.boolean),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
