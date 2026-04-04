@@ -56,6 +56,7 @@ const SVG_TOOLS = [
   'fleet-agents',
   'fleet-search',
   'playback-frame',
+  'terminal',
 ]
 
 const HTML_TOOLS = [
