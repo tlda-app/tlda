@@ -14,30 +14,10 @@
 //   renderMarkdown:  (escapedHtml) => html,
 //   highlightSyntax: (code, lang) => html,
 //   langFromFilePath: (path) => string,
+//   preambleMacros:  Record<string, string> — KaTeX macros from current doc
 // }
 
 import katex from 'katex'
-
-// KaTeX macros parsed from balancing-act/preamble.tex
-const PREAMBLE_MACROS = {
-  '\\E': '\\operatorname{E}',
-  '\\Var': '\\operatorname{Var}',
-  '\\argmin': '\\operatorname*{argmin}',
-  '\\norm': '\\left\\lVert #1 \\right\\rVert',
-  '\\inner': '\\left\\langle #1 \\right\\rangle',
-  '\\abs': '\\left\\lvert #1 \\right\\rvert',
-  '\\smallinner': '\\langle #1 \\rangle',
-  '\\smallnorm': '\\lVert #1 \\rVert',
-  '\\smallabs': '\\lvert #1 \\rvert',
-  '\\td': '\\tilde',
-  '\\one': '1',
-  '\\R': '\\mathbb{R}',
-  '\\hgamma': '\\hat{\\gamma}',
-  '\\hlambda': '\\hat{\\lambda}',
-  '\\estimand': '\\psi',
-  '\\F': '\\mathcal{F}',
-  '\\Fr': '\\mathcal{F}_r',
-}
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -168,11 +148,11 @@ export function toolContentDetail(name, input) {
   return ''
 }
 
-// --- Rendering helpers (need ctx for highlightSyntax, langFromFilePath, renderMarkdown) ---
+// --- Rendering helpers (need ctx for highlightSyntax, langFromFilePath, preambleMacros) ---
 
 export function renderEditDiff(input, ctx) {
   if (!input?.old_string || !input?.new_string) return ''
-  const { langFromFilePath, highlightSyntax, renderMarkdown } = ctx
+  const { langFromFilePath, highlightSyntax } = ctx
   const uid = 'diff-' + Math.random().toString(36).slice(2, 8)
   const isTeX = input.file_path && /\.tex$/i.test(input.file_path)
   const lang = !isTeX ? langFromFilePath(input.file_path) : ''
@@ -186,7 +166,7 @@ export function renderEditDiff(input, ctx) {
       if (/^\\(begin|end|label|item|section|subsection|usepackage|documentclass)\b/.test(trimmed)) return `<code>${esc(line)}</code>`
       if (/\\[a-zA-Z]/.test(trimmed) && !/^%/.test(trimmed)) {
         try {
-          return katex.renderToString(trimmed, { displayMode: true, throwOnError: true, macros: PREAMBLE_MACROS })
+          return katex.renderToString(trimmed, { displayMode: true, throwOnError: true, macros: ctx.preambleMacros || {} })
         } catch {
           return `<span class="diff-tex-raw">${esc(line)}</span>`
         }

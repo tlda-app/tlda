@@ -237,7 +237,7 @@ const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
-function makeCtx(agents: any[], tasks: any[]) {
+function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
@@ -272,6 +272,7 @@ function makeCtx(agents: any[], tasks: any[]) {
     renderMarkdown: tldaRenderMarkdown,
     highlightSyntax,
     langFromFilePath,
+    preambleMacros,
   }
 }
 
@@ -369,8 +370,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }, { source: 'all', scope: 'document' })
   }, [editor])
 
+  // Preamble macros — fetched once per doc from /api/projects/:name/macros
+  const [preambleMacros, setPreambleMacros] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!doc?.docName) return
+    fetch(`/api/projects/${doc.docName}/macros`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
+      .catch(() => {})
+  }, [doc?.docName])
+
   // Build context and render messages
-  const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
+  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
 
   const chatMessages = useMemo(() => {
     const sorted = events

@@ -154,6 +154,18 @@ router.get('/:name/files', requireRead, (req, res) => {
   res.json({ files: listSourceFiles(req.params.name) })
 })
 
+// Preamble macros (KaTeX-compatible, parsed during build from main tex file)
+router.get('/:name/macros', requireRead, (req, res) => {
+  const outputPath = join(getOutputDir(req.params.name), 'macros.json')
+  if (!existsSync(outputPath)) return res.json({ macros: {} })
+  try {
+    const data = JSON.parse(readFileSync(outputPath, 'utf8'))
+    res.json({ macros: data.macros || {} })
+  } catch {
+    res.json({ macros: {} })
+  }
+})
+
 // Source file hashes (for incremental push)
 router.get('/:name/hashes', requireRead, (req, res) => {
   const project = readProject(req.params.name)
