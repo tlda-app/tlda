@@ -51,6 +51,9 @@ const SVG_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'fleet-chat',
+  'fleet-agents',
+  'fleet-search',
 ]
 
 const HTML_TOOLS = [
@@ -69,6 +72,9 @@ const HTML_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'fleet-chat',
+  'fleet-agents',
+  'fleet-search',
 ]
 
 const SVG_CONFIG: FormatConfig = {

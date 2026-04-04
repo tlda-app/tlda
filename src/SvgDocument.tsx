@@ -35,6 +35,9 @@ import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
+import { FleetChatTool } from './tools/FleetChatTool'
+import { FleetAgentsTool } from './tools/FleetAgentsTool'
+import { FleetSearchTool } from './tools/FleetSearchTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -584,7 +587,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -632,6 +635,35 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         label: 'Select Text',
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
+      }
+      // Register fleet shape placement tools (toolbar overflow only, no kbd shortcut)
+      tools['fleet-chat'] = {
+        id: 'fleet-chat',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>) as any,
+        label: 'Fleet Chat',
+        onSelect: () => _editor.setCurrentTool('fleet-chat'),
+      }
+      tools['fleet-agents'] = {
+        id: 'fleet-agents',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="9" cy="7" r="4" />
+          <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          <path d="M21 21v-2a4 4 0 0 0-3-3.85" />
+        </svg>) as any,
+        label: 'Fleet Agents',
+        onSelect: () => _editor.setCurrentTool('fleet-agents'),
+      }
+      tools['fleet-search'] = {
+        id: 'fleet-search',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>) as any,
+        label: 'Fleet Search',
+        onSelect: () => _editor.setCurrentTool('fleet-search'),
       }
       // Register browse tool — pointer with starburst sparkle (interactive pages)
       tools['select'] = {
