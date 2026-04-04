@@ -94,7 +94,7 @@
 .fleet-hud-layout {
   border: none;
   background: none;
-  color: rgba(100, 100, 100, 0.15);
+  color: rgba(100, 100, 100, 0.30);
   font-size: 13px;
   cursor: grab;
   padding: 2px 4px;
@@ -175,7 +175,7 @@ html[data-theme="dark"] .fleet-drop-ghost {
 
 /* Dark mode */
 html[data-theme="dark"] .fleet-hud-layout {
-  color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.30);
 }
 html[data-theme="dark"] .fleet-hud-layout:hover {
   color: rgba(255, 255, 255, 0.6);
