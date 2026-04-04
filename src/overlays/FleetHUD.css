@@ -56,27 +56,11 @@
   zoom: 1 !important;
 }
 
-/* Controls bar — drag handle for moving the whole HUD */
 .fleet-hud-controls {
   display: flex;
   gap: 2px;
   z-index: 1000;
   pointer-events: auto;
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-}
-.fleet-hud-controls:active {
-  cursor: grabbing;
-}
-/* Edit shapes mode: show dashed border on controls bar to signal active state */
-.fleet-hud-controls.fleet-hud-controls-edit {
-  border-bottom: 1px dashed rgba(100, 120, 200, 0.4);
-  padding-bottom: 2px;
-}
-/* Buttons inside the drag handle must have their own cursor */
-.fleet-hud-controls button {
-  cursor: pointer;
 }
 
 .fleet-hud-lock {
@@ -112,19 +96,14 @@
   background: none;
   color: rgba(100, 100, 100, 0.30);
   font-size: 13px;
+  cursor: grab;
   padding: 2px 4px;
   line-height: 1;
   letter-spacing: -1px;
-  transition: color 0.2s, background 0.2s;
-  border-radius: 3px;
+  transition: color 0.2s;
 }
 .fleet-hud-layout:hover {
   color: rgba(100, 100, 100, 0.6);
-}
-/* Active state: edit shapes mode is on */
-.fleet-hud-layout.fleet-hud-layout-active {
-  color: rgba(100, 120, 200, 0.9);
-  background: rgba(100, 120, 200, 0.12);
 }
 
 /* Layout mode overlay — bounding-box handle for group move */
