@@ -619,6 +619,10 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   display: block;
   cursor: pointer;
 }
+.fleet-chat-shape .chat-image-shared-doc {
+  width: 75%;
+  max-width: 75%;
+}
 
 /* --- Long messages --- */
 .fleet-chat-shape .message-long {
