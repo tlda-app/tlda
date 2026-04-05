@@ -16,13 +16,33 @@ global.clearTimeout = id => {
   const i = timers.findIndex(t => t.id === id)
   if (i !== -1) timers.splice(i, 1)
 }
-// Advance clock by ms, firing any timers whose fireAt <= new clock value.
+
+const intervals = []
+let iid = 0
+global.setInterval = (fn, ms = 0) => {
+  const id = ++iid
+  intervals.push({ id, fn, interval: ms, nextAt: clock + ms })
+  return id
+}
+global.clearInterval = id => {
+  const i = intervals.findIndex(t => t.id === id)
+  if (i !== -1) intervals.splice(i, 1)
+}
+
+// Advance clock by ms, firing any timers whose fireAt <= new clock value,
+// and any interval ticks that fall within the elapsed range.
 function tick(ms) {
   clock += ms
   const fire = timers.filter(t => t.fireAt <= clock).sort((a, b) => a.fireAt - b.fireAt)
   for (const t of fire) {
     const i = timers.findIndex(x => x.id === t.id)
     if (i !== -1) { timers.splice(i, 1); t.fn() }
+  }
+  for (const iv of [...intervals]) {
+    while (iv.nextAt <= clock) {
+      iv.fn()
+      iv.nextAt += iv.interval
+    }
   }
 }
 
@@ -68,6 +88,7 @@ function makeTextarea() {
 function reset() {
   if (isRecording()) toggleRecording()
   timers.length = 0
+  intervals.length = 0
   startCount = 0
 }
 
@@ -165,4 +186,44 @@ function reset() {
   console.log('✓ Test 4: Watchdog restarts recognition after 8s silence')
 }
 
-console.log('\nAll 4 tests passed.')
+// ---- Test 5: Session timer restarts recognition after 45s ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+
+  toggleRecording()
+  tick(300)   // fire doStart
+  assert.equal(startCount, 1, 'initial start')
+
+  tick(45000) // session timer fires → aborts old, schedules 250ms restart
+  assert.equal(startCount, 1, 'recognition not yet restarted — waiting 250ms')
+  tick(250)   // restart fires
+  assert.equal(startCount, 2, 'session timer should have restarted recognition')
+  assert.ok(isRecording(), 'should still be recording after session restart')
+
+  reset()
+  console.log('✓ Test 5: Session timer restarts recognition after 45s')
+}
+
+// ---- Test 6: stopRecording clears session timer and sleep interval ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'initial start')
+  assert.ok(intervals.length > 0, 'sleep detection interval should be active')
+
+  toggleRecording()  // stop
+  assert.ok(!isRecording(), 'should have stopped')
+  assert.equal(intervals.length, 0, 'sleep detection interval should be cleared')
+  assert.ok(!timers.find(t => t.fireAt >= clock + 44000), 'session timer should be cleared')
+
+  reset()
+  console.log('✓ Test 6: stopRecording clears session timer and sleep interval')
+}
+
+console.log('\nAll 6 tests passed.')

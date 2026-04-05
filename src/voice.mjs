@@ -156,6 +156,9 @@ let _lastTapTime = 0
 let _singleTapTimer = null
 let _audioCaptureRetries = 0
 let _watchdogTimer = null
+let _sessionTimer = null       // proactive 45s restart — prevents Chrome's ~60s silent death
+let _sleepDetectInterval = null // setInterval-based drift detector for sleep/wake
+let _sleepDetectLast = 0       // Date.now() at last interval tick
 
 // Active chat target — set by the chat component on focus
 let _activeTextarea = null   // HTMLTextAreaElement
@@ -414,6 +417,9 @@ function watchdogRestart() {
   _recognition = null
   clearTimeout(_watchdogTimer)
   _watchdogTimer = null
+  // Cancel the session timer — it will be rescheduled after the restart.
+  clearTimeout(_sessionTimer)
+  _sessionTimer = null
   // Brief delay to let Chrome fully release the mic before claiming it again.
   setTimeout(() => {
     if (!_recording) return
@@ -421,11 +427,81 @@ function watchdogRestart() {
     try {
       _recognition.start()
       _watchdogTimer = setTimeout(watchdogRestart, 8000)
+      _sessionTimer = setTimeout(sessionRestart, 45000)
     } catch (err) {
       console.warn('voice: watchdog restart failed', err)
       _watchdogTimer = setTimeout(watchdogRestart, 8000)  // always reschedule
+      _sessionTimer = setTimeout(sessionRestart, 45000)
     }
   }, 250)
+}
+
+// Proactive 45s session restart — fires before Chrome's ~60s silent-death timeout.
+// Same abort-and-recreate pattern as watchdogRestart; rescheduled after each restart.
+function sessionRestart() {
+  if (!_recording) return
+  if (!_recognition) return  // another restart already in progress
+  const dying = _recognition
+  if (dying) {
+    dying.onresult = null
+    dying.onend = null
+    dying.onsoundstart = null
+    try { dying.abort() } catch {}
+  }
+  _recognition = null
+  clearTimeout(_watchdogTimer)
+  _watchdogTimer = null
+  clearTimeout(_sessionTimer)
+  _sessionTimer = null
+  setTimeout(() => {
+    if (!_recording) return
+    _setupRecognition()
+    try {
+      _recognition.start()
+      _watchdogTimer = setTimeout(watchdogRestart, 8000)
+      _sessionTimer = setTimeout(sessionRestart, 45000)
+    } catch (err) {
+      console.warn('voice: session restart failed', err)
+      _sessionTimer = setTimeout(sessionRestart, 45000)
+    }
+  }, 250)
+}
+
+// Sleep/wake detection via setInterval drift.
+// If the gap between ticks exceeds 10s the machine likely slept — force a restart.
+function checkSleep() {
+  if (!_recording) return
+  if (!_recognition) return  // another restart already in progress
+  const now = Date.now()
+  const gap = now - _sleepDetectLast
+  _sleepDetectLast = now
+  if (gap > 10000) {
+    clearTimeout(_sessionTimer)
+    _sessionTimer = null
+    const dying = _recognition
+    if (dying) {
+      dying.onresult = null
+      dying.onend = null
+      dying.onsoundstart = null
+      try { dying.abort() } catch {}
+    }
+    _recognition = null
+    clearTimeout(_watchdogTimer)
+    _watchdogTimer = null
+    setTimeout(() => {
+      if (!_recording) return
+      _sleepDetectLast = Date.now()
+      _setupRecognition()
+      try {
+        _recognition.start()
+        _watchdogTimer = setTimeout(watchdogRestart, 8000)
+        _sessionTimer = setTimeout(sessionRestart, 45000)
+      } catch (err) {
+        console.warn('voice: sleep-wake restart failed', err)
+        _sessionTimer = setTimeout(sessionRestart, 45000)
+      }
+    }, 250)
+  }
 }
 
 function startRecording() {
@@ -455,6 +531,9 @@ function startRecording() {
     try {
       _recognition.start()
       _watchdogTimer = setTimeout(watchdogRestart, 8000)
+      _sessionTimer = setTimeout(sessionRestart, 45000)
+      _sleepDetectLast = Date.now()
+      _sleepDetectInterval = setInterval(checkSleep, 2000)
     } catch (err) {
       console.warn('voice: could not start recognition', err)
       _recording = false
@@ -475,6 +554,10 @@ function stopRecording() {
   _recording = false
   clearTimeout(_watchdogTimer)
   _watchdogTimer = null
+  clearTimeout(_sessionTimer)
+  _sessionTimer = null
+  clearInterval(_sleepDetectInterval)
+  _sleepDetectInterval = null
 
   if (_recognition) {
     _recognition.onresult = null  // prevent late results from re-filling textarea
