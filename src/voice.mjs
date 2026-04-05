@@ -1,8 +1,8 @@
 // voice.mjs — Voice input for fleet chat.
 //
-// Right Command: tap to toggle recording, double-tap to send.
+// Right Shift: tap to toggle recording, double-tap to send.
 // Transcription fills the active chat textarea — edit before sending.
-// Uses Web Speech API (Chrome).
+// Backend: local whisper.cpp server (preferred) or Web Speech API (fallback).
 //
 // Usage:
 //   import { initVoice, setVoiceTarget } from './voice.mjs'
@@ -11,6 +11,16 @@
 //   setVoiceTarget(textarea, sendTargets, agentNames)
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+const _isChrome = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent)
+
+// --- Whisper backend state ---
+const WHISPER_URL = 'http://127.0.0.1:8178'
+let _useWhisper = false        // set true at init if whisper server is reachable
+let _micStream = null          // MediaStream from getUserMedia
+let _mediaRecorder = null      // MediaRecorder instance
+let _audioChunks = []          // accumulated audio data chunks
+let _whisperAbort = null       // AbortController — cancel in-flight transcription on reset/stop
+let _whisperLoopRunning = false // true while the sequential transcription loop is active
 
 // Math mode — when on, aggressive replacements for Greek letters
 // (replaces common English words that sound like Greek letters)
@@ -159,6 +169,8 @@ let _watchdogTimer = null
 let _sessionTimer = null       // proactive 45s restart — prevents Chrome's ~60s silent death
 let _sleepDetectInterval = null // setInterval-based drift detector for sleep/wake
 let _sleepDetectLast = 0       // Date.now() at last interval tick
+let _deadRestarts = 0          // consecutive restarts with no audio — detects poisoned state
+let _gotAudioThisSession = false // reset on each restart, set true on onsoundstart/onresult
 
 // Active chat target — set by the chat component on focus
 let _activeTextarea = null   // HTMLTextAreaElement
@@ -319,12 +331,16 @@ function _setupRecognition() {
 
   _recognition.onsoundstart = () => {
     // Any audio activity resets the watchdog — connection is alive
+    _gotAudioThisSession = true
+    _deadRestarts = 0
     clearTimeout(_watchdogTimer)
     _watchdogTimer = setTimeout(watchdogRestart, 8000)
   }
 
   _recognition.onresult = (e) => {
     // Reset watchdog — we're hearing speech
+    _gotAudioThisSession = true
+    _deadRestarts = 0
     clearTimeout(_watchdogTimer)
     _watchdogTimer = setTimeout(watchdogRestart, 8000)
 
@@ -373,6 +389,33 @@ function _setupRecognition() {
       }
       return
     }
+    // not-allowed = mic permission denied or needs user gesture (common in Safari).
+    // Request mic via getUserMedia to trigger the permission prompt, then retry.
+    if (e.error === 'not-allowed') {
+      showHud('requesting mic…', '#c8956a')
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        // Got permission — stop the stream (SpeechRecognition manages its own) and retry
+        stream.getTracks().forEach(t => t.stop())
+        if (!_recording) return
+        _setupRecognition()
+        try {
+          _recognition.start()
+          _watchdogTimer = setTimeout(watchdogRestart, 8000)
+          const who = targetLabel()
+          showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+        } catch (err) {
+          console.warn('voice: not-allowed retry failed', err)
+          stopRecording()
+          showHud('mic denied — check Safari permissions', '#c87070')
+          fadeHud(5000)
+        }
+      }).catch(() => {
+        stopRecording()
+        showHud('mic denied — check Safari permissions', '#c87070')
+        fadeHud(5000)
+      })
+      return
+    }
     // Retry network errors only
     if (_recording && e.error === 'network') {
       showHud('mic error — retrying…', '#c8956a')
@@ -406,6 +449,16 @@ function _setupRecognition() {
 
 function watchdogRestart() {
   if (!_recording) return
+  // Track consecutive dead restarts (no audio received since last restart)
+  if (!_gotAudioThisSession) {
+    _deadRestarts++
+    if (_deadRestarts >= 3) {
+      showHud('voice dead — restart Chrome', '#c87070')
+      // Don't fade — keep visible until user acts
+      return  // stop retrying, it's poisoned
+    }
+  }
+  _gotAudioThisSession = false
   // The old connection is hung — abort() rather than stop(), which can also hang.
   const dying = _recognition
   if (dying) {
@@ -437,8 +490,9 @@ function watchdogRestart() {
 }
 
 // Proactive 45s session restart — fires before Chrome's ~60s silent-death timeout.
-// Same abort-and-recreate pattern as watchdogRestart; rescheduled after each restart.
+// Chrome-only: Safari uses a different backend that doesn't have this bug.
 function sessionRestart() {
+  if (!_isChrome) return
   if (!_recording) return
   if (!_recognition) return  // another restart already in progress
   const dying = _recognition
@@ -504,8 +558,90 @@ function checkSleep() {
   }
 }
 
+// --- Whisper backend ---
+
+async function whisperTranscribe(blob, signal) {
+  const form = new FormData()
+  form.append('file', blob, 'audio.webm')
+  form.append('response_format', 'json')
+  const res = await fetch(`${WHISPER_URL}/inference`, { method: 'POST', body: form, signal })
+  if (!res.ok) throw new Error(`whisper: ${res.status}`)
+  const data = await res.json()
+  return (data.text || '')
+    .replace(/\[BLANK_AUDIO\]/gi, '')
+    .replace(/\[silence\]/gi, '')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Sequential transcription loop — at most one request in-flight at a time.
+// resetTranscript() aborts the in-flight request via _whisperAbort, so
+// there are no stale results to race with.
+async function whisperLoop(mimeType) {
+  _whisperLoopRunning = true
+  while (_recording) {
+    // Wait 3s between transcriptions
+    await new Promise(r => setTimeout(r, 3000))
+    if (!_recording || _audioChunks.length === 0) continue
+    const ac = new AbortController()
+    _whisperAbort = ac
+    try {
+      const blob = new Blob(_audioChunks, { type: mimeType })
+      const text = await whisperTranscribe(blob, ac.signal)
+      if (_recording && text && !ac.signal.aborted) {
+        fillTextarea(text)
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') continue
+      console.warn('voice: whisper transcription error', err)
+    } finally {
+      if (_whisperAbort === ac) _whisperAbort = null
+    }
+  }
+  _whisperLoopRunning = false
+}
+
+function startWhisperRecording() {
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    if (!_recording) { stream.getTracks().forEach(t => t.stop()); return }
+    _micStream = stream
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : 'audio/webm'
+    _mediaRecorder = new MediaRecorder(stream, { mimeType })
+    _audioChunks = []
+
+    _mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) _audioChunks.push(e.data)
+    }
+
+    _mediaRecorder.start(1000) // ondataavailable every 1s
+    whisperLoop(mimeType)
+  }).catch(err => {
+    console.warn('voice: mic access failed', err)
+    _recording = false
+    showHud('mic denied', '#c87070')
+    fadeHud(3000)
+  })
+}
+
+function stopWhisperCleanup() {
+  if (_whisperAbort) { _whisperAbort.abort(); _whisperAbort = null }
+  _audioChunks = []
+  if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
+    _mediaRecorder.ondataavailable = null
+    try { _mediaRecorder.stop() } catch {}
+  }
+  _mediaRecorder = null
+  if (_micStream) {
+    _micStream.getTracks().forEach(t => t.stop())
+    _micStream = null
+  }
+}
+
 function startRecording() {
-  if (_recording || !SpeechRecognition) return
+  if (_recording) return
+  if (!_useWhisper && !SpeechRecognition) return
 
   if (!_activeTextarea) {
     showHud('no chat focused', '#c8956a')
@@ -518,12 +654,21 @@ function startRecording() {
   _micChannel?.postMessage('mic-start')
 
   _recording = true
-  _audioCaptureRetries = 0
   _interimTranscript = ''
   _finalTranscript = _activeTextarea?.value || ''  // start from current textarea content
 
   const who = targetLabel()
   showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+
+  if (_useWhisper) {
+    startWhisperRecording()
+    return
+  }
+
+  // Web Speech API path
+  _audioCaptureRetries = 0
+  _deadRestarts = 0
+  _gotAudioThisSession = false
 
   const doStart = () => {
     if (!_recording) return
@@ -552,6 +697,16 @@ function startRecording() {
 function stopRecording() {
   if (!_recording) return
   _recording = false
+
+  if (_useWhisper) {
+    stopWhisperCleanup()
+    const who = targetLabel()
+    showHud(who ? `paused → ${who}` : 'paused', '#9370db')
+    fadeHud(4000)
+    return
+  }
+
+  // Web Speech API cleanup
   clearTimeout(_watchdogTimer)
   _watchdogTimer = null
   clearTimeout(_sessionTimer)
@@ -565,8 +720,6 @@ function stopRecording() {
     try { _recognition.stop() } catch {}
     _recognition = null
   }
-
-  // Finalize: textarea already has current text from last onresult
 
   const who = targetLabel()
   showHud(who ? `paused → ${who}` : 'paused', '#9370db')
@@ -617,13 +770,25 @@ function sendCurrentText() {
 
 let _initialized = false
 
-export function initVoice() {
+export async function initVoice() {
   if (_initialized) return true
-  if (!SpeechRecognition) {
-    console.warn('voice: Web Speech API not available (Chrome required)')
+  _initialized = true
+
+  // Detect whisper server
+  try {
+    const res = await fetch(`${WHISPER_URL}/`, { method: 'GET', signal: AbortSignal.timeout(1000) })
+    if (res.ok) {
+      _useWhisper = true
+      console.log('voice: whisper server detected at', WHISPER_URL)
+    }
+  } catch {
+    // whisper not available — fall back to Web Speech API
+  }
+
+  if (!_useWhisper && !SpeechRecognition) {
+    console.warn('voice: no backend available (no whisper server, no Web Speech API)')
     return false
   }
-  _initialized = true
 
   // Right Shift: tap = toggle recording, double-tap = send
   // Use capture phase so tldraw's stopPropagation doesn't block us
@@ -690,7 +855,8 @@ export function initVoice() {
     }
   })
 
-  console.log('voice: initialized v4 — BroadcastChannel:', !!_micChannel, '— Right Shift tap to toggle, double-tap to send')
+  const backend = _useWhisper ? 'whisper' : 'Web Speech API'
+  console.log(`voice: initialized v5 — ${backend} — BroadcastChannel: ${!!_micChannel} — Right Shift tap to toggle, double-tap to send`)
   return true
 }
 
@@ -721,6 +887,11 @@ export function isMathMode() { return _mathMode }
 export function resetTranscript() {
   _interimTranscript = ''
   _finalTranscript = ''
+  if (_useWhisper) {
+    // Abort any in-flight whisper request — sequential loop will skip the result
+    if (_whisperAbort) { _whisperAbort.abort(); _whisperAbort = null }
+    _audioChunks = []
+  }
   if (_recording && _recognition) {
     // Null handlers on the old instance before stopping — prevents any buffered
     // results from the old session reaching the new one.
@@ -736,5 +907,30 @@ export function resetTranscript() {
     }
     _recognition = null
     try { dying.stop() } catch {}
+  }
+}
+
+// Debug/test API
+if (typeof window !== 'undefined') {
+  window._voiceDebug = () => ({
+    recording: _recording,
+    useWhisper: _useWhisper,
+    audioChunks: _audioChunks.length,
+    hasMediaRecorder: !!_mediaRecorder,
+    recorderState: _mediaRecorder?.state || 'none',
+    hasMicStream: !!_micStream,
+    whisperInFlight: !!_whisperAbort,
+    whisperLoopRunning: _whisperLoopRunning,
+    textarea: _activeTextarea?.value || '',
+  })
+  // Expose functions for integration testing
+  window._voiceTest = {
+    setTarget: (ta, targets, names, sendFn) => setVoiceTarget(ta, targets, names, sendFn),
+    toggle: () => toggleRecording(),
+    reset: () => resetTranscript(),
+    isRecording: () => _recording,
+    pushChunk: (data) => { _audioChunks.push(data || new Blob(['fake'], { type: 'audio/webm' })) },
+    clearChunks: () => { _audioChunks = [] },
+    getChunkCount: () => _audioChunks.length,
   }
 }
