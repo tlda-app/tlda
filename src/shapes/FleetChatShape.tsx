@@ -189,6 +189,31 @@ function tldaRenderMarkdown(escapedHtml: string): string {
   return result
 }
 
+// --- Viewer context helper ---
+
+function gatherViewerContext(editor: any, doc: any) {
+  if (!editor || !doc) return null
+  const camera = editor.getCamera()
+  const viewport = editor.getViewportPageBounds()
+  const visiblePages: number[] = []
+  if (doc.pages && viewport) {
+    doc.pages.forEach((page: any, i: number) => {
+      const b = page.bounds
+      if (!b) return
+      // Page is visible if it overlaps the viewport
+      if (b.x + b.width > viewport.minX && b.x < viewport.maxX &&
+          b.y + b.height > viewport.minY && b.y < viewport.maxY) {
+        visiblePages.push(i + 1)
+      }
+    })
+  }
+  return {
+    doc: doc.docName || null,
+    page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
+    camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
+  }
+}
+
 // --- Shape definition ---
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
@@ -1580,7 +1605,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1598,7 +1624,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
@@ -1621,13 +1648,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{

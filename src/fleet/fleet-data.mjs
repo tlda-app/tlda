@@ -130,6 +130,7 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
+  if (opts.context) body.context = opts.context
   return fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
