@@ -15,6 +15,7 @@ import {
 import { useState, useCallback, useRef } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents } from '../fleet-data-adapter'
 import { appendToken } from '../authToken'
+import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -67,6 +68,7 @@ function truncate(text: string, max: number): string {
 
 function FleetSearchComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const agents = useFleetAgents()
@@ -132,7 +134,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'visible',
       }}
     >

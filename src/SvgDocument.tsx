@@ -27,6 +27,7 @@ import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { HudLayoutOverlay, registerLayoutSideEffects } from './shapes/HudLayoutMode'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
@@ -900,6 +901,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             setRefViewerRefsLocal([{ label: anchorId, region }])
           })
 
+          // Register HUD layout mode side effects (container ↔ fleet shape sync)
+          registerLayoutSideEffects(editor)
+
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
           shapeIdsArrayRef.current = editorSetup.shapeIds
@@ -1191,6 +1195,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <NoteDropHandler />
       <MarkdownDropHandler />
       <TocDropTargetManager />
+      <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </AgentPillContext.Provider>

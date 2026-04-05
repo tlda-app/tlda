@@ -17,6 +17,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
+import { toggleLayoutMode, useLayoutMode } from './HudLayoutMode'
 
 
 const DEFAULT_W = 340
@@ -231,6 +232,7 @@ function usePillDrag() {
 
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
@@ -301,7 +303,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'hidden',
       }}
     >
@@ -331,12 +333,12 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
             ×
           </button>
           <button
-            className="fleet-layout-btn"
+            className={`fleet-layout-btn${layoutMode ? ' active' : ''}`}
             onPointerUp={(e) => {
               e.stopPropagation()
-              editor.select(shape.id)
+              toggleLayoutMode(editor)
             }}
-            title="Resize / move"
+            title={layoutMode ? 'Exit layout mode' : 'Enter layout mode'}
           >
             ⊞
           </button>

@@ -37,6 +37,7 @@ import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -279,6 +280,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   // Expose editor to trackpad input adapter
   _tldaEditor = editor
   const doc = useContext(DocContext)
@@ -1383,7 +1385,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
