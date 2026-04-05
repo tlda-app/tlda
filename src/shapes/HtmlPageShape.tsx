@@ -79,7 +79,7 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-function HtmlPageBackground({ shape }: { shape: any }) {
+function HtmlPageBackground({ shape: _shape }: { shape: any }) {
   return null
 }
 
@@ -100,7 +100,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const isTextSelectTool = useValue('text-select-tool', () =>
     editor.getCurrentToolId() === 'text-select', [editor])
   const isBrowseTool = useValue('browse-tool', () =>
-    editor.getCurrentToolId() === 'browse', [editor])
+    editor.getCurrentToolId() === 'select', [editor])
   const [isInteracting, setIsInteracting] = useState(false)
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
 
@@ -108,17 +108,24 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const isSlide = shape.props.url?.includes('_tldaH=')
 
   // Viewport gating: only render iframe when near viewport.
-  // With multipage, each TLDraw page typically has one iframe, so this mainly
-  // avoids rendering when zoomed very far out.
+  // Slides are laid out horizontally, so check both X and Y axes.
+  // Keep a generous margin for slides (prev/next slides should stay mounted).
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
-    // Slides use a larger keep-alive margin so scrolling back doesn't trigger a full reload.
-    // SVG pages use 2x height since each page is on its own TLDraw page anyway.
-    const margin = viewport.height * (isSlide ? 6 : 2)
+    const marginY = viewport.height * (isSlide ? 6 : 2)
     const shapeTop = shape.y
     const shapeBottom = shape.y + shape.props.h
-    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
-  }, [editor, shape.id, shape.y, shape.props.h, isSlide])
+    const inY = shapeBottom > viewport.minY - marginY && shapeTop < viewport.maxY + marginY
+    if (!inY) return false
+    if (isSlide) {
+      // Horizontal check: keep ±2 slides worth of margin
+      const marginX = viewport.width * 3
+      const shapeLeft = shape.x
+      const shapeRight = shape.x + shape.props.w
+      return shapeRight > viewport.minX - marginX && shapeLeft < viewport.maxX + marginX
+    }
+    return true
+  }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h, isSlide])
 
   // Slide fade-in: start invisible, show when Reveal signals ready.
   // Reset when isNearViewport goes false (iframe unmounted).

@@ -10,8 +10,8 @@ import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
 
 export function BrowseToolbarItem() {
   const tools = useTools()
-  const isSelected = useIsToolSelected(tools['browse'])
-  return <TldrawUiMenuToolItem toolId="browse" isSelected={isSelected} />
+  const isSelected = useIsToolSelected(tools['select'])
+  return <TldrawUiMenuToolItem toolId="select" isSelected={isSelected} />
 }
 
 export function MathNoteToolbarItem() {
@@ -128,11 +128,23 @@ export function ToolToggleZones({ format }: { format?: string }) {
   )
 }
 
+/**
+ * DesktopHighlighterZone — invisible zone on the right edge.
+ * Hover: ghost slider appears at cursor Y, centered on current color.
+ * Drag: slider materializes, move up/down to pick. Double-tap: undo.
+ * Desktop only (touch devices use PhoneHighlighterButton).
+ */
+export function DesktopHighlighterZone() {
+  // Replaced by HighlighterSlider in InFrontOfTheCanvas
+  return null
+}
+
 export function PenHelperButtons({ format }: { format?: string }) {
   return (
     <>
       <ExitPenModeButton />
       <ToolToggleZones format={format} />
+      <DesktopHighlighterZone />
     </>
   )
 }

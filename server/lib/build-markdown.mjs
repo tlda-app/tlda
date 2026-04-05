@@ -12,7 +12,7 @@
 import MarkdownIt from 'markdown-it'
 import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
@@ -30,6 +30,39 @@ function escapedDollar(state, silent) {
   state.pos += 2
   return true
 }
+
+// Extract \newcommand and \DeclareMathOperator from preamble $$ blocks
+function extractMacros(source) {
+  const macros = {}
+  const preambleRe = /\$\$([\s\S]*?)\$\$/g
+  let m
+  while ((m = preambleRe.exec(source)) !== null) {
+    const block = m[1]
+    if (!block.includes('\\newcommand') && !block.includes('\\DeclareMathOperator')) continue
+    // \newcommand{\name}[nargs]{body}
+    for (const cm of block.matchAll(/\\newcommand\{(\\[a-zA-Z]+)\}(?:\[(\d+)\])?\{/g)) {
+      const name = cm[1]
+      const nargs = parseInt(cm[2] || '0')
+      // Find the matching closing brace
+      let depth = 1, i = cm.index + cm[0].length
+      while (i < block.length && depth > 0) {
+        if (block[i] === '{') depth++
+        if (block[i] === '}') depth--
+        i++
+      }
+      const body = block.slice(cm.index + cm[0].length, i - 1)
+      // Double '#' that aren't argument refs (#1, #2..) — KaTeX uses # for args
+      macros[name] = body.replace(/#(?![1-9])/g, '##')
+    }
+    // \DeclareMathOperator{\name}{text}
+    for (const cm of block.matchAll(/\\DeclareMathOperator\*?\{(\\[a-zA-Z]+)\}\{([^}]*)\}/g)) {
+      macros[cm[1]] = `\\operatorname{${cm[2]}}`
+    }
+  }
+  return macros
+}
+
+let _macros = {}
 
 function mathPlugin(md) {
   // Display math: $$...$$
@@ -127,15 +160,20 @@ function mathPlugin(md) {
   // Render tokens
   md.renderer.rules.math_inline = (tokens, idx) => {
     try {
-      return katex.renderToString(tokens[idx].content, { throwOnError: false, displayMode: false })
+      return katex.renderToString(tokens[idx].content, { throwOnError: false, strict: false, displayMode: false, macros: { ..._macros } })
     } catch (e) {
       return `<span class="math-error">${tokens[idx].content}</span>`
     }
   }
 
   md.renderer.rules.math_block = (tokens, idx) => {
+    const content = tokens[idx].content
+    // Skip preamble-only blocks (just \newcommand/\DeclareMathOperator definitions)
+    if (/^[\s\\]*(newcommand|DeclareMathOperator|def\b)/.test(content.trim()) && !content.includes('=')) {
+      return '' // suppress preamble block from output
+    }
     try {
-      return '<p>' + katex.renderToString(tokens[idx].content, { throwOnError: false, displayMode: true }) + '</p>\n'
+      return '<p>' + katex.renderToString(content, { throwOnError: false, strict: false, displayMode: true, macros: { ..._macros } }) + '</p>\n'
     } catch (e) {
       return `<p class="math-error">${tokens[idx].content}</p>\n`
     }
@@ -170,6 +208,11 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     updateProject(name, { buildStatus: 'error' })
     return
   }
+
+  // Extract preamble macros for KaTeX
+  _macros = extractMacros(source)
+  const macroCount = Object.keys(_macros).length
+  if (macroCount > 0) addLog(`[markdown] Extracted ${macroCount} macros from preamble`)
 
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
 
@@ -259,6 +302,16 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; }
     th { background: #f5f5f5; font-weight: 500; }
     img { max-width: 100%; height: auto; }
+    /* Fragment image sequences — break out of body max-width */
+    div[style*="flex"] {
+      max-width: none;
+      width: max-content;
+    }
+    div[style*="flex"] img {
+      max-width: none;
+      height: 360px;
+      width: auto;
+    }
     a { color: #2563eb; }
     .katex-display { overflow-x: auto; overflow-y: hidden; }
     .math-error { color: red; font-family: monospace; }
@@ -273,6 +326,15 @@ ${content}
 
   mkdirSync(outDir, { recursive: true })
   writeFileSync(join(outDir, 'index.html'), injected)
+
+  // Copy image/asset directories from source to output
+  for (const dir of ['img', 'images', 'assets', 'png']) {
+    const src = join(srcDir, dir)
+    if (existsSync(src)) {
+      cpSync(src, join(outDir, dir), { recursive: true })
+      addLog(`[markdown] Copied ${dir}/ to output`)
+    }
+  }
 
   const pageInfo = [{ file: 'index.html', width: 800, height: 1200, title }]
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))

@@ -4,11 +4,6 @@ import type { TLImageShape, TLShapePartial, Editor, TLShapeId } from 'tldraw'
 import { loadDiffData, type SvgDocument, type DiffData } from '../svgDocumentLoader'
 import { setupDiffHoverEffectFromData, setupDiffReviewEffectFromData, setupPulseForDiffData } from '../diffHelpers'
 
-function isInputFocused() {
-  const tag = window.document.activeElement?.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || (window.document.activeElement as HTMLElement)?.isContentEditable
-}
-
 interface UseDiffToggleParams {
   editorRef: React.MutableRefObject<Editor | null>
   document: SvgDocument

@@ -10,6 +10,10 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "fleet-dashboard/*": ["../fleet/dashboard/*"]
+    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

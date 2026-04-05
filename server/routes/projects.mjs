@@ -9,6 +9,7 @@
  *   GET    /:name               Project info
  *   DELETE /:name               Remove project
  *   GET    /:name/files         List source files
+ *   GET    /:name/source/:file  Read source file content
  *   POST   /:name/push          Push files + trigger build
  *   POST   /:name/build         Trigger rebuild
  *   GET    /:name/build/status  Build status + log
@@ -20,13 +21,13 @@ import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
-  listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
+  listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import historyRoutes from './history.mjs'
-import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot } from '../lib/sync-rooms.mjs'
+import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
 
@@ -55,6 +56,27 @@ router.get('/meta', requireRead, (req, res) => {
     }
   }
   res.json(meta)
+})
+
+// GET /events/stream — Global SSE stream of project-level events (doc-arrived, etc.)
+router.get('/events/stream', requireRead, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  })
+  res.write('data: {"type":"connected"}\n\n')
+
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000)
+
+  const unsub = onGlobalEvent((event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  })
+
+  req.on('close', () => {
+    clearInterval(keepalive)
+    unsub()
+  })
 })
 
 // List archived projects
@@ -133,6 +155,31 @@ router.get('/:name/files', requireRead, (req, res) => {
   res.json({ files: listSourceFiles(req.params.name) })
 })
 
+// Read a specific source file's content
+router.get('/:name/source/:file', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  try {
+    const content = readSourceFile(req.params.name, req.params.file)
+    if (content === null) return res.status(404).json({ error: 'File not found' })
+    res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Preamble macros (KaTeX-compatible, parsed during build from main tex file)
+router.get('/:name/macros', requireRead, (req, res) => {
+  const outputPath = join(getOutputDir(req.params.name), 'macros.json')
+  if (!existsSync(outputPath)) return res.json({ macros: {} })
+  try {
+    const data = JSON.parse(readFileSync(outputPath, 'utf8'))
+    res.json({ macros: data.macros || {} })
+  } catch {
+    res.json({ macros: {} })
+  }
+})
+
 // Source file hashes (for incremental push)
 router.get('/:name/hashes', requireRead, (req, res) => {
   const project = readProject(req.params.name)
@@ -198,7 +245,15 @@ router.post('/:name/push', requireRw, async (req, res) => {
   if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
     res.json({ ok: true, filesWritten: files?.length || 0, building: true })
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
-    builder(req.params.name).catch(e => {
+    builder(req.params.name).then(() => {
+      const updated = readProject(req.params.name)
+      if (updated?.buildStatus === 'success') {
+        emitGlobalEvent('doc-arrived', {
+          name: req.params.name, title: updated.title || req.params.name,
+          format: updated.format, pages: updated.pages || 0,
+        })
+      }
+    }).catch(e => {
       console.error(`[${project.format}] Build failed for ${req.params.name}: ${e.message}`)
       updateProject(req.params.name, { buildStatus: 'error' })
     })
@@ -210,6 +265,13 @@ router.post('/:name/push', requireRw, async (req, res) => {
 
   try {
     await runBuild(req.params.name, { priorityPages })
+    const updated = readProject(req.params.name)
+    if (updated?.buildStatus === 'success') {
+      emitGlobalEvent('doc-arrived', {
+        name: req.params.name, title: updated.title || req.params.name,
+        format: updated.format, pages: updated.pages || 0,
+      })
+    }
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }
@@ -289,6 +351,16 @@ router.get('/:name/shapes', requireRead, (req, res) => {
   res.json(records)
 })
 
+// GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
+router.get('/:name/shapes/at/:timestamp', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const ts = parseInt(req.params.timestamp, 10)
+  if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
+  const result = getShapesAt(req.params.name, ts)
+  res.json(result)
+})
+
 // POST /:name/shapes — create a shape
 router.post('/:name/shapes', requireRw, async (req, res) => {
   const project = readProject(req.params.name)
@@ -298,6 +370,9 @@ router.post('/:name/shapes', requireRw, async (req, res) => {
   // Stamp creation time for temporal clustering
   if (!shape.meta) shape.meta = {}
   if (!shape.meta.createdAt) shape.meta.createdAt = Date.now()
+  // Default required TLDraw fields if not provided
+  if (!shape.parentId) shape.parentId = 'page:page'
+  if (!shape.index) shape.index = 'a1'
   try {
     await putShape(syncRoomName(req.params.name), shape)
     res.json({ ok: true, id: shape.id })
@@ -399,6 +474,48 @@ router.get('/:name/signal/:key', requireRead, (req, res) => {
   res.json(signal)
 })
 
+// GET /:name/highlight-feedback — structured feedback from highlight shapes
+// Maps highlight colors to semantic types (approve/reject/question/expand/comment/info)
+const HIGHLIGHT_THEMES = {
+  'light-green': { type: 'approve', label: 'Good, keep this' },
+  'green':       { type: 'approve', label: 'Good, keep this' },
+  'light-red':   { type: 'reject', label: 'Fix this' },
+  'red':         { type: 'reject', label: 'Fix this' },
+  'yellow':      { type: 'question', label: 'Question / unsure' },
+  'light-violet': { type: 'expand', label: 'Develop further' },
+  'violet':      { type: 'expand', label: 'Develop further' },
+  'orange':      { type: 'comment', label: 'General comment' },
+  'light-blue':  { type: 'info', label: 'Note / reference' },
+  'blue':        { type: 'info', label: 'Note / reference' },
+}
+router.get('/:name/highlight-feedback', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  const records = getRoomRecords(syncRoomName(req.params.name), 'highlight')
+  const feedback = records
+    .filter(shape => shape.meta?.highlightText)
+    .map(shape => {
+      const color = shape.props?.color || 'yellow'
+      const theme = HIGHLIGHT_THEMES[color] || { type: 'comment', label: 'General comment' }
+      return {
+        type: theme.type,
+        label: theme.label,
+        color,
+        shapeId: shape.id,
+        text: shape.meta.highlightText || '',
+        highlightLines: shape.meta.highlightLines || [],
+        sourceLine: shape.meta.sourceLine ?? null,
+        addressed: shape.meta.addressed === true,
+        createdAt: shape.meta.createdAt ?? null,
+        opacity: shape.opacity ?? 1,
+      }
+    })
+    .sort((a, b) => (a.sourceLine || 0) - (b.sourceLine || 0))
+
+  res.json({ doc: req.params.name, feedback })
+})
+
 // GET /:name/shapes/stream — SSE stream of shape changes (must be before :id route)
 router.get('/:name/shapes/stream', requireRead, (req, res) => {
   const project = readProject(req.params.name)
@@ -418,7 +535,16 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   getOrCreateRoom(syncRoomName(req.params.name))
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff
+    const slim = { ...event }
+    if (slim.changes) {
+      slim.changes = slim.changes.map(c => {
+        const entry = { action: c.action, id: c.id, shapeType: c.shapeType }
+        if (c.state?.meta) entry.meta = c.state.meta
+        return entry
+      })
+    }
+    res.write(`data: ${JSON.stringify(slim)}\n\n`)
   })
 
   req.on('close', () => { clearInterval(keepalive); unsub() })

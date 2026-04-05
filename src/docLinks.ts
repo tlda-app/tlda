@@ -1,0 +1,486 @@
+/**
+ * docLinks.ts — Detect document references in chat messages and make them clickable.
+ *
+ * Patterns detected:
+ *   - "page N" / "p. N" / "p N"
+ *   - "line N" / "line N-M"
+ *   - "Theorem N.N" / "Lemma N.N" / "Proposition N.N" / "Corollary N.N" / "Definition N.N"
+ *   - "Section N" / "§N" / "Appendix X"
+ *   - "Equation (N)" / "Eq. (N)" / "eq. N"
+ *
+ * Each detected reference is wrapped in a <span class="doc-link" data-ref-type="..." data-ref-value="...">
+ * The click handler resolves references to canvas coordinates and navigates.
+ */
+
+import type { LookupData } from './synctexLookup'
+
+// --- Reference pattern matching ---
+
+export interface DocRef {
+  type: 'page' | 'line' | 'theorem' | 'section' | 'equation'
+  /** The matched text */
+  text: string
+  /** For page: page number. For line: line number. For theorem/section: display number string. */
+  value: string
+  /** For theorem-like: the environment type */
+  envType?: string
+}
+
+// Order matters: longer patterns first to avoid partial matches
+const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string }> = [
+  // Theorem-like with number
+  { re: /\b(Theorem)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'theorem' },
+  { re: /\b(Lemma)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'lemma' },
+  { re: /\b(Proposition)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'proposition' },
+  { re: /\b(Corollary)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'corollary' },
+  { re: /\b(Definition)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'definition' },
+  { re: /\b(Remark)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'remark' },
+  { re: /\b(Example)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'example' },
+  { re: /\b(Assumption)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'assumption' },
+
+  // Sections
+  { re: /\b(Section)\s+(\d+(?:\.\d+)*)/gi, type: 'section' },
+  { re: /§\s*(\d+(?:\.\d+)*)/g, type: 'section' },
+  { re: /\b(Appendix)\s+([A-Z](?:\.\d+)*)/gi, type: 'section' },
+
+  // Equations
+  { re: /\b(?:Equation|Eq\.)\s*\((\d+(?:\.\d+)*)\)/gi, type: 'equation' },
+  { re: /\beq\.\s*(\d+(?:\.\d+)*)/gi, type: 'equation' },
+
+  // Page references
+  { re: /\b(?:page|p\.)\s*(\d+)/gi, type: 'page' },
+
+  // Line references
+  { re: /\blines?\s+(\d+)(?:\s*[-–]\s*(\d+))?/gi, type: 'line' },
+]
+
+/**
+ * Find all document references in a plain text string.
+ */
+export function findRefs(text: string): Array<DocRef & { start: number; end: number }> {
+  const refs: Array<DocRef & { start: number; end: number }> = []
+  const covered = new Set<number>() // prevent overlapping matches
+
+  for (const pat of REF_PATTERNS) {
+    pat.re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = pat.re.exec(text)) !== null) {
+      const start = m.index
+      const end = start + m[0].length
+
+      // Skip if overlapping with a previous match
+      let overlap = false
+      for (let i = start; i < end; i++) {
+        if (covered.has(i)) { overlap = true; break }
+      }
+      if (overlap) continue
+
+      for (let i = start; i < end; i++) covered.add(i)
+
+      let value: string
+      if (pat.type === 'section' && m[0].startsWith('§')) {
+        value = m[1]
+      } else if (pat.type === 'theorem') {
+        value = m[2]
+      } else if (pat.type === 'section') {
+        value = m[2]
+      } else if (pat.type === 'equation') {
+        value = m[1]
+      } else if (pat.type === 'page') {
+        value = m[1]
+      } else {
+        // line
+        value = m[2] ? `${m[1]}-${m[2]}` : m[1]
+      }
+
+      refs.push({
+        type: pat.type,
+        text: m[0],
+        value,
+        envType: pat.envType,
+        start,
+        end,
+      })
+    }
+  }
+
+  refs.sort((a, b) => a.start - b.start)
+  return refs
+}
+
+/**
+ * Post-process rendered HTML to wrap document references as clickable links.
+ * Works on the HTML output from chat-render — scans text nodes only (not inside tags).
+ */
+export function linkifyDocRefs(html: string): string {
+  // We process text outside of HTML tags. Split into tag / text segments.
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) {
+      parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    }
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) {
+    parts.push({ text: html.slice(lastIdx), isTag: false })
+  }
+
+  // Track nesting to skip inside <a>, <code>, <pre>, and existing doc-link spans
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
+  const DOC_LINK_OPEN = /^<span\s[^>]*class="[^"]*doc-link/i
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (SKIP_OPEN.test(part.text) || DOC_LINK_OPEN.test(part.text)) skipDepth++
+      else if (SKIP_CLOSE.test(part.text) && skipDepth > 0) skipDepth = Math.max(0, skipDepth - 1)
+      result.push(part.text)
+      continue
+    }
+
+    if (skipDepth > 0) {
+      result.push(part.text)
+      continue
+    }
+
+    // Find refs in this text segment
+    const refs = findRefs(part.text)
+    if (refs.length === 0) {
+      result.push(part.text)
+      continue
+    }
+
+    let cursor = 0
+    for (const ref of refs) {
+      if (ref.start > cursor) {
+        result.push(part.text.slice(cursor, ref.start))
+      }
+      const attrs = [
+        `class="doc-link"`,
+        `data-ref-type="${ref.type}"`,
+        `data-ref-value="${escAttr(ref.value)}"`,
+      ]
+      if (ref.envType) attrs.push(`data-env-type="${ref.envType}"`)
+      result.push(`<span ${attrs.join(' ')}>${part.text.slice(ref.start, ref.end)}</span>`)
+      cursor = ref.end
+    }
+    if (cursor < part.text.length) {
+      result.push(part.text.slice(cursor))
+    }
+  }
+
+  return result.join('')
+}
+
+function escAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+// --- Arrow ref links: [->label] and [->Display Name] ---
+
+export interface LabelRegionInfo {
+  page: number
+  yTop: number
+  yBottom: number
+  type: string
+  displayLabel: string
+}
+
+/**
+ * Post-process rendered HTML to convert [->ref] syntax into clickable doc links.
+ * Supports both LaTeX labels ([->eq:riesz-rep]) and display names ([->Theorem 3.2]).
+ *
+ * In the HTML, the `>` in `->` may be escaped as `&gt;` by markdown-it.
+ */
+export function linkifyArrowRefs(
+  html: string,
+  labelRegions: Record<string, LabelRegionInfo>,
+): string {
+  if (!html.includes('-&gt;') && !html.includes('->')) return html
+
+  // Build reverse index: displayLabel → label (case-insensitive)
+  const displayToLabel = new Map<string, string>()
+  for (const [label, info] of Object.entries(labelRegions)) {
+    if (info.displayLabel && info.displayLabel !== label) {
+      displayToLabel.set(info.displayLabel.toLowerCase(), label)
+    }
+  }
+
+  // Match [->...] where > may be &gt;
+  const ARROW_RE = /\[-(?:&gt;|>)([^\]]+)\]/g
+
+  // Process text segments outside HTML tags (same approach as linkifyDocRefs)
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) {
+      parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    }
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) {
+    parts.push({ text: html.slice(lastIdx), isTag: false })
+  }
+
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre)>/i
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (SKIP_OPEN.test(part.text)) skipDepth++
+      else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      result.push(part.text)
+      continue
+    }
+
+    if (skipDepth > 0) {
+      result.push(part.text)
+      continue
+    }
+
+    // Replace arrow refs in text
+    ARROW_RE.lastIndex = 0
+    let cursor = 0
+    let m: RegExpExecArray | null
+    let modified = false
+
+    while ((m = ARROW_RE.exec(part.text)) !== null) {
+      modified = true
+      if (m.index > cursor) {
+        result.push(part.text.slice(cursor, m.index))
+      }
+
+      const inner = m[1].trim()
+      let label: string | null = null
+      let info: LabelRegionInfo | null = null
+      let displayText: string
+
+      // Try as exact label first
+      if (labelRegions[inner]) {
+        label = inner
+        info = labelRegions[inner]
+        displayText = info.displayLabel !== inner ? info.displayLabel : inner
+      } else {
+        // Try as display name (case-insensitive)
+        const matchedLabel = displayToLabel.get(inner.toLowerCase())
+        if (matchedLabel && labelRegions[matchedLabel]) {
+          label = matchedLabel
+          info = labelRegions[matchedLabel]
+          displayText = inner // Use the user's original text
+        } else {
+          // No match — render as plain text
+          displayText = inner
+        }
+      }
+
+      if (info && label) {
+        const attrs = [
+          `class="doc-link"`,
+          `data-ref-type="label"`,
+          `data-ref-label="${escAttr(label)}"`,
+          `data-ref-page="${info.page}"`,
+          `data-ref-y-top="${info.yTop}"`,
+          `data-ref-y-bottom="${info.yBottom}"`,
+        ]
+        result.push(`<span ${attrs.join(' ')}>${escAttr(displayText)}</span>`)
+      } else {
+        // Unresolved — render as styled but non-clickable
+        result.push(`<span class="doc-link doc-link-unresolved">${escAttr(displayText)}</span>`)
+      }
+
+      cursor = m.index + m[0].length
+    }
+
+    if (modified) {
+      if (cursor < part.text.length) {
+        result.push(part.text.slice(cursor))
+      }
+    } else {
+      result.push(part.text)
+    }
+  }
+
+  return result.join('')
+}
+
+// --- Reference resolution ---
+
+export interface ResolvedRef {
+  page: number     // 1-indexed
+  pdfY?: number    // PDF y-coordinate (for sub-page positioning)
+}
+
+/**
+ * Build a resolver from lookup data. Returns a function that maps DocRef → page/y.
+ */
+export function buildRefResolver(lookup: LookupData): (ref: DocRef) => ResolvedRef | null {
+  // Pre-index: sections in document order, theorem-like envs in order
+  const sections: Array<{ num: string; page: number; y: number }> = []
+  const envs: Record<string, Array<{ page: number; y: number; idx: number }>> = {}
+
+  // Count environments to assign display numbers
+  const envCounters: Record<string, number> = {}
+  // Track section number for numbered items
+  let currentSection = 0
+
+  // Sort entries by page then y for stable ordering
+  const sorted = Object.entries(lookup.lines)
+    .map(([key, entry]) => ({ key, entry }))
+    .sort((a, b) => a.entry.page - b.entry.page || a.entry.y - b.entry.y)
+
+  for (const { entry } of sorted) {
+    const c = entry.content
+
+    // Section heading
+    const secMatch = c.match(/\\section\*?\{/)
+    if (secMatch) {
+      currentSection++
+      sections.push({ num: String(currentSection), page: entry.page, y: entry.y })
+      continue
+    }
+
+    // Subsection
+    const subMatch = c.match(/\\subsection\*?\{/)
+    if (subMatch) {
+      // We don't track subsection numbering for now — section refs are enough
+      continue
+    }
+
+    // Theorem-like environments
+    const envMatch = c.match(/\\begin\{(theorem|lemma|proposition|corollary|definition|remark|example|assumption)\}/)
+    if (envMatch) {
+      const envType = envMatch[1]
+      if (!envCounters[envType]) envCounters[envType] = 0
+      envCounters[envType]++
+      if (!envs[envType]) envs[envType] = []
+      envs[envType].push({ page: entry.page, y: entry.y, idx: envCounters[envType] })
+    }
+  }
+
+  return (ref: DocRef): ResolvedRef | null => {
+    switch (ref.type) {
+      case 'page': {
+        const page = parseInt(ref.value)
+        return isNaN(page) ? null : { page }
+      }
+
+      case 'line': {
+        const lineNum = parseInt(ref.value.split('-')[0])
+        if (isNaN(lineNum)) return null
+        // Look up in lookup.lines
+        const entry = lookup.lines[String(lineNum)]
+        if (entry) return { page: entry.page, pdfY: entry.y }
+        // Try nearby lines
+        for (let off = 1; off <= 10; off++) {
+          const nearby = lookup.lines[String(lineNum + off)] || lookup.lines[String(lineNum - off)]
+          if (nearby) return { page: nearby.page, pdfY: nearby.y }
+        }
+        return null
+      }
+
+      case 'section': {
+        // ref.value is like "2" or "A" (for appendix)
+        const letter = ref.value.match(/^[A-Z]/)
+        if (letter) {
+          // Appendix — use appendixLine to find where appendix starts,
+          // then count sections after it. A=1st, B=2nd, etc.
+          const appLine = lookup.meta.appendixLine
+          if (!appLine) return null
+          // Find sections that come after the appendix boundary by page
+          // We need to find the page of the appendix line first
+          const appEntry = lookup.lines[String(appLine.line)]
+          const appPage = appEntry ? appEntry.page : Infinity
+          const appSections = sections.filter(s => s.page >= appPage)
+          const idx = ref.value.charCodeAt(0) - 65 // A=0, B=1
+          if (idx >= 0 && idx < appSections.length) {
+            return { page: appSections[idx].page, pdfY: appSections[idx].y }
+          }
+          return null
+        }
+
+        const secNum = parseInt(ref.value)
+        if (isNaN(secNum) || secNum < 1 || secNum > sections.length) return null
+        const sec = sections[secNum - 1]
+        return { page: sec.page, pdfY: sec.y }
+      }
+
+      case 'theorem': {
+        if (!ref.envType) return null
+        const envList = envs[ref.envType]
+        if (!envList) return null
+
+        // ref.value might be "3.1" (section.local) or just "1" (global counter)
+        // Try matching by global index first
+        const parts = ref.value.split('.')
+        if (parts.length === 1) {
+          const idx = parseInt(parts[0])
+          if (!isNaN(idx) && idx >= 1 && idx <= envList.length) {
+            const e = envList[idx - 1]
+            return { page: e.page, pdfY: e.y }
+          }
+        } else {
+          // "N.M" — try M-th instance within section N
+          // Also try as global counter (many papers use continuous numbering)
+          const globalIdx = envList.findIndex(e => e.idx === parseInt(parts[parts.length - 1]))
+          if (globalIdx >= 0) {
+            return { page: envList[globalIdx].page, pdfY: envList[globalIdx].y }
+          }
+          // Try treating the whole thing as a global index
+          const lastNum = parseInt(parts[parts.length - 1])
+          if (!isNaN(lastNum) && lastNum >= 1 && lastNum <= envList.length) {
+            return { page: envList[lastNum - 1].page, pdfY: envList[lastNum - 1].y }
+          }
+        }
+        return null
+      }
+
+      case 'equation':
+        // Can't easily resolve equation numbers from lookup data
+        return null
+
+      default:
+        return null
+    }
+  }
+}
+
+/**
+ * Convert a resolved reference to canvas coordinates.
+ */
+export function refToCanvas(
+  resolved: ResolvedRef,
+  pages: Array<{ bounds: { x: number; y: number; width: number; height: number } }>,
+  pdfHeight: number,
+): { x: number; y: number } | null {
+  const pageIdx = resolved.page - 1
+  if (pageIdx < 0 || pageIdx >= pages.length) return null
+  const bounds = pages[pageIdx].bounds
+
+  const cx = bounds.x + bounds.width / 2
+  let cy: number
+  if (resolved.pdfY != null) {
+    // Scale PDF y to canvas y
+    const scale = bounds.height / pdfHeight
+    cy = bounds.y + resolved.pdfY * scale
+  } else {
+    // Center on page top third
+    cy = bounds.y + bounds.height * 0.3
+  }
+
+  return { x: cx, y: cy }
+}

@@ -15,7 +15,7 @@ import { snapshotPageUrl } from '../historyStore'
 import type { PageDiff, ChangeItem } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'
 import { TARGET_WIDTH } from '../layoutConstants'
-import { setSvgText, deleteSvgText, svgViewBoxStore, setChangeHighlights, dismissAllChanges, type ChangeRegion } from '../stores'
+import { setSvgText, deleteSvgText, svgViewBoxStore, setChangeHighlights, type ChangeRegion } from '../stores'
 
 const OLD_PAGE_GAP = 48
 

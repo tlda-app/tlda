@@ -61,9 +61,11 @@ interface DiffConfig {
   buildStatus?: string
 }
 
+type ErrorType = 'not-found' | 'auth' | 'generic'
+
 type State =
   | { phase: 'loading'; message: string; roomId: string }
-  | { phase: 'error'; message: string }
+  | { phase: 'error'; message: string; errorType?: ErrorType }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
   | { phase: 'book'; bookName: string; members: BookMember[] }
@@ -103,8 +105,22 @@ async function fetchManifest(bustCache = false): Promise<Record<string, DocConfi
 let loadGeneration = 0
 let loadAbort: AbortController | null = null
 
+// Parse initial camera from URL params (?cx=...&cy=...&cz=...&page=...)
+function parseInitialCamera(): { x: number; y: number; z: number; page?: string } | undefined {
+  const params = new URLSearchParams(window.location.search)
+  const cx = params.get('cx'), cy = params.get('cy'), cz = params.get('cz')
+  if (cx == null && cy == null && cz == null) return undefined
+  return {
+    x: cx ? parseFloat(cx) : 0,
+    y: cy ? parseFloat(cy) : 0,
+    z: cz ? parseFloat(cz) : 1,
+    page: params.get('page') || undefined,
+  }
+}
+
 function App() {
   const [state, setState] = useState<State | null>(null)
+  const [initialCamera] = useState(parseInitialCamera)
 
   // Handle browser back/forward — reload to cleanly reset TLDraw state
   useEffect(() => {
@@ -131,7 +147,8 @@ function App() {
           try {
             manifest = await fetchManifest()
           } catch (e) {
-            setState({ phase: 'error', message: (e as Error).message })
+            const msg = (e as Error).message
+            setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
             return
           }
           const docs = Object.keys(manifest)
@@ -168,7 +185,8 @@ function App() {
     try {
       manifest = await fetchManifest()
     } catch (e) {
-      setState({ phase: 'error', message: (e as Error).message })
+      const msg = (e as Error).message
+      setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
       return
     }
     if (gen !== loadGeneration) return  // superseded
@@ -187,15 +205,10 @@ function App() {
             format: memberConfig.format,
             pages: memberConfig.pages,
             basePath: memberConfig.basePath,
-            ...(memberConfig.sessionAt && { sessionAt: memberConfig.sessionAt }),
+            ...((memberConfig as any).sessionAt && { sessionAt: (memberConfig as any).sessionAt }),
           }
         })
         .filter((m): m is BookMember => m !== null)
-
-      if (members.length === 0) {
-        setState({ phase: 'error', message: `Book "${docName}" has no loadable members.` })
-        return
-      }
 
       setState({ phase: 'book', bookName: docName, members })
       return
@@ -203,6 +216,20 @@ function App() {
 
     // If project is missing, still building, or has no pages yet, poll until ready
     if (!config || config.buildStatus === 'building' || config.pages === 0) {
+      // If not in manifest, probe the API to distinguish "doesn't exist" from "not yet built"
+      if (!config) {
+        try {
+          const checkResp = await fetch(`/api/projects/${docName}`)
+          if (checkResp.status === 404) {
+            setState({ phase: 'error', message: `Document "${docName}" not found.`, errorType: 'not-found' })
+            return
+          }
+          if (checkResp.status === 401 || checkResp.status === 403) {
+            setState({ phase: 'error', message: 'Authentication required. Add ?token=TOKEN to the URL.', errorType: 'auth' })
+            return
+          }
+        } catch { /* network error — fall through to polling */ }
+      }
       const label = config?.name || docName
       setState({ phase: 'loading', message: config ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
       const waitForBuild = async () => {
@@ -277,7 +304,7 @@ function App() {
           const diffBasePath = diffEntry.basePath.startsWith('/')
             ? diffEntry.basePath.slice(1)
             : diffEntry.basePath
-          diffConfig = { basePath: `${base}${diffBasePath}` }
+          diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
         }
       }
 
@@ -313,7 +340,13 @@ function App() {
         }
       } catch { /* ignore status check failure */ }
 
-      setState({ phase: 'error', message: `Failed to load "${docName}": ${(e as Error).message}` })
+      const msg = (e as Error).message
+      const isAuth = msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized') || msg.includes('Forbidden') || msg.includes('Authentication')
+      setState({
+        phase: 'error',
+        message: isAuth ? 'Authentication required. Add ?token=TOKEN to the URL.' : `Failed to load "${docName}": ${msg}`,
+        errorType: isAuth ? 'auth' : 'generic',
+      })
     }
   }
 
@@ -333,9 +366,17 @@ function App() {
     case 'error':
       return (
         <div className="App">
-          <div className="LoadingScreen">
-            <h2>Error</h2>
-            <p>{state.message}</p>
+          <div className="ErrorScreen">
+            <div className="error-icon">
+              {state.errorType === 'not-found' ? '404' : state.errorType === 'auth' ? '🔒' : '⚠'}
+            </div>
+            <h2 className="error-title">
+              {state.errorType === 'not-found' ? 'Document not found'
+                : state.errorType === 'auth' ? 'Authentication required'
+                : 'Something went wrong'}
+            </h2>
+            <p className="error-message">{state.message}</p>
+            <a className="error-home-link" href="/">← All documents</a>
           </div>
         </div>
       )
@@ -364,7 +405,7 @@ function App() {
       return (
         <div className="App">
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} />
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>
         </div>
       )

@@ -89,6 +89,9 @@ export function parseRevealSlides(html) {
           indexv = 0
           inWrapper = false
           const afterSection = content.slice(event.pos, event.pos + 2000)
+          // Skip Quarto hidden macro-definition slides (content is only <div class="hidden">)
+          const afterTag = afterSection.replace(/^<section[^>]*>\s*/, '')
+          if (/^<div class="hidden">/.test(afterTag)) continue
           let title = ''
           const h1Match = afterSection.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/)
           if (h1Match) title = h1Match[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()

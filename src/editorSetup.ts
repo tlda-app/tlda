@@ -11,8 +11,9 @@ import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
-import { mergeTabs } from './noteThreading'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
+import { processHighlightFeedback } from './highlightFeedback'
+import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
@@ -21,7 +22,7 @@ import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
 } from './annotationVisibility'
-import { getRole } from './viewerRole'
+// getRole import removed (unused)
 import { cleanupHtmlShapeData } from './shapes/HtmlPageShape'
 
 export type ReloadResult = {
@@ -305,7 +306,7 @@ export async function reloadPages(
     ? pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
     : pages.map((_, i) => i)
 
-  if (indices.length === 0) return
+  if (indices.length === 0) return { failedPages: [] }
 
   console.log(`[Reload] Fetching ${indices.length} page(s): ${indices.map(i => i + 1).join(', ')}`)
 
@@ -613,39 +614,50 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             return
           }
           snapHighlighterToText(editor, shape.id)
+          // Process highlight for feedback integration (understanding-line updates + signal)
+          processHighlightFeedback(editor, shape.id, document.name)
         }
         setTimeout(checkSnap, 300)
       }
     }
   })
 
-  // Drag-to-merge: when a math-note is dropped overlapping another, merge tabs
-  editor.sideEffects.registerAfterChangeHandler('shape', (prev, next) => {
-    if (next.type !== 'math-note') return
-    if (shapeIdSet.has(next.id)) return
-    if (prev.x === next.x && prev.y === next.y) return
-
-    const allShapes = editor.getCurrentPageShapes()
-    for (const other of allShapes) {
-      if (other.id === next.id) continue
-      if (other.type !== 'math-note') continue
-
-      // Simple bounding box overlap
-      const ow = (other.props as any).w || 200
-      const oh = (other.props as any).h || 50
-      const nw = (next.props as any).w || 200
-      const nh = (next.props as any).h || 50
-
-      const overlapX = next.x < other.x + ow && next.x + nw > other.x
-      const overlapY = next.y < other.y + oh && next.y + nh > other.y
-
-      if (overlapX && overlapY) {
-        // Merge: dragged note's tabs merge into target
-        setTimeout(() => mergeTabs(editor, next.id, other.id), 0)
-        return
-      }
+  // Slider zone guard: cancel highlight/draw tool when pointer_down is in the slider zone.
+  // This prevents strokes from starting when the user interacts with the ghost slider.
+  const SLIDER_ZONE_WIDTH = 250
+  editor.on('event', (event: any) => {
+    if (event.name !== 'pointer_down' || event.type !== 'pointer') return
+    if (!event.point) return
+    const w = window.innerWidth
+    const h = window.innerHeight
+    const inZone = event.point.x >= w - SLIDER_ZONE_WIDTH && event.point.y >= h * 0.1 && event.point.y <= h * 0.9
+    if (!inZone) return
+    const tool = editor.getCurrentToolId()
+    if (tool === 'highlight' || tool === 'draw' || tool === 'eraser') {
+      editor.cancel()
     }
   })
+
+  // Re-saturate addressed highlights on tap/click.
+  // When a highlight has meta.addressed = true, clicking it re-activates it
+  // (sets addressed = false, restores opacity) so the agent retries.
+  editor.on('event', (event) => {
+    if (event.name !== 'pointer_up' || event.type !== 'pointer') return
+    const selectedIds = editor.getSelectedShapeIds()
+    if (selectedIds.length !== 1) return
+    const shape = editor.getShape(selectedIds[0])
+    if (!shape || shape.type !== 'highlight') return
+    if (!shape.meta?.addressed) return
+    // Re-saturate: clear addressed flag and restore opacity
+    editor.store.update(shape.id, (s: any) => ({
+      ...s,
+      opacity: 1,
+      meta: { ...s.meta, addressed: false },
+    }))
+  })
+
+  // Drag-to-merge is handled by onTranslateEnd in MathNoteShapeUtil
+  // (fires only on drop, not mid-drag)
 
   // Constrain the camera to the bounds of the pages
   let targetBounds = document.pages.reduce(
@@ -653,18 +665,45 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     document.pages[0].bounds.clone()
   )
 
+  const isSlides = document.format === 'slides'
+
   function applyCameraBounds() {
-    editor.setCameraOptions({
-      constraints: {
-        bounds: targetBounds,
-        padding: { x: 100, y: 50 },
-        origin: { x: 0.5, y: 0 },
-        initialZoom: 'fit-x-100',
-        baseZoom: 'default',
-        behavior: 'free',
-      },
-    })
-    editor.setCamera(editor.getCamera(), { reset: true })
+    if (isSlides) {
+      // Spatial slides: free camera within canvas bounds, initial zoom fits first slide
+      editor.setCameraOptions({
+        constraints: {
+          bounds: targetBounds,
+          padding: { x: 16, y: 16 },
+          origin: { x: 0, y: 0.5 },
+          initialZoom: 'default',
+          baseZoom: 'default',
+          behavior: 'free',
+        },
+      })
+      // Center camera on first slide
+      const first = document.pages[0]
+      if (first) {
+        const vp = editor.getViewportScreenBounds()
+        const z = Math.min(1, vp.width / first.width, vp.height / first.height)
+        editor.setCamera({
+          x: -first.bounds.x + (vp.width / z - first.width) / 2,
+          y: -first.bounds.y + (vp.height / z - first.height) / 2,
+          z,
+        })
+      }
+    } else {
+      editor.setCameraOptions({
+        constraints: {
+          bounds: targetBounds,
+          padding: { x: 100, y: 50 },
+          origin: { x: 0.5, y: 0 },
+          initialZoom: 'fit-x-100',
+          baseZoom: 'default',
+          behavior: 'free',
+        },
+      })
+      editor.setCamera(editor.getCamera(), { reset: true })
+    }
   }
 
   let isMobile = editor.getViewportScreenBounds().width < 840
@@ -688,18 +727,16 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       editor.setCameraOptions({
         constraints: {
           bounds: targetBounds,
-          padding: { x: 100, y: 50 },
-          origin: { x: 0.5, y: 0 },
-          initialZoom: 'fit-x-100',
+          padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
+          origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+          initialZoom: isSlides ? 'default' : 'fit-x-100',
           baseZoom: 'default',
           behavior: 'free',
         },
       })
-      if (newBounds.w > prevW * 1.2) {
-        // Bounds expanded significantly (overlay added) — refit to show both columns
+      if (newBounds.w > prevW * 1.2 && !isSlides) {
         editor.setCamera(editor.getCamera(), { reset: true })
       } else {
-        // Bounds narrowed or unchanged — preserve camera position
         editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
       }
     },
@@ -770,18 +807,17 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       styleEl.textContent = css
     }
 
-    const unsubMode = subscribeVisibility(rebuildVisibilityCSS)
-    const unsubDrafts = subscribeDrafts(rebuildVisibilityCSS)
-    const unsubHover = subscribeDraftHovering(rebuildVisibilityCSS)
+    void subscribeVisibility(rebuildVisibilityCSS)
+    void subscribeDrafts(rebuildVisibilityCSS)
+    void subscribeDraftHovering(rebuildVisibilityCSS)
     let rebuildTimer: ReturnType<typeof setTimeout>
     const debouncedRebuild = () => {
       clearTimeout(rebuildTimer)
       rebuildTimer = setTimeout(rebuildVisibilityCSS, 100)
     }
-    const unsubStore = editor.store.listen(debouncedRebuild, { scope: 'document' })
+    void editor.store.listen(debouncedRebuild, { scope: 'document' })
     rebuildVisibilityCSS()
-    // Note: cleanup not strictly needed (editor outlives this setup), but
-    // if needed: styleEl.remove(); unsubMode(); unsubDrafts(); unsubStore();
+    // Note: cleanup not strictly needed (editor outlives this setup)
   }
 
   // Restore magic highlights from persisted metadata shapes
@@ -803,6 +839,10 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           const shape = editor.getShape(id)
           if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
             glowCleanup = showGlow(editor, id)
+          }
+          // Show transcription toast on hover for recognized draw shapes
+          if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {
+            glowCleanup = showTranscriptionToast(editor, shape)
           }
         }
       } catch { /* editor not ready */ }

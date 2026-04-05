@@ -20,6 +20,9 @@ const MATHJAX_CONFIG = `
   var prevMacros = prevTex.macros || {};
   window.MathJax = Object.assign({}, prev, {
     tex: Object.assign({}, prevTex, {
+      inlineMath: [['\\\\(', '\\\\)'], ['$', '$']],
+      displayMath: [['\\\\[', '\\\\]'], ['$$', '$$']],
+      processEscapes: true,
       macros: Object.assign({}, prevMacros, {
         qqtext: ['\\\\qquad\\\\text{#1}\\\\qquad', 1],
         qty: ['\\\\left(#1\\\\right)', 1],
@@ -615,6 +618,46 @@ const SLIDES_BRIDGE_SCRIPT = `
     ].join('\\n');
     document.head.appendChild(style);
 
+    // Report fragment state to parent (for SlidesNavigator)
+    function reportFragmentState() {
+      if (window.parent === window) return;
+      var slide = Reveal.getCurrentSlide();
+      if (!slide) return;
+      var fragments = slide.querySelectorAll('.fragment');
+      var total = 0;
+      var current = 0;
+      // Count unique fragment indices
+      var indices = new Set();
+      for (var i = 0; i < fragments.length; i++) {
+        var idx = fragments[i].getAttribute('data-fragment-index');
+        if (idx !== null) indices.add(idx);
+        else indices.add('auto-' + i);
+      }
+      total = indices.size;
+      // Count visible fragments
+      for (var i = 0; i < fragments.length; i++) {
+        if (fragments[i].classList.contains('visible')) {
+          var idx = fragments[i].getAttribute('data-fragment-index');
+          if (idx !== null) indices.delete(idx);
+          else indices.delete('auto-' + i);
+        }
+      }
+      current = total - indices.size;
+      window.parent.postMessage({
+        type: 'tlda-fragment-state',
+        shapeId: shapeId,
+        current: current,
+        total: total,
+      }, '*');
+    }
+
+    // Report initial fragment state
+    setTimeout(reportFragmentState, 200);
+
+    // Report on every fragment change
+    Reveal.on('fragmentshown', reportFragmentState);
+    Reveal.on('fragmenthidden', reportFragmentState);
+
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type) return;
@@ -623,8 +666,6 @@ const SLIDES_BRIDGE_SCRIPT = `
         if (avail && avail.next) {
           Reveal.next();
         }
-        // If no more fragments, do nothing — the tap zone in the parent
-        // can handle "advance past last fragment" if needed later
       }
       if (e.data.type === 'tlda-fragment-prev') {
         var avail = Reveal.availableFragments();
@@ -689,6 +730,26 @@ export function injectSlidesBridge(html) {
       str.lastIndexOf('</body>') === offset ? match : '<\\/body>')
     .replace(/<\/html>/gi, (match, offset, str) =>
       str.lastIndexOf('</html>') === offset ? match : '<\\/html>')
+
+  // Fix MathJax v2/v3 mismatch: Quarto configures RevealMath (MathJax2 plugin) with a
+  // mathjax@3 URL. The v2 plugin calls MathJax.Hub.Config() which doesn't exist in v3.
+  // Replace RevealMath with RevealMath.MathJax3() and move config to mathjax3 key.
+  if (html.includes('mathjax@3') && html.includes('RevealMath')) {
+    // Switch plugin from default (MathJax2) to MathJax3
+    html = html.replace(/(\bplugins\s*:\s*\[[\s\S]*?)RevealMath(\s*[,\]])/,
+      '$1RevealMath.MathJax3()$2')
+    // Move math: config to mathjax3: so the MathJax3 plugin picks it up
+    html = html.replace(/\bmath\s*:\s*\{/, 'mathjax3: {')
+  }
+
+  // Inject MathJax config (custom macros) before MathJax loads
+  const mathjaxScriptIdx = html.indexOf('mathjax@3')
+  if (mathjaxScriptIdx !== -1) {
+    const scriptStart = html.lastIndexOf('<script', mathjaxScriptIdx)
+    if (scriptStart !== -1) {
+      html = html.slice(0, scriptStart) + MATHJAX_CONFIG + html.slice(scriptStart)
+    }
+  }
 
   // Inject head script before the structural </head> tag.
   // Quarto reveal.js files have multiple </head> occurrences inside JS template literals

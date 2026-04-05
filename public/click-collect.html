@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+<title>Click Classifier — Data Collection</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #111; color: #eee; font-family: monospace; padding: 24px; }
+h1 { font-size: 18px; margin-bottom: 16px; color: #8af; }
+#status { color: #fa8; margin-bottom: 16px; }
+#startbtn { padding: 12px 32px; font-size: 16px; cursor: pointer; background: #4af; border: none; border-radius: 6px; color: #000; margin-bottom: 24px; }
+
+#queue-area { display: none; }
+#spectrogram-wrap { margin-bottom: 16px; }
+canvas { display: block; background: #000; border: 1px solid #333; }
+
+#label-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+.lbtn {
+  padding: 12px 20px; font-size: 14px; cursor: pointer;
+  border: 2px solid #444; border-radius: 6px; background: #1a1a1a; color: #eee;
+  font-family: monospace;
+}
+.lbtn:hover { border-color: #8af; }
+.lbtn.discard { color: #888; }
+#skip-all { padding: 8px 16px; font-size: 12px; cursor: pointer; background: #222; border: 1px solid #444; border-radius: 4px; color: #888; }
+
+#counts { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+.cnt { font-size: 12px; color: #888; }
+.cnt span { color: #eee; }
+
+#floor-line { font-size: 11px; color: #555; margin-bottom: 24px; }
+#exportbtn { padding: 10px 28px; font-size: 14px; cursor: pointer; background: #383; border: none; border-radius: 6px; color: #fff; margin-right: 12px; }
+#clearbtn { padding: 10px 28px; font-size: 14px; cursor: pointer; background: #522; border: none; border-radius: 6px; color: #fff; }
+#recent { margin-top: 24px; font-size: 12px; color: #8f8; max-height: 200px; overflow-y: auto; }
+
+#ambient-hint { font-size: 11px; color: #555; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Click Classifier — Data Collection</h1>
+<div id="status">Click Start to begin.</div>
+<button id="startbtn">Start Mic</button>
+
+<div id="queue-area">
+  <div id="spectrogram-wrap">
+    <canvas id="spec" width="512" height="120"></canvas>
+  </div>
+  <div id="ambient-hint">Hold <b>A</b> to record ambient/fan frames continuously. For other sounds, trigger then label.</div>
+  <div id="label-row">
+    <button class="lbtn" data-label="click">click</button>
+    <button class="lbtn" data-label="dblclick">dblclick</button>
+    <button class="lbtn" data-label="pop">pop</button>
+    <button class="lbtn" data-label="typing">typing</button>
+    <button class="lbtn" data-label="knock">knock</button>
+    <button class="lbtn" data-label="fan">fan</button>
+    <button class="lbtn" data-label="ambient">ambient</button>
+    <button class="lbtn discard" data-label="__discard__">discard</button>
+  </div>
+  <div id="floor-line">noise floor: — | threshold: — | energy: — | hiR: —</div>
+  <div id="counts"></div>
+  <button id="exportbtn">Export JSON</button>
+  <button id="clearbtn">Clear</button>
+  <div id="recent"></div>
+</div>
+
+<script>
+const LABELS = ['click','dblclick','pop','typing','knock','fan','ambient']
+const TRIGGER = 3.0, ATTACK = 1.5, ALPHA = 0.005
+const HI_BAND_START = 2000  // Hz
+
+let samples = []   // { label, fft: number[], sampleRate }
+let counts = Object.fromEntries(LABELS.map(l => [l, 0]))
+let pending = null  // FFT frame waiting for label
+let ambientHeld = false
+
+function energy(data, sr, lo, hi) {
+  const bw = sr / (data.length * 2)
+  const l = Math.floor(lo/bw), h = Math.min(Math.ceil(hi/bw), data.length-1)
+  let s = 0
+  for (let i = l; i <= h; i++) { const v = Math.pow(10, data[i]/20); s += v*v }
+  return Math.sqrt(s / (h-l+1))
+}
+
+function drawSpec(data, sr, ctx, canvas) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const W = canvas.width, H = canvas.height
+  const n = data.length
+  for (let i = 0; i < W; i++) {
+    const bin = Math.floor(i * n / W)
+    // dBFS: -160 to 0
+    const db = Math.max(-120, data[bin])
+    const norm = (db + 120) / 120
+    const h = Math.floor(norm * H)
+    // Color by frequency: blue=low, green=mid, red=high
+    const hue = 240 - Math.floor(240 * i / W)
+    ctx.fillStyle = `hsl(${hue},80%,${20 + 50*norm}%)`
+    ctx.fillRect(i, H - h, 1, h)
+  }
+  // Mark HI_BAND_START
+  const hiX = Math.floor(HI_BAND_START / (sr/2) * W)
+  ctx.strokeStyle = 'rgba(255,255,0,0.4)'
+  ctx.beginPath(); ctx.moveTo(hiX, 0); ctx.lineTo(hiX, H); ctx.stroke()
+}
+
+function updateCounts() {
+  const el = document.getElementById('counts')
+  el.innerHTML = LABELS.map(l => `<div class="cnt">${l}: <span>${counts[l]}</span></div>`).join('')
+    + `<div class="cnt">total: <span>${samples.length}</span></div>`
+}
+
+function recordLabel(label) {
+  if (!pending) return
+  if (label !== '__discard__') {
+    samples.push({ label, fft: Array.from(pending.fft), sampleRate: pending.sr })
+    counts[label] = (counts[label] || 0) + 1
+    document.getElementById('recent').innerHTML =
+      `<div>${new Date().toLocaleTimeString()}: ${label}</div>` +
+      document.getElementById('recent').innerHTML
+    updateCounts()
+  }
+  pending = null
+}
+
+document.getElementById('startbtn').onclick = async function() {
+  this.textContent = 'connecting...'
+  this.disabled = true
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const ctx = new AudioContext()
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 2048
+    analyser.smoothingTimeConstant = 0
+    ctx.createMediaStreamSource(stream).connect(analyser)
+    document.getElementById('startbtn').style.display = 'none'
+    document.getElementById('queue-area').style.display = 'block'
+
+    const canvas = document.getElementById('spec')
+    const sCtx = canvas.getContext('2d')
+    const floorEl = document.getElementById('floor-line')
+
+    let floor = 1e-4, prev = 0
+    const sr = ctx.sampleRate
+
+    function poll() {
+      const data = new Float32Array(analyser.frequencyBinCount)
+      analyser.getFloatFrequencyData(data)
+      const tot = energy(data, sr, 100, sr/2 * 0.9)
+      const thr = floor * TRIGGER
+      const hiR = energy(data, sr, HI_BAND_START, sr/2 * 0.9) / (tot + 1e-10)
+      floorEl.textContent = `floor: ${floor.toFixed(5)}  thr: ${thr.toFixed(5)}  energy: ${tot.toFixed(5)}  hiR: ${hiR.toFixed(2)}`
+
+      // Ambient recording — hold A key
+      if (ambientHeld && Math.random() < 0.05) {  // ~3fps worth of samples at 60fps
+        samples.push({ label: 'ambient', fft: Array.from(data), sampleRate: sr })
+        counts['ambient'] = (counts['ambient'] || 0) + 1
+        updateCounts()
+      }
+
+      if (tot > thr && tot > prev * ATTACK) {
+        if (!pending) {
+          pending = { fft: data.slice(), sr }
+          drawSpec(data, sr, sCtx, canvas)
+          document.getElementById('status').textContent = '⚡ Transient detected — label it:'
+        }
+      } else {
+        floor = floor * (1-ALPHA) + tot * ALPHA
+        if (!pending) {
+          document.getElementById('status').textContent = 'listening...'
+        }
+      }
+      prev = tot * 0.7 + prev * 0.3
+      requestAnimationFrame(poll)
+    }
+    poll()
+    document.getElementById('status').textContent = 'listening...'
+    updateCounts()
+  } catch(e) {
+    document.getElementById('startbtn').textContent = 'ERROR: ' + e.message
+    document.getElementById('startbtn').disabled = false
+  }
+}
+
+// Label buttons
+document.getElementById('label-row').addEventListener('click', e => {
+  const btn = e.target.closest('.lbtn')
+  if (!btn) return
+  recordLabel(btn.dataset.label)
+  document.getElementById('status').textContent = `labeled: ${btn.dataset.label}`
+})
+
+// Keyboard shortcuts: 1-7 = labels, Escape = discard, A = ambient hold
+const keyMap = { '1':'click','2':'dblclick','3':'pop','4':'typing','5':'knock','6':'fan','7':'ambient' }
+window.addEventListener('keydown', e => {
+  if (keyMap[e.key]) { recordLabel(keyMap[e.key]); return }
+  if (e.key === 'Escape') { recordLabel('__discard__'); return }
+  if (e.key === 'a' || e.key === 'A') ambientHeld = true
+})
+window.addEventListener('keyup', e => {
+  if (e.key === 'a' || e.key === 'A') ambientHeld = false
+})
+
+document.getElementById('exportbtn').onclick = () => {
+  const blob = new Blob([JSON.stringify({ samples, counts }, null, 0)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `click-samples-${Date.now()}.json`
+  a.click()
+}
+
+document.getElementById('clearbtn').onclick = () => {
+  if (!confirm('Clear all samples?')) return
+  samples = []
+  counts = Object.fromEntries(LABELS.map(l => [l, 0]))
+  updateCounts()
+  document.getElementById('recent').innerHTML = ''
+}
+</script>
+</body>
+</html>

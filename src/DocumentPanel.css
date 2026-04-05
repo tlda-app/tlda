@@ -198,10 +198,11 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 }
 
 .doc-panel {
+  --panel-full-width: 250px;
   position: fixed;
   top: 0;
   right: 0;
-  width: 250px;
+  width: var(--panel-full-width);
   max-height: 85vh;
   z-index: 999;
   background: transparent;
@@ -210,15 +211,91 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 11px;
   color: rgba(0, 0, 0, 0.1);
-  pointer-events: all;
+  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
   overflow: hidden;
+  transition: background 0.4s ease-out, color 0.3s;
+}
+
+/* Invisible hover trigger strip on the right edge */
+.doc-panel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--zone-width, 60px);
+  pointer-events: all;
+  z-index: 0;
+}
+
+/* Once hovered, the trigger zone shouldn't block content */
+.doc-panel:hover::after,
+.doc-panel-open::after {
+  pointer-events: none;
 }
 
 /* Narrower panel for HTML-format docs (no history tab = less width needed) */
 .doc-panel.doc-panel--html {
-  width: 180px;
+  --panel-full-width: 180px;
+}
+
+.toc-zone-width-slider {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  opacity: 0.25;
+  transition: opacity 0.3s;
+  z-index: 1;
+}
+
+.toc-zone-width-slider:hover {
+  opacity: 0.7;
+}
+
+.toc-zone-width-slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.toc-zone-width-slider input[type="range"]::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 14px;
+}
+
+.toc-zone-width-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.4);
+  border: none;
+  margin-top: 1px;
+}
+
+.tl-theme__dark .toc-zone-width-slider input[type="range"]::-webkit-slider-thumb {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.toc-zone-width-slider input[type="range"]::-moz-range-track {
+  background: transparent;
+  height: 14px;
+  border: none;
+}
+
+.toc-zone-width-slider input[type="range"]::-moz-range-thumb {
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.4);
+  border: none;
 }
 
 /* Tabs and content ghost when idle — slow fade in on hover */
@@ -232,11 +309,11 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 /* Fade in on hover (desktop) or open state (touch) */
 .doc-panel:hover,
 .doc-panel-open {
+  pointer-events: all;
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: rgba(0, 0, 0, 0.6);
-  transition: background 0.4s ease-out;
 }
 
 .doc-panel:hover .doc-panel-tabs,
@@ -415,6 +492,28 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 .toc-item.subsubsection {
   padding-left: 40px;
   font-size: 10px;
+}
+
+.toc-drop-hint {
+  color: #0284c7;
+  border: 1px dashed #38bdf8;
+  border-radius: 4px;
+  margin: 4px 8px;
+  padding: 4px 8px;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.toc-adding {
+  color: #64748b;
+  font-style: italic;
+  margin: 4px 8px;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .toc-drop-hint {
+  color: #38bdf8;
+  border-color: #0284c7;
 }
 
 .toc-fold {
@@ -1343,5 +1442,612 @@ html[data-theme="dark"] .snapshot-label {
   html[data-theme="dark"] .doc-panel-open .doc-panel-tab {
     color: rgba(255, 255, 255, 0.5);
   }
+}
+
+/* ========================
+   Phone mode (max-width 600px)
+   ======================== */
+
+/* Hide panel and toolbar on phone */
+body.phone-mode .doc-panel {
+  display: none;
+}
+
+body.phone-mode .tlui-layout__bottom {
+  display: none !important;
+}
+
+body.phone-mode.phone-bar-visible .tlui-layout__bottom {
+  display: flex !important;
+}
+
+/* Also hide watermark and agent pill on phone — save space */
+body.phone-mode [class*="watermark"] {
+  display: none !important;
+}
+
+/* TOC toggle button — top right, small */
+.phone-toc-btn {
+  display: none;
+}
+
+body.phone-mode .phone-toc-btn {
+  display: flex;
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
+  z-index: 10001;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.5;
+}
+
+/* phone-bar-btn removed — merged into single ☰ menu button */
+
+/* TOC modal backdrop */
+.phone-toc-backdrop {
+  display: none;
+}
+
+body.phone-mode .phone-toc-backdrop {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.3);
+  justify-content: flex-end;
+  pointer-events: all;
+}
+
+.phone-toc-modal {
+  width: min(300px, 80vw);
+  height: 100%;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Override ghost opacity — modal content should be fully visible */
+.phone-toc-modal .doc-panel-content,
+.phone-toc-modal .search-input-wrap {
+  opacity: 1;
+}
+
+.phone-toc-modal .toc-item {
+  padding: 8px 12px;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .toc-item.section {
+  padding-top: 6px;
+  color: rgba(0, 0, 0, 0.65);
+  font-weight: 500;
+}
+
+.phone-toc-modal .toc-item.subsection {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .search-input {
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .phone-toc-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .phone-toc-modal {
+  background: rgba(0, 0, 0, 0.75);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.section {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Highlighter button — bottom right, desktop + mobile */
+.phone-hl-btn {
+  display: flex;
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 10001;
+  width: 27px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  transition: background 0.15s, opacity 0.15s;
+  touch-action: none;
+  opacity: 0.15;
+}
+.phone-hl-btn:hover {
+  opacity: 0.5;
+}
+
+body.phone-mode .phone-hl-btn {
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  right: calc(16px + env(safe-area-inset-right));
+  opacity: 0.5;
+}
+
+/* Show selected color as subtle ring when inactive */
+/* Inactive button + tool slots (eraser, select, draw): ring style */
+.phone-hl-btn,
+.phone-hl-slot.tool {
+  box-shadow: inset 0 0 0 2px var(--hl-color, transparent);
+  background: none;
+  color: var(--hl-color, rgba(0, 0, 0, 0.5));
+}
+/* Active button + color slots: filled circle */
+.phone-hl-btn.active,
+.phone-hl-slot.color {
+  background: var(--hl-color, #ffc940);
+  color: white;
+  box-shadow: none;
+}
+/* Icon blends into fill — less stark white-on-color */
+.phone-hl-btn.active span,
+.phone-hl-slot.color span {
+  mix-blend-mode: overlay;
+  opacity: 0.8;
+}
+.phone-hl-btn.active {
+  opacity: 0.2;
+}
+
+/* Highlighter color slider — appears to the left of button during drag */
+/* Position is set via inline style (dynamic from button rect). */
+.phone-hl-slider {
+  display: flex;
+  flex-direction: row;
+  position: fixed;
+  z-index: 10002;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: none;
+  pointer-events: none;
+  gap: 2px;
+  opacity: 0.6;
+}
+
+.phone-hl-slot {
+  position: relative;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s;
+}
+
+.phone-hl-slot.active {
+  transform: scale(1.25);
+}
+
+.phone-hl-slot-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--slot-color);
+}
+
+.phone-hl-slot-eraser {
+  font-size: 16px;
+  color: #888;
+  font-weight: bold;
+}
+
+.phone-hl-slot-label {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: #fff;
+  background: var(--slot-color);
+  padding: 4px 14px;
+  border-radius: 16px;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+/* Dark mode highlighter */
+html[data-theme="dark"] .phone-hl-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .phone-hl-btn.active {
+  background: var(--hl-color, #ffc940);
+  color: white;
+}
+
+/* Options popup — appears above button on upward drag */
+.phone-hl-options {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  z-index: 10002;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: none;
+  pointer-events: none;
+  gap: 2px;
+}
+
+.phone-hl-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(80, 80, 80, 0.6);
+  white-space: nowrap;
+  transition: background 0.08s;
+}
+
+.phone-hl-option.active {
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(40, 40, 40, 0.9);
+}
+
+.phone-hl-option-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+html[data-theme="dark"] .phone-hl-option {
+  color: rgba(200, 200, 200, 0.6);
+}
+html[data-theme="dark"] .phone-hl-option.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(220, 220, 220, 0.9);
+}
+
+html[data-theme="dark"] .phone-hl-slot.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Phone page number indicator — bottom center, shows during scroll */
+.phone-page-indicator {
+  display: none;
+}
+
+body.phone-mode .phone-page-indicator {
+  display: block;
+  position: fixed;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  font-family: system-ui, sans-serif;
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+}
+
+body.phone-mode .phone-page-indicator.visible {
+  opacity: 1;
+  transition: opacity 0.1s ease-in;
+}
+
+/* Page/figure background — themed via CSS, not inline styles */
+.svg-page-background {
+  width: 100%;
+  height: 100%;
+  background: white;
+}
+
+.tl-theme__dark .svg-page-background {
+  background: #0f0f1a;
+}
+
+/* Warm / sepia reading mode */
+body.warm-mode .tl-container {
+  background: #f5f0e8 !important;
+}
+
+body.warm-mode .tl-background {
+  background: #f5f0e8 !important;
+}
+
+body.warm-mode .svg-page-background {
+  background: #f5f0e8;
+}
+
+.tl-theme__dark [data-shape-type="fleet-search"] input,
+.tl-theme__dark [data-shape-type="fleet-chat"] textarea {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+body.warm-mode [data-shape-type="fleet-search"] input,
+body.warm-mode [data-shape-type="fleet-chat"] textarea {
+  background: rgba(0, 0, 0, 0.03) !important;
+}
+
+body.warm-mode [data-shape-id] svg {
+  filter: sepia(0.15) saturate(0.9) brightness(0.97);
+}
+
+/* ==================== Fleet Tab ==================== */
+
+.fleet-tab {
+  font-size: 11px;
+}
+
+.fleet-agents {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+  padding: 4px 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.fleet-no-agents,
+.fleet-no-messages {
+  padding: 12px 8px;
+  opacity: 0.4;
+  text-align: center;
+  font-size: 10px;
+}
+
+.fleet-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-radius: 3px;
+  margin: 0 2px;
+}
+
+.fleet-agent-row:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.fleet-agent-row.selected {
+  background: rgba(100, 140, 255, 0.15);
+}
+
+.fleet-agent-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.fleet-agent-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fleet-agent-name {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.fleet-agent-task {
+  font-size: 9px;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-agent-seen {
+  font-size: 9px;
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+
+/* Chat area */
+
+.fleet-chat-area {
+  padding: 4px 0;
+}
+
+.fleet-message {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+}
+
+.fleet-message--skip {
+  background: rgba(100, 140, 255, 0.04);
+}
+
+.fleet-message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.fleet-message-sender {
+  font-weight: 600;
+  font-size: 10px;
+}
+
+.fleet-message-time {
+  font-size: 9px;
+  opacity: 0.35;
+}
+
+.fleet-message-text {
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.fleet-message-text code {
+  background: rgba(128, 128, 128, 0.12);
+  padding: 1px 3px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+.fleet-message-text pre {
+  background: rgba(128, 128, 128, 0.1);
+  padding: 4px 6px;
+  border-radius: 3px;
+  overflow-x: auto;
+  margin: 4px 0;
+  font-size: 10px;
+}
+
+.fleet-message-text pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Chat input */
+
+.fleet-chat-input {
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
+  padding: 4px;
+}
+
+.fleet-chat-input input {
+  width: 100%;
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: inherit;
+  outline: none;
+  font-family: inherit;
+}
+
+.fleet-chat-input input:focus {
+  border-color: rgba(100, 140, 255, 0.4);
+  background: rgba(128, 128, 128, 0.04);
+}
+
+.fleet-chat-input input::placeholder {
+  opacity: 0.35;
+}
+
+/* Dark theme overrides */
+
+html[data-theme="dark"] .fleet-agent-row.selected {
+  background: rgba(100, 140, 255, 0.12);
+}
+
+html[data-theme="dark"] .fleet-message--skip {
+  background: rgba(100, 140, 255, 0.06);
+}
+
+html[data-theme="dark"] .fleet-chat-input input {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark"] .fleet-chat-input input:focus {
+  border-color: rgba(100, 140, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Voice note button — bottom right, stacked above highlighter */
+.voice-note-btn {
+  display: flex;
+  position: fixed;
+  bottom: 49px;
+  right: 16px;
+  z-index: 10001;
+  width: 27px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  transition: background 0.15s, opacity 0.15s, box-shadow 0.15s;
+  touch-action: none;
+  opacity: 0.15;
+}
+.voice-note-btn:hover { opacity: 0.5; }
+
+.voice-note-btn.recording {
+  background: rgba(239, 100, 100, 0.18);
+  color: rgba(180, 60, 60, 0.7);
+  opacity: 1;
+}
+.voice-note-btn.placing {
+  background: rgba(255, 200, 64, 0.18);
+  color: rgba(160, 120, 0, 0.7);
+  opacity: 1;
+}
+
+body.phone-mode .voice-note-btn {
+  bottom: calc(57px + env(safe-area-inset-bottom));
+  right: calc(16px + env(safe-area-inset-right));
+  opacity: 0.5;
+}
+
+html[data-theme="dark"] .voice-note-btn {
+  color: rgba(255, 255, 255, 0.5);
 }
 

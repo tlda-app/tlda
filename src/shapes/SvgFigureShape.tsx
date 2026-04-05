@@ -62,7 +62,7 @@ function SvgFigureComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const isPenMode = useValue('pen-mode', () => editor.getInstanceState().isPenMode, [editor])
-  const isBrowseTool = useValue('browse-tool', () => editor.getCurrentToolId() === 'browse', [editor])
+  const isBrowseTool = useValue('browse-tool', () => editor.getCurrentToolId() === 'select', [editor])
   const isTextSelectTool = useValue('text-select-tool', () => editor.getCurrentToolId() === 'text-select', [editor])
   const canInteract = isBrowseTool || isTextSelectTool
   const containerRef = useRef<HTMLDivElement>(null)

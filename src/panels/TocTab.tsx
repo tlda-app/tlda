@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
 import { useBook } from '../BookContext'
 import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
@@ -9,7 +9,10 @@ import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
+import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+import { useFleetAgents } from '../fleet-data-adapter'
+import { createFleetLayout } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -126,6 +129,138 @@ export function TocTab() {
     })
   }, [])
 
+  // --- Drop-to-book state (must be before any early returns) ---
+  const [tocDragOver, setTocDragOver] = useState(false)
+  const [tocAdding, setTocAdding] = useState<string | null>(null)
+
+  // TLDraw-native drop target: listen for custom events from TocDropTargetShape
+  useEffect(() => {
+    if (!book) return
+    function onHover(e: Event) {
+      const active = (e as CustomEvent).detail?.active
+      setTocDragOver(!!active)
+    }
+    function onChapter(e: Event) {
+      const { text, title } = (e as CustomEvent).detail || {}
+      if (text && title) addChapterFromContent(title, text)
+    }
+    window.addEventListener('toc-drop-hover', onHover)
+    window.addEventListener('toc-drop-chapter', onChapter)
+    return () => {
+      window.removeEventListener('toc-drop-hover', onHover)
+      window.removeEventListener('toc-drop-chapter', onChapter)
+    }
+  }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Shared chapter-add logic: create markdown project from content, add to book
+  async function addChapterFromContent(title: string, text: string) {
+    if (!book) return
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'chapter'
+    setTocAdding(title)
+    try {
+      const createRes = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: slug, title, format: 'markdown', mainFile: 'content.md' }),
+      })
+      if (!createRes.ok) {
+        const err = await createRes.json().catch(() => ({}))
+        if (!err.error?.includes('exists')) throw new Error('Failed to create project')
+      }
+      const contentB64 = btoa(unescape(encodeURIComponent(text)))
+      await fetch(`/api/projects/${slug}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [{ path: 'content.md', content: contentB64, encoding: 'base64' }] }),
+      })
+      const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ add: slug }),
+      })
+      if (!patchRes.ok) throw new Error('Failed to add to book')
+      window.location.reload()
+    } catch (err) {
+      console.error('Drop-to-book failed:', err)
+      setTocAdding(null)
+    }
+  }
+
+  function handleTocDragOver(e: ReactDragEvent) {
+    if (!book) return
+    const types = e.dataTransfer?.types
+    if (!types?.includes('text/plain') && !types?.includes('application/x-chat-attachment')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setTocDragOver(true)
+  }
+
+  function handleTocDragLeave(e: ReactDragEvent) {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return
+    setTocDragOver(false)
+  }
+
+  async function handleTocDrop(e: ReactDragEvent) {
+    setTocDragOver(false)
+    if (!book) return
+
+    // Parse drop payload: fleet shared-doc OR canvas chapter-note
+    let item: Record<string, any> | null = null
+    const custom = e.dataTransfer?.getData('application/x-chat-attachment')
+    if (custom) try { item = JSON.parse(custom) } catch {}
+    if (!item) {
+      const plain = e.dataTransfer?.getData('text/plain')
+      if (plain) try {
+        const p = JSON.parse(plain)
+        if (p._fleet || p._tlda) item = p
+      } catch {}
+    }
+    if (!item) return
+
+    // Fleet shared-doc: create project via fleet share endpoint
+    if (item.type === 'shared-doc' && item.path) {
+      e.preventDefault()
+      const fileName = item.name || item.path.split('/').pop() || 'untitled'
+      setTocAdding(fileName)
+
+      try {
+        const shareRes = await fetch('http://localhost:5199/api/tlda/share', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: item.path }),
+        })
+        if (!shareRes.ok) throw new Error('Failed to create project')
+        const shareData = await shareRes.json()
+
+        const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ add: shareData.project }),
+        })
+        if (!patchRes.ok) throw new Error('Failed to add to book')
+
+        window.location.reload()
+      } catch (err) {
+        console.error('Drop-to-book failed:', err)
+        setTocAdding(null)
+      }
+      return
+    }
+
+    // Canvas chapter-note: create markdown project from note content
+    if (item.type === 'chapter-note' && item.text) {
+      e.preventDefault()
+      addChapterFromContent(item.title || 'Untitled', item.text)
+      return
+    }
+  }
+
+  const tocDropProps = book ? {
+    onDragOver: handleTocDragOver,
+    onDragLeave: handleTocDragLeave,
+    onDrop: handleTocDrop,
+  } : {}
+
   // --- Search state (must be before any early returns) ---
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -228,7 +363,7 @@ export function TocTab() {
   // Slides format: render TOC from page-info.json titles
   if (doc?.format === 'slides' && slideTitles) {
     return (
-      <div className="doc-panel-content">
+      <div className="doc-panel-content" {...tocDropProps}>
         {slideTitles.map((title, i) => (
           <div
             key={i}
@@ -243,6 +378,7 @@ export function TocTab() {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <SemanticHighlightToggle />
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
@@ -257,13 +393,20 @@ export function TocTab() {
 
   if (headings.length === 0 && !useHtml) {
     return (
-      <div className="doc-panel-content">
+      <div className="doc-panel-content" {...tocDropProps}>
         <div className="panel-empty">No headings found</div>
+        {tocDragOver && book && (
+          <div className="toc-item toc-drop-hint">+ Add chapter</div>
+        )}
+        {tocAdding && (
+          <div className="toc-item toc-adding">Adding {tocAdding}...</div>
+        )}
         {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
           <div className="toc-diff-hint" onClick={() => ctx.onToggleRole?.()}>
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
+        <SemanticHighlightToggle />
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
@@ -275,9 +418,19 @@ export function TocTab() {
   const liveUrl = getLiveUrl()
 
   // Unified render for both TeX and HTML TOC entries
-  const items: Array<{ level: TocLevel; title: string; nav: () => void; targetFile?: string }> = useHtml
+  let items: Array<{ level: TocLevel; title: string; nav: () => void; targetFile?: string }> = useHtml
     ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile), targetFile: h.targetFile }))
     : headings.map(h => ({ level: h.level, title: renderTocTitle(h.title), nav: () => handleNav(h.entry) }))
+
+  // Book: if no TOC from active member, show book members as chapters
+  if (items.length === 0 && book) {
+    items = book.members.map((m, i) => ({
+      level: 'chapter' as TocLevel,
+      title: m.name || m.key,
+      nav: () => book.switchTo(i),
+      targetFile: m.key,
+    }))
+  }
 
   // Build visibility: children hidden if their parent is collapsed
   let currentPartIdx = -1
@@ -318,7 +471,7 @@ export function TocTab() {
         onChange={e => setQuery(e.target.value)}
       />
     </div>
-    <div className="doc-panel-content">
+    <div className="doc-panel-content" {...tocDropProps}>
       {/* Search results first */}
       {hasSearchResults && (
         <>
@@ -400,6 +553,12 @@ export function TocTab() {
             dangerouslySetInnerHTML={{ __html: h.title }} />
         )
       })}
+      {tocDragOver && book && (
+        <div className="toc-item toc-drop-hint">+ Add chapter</div>
+      )}
+      {tocAdding && (
+        <div className="toc-item toc-adding">Adding {tocAdding}...</div>
+      )}
       {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
         <div
           className="toc-diff-hint"
@@ -408,6 +567,7 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
+      <FleetToggle />
       <DarkModeToggle />
       <VimModeToggle />
       <CameraLinkToggle />
@@ -444,19 +604,104 @@ export function VimModeToggle() {
   )
 }
 
+export function SemanticHighlightToggle() {
+  const enabled = useSyncExternalStore(subscribeSemanticHighlight, getSemanticHighlight)
+  return (
+    <div className="toc-diff-hint" onClick={toggleSemanticHighlight}>
+      <span className="toc-toggle-icon">{'\u2B22'}</span> {enabled ? 'Semantic HL' : 'Semantic HL off'}
+    </div>
+  )
+}
+
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const label = scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
+  const [warm, setWarm] = useState(() => {
+    const saved = localStorage.getItem('tlda-warm-mode') === 'true'
+    if (saved) document.body.classList.add('warm-mode')
+    return saved || document.body.classList.contains('warm-mode')
+  })
+
+  const label = warm ? 'Warm' : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
+  const icon = warm ? '\u2600\uFE0E' : scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'
+
+  const cycle = useCallback(() => {
+    if (warm) {
+      // Warm → System (exit warm mode)
+      document.body.classList.remove('warm-mode')
+      localStorage.setItem('tlda-warm-mode', 'false')
+      setWarm(false)
+      editor.user.updateUserPreferences({ colorScheme: 'system' })
+    } else if (scheme === 'system') {
+      editor.user.updateUserPreferences({ colorScheme: 'dark' })
+    } else if (scheme === 'dark') {
+      editor.user.updateUserPreferences({ colorScheme: 'light' })
+    } else {
+      // Light → Warm
+      document.body.classList.add('warm-mode')
+      localStorage.setItem('tlda-warm-mode', 'true')
+      setWarm(true)
+    }
+  }, [editor, scheme, warm])
+
   return (
-    <div
-      className="toc-diff-hint"
-      onClick={() => {
-        const next = scheme === 'system' ? 'dark' : scheme === 'dark' ? 'light' : 'system'
-        editor.user.updateUserPreferences({ colorScheme: next })
-      }}
-    >
-      <span className="toc-toggle-icon">{scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'}</span> {label}
+    <div className="toc-diff-hint" onClick={cycle}>
+      <span className="toc-toggle-icon">{icon}</span> {label}
+    </div>
+  )
+}
+
+const ZONE_WIDTH_KEY = 'zone-width'
+const ZONE_WIDTH_EVENT = 'zone-width-change'
+const ZONE_WIDTH_DEFAULT = 60
+const ZONE_WIDTH_MIN = 20
+const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
+
+export function getZoneWidth(): number {
+  const stored = parseInt(localStorage.getItem(ZONE_WIDTH_KEY) || '')
+  if (isNaN(stored)) return ZONE_WIDTH_DEFAULT
+  return Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, stored))
+}
+
+export function applyZoneWidth(w: number) {
+  document.documentElement.style.setProperty('--zone-width', w + 'px')
+}
+
+export function ZoneWidthSlider() {
+  const [width, setWidth] = useState(getZoneWidth)
+
+  useEffect(() => {
+    applyZoneWidth(width)
+  }, [])
+
+  const onChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    // Invert: slider value increases left→right, zone width decreases left→right
+    const v = ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - parseInt(e.target.value)
+    setWidth(v)
+    localStorage.setItem(ZONE_WIDTH_KEY, String(v))
+    applyZoneWidth(v)
+    window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
+  }, [])
+
+  return (
+    <div className="toc-zone-width-slider">
+      <input type="range" min={ZONE_WIDTH_MIN} max={ZONE_WIDTH_MAX} step="1"
+        value={ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - width} onChange={onChange} />
+    </div>
+  )
+}
+
+export function FleetToggle() {
+  const editor = useEditor()
+  const allAgents = useFleetAgents()
+
+  const handleClick = useCallback(() => {
+    createFleetLayout(editor, allAgents)
+  }, [editor, allAgents])
+
+  return (
+    <div className="toc-diff-hint" onClick={handleClick}>
+      <span className="toc-toggle-icon">{'\u2693'}</span> Fleet
     </div>
   )
 }

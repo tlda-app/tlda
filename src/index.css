@@ -10,6 +10,7 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -19,9 +20,10 @@ body {
 }
 
 /* Bottom-left panels (rendered inside InFrontOfTheCanvas for proper TLDraw event handling) */
+/* Stacks above tldraw watermark — column grows upward from bottom */
 .bottom-panels {
   position: fixed;
-  bottom: 16px;
+  bottom: 44px;
   left: 16px;
   z-index: 1000;
   display: flex;
@@ -32,7 +34,49 @@ body {
 
 .build-pills-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   pointer-events: none;
+}
+
+/* High-res display compensation: macOS "More Space" gives huge CSS viewports.
+   Scale up UI chrome so it's not physically tiny. Uses --hires-scale set by main.tsx.
+   Only affects overlays — tldraw canvas/shapes are unaffected. */
+html.hires .tlui-layout {
+  overflow: visible;
+  contain: layout style;
+}
+html.hires .tlui-main-toolbar {
+  zoom: var(--hires-scale);
+}
+html.hires [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
+  zoom: var(--hires-scale);
+}
+html.hires .build-pills-row {
+  zoom: var(--hires-scale);
+}
+html.hires .fleet-pill-container {
+  zoom: var(--hires-scale);
+}
+html.hires .fleet-hud-controls {
+  zoom: var(--hires-scale);
+}
+html.hires .doc-panel {
+  zoom: var(--hires-scale);
+}
+html.hires .phone-hl-btn {
+  zoom: var(--hires-scale);
+}
+html.hires .voice-note-btn {
+  zoom: var(--hires-scale);
+}
+html.hires .phone-hl-slider {
+  zoom: var(--hires-scale);
+}
+html.hires .agent-indicator {
+  zoom: var(--hires-scale);
+}
+html.hires .ping-button-standalone {
+  zoom: var(--hires-scale);
 }

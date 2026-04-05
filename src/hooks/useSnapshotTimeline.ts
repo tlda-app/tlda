@@ -5,7 +5,7 @@ import type { HistoryEntry, PageDiff, ChangeItem } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'
 
 // Also keep the old localStorage snapshots for immediate feedback
-import { getSnapshots, diffAgainstSnapshot, onSnapshotUpdate } from '../snapshotStore'
+import { onSnapshotUpdate } from '../snapshotStore'
 
 export function useSnapshotTimeline(document: SvgDocument, docName: string) {
   const [entries, setEntries] = useState<HistoryEntry[]>([])

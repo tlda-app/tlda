@@ -45,6 +45,7 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
+  scratch: 'tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -61,13 +62,14 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
   preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
+  remotes: 'tlda remotes [doc]\n\n  Show remote access URLs (Tailscale, Funnel) with QR codes.\n  Checks server reachability, firewall status, and prints scannable URLs.\n\n  Optionally pass a doc name to include ?doc=NAME in the URLs.',
   server:  'tlda server [start|stop|status|log|install|uninstall] [--agent]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service\n\n  --agent    Start the triage agent alongside the server.\n             Equivalent to running `tlda agent start` separately.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -114,8 +116,9 @@ function getToken() {
 
 const isTTY = process.stderr.isTTY
 const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
-const green = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
-const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
+const green  = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
+const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s
+const red    = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
 const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
@@ -266,6 +269,72 @@ async function cmdBook() {
 
   const server = getServer()
   console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+}
+
+async function cmdScratch() {
+  const filePath = getPositional(0)
+  if (!filePath) {
+    console.error('Usage: tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]')
+    process.exit(1)
+  }
+
+  const absPath = resolve(filePath)
+  if (!existsSync(absPath)) {
+    console.error(red(`File not found: ${absPath}`))
+    process.exit(1)
+  }
+
+  const fileName = basename(absPath)
+  if (!fileName.endsWith('.md')) {
+    console.error(red('File must be a .md markdown file.'))
+    process.exit(1)
+  }
+
+  const dir = dirname(absPath)
+  const stem = fileName.replace(/\.md$/, '')
+  const name = `scratch-${stem}`
+  const bookName = getFlag('book') || 'fleet-workspace'
+
+  // Extract title from first heading if not provided
+  let title = getFlag('title')
+  if (!title) {
+    const content = readFileSync(absPath, 'utf8')
+    const headingMatch = content.match(/^#\s+(.+)$/m)
+    title = headingMatch ? headingMatch[1].trim() : stem
+  }
+
+  console.log(dim(`  File: ${absPath}`))
+  console.log(dim(`  Project: ${name}`))
+  console.log(dim(`  Title: ${title}`))
+
+  // Create or update markdown project
+  try {
+    await api('POST', '/api/projects', { name, title, mainFile: fileName, format: 'markdown', sourceDir: dir })
+    console.log(green(`Created scratch project "${name}".`))
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      console.log(`Project "${name}" exists, pushing update.`)
+    } else {
+      throw e
+    }
+  }
+
+  // Push the file
+  const content = readFileSync(absPath)
+  const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
+  await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+  console.log(green('Pushed.'))
+
+  // Auto-join book
+  try {
+    await api('PATCH', `/api/projects/${bookName}/members`, { add: name })
+    console.log(dim(`  Joined book "${bookName}"`))
+  } catch (e) {
+    console.log(dim(`  Book "${bookName}": ${e.message}`))
+  }
+
+  const server = getServer()
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${bookName}`)}`)
 }
 
 async function cmdCreate() {
@@ -506,7 +575,8 @@ async function cmdWatch() {
   console.log(dim(`  Debounce: ${debounceMs}ms`))
   console.log()
 
-  const { startWatcher } = await import('./lib/watcher.mjs')
+  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
+  installProcessHandlers()
   await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
@@ -607,7 +677,8 @@ async function watchAllRun() {
 
   const debounceMs = parseInt(getFlag('debounce') || '200', 10)
   const pollInterval = 30_000 // check for new projects every 30s
-  const { startWatcher } = await import('./lib/watcher.mjs')
+  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
+  installProcessHandlers()
 
   const watchers = new Map()
 
@@ -623,6 +694,7 @@ async function watchAllRun() {
 
     for (const p of projects) {
       if (watchers.has(p.name)) continue
+      if (p.archived) continue
       if (!p.sourceDir || !p.mainFile) continue
       if (!existsSync(p.sourceDir)) {
         console.log(`[watch-all] Skipping ${p.name}: ${p.sourceDir} not found`)
@@ -630,7 +702,13 @@ async function watchAllRun() {
       }
 
       console.log(`[watch-all] Watching ${p.sourceDir} → ${p.name}`)
-      const watcher = await startWatcher({ dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken })
+      const watcher = await startWatcher({
+        dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken,
+        onFatalError: (err) => {
+          console.error(`[watch-all] Dropping ${p.name}: ${err.message}`)
+          watchers.delete(p.name)
+        }
+      })
       watchers.set(p.name, watcher)
     }
   }
@@ -1211,6 +1289,115 @@ async function cmdAuth() {
   console.log('  show   Show current tokens')
 }
 
+async function cmdRemotes() {
+  const { execSync } = await import('child_process')
+  const config = loadConfig()
+  const port = getPort()
+  const readToken = config.tokenRead || null
+  const doc = getPositional(0) || null
+
+  const run = (cmd) => {
+    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
+    catch { return null }
+  }
+
+  const check = async (url) => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
+      return res.ok
+    } catch { return false }
+  }
+
+  // Server running?
+  const localOk = await check(`http://127.0.0.1:${port}/health`)
+  if (!localOk) {
+    console.error(red(`Server not responding on localhost:${port}`))
+    console.error(dim('Run: tlda server start'))
+    process.exit(1)
+  }
+  console.log(green(`Server running on port ${port}`))
+  console.log()
+
+  // Firewall check (macOS)
+  if (process.platform === 'darwin') {
+    const fwState = run('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate')
+    if (fwState?.includes('State = 1')) {
+      const nodePath = run('which node')
+      if (nodePath) {
+        const fwApps = run('/usr/libexec/ApplicationFirewall/socketfilterfw --listapps')
+        if (fwApps?.includes(nodePath) && fwApps?.includes('Block incoming connections')) {
+          // Find the block line that follows the node path
+          const lines = fwApps.split('\n')
+          const nodeIdx = lines.findIndex(l => l.includes(nodePath))
+          if (nodeIdx >= 0 && lines[nodeIdx + 1]?.includes('Block incoming')) {
+            console.log(red('macOS firewall is blocking Node.js incoming connections!'))
+            console.log(dim(`Run: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp ${nodePath}`))
+            console.log()
+          }
+        }
+      }
+    }
+  }
+
+  const buildLoginUrl = (base) => {
+    const redirect = doc ? `/?doc=${doc}` : '/'
+    if (readToken) {
+      return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
+    }
+    return `${base}${redirect}`
+  }
+
+  const printQr = async (url) => {
+    try {
+      const qr = await import('qrcode-terminal')
+      qr.default.generate(url, { small: true })
+    } catch {
+      console.log(dim('  (qrcode-terminal not available)'))
+    }
+  }
+
+  const entries = []
+
+  // Tailscale
+  const tsIp = run('tailscale ip -4')
+  if (tsIp) {
+    const base = `http://${tsIp}:${port}`
+    const url = buildLoginUrl(base)
+    const ok = await check(`${base}/health`)
+    entries.push({ label: 'Tailscale', url, ok })
+  }
+
+  // Funnel
+  const funnelStatus = run('tailscale funnel status 2>&1')
+  if (funnelStatus) {
+    const urlMatch = funnelStatus.match(/https:\/\/\S+\.ts\.net/)
+    if (urlMatch) {
+      const base = urlMatch[0]
+      const url = buildLoginUrl(base)
+      const ok = await check(`${base}/health`)
+      entries.push({ label: 'Funnel', url, ok })
+    }
+  }
+
+  if (entries.length === 0) {
+    console.log(dim('No remote access methods found.'))
+    console.log(dim('Install Tailscale: https://tailscale.com'))
+    return
+  }
+
+  for (const { label, url, ok } of entries) {
+    const status = ok ? green('reachable') : red('unreachable')
+    console.log(`${bold(label)} ${dim('—')} ${status}`)
+    if (readToken) {
+      console.log(dim('  Login URL (sets cookie, then redirects):'))
+    }
+    console.log(`  ${cyan(url)}`)
+    console.log()
+    if (ok) await printQr(url)
+    console.log()
+  }
+}
+
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
@@ -1278,6 +1465,216 @@ const LOGFILE = join(homedir(), '.config', 'tlda', 'server.log')
 
 function getPort() {
   try { return new URL(getServer()).port || '5176' } catch { return '5176' }
+}
+
+async function cmdDoctor() {
+  const { execSync, spawnSync } = await import('child_process')
+  const ok  = (msg) => console.log(green('✓') + ' ' + msg)
+  const fail = (msg, fix) => {
+    console.log(red('✗') + ' ' + msg)
+    if (fix) console.log('  ' + dim(fix))
+  }
+  const warn = (msg, fix) => {
+    const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s
+    console.log(yellow('!') + ' ' + msg)
+    if (fix) console.log('  ' + dim(fix))
+  }
+
+  let issues = 0
+
+  // 1. Node version
+  const nodeVer = process.versions.node
+  const [major] = nodeVer.split('.').map(Number)
+  if (major >= 18) {
+    ok(`Node ${nodeVer}`)
+  } else {
+    fail(`Node ${nodeVer} (need ≥18)`, 'brew install node')
+    issues++
+  }
+
+  // 2. LaTeX tools
+  const checkBin = (bin) => {
+    try { execSync(`which ${bin}`, { stdio: 'pipe' }); return true } catch { return false }
+  }
+  if (checkBin('latexmk')) {
+    ok('latexmk found')
+  } else {
+    fail('latexmk not found', 'brew install --cask mactex-no-gui  (or: brew install basictex)')
+    issues++
+  }
+  if (checkBin('dvisvgm')) {
+    ok('dvisvgm found')
+  } else {
+    fail('dvisvgm not found', 'Included in MacTeX. If using BasicTeX: tlmgr install dvisvgm')
+    issues++
+  }
+
+  // 3. Server
+  const serverUrl = getServer()
+  let serverRunning = false
+  try {
+    const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
+    serverRunning = res.ok
+  } catch {}
+
+  if (serverRunning) {
+    ok(`Server running at ${serverUrl}`)
+  } else {
+    console.log(red('✗') + ' Server not running — starting it...')
+    try {
+      // Check launchd
+      const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
+      const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
+      if (hasLaunchd) {
+        try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
+        try { execSync('launchctl kickstart -k gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+      } else {
+        const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+        const serverScript = join(ctdRoot, 'server', 'unified-server.mjs')
+        const { spawn: cpSpawn } = await import('child_process')
+        const { openSync: fsOpenSync } = await import('fs')
+        const logFd = fsOpenSync(LOGFILE, 'a')
+        const child = cpSpawn(process.execPath, [serverScript], {
+          detached: true, stdio: ['ignore', logFd, logFd],
+          env: { ...process.env, PORT: getPort() }
+        })
+        child.unref()
+      }
+      // Wait for it
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        try {
+          const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(1000) })
+          if (res.ok) { serverRunning = true; break }
+        } catch {}
+      }
+      if (serverRunning) {
+        ok(`Server started at ${serverUrl}`)
+      } else {
+        fail('Server failed to start', `Check log: tlda server log`)
+        issues++
+      }
+    } catch (e) {
+      fail(`Server failed to start: ${e.message}`, 'tlda server log')
+      issues++
+    }
+  }
+
+  // 4. launchd (auto-restart on login)
+  {
+    const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
+    if (existsSync(PLIST)) {
+      ok('launchd service installed (server auto-restarts)')
+    } else {
+      warn('launchd service not installed (server won\'t restart after a crash or login)', 'tlda server install')
+    }
+  }
+
+  // 5. Watch-all
+  let watchRunning = false
+  if (existsSync(WATCH_ALL_PIDFILE)) {
+    const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); watchRunning = true } catch {}
+  }
+  if (watchRunning) {
+    ok('watch-all running')
+  } else {
+    console.log(red('✗') + ' watch-all not running — starting it...')
+    try {
+      const ctdScript = fileURLToPath(import.meta.url)
+      const { spawn: cpSpawn } = await import('child_process')
+      const { openSync: fsOpenSync } = await import('fs')
+      if (!existsSync(dirname(WATCH_ALL_LOGFILE))) mkdirSync(dirname(WATCH_ALL_LOGFILE), { recursive: true })
+      const logFd = fsOpenSync(WATCH_ALL_LOGFILE, 'a')
+      const child = cpSpawn(process.execPath, [ctdScript, 'watch-all', 'run'], {
+        detached: true, stdio: ['ignore', logFd, logFd]
+      })
+      child.unref()
+      await new Promise(r => setTimeout(r, 1000))
+      if (existsSync(WATCH_ALL_PIDFILE)) {
+        ok('watch-all started')
+      } else {
+        fail('watch-all failed to start', `Check log: tlda watch-all log`)
+        issues++
+      }
+    } catch (e) {
+      fail(`watch-all failed to start: ${e.message}`, 'tlda watch-all log')
+      issues++
+    }
+  }
+
+  // 6. MCP server configured
+  {
+    const mcpConfigs = [
+      join(homedir(), '.claude', 'settings.json'),
+      join(homedir(), '.config', 'claude', 'settings.json'),
+      // project-level .mcp.json — look up from cwd
+      join(process.cwd(), '.mcp.json'),
+    ]
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const mcpEntry = join(ctdRoot, 'mcp-server', 'index.mjs')
+
+    let mcpFound = false
+    for (const cfgPath of mcpConfigs) {
+      if (!existsSync(cfgPath)) continue
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+        const servers = cfg.mcpServers || {}
+        for (const s of Object.values(servers)) {
+          const args = s.args || []
+          if (args.some(a => String(a).includes('mcp-server'))) {
+            mcpFound = true; break
+          }
+        }
+      } catch {}
+      if (mcpFound) break
+    }
+
+    if (mcpFound) {
+      ok('MCP server configured in Claude settings')
+    } else {
+      fail('MCP server not found in Claude settings')
+      console.log()
+      console.log('  Add this to your project .mcp.json or ~/.claude/settings.json:')
+      console.log()
+      console.log('  ' + cyan(JSON.stringify({
+        mcpServers: {
+          'tldraw-feedback': {
+            type: 'stdio',
+            command: process.execPath,
+            args: [mcpEntry],
+            env: { TLDA_SERVER: serverUrl }
+          }
+        }
+      }, null, 2).split('\n').join('\n  ')))
+      console.log()
+      issues++
+    }
+  }
+
+  // 7. Projects with build errors (only if server is running)
+  if (serverRunning) {
+    try {
+      const data = await api('GET', '/api/projects', null, { timeoutMs: 5000 })
+      const errored = (data.projects || []).filter(p => p.buildStatus === 'error')
+      if (errored.length === 0) {
+        ok('No projects with build errors')
+      } else {
+        for (const p of errored) {
+          fail(`Project "${p.name}" has build errors`, `tlda errors ${p.name}`)
+          issues++
+        }
+      }
+    } catch {}
+  }
+
+  console.log()
+  if (issues === 0) {
+    console.log(green(bold('All checks passed.')))
+  } else {
+    console.log(red(bold(`${issues} issue${issues === 1 ? '' : 's'} found.`)))
+    process.exit(1)
+  }
 }
 
 
@@ -1521,6 +1918,100 @@ async function inferProjectName() {
   return basename(dir)
 }
 
+// --- Whisper server management ---
+
+const WHISPER_PID_FILE = join(homedir(), '.config', 'tlda', 'whisper.pid')
+const WHISPER_LOG_FILE = join(homedir(), '.config', 'tlda', 'whisper.log')
+const WHISPER_MODEL = join(homedir(), '.local', 'share', 'whisper-cpp', 'models', 'ggml-small.en.bin')
+const WHISPER_PORT = 8178
+
+async function cmdWhisper() {
+  const sub = getPositional(0) || 'start'
+  const { execSync, spawn } = await import('child_process')
+
+  function readWhisperPid() {
+    try { return parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim()) } catch { return null }
+  }
+
+  function isWhisperRunning() {
+    const pid = readWhisperPid()
+    if (!pid) return false
+    try { process.kill(pid, 0); return true } catch { return false }
+  }
+
+  if (sub === 'start') {
+    if (isWhisperRunning()) {
+      console.log(green('Whisper server already running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+      return
+    }
+
+    // Check binary
+    let whisperBin
+    try { whisperBin = execSync('which whisper-server', { stdio: 'pipe' }).toString().trim() } catch {
+      console.error(red('whisper-server not found. Install with: brew install whisper-cpp'))
+      process.exit(1)
+    }
+
+    // Check model
+    if (!existsSync(WHISPER_MODEL)) {
+      console.error(red(`Model not found: ${WHISPER_MODEL}`))
+      console.error('Download with:')
+      console.error(`  mkdir -p ~/.local/share/whisper-cpp/models`)
+      console.error(`  curl -L "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin" -o "${WHISPER_MODEL}"`)
+      process.exit(1)
+    }
+
+    const logFd = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
+    const child = spawn(whisperBin, [
+      '-m', WHISPER_MODEL,
+      '--port', String(WHISPER_PORT),
+      '--convert',
+    ], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    })
+    child.unref()
+    writeFileSync(WHISPER_PID_FILE, String(child.pid))
+    // Wait for server to be ready
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
+        if (res.ok) {
+          console.log(green('Whisper server started') + ` (pid ${child.pid}, port ${WHISPER_PORT}, model: small.en)`)
+          return
+        }
+      } catch {}
+    }
+    console.log(yellow('Whisper server spawned') + ` (pid ${child.pid}) — model loading may take a moment`)
+  } else if (sub === 'stop') {
+    const pid = readWhisperPid()
+    if (pid && isWhisperRunning()) {
+      process.kill(pid, 'SIGTERM')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+      console.log(green('Whisper server stopped'))
+    } else {
+      console.log('Whisper server not running')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+    }
+  } else if (sub === 'status') {
+    if (isWhisperRunning()) {
+      console.log(green('running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+    } else {
+      console.log('not running')
+    }
+  } else if (sub === 'log') {
+    if (existsSync(WHISPER_LOG_FILE)) {
+      const { execSync: exec } = await import('child_process')
+      process.stdout.write(exec(`tail -30 "${WHISPER_LOG_FILE}"`, { encoding: 'utf8' }))
+    } else {
+      console.log('No whisper log file')
+    }
+  } else {
+    console.log('Usage: tlda whisper [start|stop|status|log]')
+  }
+}
+
 // --- Ensure server is running ---
 
 async function ensureServer() {
@@ -1546,12 +2037,194 @@ async function ensureServer() {
   await cmdServer('start')
 }
 
+// --- Fleet dev setup ---
+
+async function cmdFleetDev() {
+  const snapshotPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'projects', 'fleet-dev', 'sync-snapshot.json')
+  const projectPath = join(dirname(snapshotPath), 'project.json')
+
+  if (!existsSync(projectPath)) {
+    console.error('fleet-dev project not found. Run from the tlda repo root.')
+    process.exit(1)
+  }
+
+  // Reset sync snapshot to known-good test state
+  const snapshot = {
+    tombstoneHistoryStartsAtClock: 0,
+    documentClock: 100,
+    documents: [
+      // Blank page (800x1035, standard SVG page size)
+      rec('shape:fleet-dev-page-0', 'svg-page', 0, 0, { w: 800, h: 1035, pageIndex: 0 }, 'a1', true),
+      // Agents panel — right of page
+      rec('shape:fleet-dev-agents', 'fleet-agents', 860, 0, { w: 340, h: 400 }, 'a2'),
+      // Chat with multi-clause filter: (to:alice AND from:bob) OR (to:carol)
+      rec('shape:fleet-dev-chat-filtered', 'fleet-chat', 860, 420, {
+        w: 400, h: 600,
+        filter: [[['to', 'fleet:alice'], ['from', 'fleet:bob']], [['to', 'fleet:carol']]],
+      }, 'a3'),
+      // Chat with no filter
+      rec('shape:fleet-dev-chat-empty', 'fleet-chat', 1280, 420, { w: 400, h: 600, filter: [] }, 'a4'),
+      // Search
+      rec('shape:fleet-dev-search', 'fleet-search', 1280, 0, { w: 380, h: 400 }, 'a5'),
+    ],
+  }
+  writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2))
+  console.log(green('Reset fleet-dev sync snapshot.'))
+
+  // Restart server so it loads the fresh snapshot
+  console.log(dim('  Restarting server...'))
+  try {
+    await api('POST', '/api/admin/restart', {})
+  } catch {
+    // Server may not have this endpoint — manual restart
+  }
+  console.log(dim('  If shapes look stale: tlda server stop && tlda server start'))
+
+  const server = getServer()
+  console.log(`\n  ${server}/?doc=fleet-dev\n`)
+  console.log(dim('  Click the page in TOC to zoom to the fleet shapes area.'))
+
+  function rec(id, type, x, y, props, index, locked = false) {
+    return {
+      state: { id, type, typeName: 'shape', x, y, rotation: 0, isLocked: locked, opacity: 1, meta: {}, props, parentId: 'page:page', index },
+      lastChangedClock: parseInt(id.replace(/\D/g, '').slice(-1)) || 1,
+    }
+  }
+}
+
+// --- Dev worktree setup ---
+
+async function findFreePort(startPort) {
+  const net = await import('net')
+  return new Promise((resolve) => {
+    const server = net.default.createServer()
+    server.listen(startPort, () => {
+      const { port } = server.address()
+      server.close(() => resolve(port))
+    })
+    server.on('error', () => resolve(findFreePort(startPort + 1)))
+  })
+}
+
+async function cmdDev() {
+  const { execSync, spawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+
+  const worktreeName = getFlag('worktree')
+  const portArg = getFlag('port')
+
+  // Find main repo root (works whether we're in a worktree or the main repo).
+  // git rev-parse --git-common-dir returns the shared .git dir — parent is the main repo.
+  const scriptDir = dirname(fileURLToPath(import.meta.url))
+  let repoRoot
+  try {
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: scriptDir, stdio: 'pipe' }).toString().trim()
+    // In main repo: '.git' (relative). In worktree: absolute path like /path/to/repo/.git
+    repoRoot = gitCommonDir === '.git'
+      ? join(scriptDir, '..')
+      : dirname(gitCommonDir)
+  } catch {
+    repoRoot = join(scriptDir, '..')
+  }
+
+  let worktreeDir = repoRoot  // default: current repo if no --worktree
+  if (worktreeName) {
+    worktreeDir = join(repoRoot, '.worktrees', worktreeName)
+
+    if (!existsSync(worktreeDir)) {
+      console.log(dim(`Creating worktree .worktrees/${worktreeName}...`))
+      try {
+        execSync(`git worktree add -b "${worktreeName}" ".worktrees/${worktreeName}"`, {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        })
+      } catch (e1) {
+        // Branch already exists — check it out without -b
+        try {
+          execSync(`git worktree add ".worktrees/${worktreeName}" "${worktreeName}"`, {
+            cwd: repoRoot,
+            stdio: 'pipe',
+          })
+        } catch (e2) {
+          throw new Error(`Failed to create worktree: ${e2.message}`)
+        }
+      }
+      console.log(green(`Worktree created: ${worktreeDir}`))
+    } else {
+      console.log(dim(`Using existing worktree: ${worktreeDir}`))
+    }
+  }
+
+  // npm install if needed (--ignore-scripts skips `prepare` vite build)
+  if (!existsSync(join(worktreeDir, 'node_modules'))) {
+    console.log(dim('Running npm install...'))
+    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
+  }
+
+  // Pick port
+  const port = portArg ? parseInt(portArg) : await findFreePort(5180)
+
+  // Start Vite in background
+  const viteLogFile = join(worktreeDir, '.dev-vite.log')
+  const logFd = fsOpenSync(viteLogFile, 'a')
+
+  const viteChild = spawn('npx', ['vite', '--port', String(port)], {
+    cwd: worktreeDir,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  })
+  viteChild.unref()
+
+  console.log(dim(`Vite starting on port ${port} (pid ${viteChild.pid})...`))
+
+  // Wait for Vite to be ready (poll up to 30s)
+  let ready = false
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      const res = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
+      if (res.ok || res.status === 404) { ready = true; break }
+    } catch {}
+  }
+
+  if (!ready) {
+    throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${viteLogFile}`)
+  }
+
+  // Write .dev-url
+  const token = getToken()
+  const url = token
+    ? `http://localhost:${port}/?token=${token}`
+    : `http://localhost:${port}/`
+  const devUrlPath = join(worktreeDir, '.dev-url')
+  writeFileSync(devUrlPath, url)
+
+  // Print summary
+  console.log(green(`\nVite dev server ready`))
+  if (worktreeName) console.log(`  Worktree: ${worktreeDir}`)
+  console.log(`  Port:     ${port}`)
+  console.log(`  PID:      ${viteChild.pid}`)
+  console.log(`  Log:      ${viteLogFile}`)
+  console.log(bold(`\n  ${url}\n`))
+}
+
+async function cmdDevUrl() {
+  const portArg = getFlag('port')
+  const port = portArg ? parseInt(portArg) : 5180
+  const token = getToken()
+  const url = token
+    ? `http://localhost:${port}/?token=${token}`
+    : `http://localhost:${port}/`
+  console.log(url)
+}
+
 // --- Main ---
 
 async function main() {
   try {
     switch (command) {
       case 'server': await cmdServer(); break
+      case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
@@ -1576,13 +2249,20 @@ async function main() {
       case 'publish': await cmdPublish(); break
       case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
+      case 'remotes': await cmdRemotes(); break
       case 'config': await cmdConfig(); break
+      case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
+      case 'dev': await cmdDev(); break
+      case 'dev-url': await cmdDevUrl(); break
+      case 'whisper': await cmdWhisper(); break
+      case 'doctor': await cmdDoctor(); break
       default:
         console.log(`tlda — tlda CLI
 
 Commands:
   server [start|stop|status|log|install|uninstall]  Manage the server
   create <name>  Create project (or update existing), upload files, build
+  scratch <file> Publish scratch .md to fleet-workspace book
   book <name>    Create a book grouping existing docs (--members doc1,doc2,...)
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
@@ -1597,7 +2277,10 @@ Commands:
   logs           Show server log (alias: tlda server logs)
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
+  remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
+  whisper        Manage local whisper speech server [start|stop|status|log]
+  doctor         Check and fix common setup issues
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.

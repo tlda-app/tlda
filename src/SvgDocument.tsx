@@ -11,28 +11,55 @@ import {
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
-import { MathNoteShapeUtil, setMathNoteEntryMode, setReplyContext } from './shapes/MathNoteShape'
-import { switchTab, addTab } from './noteThreading'
+import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
+import { TocDropTargetShapeUtil, TocDropTargetManager } from './shapes/TocDropTargetShape'
+// noteThreading removed — no tabs
 import { HtmlPageShapeUtil } from './shapes/HtmlPageShape'
 import { SvgPageShapeUtil } from './shapes/SvgPageShape'
 import { SvgFigureShapeUtil } from './shapes/SvgFigureShape'
+import { ReadingAssistBarShapeUtil } from './shapes/ReadingAssistBarShape'
+import { UnderstandingLineShapeUtil } from './shapes/UnderstandingLineShape'
+import { TimelineOverlayShapeUtil } from './shapes/TimelineOverlayShape'
+import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
+// DotAnnotationShape removed — math-note dots replace it
+import { FleetChatShapeUtil } from './shapes/FleetChatShape'
+import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
+import { FleetPillShapeUtil } from './shapes/FleetPillShape'
+import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
+import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { TerminalShapeUtil } from './shapes/TerminalShape'
+import { InlineDocShapeUtil } from './shapes/InlineDocShape'
+import { DocVersionShapeUtil } from './shapes/DocVersionShape'
+import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
+import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
-import { BrowseTool } from './tools/BrowseTool'
+import { BrowseTool } from './tools/BrowseTool/BrowseTool'
+import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
+import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
+import { FleetChatTool } from './tools/FleetChatTool'
+import { FleetAgentsTool } from './tools/FleetAgentsTool'
+import { FleetSearchTool } from './tools/FleetSearchTool'
+import { ClusterTool } from './tools/ClusterTool'
+import { TerminalTool } from './tools/TerminalTool'
+import { PlaybackTool } from './tools/PlaybackTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, AgentPill } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
+import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
+import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
+import { FleetHUD } from './overlays/FleetHUD'
 import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
@@ -41,6 +68,7 @@ import { FollowingBadge } from './pills/FollowingBadge'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
+import { AnnotationViewer } from './overlays/AnnotationViewer'
 import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
@@ -56,6 +84,16 @@ import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
+import { useSyncedPlayback } from './hooks/useSyncedPlayback'
+import { useFleetTheme } from './hooks/useFleetTheme'
+import { useTimelineOverlay } from './hooks/useTimelineOverlay'
+import { useDocAutoOpen } from './hooks/useDocAutoOpen'
+import { useFootControl } from './hooks/useFootControl'
+import { FootControlDebug } from './footControlDebug'
+import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
+import { PlaybackPill } from './pills/PlaybackPill'
+import { SlidesNavigator } from './SlidesNavigator'
 
 // Sync server URL - use env var, or derive from window.location
 // Dev mode (Vite on 5173): connect to sync server on 5176
@@ -85,6 +123,7 @@ function AgentPillSlot() {
   return <>{content}</>
 }
 
+
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
 
@@ -113,15 +152,22 @@ interface SvgDocumentEditorProps {
   document: SvgDocument
   roomId: string
   diffConfig?: { basePath: string }
+  initialCamera?: { x: number; y: number; z: number; page?: string }
 }
 
 
-export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentEditorProps) {
+/** Slide navigation wrapper — uses SlidesNavigator for spatial canvas navigation */
+function SlideNavWrapper({ document }: { document: SvgDocument }) {
+  const editor = useEditor()
+  return <SlidesNavigator editor={editor} document={document} />
+}
+
+export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
   const editorRef = useRef<Editor | null>(null)
-  const sessionRestoredRef = useRef(false)
+  const restoredEditorRef = useRef<Editor | null>(null)
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
@@ -133,7 +179,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
   const panelsLocalRef = useRef(true)
-  const [editorMounted, setEditorMounted] = useState(false)
+  const [editorMounted, setEditorMounted] = useState(0)
   useEffect(() => { panelsLocalRef.current = panelsLocal }, [panelsLocal])
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
@@ -253,6 +299,28 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
   // Remap warnings from reload (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
 
+  // Fleet playback — listen for BroadcastChannel and swap annotation shapes
+  const playbackState = useSyncedPlayback(editorRef, docName)
+
+  // Spatial timeline overlay — activity scatter plot
+  const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
+
+  // Shadow history scrubber
+  const {
+    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+  } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
+  // Sync theme from fleet dashboard (cross-origin SSE)
+  useFleetTheme()
+
+  // Auto-open shared docs pushed via fleet
+  useDocAutoOpen(editorRef, document, docName)
+
+  // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
+  const footEnabled = new URLSearchParams(window.location.search).has('foot')
+  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
+
   useYjsSignals({
     editorRef, document,
     diffDataRef, setDiffFetchSeq,
@@ -337,52 +405,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       if (!targetId) return
       e.preventDefault()
 
-      // 'i' on a tabbed note: create reply tab with split-view context
-      if (e.key === 'i') {
-        const targetShape = editor.getShape(targetId as any)
-        const targetTabs = targetShape && (targetShape.props as any).tabs as string[] | undefined
-        if (targetTabs && targetTabs.length >= 1) {
-          // Save current tab text as reply context
-          const currentText = (targetShape!.props as any).text || ''
-          setReplyContext(currentText)
-          addTab(editor, targetId as any, '')
-        }
-      }
-
       setMathNoteEntryMode(e.key as 'i' | ':')
       editor.setEditingShape(targetId as any)
       lastEditedNoteRef.current = targetId
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
-
-  // Arrow keys cycle tabs on selected math-note (vim-style navigation)
-  useEffect(() => {
-    const handleArrowKey = (e: KeyboardEvent) => {
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'h' && e.key !== 'l') return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (isInputFocused()) return
-      const editor = editorRef.current
-      if (!editor) return
-      if (editor.getEditingShapeId()) return
-      const selected = editor.getSelectedShapeIds()
-      if (selected.length !== 1) return
-      const shape = editor.getShape(selected[0])
-      if (!shape || (shape.type as string) !== 'math-note') return
-      const tabs = (shape.props as any).tabs as string[] | undefined
-      if (!tabs || tabs.length <= 1) return
-      const active = (shape.props as any).activeTab || 0
-      const next = (e.key === 'ArrowRight' || e.key === 'l')
-        ? Math.min(active + 1, tabs.length - 1)
-        : Math.max(active - 1, 0)
-      if (next !== active) {
-        e.preventDefault()
-        switchTab(editor, shape.id, next)
-      }
-    }
-    window.addEventListener('keydown', handleArrowKey)
-    return () => window.removeEventListener('keydown', handleArrowKey)
   }, [])
 
   // Track last-edited note across all entry methods (double-click, etc.)
@@ -490,6 +518,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, hasDiffBuiltin, diffMode])
 
+
   const components = useMemo<TLComponents>(
     () => ({
       PageMenu: null,
@@ -497,7 +526,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><AgentAttentionCanvas /><BottomPanelsSlot /><AgentPillSlot /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /></>,
     }),
     [document, roomId]
   )
@@ -561,7 +590,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     onSelectChange: handleSelectChange,
     buildErrors,
     buildWarnings,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings])
+    timelineActive,
+    onToggleTimeline: toggleTimeline,
+    shadowHistoryVisible: shadowVisible,
+    onToggleShadowHistory: toggleShadowOverlay,
+    shadowHistoryVersionCount: shadowVersions.length,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions.length])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -571,10 +605,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const tools = useMemo(() => [BrowseTool, MathNoteTool, TextSelectTool], [])
+  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+  const tools = useMemo(() => [
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, PlaybackTool, TerminalTool,
+    ...(isPhone ? [PhoneHandTool] : []),
+  ], [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -621,9 +659,38 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
       }
+      // Register fleet shape placement tools (toolbar overflow only, no kbd shortcut)
+      tools['fleet-chat'] = {
+        id: 'fleet-chat',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>) as any,
+        label: 'Fleet Chat',
+        onSelect: () => _editor.setCurrentTool('fleet-chat'),
+      }
+      tools['fleet-agents'] = {
+        id: 'fleet-agents',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="9" cy="7" r="4" />
+          <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          <path d="M21 21v-2a4 4 0 0 0-3-3.85" />
+        </svg>) as any,
+        label: 'Fleet Agents',
+        onSelect: () => _editor.setCurrentTool('fleet-agents'),
+      }
+      tools['fleet-search'] = {
+        id: 'fleet-search',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>) as any,
+        label: 'Fleet Search',
+        onSelect: () => _editor.setCurrentTool('fleet-search'),
+      }
       // Register browse tool — pointer with starburst sparkle (interactive pages)
-      tools['browse'] = {
-        id: 'browse',
+      tools['select'] = {
+        id: 'select',
         icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           {/* Smaller pointer arrow, shifted down-left */}
           <path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor" stroke="none" />
@@ -641,7 +708,35 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           })()}
         </svg>) as any,
         label: 'Browse',
-        onSelect: () => _editor.setCurrentTool('browse'),
+        onSelect: () => _editor.setCurrentTool('select'),
+      }
+      // Register cluster tool — server/grid icon
+      tools['cluster'] = {
+        id: 'cluster',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          {/* Server rack outline */}
+          <rect x="2" y="2" width="14" height="5" rx="1" />
+          <rect x="2" y="8" width="14" height="5" rx="1" />
+          {/* Status dots */}
+          <circle cx="13.5" cy="4.5" r="0.8" fill="currentColor" stroke="none" />
+          <circle cx="13.5" cy="10.5" r="0.8" fill="currentColor" stroke="none" />
+          {/* Progress bar hint */}
+          <line x1="4" y1="15" x2="9" y2="15" strokeWidth="2" />
+          <line x1="9" y1="15" x2="14" y2="15" strokeWidth="1" strokeOpacity="0.3" />
+        </svg>) as any,
+        label: 'Cluster Monitor',
+        onSelect: () => _editor.setCurrentTool('cluster'),
+      }
+      // Register playback-frame tool (kbd 'p')
+      tools['playback-frame'] = {
+        id: 'playback-frame',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="3" width="14" height="12" rx="2" />
+          <polygon points="7,7 7,11 12,9" fill="currentColor" stroke="none" />
+        </svg>) as any,
+        label: 'Playback',
+        kbd: 'p',
+        onSelect: () => _editor.setCurrentTool('playback-frame'),
       }
       return tools
     },
@@ -694,8 +789,26 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           onSelectChange={handleSelectChange}
         />
       )}
+      {editorRef.current && (
+        <AnnotationViewer
+          mainEditor={editorRef.current}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+        />
+      )}
+      {shadowVisible && (
+        <ShadowHistoryOverlay
+          versions={shadowVersions}
+          activeIdx={shadowActiveIdx}
+          loading={shadowLoading}
+          onScrub={handleShadowScrub}
+          onClose={hideShadowOverlay}
+        />
+      )}
       <div className="build-pills-row">
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
+        <PlaybackPill state={playbackState} />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (
           <BuildErrorOverlay
@@ -709,12 +822,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           />
         )}
       </div>
+      {editorRef.current && (
+        <FleetHUD
+          mainEditor={editorRef.current}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+        />
+      )}
     </div>
   )
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
+
   return (
+    <>
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
@@ -729,7 +852,26 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
-          setEditorMounted(true)
+          setEditorMounted(v => v + 1)
+
+          // Patch isInAny NARROWLY for SelectionFg only.
+          // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
+          // "select.pointing_shape","select.crop.idle") to decide whether to show handles.
+          // BrowseTool uses browse.* states, so handles are hidden. We detect the exact
+          // 4-arg SelectionFg call and remap it — leaving all other isInAny callers untouched.
+          const FG_PATHS = new Set(['select.idle','select.pointing_selection','select.pointing_shape','select.crop.idle'])
+          const origIsInAny = editor.isInAny.bind(editor)
+          ;(editor as any).isInAny = (...paths: string[]) => {
+            const result = origIsInAny(...paths)
+            if (result) return result
+            // Only remap the exact SelectionFg call (4 paths, all in FG_PATHS)
+            if (paths.length === 4 && paths.every((p: string) => FG_PATHS.has(p))) {
+              return origIsInAny('browse.idle') ||
+                     origIsInAny('browse.pointing_selection') ||
+                     origIsInAny('browse.pointing_shape')
+            }
+            return false
+          }
 
           // Set up hyperref link navigation: open target in RefViewer panel
           setNavigateToAnchor((anchorId: string, title: string) => {
@@ -787,9 +929,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
               fetchSvgPagesAsync(editor, document)
             }
           }
-
-          // Follow system dark/light mode preference
-          editor.user.updateUserPreferences({ colorScheme: 'system' })
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -864,10 +1003,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
 
           // Restore session after constraints and Yjs sync settle,
           // then start watching for changes.
-          // Guard: onMount fires multiple times (React Strict Mode double-invokes
-          // TLDraw's layout effect on every commit). Only restore+watch once.
-          if (!sessionRestoredRef.current) {
-            sessionRestoredRef.current = true
+          // Guard: track which editor was restored. Skips React Strict Mode
+          // double-invokes (same editor), but re-runs when a new editor is
+          // created (e.g. after Vite HMR causes useSync to return a new store).
+          if (restoredEditorRef.current !== editor) {
+            restoredEditorRef.current = editor
             const session = loadSession()
             setTimeout(() => {
               if (session?.pageId) {
@@ -877,10 +1017,62 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                   editor.setCurrentPage(session.pageId as any)
                 }
               }
-              if (session?.camera) {
+              if (initialCamera) {
+                // URL camera params override session restore
+                if (initialCamera.page) {
+                  const pages = editor.getPages()
+                  const target = pages.find(p => p.name === initialCamera.page || p.id === initialCamera.page)
+                  if (target) editor.setCurrentPage(target.id as any)
+                }
+                editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
+              } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-              if (session?.tool) {
+              if (isPhone) {
+                // Phone: fit text column width on load (unless URL camera was specified)
+                // Defer slightly so SVG content is injected and we can measure text bounds
+                if (!initialCamera && !session?.camera) {
+                  const fitToContent = () => {
+                    const pageShapes = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'svg-page')
+                    if (pageShapes.length === 0) return
+                    const first = pageShapes.sort((a, b) => (a as any).y - (b as any).y)[0]
+                    const b = editor.getShapePageBounds(first.id)
+                    if (!b) return
+                    // Try to find text column bounds from DOM
+                    const el = window.document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
+                    const svg = el?.querySelector('svg')
+                    const vp = editor.getViewportScreenBounds()
+                    if (svg?.viewBox?.baseVal?.width) {
+                      const vb = svg.viewBox.baseVal
+                      const texts = svg.querySelectorAll('text')
+                      let minX = Infinity, maxX = -Infinity
+                      for (const t of texts) {
+                        if (t.closest('defs')) continue
+                        const x = parseFloat(t.getAttribute('x') || '0')
+                        const len = (t as SVGTextContentElement).getComputedTextLength?.() || 0
+                        if (x < minX) minX = x
+                        if (x + len > maxX) maxX = x + len
+                      }
+                      if (minX < maxX) {
+                        const sx = b.width / vb.width
+                        const colMinX = b.minX + minX * sx
+                        const colW = (maxX - minX) * sx
+                        const z = vp.width / colW
+                        editor.setCamera({ x: -colMinX, y: -b.minY, z })
+                        return
+                      }
+                    }
+                    // Fallback: full page width
+                    const z = vp.width / b.width
+                    editor.setCamera({ x: -b.minX, y: -b.minY, z })
+                  }
+                  // Try immediately, retry after SVG injection
+                  fitToContent()
+                  setTimeout(fitToContent, 500)
+                }
+                // Phone: always start in phone-hand tool for axis-locked scroll
+                editor.setCurrentTool('phone-hand')
+              } else if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
               } else {
                 const home = getHomeTool(getFormatConfig(document.format))
@@ -949,26 +1141,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
                 saveSession()
               })
 
-              // Browse bounce-back: when the select tool deselects everything
-              // in an interactive doc, return to browse mode. The browse tool delegates
-              // to select for note interaction; this closes the loop.
-              if (getFormatConfig(document.format).browseBounce) {
-                let bounceTimer: ReturnType<typeof setTimeout> | null = null
-                react('browse-bounce', () => {
-                  const tool = editor.getCurrentToolId()
-                  const sel = editor.getSelectedShapeIds()
-                  if (bounceTimer) { clearTimeout(bounceTimer); bounceTimer = null }
-                  if (tool === 'select' && sel.length === 0) {
-                    // Small delay: don't bounce during transient states (mid-click)
-                    bounceTimer = setTimeout(() => {
-                      if (editor.getCurrentToolId() === 'select' &&
-                          editor.getSelectedShapeIds().length === 0) {
-                        editor.setCurrentTool('browse')
-                      }
-                    }, 300)
-                  }
-                })
-              }
+              // Browse bounce-back removed — BrowseTool now subclasses SelectTool
+              // and handles fleet/HTML routing in its own Idle state. No tool switching needed.
             }, 500)
           }
 
@@ -981,14 +1155,17 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
             if (e.key === 'm') {
               editor.setCurrentTool('math-note')
             }
+            // Slides keyboard/swipe nav handled by SlidesNavigator component
           }
           window.addEventListener('keydown', handleKeyDown)
 
           // Dismiss reload-sourced change highlights on canvas click
-          const container = editor.getContainer()
-          container.addEventListener('pointerdown', () => {
-            if (changedPages.size > 0) dismissAllChanges()
-          })
+          {
+            const c = editor.getContainer()
+            c.addEventListener('pointerdown', () => {
+              if (changedPages.size > 0) dismissAllChanges()
+            })
+          }
 
           // Axis-lock two-finger scroll: snap to vertical or horizontal
           // when the gesture is approximately aligned (3:1 ratio).
@@ -1013,10 +1190,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig }: SvgDocumentE
     >
       <DarkModeSync />
       <NoteDropHandler />
+      <MarkdownDropHandler />
+      <TocDropTargetManager />
+      {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
+    {footEnabled && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    </>
   )
 }
+

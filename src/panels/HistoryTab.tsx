@@ -80,6 +80,22 @@ export function HistoryTab() {
                     &#9703;
                   </button>
                 )}
+                <button
+                  className={`history-compare-btn${ctx?.timelineActive ? ' active' : ''}`}
+                  onClick={() => ctx?.onToggleTimeline?.()}
+                  title="Spatial timeline overlay"
+                >
+                  &#9201;
+                </button>
+                {(ctx?.shadowHistoryVersionCount ?? 0) >= 2 && (
+                  <button
+                    className={`history-compare-btn${ctx?.shadowHistoryVisible ? ' active' : ''}`}
+                    onClick={() => ctx?.onToggleShadowHistory?.()}
+                    title="Shadow history scrubber"
+                  >
+                    &#8635;
+                  </button>
+                )}
               </div>
               <span className="snapshot-label">
                 <span className="snapshot-position">{idx + 1}/{entries.length}</span>
@@ -117,7 +133,7 @@ export function HistoryChanges() {
     setReviews(readReviewState())
     setSummaries(readSummaries())
     const unsub1 = onDiffReview((signal) => {
-      setReviews(signal.reviews || {})
+      setReviews((signal.reviews || {}) as ReviewMap)
     })
     const unsub2 = onDiffSummaries((signal) => {
       setSummaries(signal.summaries || {})

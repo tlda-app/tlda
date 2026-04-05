@@ -6,6 +6,7 @@
  * unmounts the current editor and mounts the new one.
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -80,6 +81,31 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
     return () => window.removeEventListener('message', handleMessage)
   }, [members, activeIndex, switchTo])
 
+  // Handle fleet-open-doc events: add member to book and switch to it
+  useEffect(() => {
+    function handleOpenDoc(e: Event) {
+      const { docName, book } = (e as CustomEvent).detail
+      if (book && book !== bookName) return // wrong book — let it open in new tab
+      e.preventDefault() // signal we handled it
+      const idx = members.findIndex(m => m.key === docName || m.name === docName)
+      if (idx !== -1) {
+        switchTo(idx)
+      } else {
+        // New member — add via API, then reload members (App.tsx watches manifest)
+        fetch(`/api/projects/${encodeURIComponent(bookName)}/members`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ add: docName }),
+        }).then(() => {
+          // Trigger manifest reload by updating URL hash
+          window.location.hash = docName
+        }).catch(console.error)
+      }
+    }
+    window.addEventListener('fleet-open-doc', handleOpenDoc)
+    return () => window.removeEventListener('fleet-open-doc', handleOpenDoc)
+  }, [bookName, members, switchTo])
+
   // After a cross-member switch completes, navigate to pending anchor
   useEffect(() => {
     if (loading || !pendingAnchor.current) return
@@ -99,6 +125,15 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
 
   const activeMember = members[activeIndex]
   const roomId = activeMember ? `doc-${activeMember.key}` : ''
+
+  // Empty book (no resolvable members): show blank canvas
+  if (members.length === 0) {
+    return (
+      <div className="book-viewer" style={{ position: 'fixed', inset: 0 }}>
+        <Tldraw />
+      </div>
+    )
+  }
 
   return (
     <BookContext.Provider value={ctx}>

@@ -19,21 +19,34 @@
  */
 
 import express from 'express'
-import { createServer } from 'http'
-import { WebSocketServer } from 'ws'
+import { createServer, request as httpRequest } from 'http'
+import { WebSocketServer, WebSocket as WS } from 'ws'
 import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
 import { homedir } from 'os'
+import { lookup as mimeLookup } from 'mime-types'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes from './routes/projects.mjs'
-import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead } from './lib/auth.mjs'
+import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Load .env from project root (for MYSCRIPT_APP_KEY, etc.)
+try {
+  const _envFile = join(__dirname, '..', '.env')
+  const _envContent = readFileSync(_envFile, 'utf8')
+  let _envCount = 0
+  for (const line of _envContent.split('\n')) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)/)
+    if (m && !process.env[m[1]]) { process.env[m[1]] = m[2].trim(); _envCount++ }
+  }
+  if (_envCount > 0) console.log(`[env] Loaded ${_envCount} vars from ${_envFile}`)
+} catch (e) { console.warn('[env] Failed to load .env:', e.message) }
 
 const PORT = process.env.PORT || 5176
 const HOST = process.env.HOST || '0.0.0.0'
@@ -65,6 +78,9 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
+// Cookie login — set token as cookie, redirect to viewer
+app.get('/auth/login', loginRoute)
+
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', (req, res) => {
   if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
@@ -74,9 +90,22 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ level, presenter: level === 'rw' })
 })
 
+// ---------- Local image serving ----------
+// Serves local filesystem images for math notes (paths starting with / or ~)
+app.get('/api/local-image', requireRead, (req, res) => {
+  const { path: filePath } = req.query
+  if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'Missing path' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  if (!expanded.startsWith('/')) return res.status(400).json({ error: 'Path must be absolute' })
+  if (!existsSync(expanded)) return res.status(404).json({ error: 'Not found' })
+  const mimeType = mimeLookup(expanded) || 'application/octet-stream'
+  res.set('Content-Type', mimeType)
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.sendFile(resolve(expanded), { dotfiles: 'allow' })
+})
+
 // ---------- Doc asset serving ----------
 // Serves from server/projects/{name}/output/ at /docs/{name}/*
-// Falls back to public/docs/{name}/* for legacy/dev compatibility
 
 app.get('/docs/manifest.json', requireRead, (req, res) => {
   const manifest = generateManifest()
@@ -101,7 +130,7 @@ app.use('/docs', (req, res, next) => {
           const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
           if (existsSync(assetPath)) {
             res.set('Cache-Control', 'public, max-age=3600')
-            return res.sendFile(resolve(assetPath))
+            return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
           }
         }
       }
@@ -110,7 +139,7 @@ app.use('/docs', (req, res, next) => {
   next()
 })
 
-// Serve doc assets: try projects output first, then legacy public/docs
+// Serve doc assets from projects output
 app.use('/docs', (req, res, next) => {
   // Exempt site_libs (Quarto static assets) from auth — loaded by iframes which can't inject Authorization headers
   if (req.path.includes('/site_libs/')) return next()
@@ -130,7 +159,7 @@ app.use('/docs', (req, res, next) => {
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
-      return res.sendFile(resolve(histPath))
+      return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
     return res.status(404).json({ error: 'Not found' })
   }
@@ -282,7 +311,7 @@ app.use('/docs', (req, res, next) => {
         // Fall through to sendFile on error
       }
     }
-    return res.sendFile(resolve(projectPath))
+    return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
   }
 
   res.status(404).json({ error: 'Not found' })
@@ -291,6 +320,44 @@ app.use('/docs', (req, res, next) => {
 // ---------- API routes ----------
 
 app.use('/api/projects', projectRoutes)
+
+// Handwriting recognition (MyScript proxy)
+import recognizeRoutes from './routes/recognize.mjs'
+app.use('/api/recognize', recognizeRoutes)
+
+// ---------- Fleet API proxy ----------
+// Proxy unhandled /api/* and /events to fleet server (for fleet shapes in the SPA)
+const FLEET_SERVER = process.env.FLEET_SERVER || 'http://localhost:5199'
+function fleetProxy(req, res) {
+  const url = new URL(FLEET_SERVER)
+  const opts = {
+    hostname: url.hostname,
+    port: url.port,
+    path: req.originalUrl,
+    method: req.method,
+    headers: { ...req.headers, host: url.host },
+  }
+  // Remove content-length since we may re-serialize the body
+  delete opts.headers['content-length']
+  const proxyReq = httpRequest(opts, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers)
+    proxyRes.pipe(res)
+  })
+  proxyReq.on('error', () => {
+    if (!res.headersSent) res.status(502).json({ error: 'Fleet server unavailable' })
+  })
+  // Express may have consumed the body — re-send it
+  if (req.body && Object.keys(req.body).length > 0) {
+    const bodyStr = JSON.stringify(req.body)
+    proxyReq.setHeader('Content-Type', 'application/json')
+    proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyStr))
+    proxyReq.end(bodyStr)
+  } else {
+    req.pipe(proxyReq)
+  }
+}
+app.use('/events', fleetProxy)
+app.use('/api', fleetProxy)
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math
@@ -326,14 +393,14 @@ app.get('/{*path}', (req, res) => {
 const server = createServer(app)
 
 const syncWss = new WebSocketServer({ noServer: true })
+const fleetWss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
-  // Auth check: token from ?token= query param or Authorization header
+  // Auth check: token from ?token= query param, Authorization header, or cookie
   if (isAuthEnabled()) {
-    const token = url.searchParams.get('token') ||
-      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null)
+    const token = extractToken(req)
     if (!validateToken(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
@@ -352,6 +419,27 @@ server.on('upgrade', (req, socket, head) => {
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
     })
+    return
+  }
+
+  // Proxy /ws/fleet to fleet server for live chat events
+  if (url.pathname === '/ws/fleet') {
+    const fleetUrl = new URL(FLEET_SERVER)
+    const target = `ws://${fleetUrl.hostname}:${fleetUrl.port}${req.url}`
+    const upstream = new WS(target)
+    upstream.on('open', () => {
+      fleetWss.handleUpgrade(req, socket, head, (ws) => {
+        upstream.on('message', (data) => {
+          try { if (ws.readyState === 1) ws.send(data.toString()) } catch {}
+        })
+        ws.on('message', (data) => {
+          try { if (upstream.readyState === 1) upstream.send(data.toString()) } catch {}
+        })
+        upstream.on('close', () => ws.close())
+        ws.on('close', () => upstream.close())
+      })
+    })
+    upstream.on('error', () => socket.destroy())
     return
   }
 
@@ -390,50 +478,6 @@ function generateManifest() {
   return { documents }
 }
 
-// ---------- Triage agent management ----------
-
-const AGENT_ENABLED = process.argv.includes('--agent')
-let agentProc = null
-let agentRespawnTimer = null
-
-function spawnTriageAgent() {
-  const agentPath = resolve(__dirname, '../cli/lib/triage-agent.mjs')
-  const logDir = join(homedir(), '.config', 'tlda')
-  mkdirSync(logDir, { recursive: true })
-  const logFd = openSync(join(logDir, 'agent.log'), 'a')
-
-  const token = process.env.TLDA_TOKEN || ''
-  const env = { ...process.env, TLDA_SERVER: `http://localhost:${PORT}` }
-  if (token) env.TLDA_TOKEN = token
-
-  agentProc = spawn('node', [agentPath], {
-    env,
-    stdio: ['ignore', logFd, logFd],
-    detached: false,
-  })
-
-  console.log(`[agent] Triage agent started (PID ${agentProc.pid})`)
-
-  agentProc.on('exit', (code, signal) => {
-    console.log(`[agent] Triage agent exited (code=${code}, signal=${signal})`)
-    agentProc = null
-    if (!shuttingDown) {
-      console.log('[agent] Respawning in 5s...')
-      agentRespawnTimer = setTimeout(spawnTriageAgent, 5000)
-    }
-  })
-}
-
-function stopTriageAgent() {
-  if (agentRespawnTimer) {
-    clearTimeout(agentRespawnTimer)
-    agentRespawnTimer = null
-  }
-  if (agentProc) {
-    agentProc.kill('SIGTERM')
-    agentProc = null
-  }
-}
 
 // ---------- Graceful shutdown ----------
 
@@ -443,10 +487,7 @@ function shutdown() {
   shuttingDown = true
   console.log('\nShutting down...')
 
-  // 1. Kill triage agent if running
-  stopTriageAgent()
-
-  // 2. Kill all active build child processes (latexmk, dvisvgm, etc.)
+  // 1. Kill all active build child processes (latexmk, dvisvgm, etc.)
   killAllBuilds()
 
   // 3. Flush and close @tldraw/sync rooms
@@ -495,8 +536,4 @@ server.listen(PORT, HOST, () => {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
 
-  if (AGENT_ENABLED) {
-    // Brief delay to let server fully initialize before agent connects
-    setTimeout(spawnTriageAgent, 2000)
-  }
 })

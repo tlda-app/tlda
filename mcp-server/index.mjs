@@ -237,7 +237,8 @@ function checkDocBuildStatusDisk(docName) {
 
 async function headlessScreenshot(docName, targetPage) {
   const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
-  const url = `${serverUrl}/?doc=${docName}`;
+  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
+  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
   const browser = await getHeadlessBrowser();
   const page = await browser.newPage();
   try {
@@ -264,6 +265,94 @@ async function headlessScreenshot(docName, targetPage) {
     const buf = await page.screenshot({ type: 'png' });
     const base64 = buf.toString('base64');
     return base64;
+  } finally {
+    await page.close();
+    scheduleBrowserClose();
+  }
+}
+
+/**
+ * Take a cropped screenshot of a specific canvas region.
+ * Centers the viewport on the given canvas bounds, then clips to the exact region.
+ * @param {string} docName - document name
+ * @param {{ x: number, y: number, w: number, h: number }} bounds - canvas bounds to capture
+ * @param {number} [padding=200] - extra pixels around the bounds (generous for context)
+ * @param {string} [focusShapeId] - if provided, desaturate other annotations to highlight this one
+ */
+async function headlessScreenshotCrop(docName, bounds, padding = 200, focusShapeId = null) {
+  const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
+  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
+  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
+  const browser = await getHeadlessBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: 1280, height: 960 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Center on the bounds and zoom to fit
+    const clip = await page.evaluate((b, pad) => {
+      const editor = window.__tldraw_editor__;
+      if (!editor) return null;
+      // Zoom to fit the bounds with padding
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      editor.centerOnPoint({ x: cx, y: cy });
+      // Calculate zoom to fit bounds in viewport
+      const vw = 1280, vh = 960;
+      const zoomX = vw / (b.w + pad * 2);
+      const zoomY = vh / (b.h + pad * 2);
+      const zoom = Math.min(zoomX, zoomY, 2); // cap at 2x for readability
+      editor.setCamera({ x: -(cx - vw / (2 * zoom)), y: -(cy - vh / (2 * zoom)), z: zoom });
+      // Convert canvas bounds to screen coords
+      const tl = editor.pageToScreen({ x: b.x, y: b.y });
+      const br = editor.pageToScreen({ x: b.x + b.w, y: b.y + b.h });
+      return {
+        x: Math.max(0, Math.floor(tl.x - pad)),
+        y: Math.max(0, Math.floor(tl.y - pad)),
+        width: Math.min(vw, Math.ceil(br.x - tl.x + pad * 2)),
+        height: Math.min(vh, Math.ceil(br.y - tl.y + pad * 2)),
+      };
+    }, bounds, padding);
+
+    // Force light theme and hide fleet UI shapes for clean document screenshots
+    await page.evaluate(() => {
+      document.documentElement.classList.remove('tl-theme__dark');
+      document.documentElement.classList.add('tl-theme__light');
+      document.body.classList.remove('tl-theme__dark');
+      document.body.classList.add('tl-theme__light');
+      const editor = window.__tldraw_editor__;
+      if (!editor) return;
+      const fleetTypes = new Set(['fleet-chat', 'fleet-agents', 'fleet-pill', 'fleet-status']);
+      for (const shape of editor.getCurrentPageShapes()) {
+        if (!fleetTypes.has(shape.type)) continue;
+        const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
+        if (el) el.style.display = 'none';
+      }
+    });
+
+    // Fade non-target annotations (keep colors recognizable, just lower salience)
+    if (focusShapeId) {
+      await page.evaluate((targetId) => {
+        const editor = window.__tldraw_editor__;
+        if (!editor) return;
+        const annotationTypes = new Set(['highlight', 'draw', 'dot-annotation']);
+        for (const shape of editor.getCurrentPageShapes()) {
+          if (!annotationTypes.has(shape.type)) continue;
+          if (shape.id === targetId) continue;
+          const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
+          if (el) el.style.opacity = '0.4';
+        }
+      }, focusShapeId);
+    }
+
+    await new Promise(r => setTimeout(r, 500)); // let render settle
+
+    const buf = clip
+      ? await page.screenshot({ type: 'png', clip })
+      : await page.screenshot({ type: 'png' });
+    return buf.toString('base64');
   } finally {
     await page.close();
     scheduleBrowserClose();
@@ -561,8 +650,12 @@ async function collectDrawnShapes(docName) {
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
       const sourceLine = record.meta?.sourceLine || null;
+      // Handwriting recognition metadata
+      const transcription = record.meta?.transcription || null;
+      const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine });
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
+        transcription, transcriptionVerified });
       continue;
     }
 
@@ -1076,6 +1169,8 @@ async function addAnnotation(doc, line, text, { color = 'orange', width = 200, h
         column: -1,
         content: linePos.content,
       },
+      ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+      ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
     },
     parentId: 'page:page',
     index: noteIndex,
@@ -1701,6 +1796,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'crop_screenshot',
+      description: 'Take a cropped screenshot of a specific document region. Pass a screenshotRef from an annotation attachment, or specify doc + bounds directly. Returns a PNG image.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Screenshot ref string from annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h")',
+          },
+          doc: {
+            type: 'string',
+            description: 'Document name (required if ref is not provided)',
+          },
+          x: { type: 'number', description: 'Canvas X of crop region' },
+          y: { type: 'number', description: 'Canvas Y of crop region' },
+          w: { type: 'number', description: 'Width of crop region' },
+          h: { type: 'number', description: 'Height of crop region' },
+          padding: { type: 'number', description: 'Extra pixels around the region (default: 200)' },
+          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out' },
+        },
+      },
+    },
+    {
       name: 'highlight_location',
       description: 'Highlight a location in the TLDraw canvas on the iPad. Use this for forward sync from TeX source to iPad.',
       inputSchema: {
@@ -1852,6 +1970,70 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'mark_highlight_addressed',
+      description: 'Mark a highlight shape as addressed (desaturated). Sets meta.addressed=true and reduces opacity to 0.3. The user can tap the highlight to re-saturate and signal the agent to retry.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          id: { type: 'string', description: 'Highlight shape ID (e.g. "shape:abc123")' },
+        },
+        required: ['doc', 'id'],
+      },
+    },
+    {
+      name: 'place_response_bar',
+      description: 'Place a reading-assist margin bar next to a highlight, indicating an agent response exists. The bar is a thin colored strip in the right margin spanning the highlight height. Tap the bar to see the response popover.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          highlightId: { type: 'string', description: 'ID of the highlight shape this bar responds to' },
+          responseId: { type: 'string', description: 'ID of the response math-note annotation' },
+        },
+        required: ['doc', 'highlightId', 'responseId'],
+      },
+    },
+    {
+      name: 'get_highlight_feedback',
+      description: 'Get structured feedback from highlight annotations on a document. Returns semantic feedback objects mapping highlight colors to intent: approve (green), reject (red), question (yellow), expand (violet), comment (orange), info (blue). Each entry includes the highlighted text, source line, and addressed status.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          unaddressed_only: { type: 'boolean', description: 'Only return unaddressed highlights (default: false)' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'set_understanding',
+      description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          startLine: { type: 'number', description: 'First source line' },
+          endLine: { type: 'number', description: 'Last source line' },
+          status: { type: 'string', enum: ['approved', 'understood', 'unchecked'], description: 'Understanding status' },
+          userId: { type: 'string', description: 'User ID (defaults to FLEET_ID env)' },
+          displayName: { type: 'string', description: 'Display name (defaults to FLEET_NAME env)' },
+        },
+        required: ['doc', 'startLine', 'endLine', 'status'],
+      },
+    },
+    {
+      name: 'get_understanding',
+      description: 'Get the understanding map for a document — all users\' line-level statuses.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
       name: 'scroll_to_line',
       description: 'Scroll the viewer to a source line. Looks up the line position and broadcasts a scroll command to all connected viewers.',
       inputSchema: {
@@ -1879,6 +2061,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
         },
         required: ['doc', 'text'],
+      },
+    },
+    {
+      name: 'doc_version',
+      description: 'List recent shadow-repo versions for a document, or find the active version at a given timestamp. Each build commits source files to a per-project shadow git repo.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version active at that time (latest commit before). Omit to list all recent versions.' },
+          limit: { type: 'number', description: 'Max entries to return (default: 20)' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'doc_checkout',
+      description: 'Revert a document to a specific historical version from the shadow repo. Accepts a git hash or a time string (ISO, unix ms, or relative like "20 minutes ago"). Extracts source at that ref, pushes to the server, and triggers a rebuild.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref: { type: 'string', description: 'Shadow repo git hash, or a time string (ISO, "20 minutes ago", etc.)' },
+        },
+        required: ['doc', 'ref'],
+      },
+    },
+    {
+      name: 'doc_diff',
+      description: 'Show the source diff between two versions of a document using the shadow repo. ref2 defaults to HEAD (latest shadow commit).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref1: { type: 'string', description: 'Base shadow-repo commit hash to diff from' },
+          ref2: { type: 'string', description: 'Target shadow-repo commit hash (default: HEAD / latest)' },
+        },
+        required: ['doc', 'ref1'],
       },
     },
   ],
@@ -2002,6 +2222,17 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     return { content: [{ type: 'text', text }], page: pos?.page || null };
   }
 
+  // Handwriting recognition: has LaTeX transcription from MyScript
+  if (r.type === 'draw' && r.meta?.transcription) {
+    const pos = bbox ? describePagePosition(docName, bbox) : null;
+    let text = `${prefix}Handwriting (${color})`;
+    if (pos) text += ` ${pos.description}`;
+    text += `\n  transcription: "${r.meta.transcription}"`;
+    if (!r.meta.transcriptionVerified) text += ` (unverified)`;
+    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    return { content: [{ type: 'text', text }], page: pos?.page || null };
+  }
+
   const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
   const gesture = bbox ? classifyGesture(bbox) : 'unknown';
   const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
@@ -2025,10 +2256,13 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
-  'wait_for_feedback', 'screenshot', 'get_latest_feedback',
+  'wait_for_feedback', 'screenshot', 'crop_screenshot', 'get_latest_feedback',
   'highlight_location', 'add_annotation', 'send_note',
   'scroll_to_line', 'read_pen_annotations',
   'draw_highlight', 'draw_arrow',
+  'mark_highlight_addressed', 'place_response_bar',
+  'get_highlight_feedback',
+  'set_understanding', 'get_understanding',
 ]);
 
 // Handle tool calls
@@ -2052,6 +2286,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     }
+
+    // Warn if agent has a delegated task — they should probably be working, not blocking
+    try {
+      const stateFile = `${os.homedir()}/.claude/agent-tasks.json`;
+      const agentWin = process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID;
+      if (agentWin && fs.existsSync(stateFile)) {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        const winId = parseInt(agentWin);
+        const task = (state.tasks || []).find(t => t.agent === winId && t.status !== 'done');
+        if (task) {
+          return {
+            content: [{
+              type: 'text',
+              text: `WARNING: You have an active task [${task.id}]: "${task.description}". ` +
+                `wait_for_feedback blocks for up to ${Math.round(timeout/1000)}s and is only for dedicated iPad review sessions. ` +
+                `If your task is to write/edit/analyze, use \`tlda monitor add ${docName}\` for background notifications instead, and do your actual work.`,
+            }],
+          };
+        }
+      }
+    } catch { /* best effort — don't block on check failure */ }
 
     let heartbeatInterval;
     let shapeStream;
@@ -2639,6 +2894,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'crop_screenshot') {
+    let docName, bounds, padding = args?.padding || 200;
+    if (args?.ref) {
+      // Parse ref: "tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>"
+      const parts = args.ref.split(':');
+      // Expected: ["tlda-screenshot", "page", "page", "<x>,<y>,<w>,<h>"]
+      const coordStr = parts[parts.length - 1];
+      const coords = coordStr.split(',').map(Number);
+      if (coords.length !== 4 || coords.some(isNaN)) {
+        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
+      }
+      [bounds] = [{ x: coords[0], y: coords[1], w: coords[2], h: coords[3] }];
+      // Doc name must be provided separately when using ref
+      docName = args.doc;
+    } else {
+      docName = args?.doc;
+      if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
+        bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
+      }
+    }
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
+    }
+    if (!bounds) {
+      return { content: [{ type: 'text', text: 'Missing bounds — provide ref or x/y/w/h' }], isError: true };
+    }
+    try {
+      const base64 = await headlessScreenshotCrop(docName, bounds, padding, args?.shapeId || null);
+      return {
+        content: [
+          { type: 'text', text: `Cropped screenshot (${Math.round(base64.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
+          { type: 'image', data: base64, mimeType: 'image/png' },
+        ],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Crop screenshot failed: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'highlight_location') {
     const { doc, file, line } = args;
     if (!file || !line) {
@@ -2817,7 +3111,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
     }
-    return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
+    const tok = resolveToken();
+    const tokParam = tok ? `&token=${tok}` : '';
+    const viewUrl = `http://localhost:5176/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
+    return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 
   if (name === 'send_note') {
@@ -2931,6 +3228,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           createdAt: Date.now(),
           createdBy: 'claude',
           sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
         },
         parentId: 'page:page',
         typeName: 'shape',
@@ -3017,6 +3316,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           createdAt: Date.now(),
           createdBy: 'claude',
           sourceAnchor: { file: file || './' + (fromPos.texFile || 'main.tex'), line: fromLine },
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
         },
         parentId: 'page:page',
         typeName: 'shape',
@@ -3027,6 +3328,331 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? `Arrow drawn: line ${fromLine} → ${toLine}, page ${fromPos.page}`
         : `Arrow drawn: line ${fromLine} (p${fromPos.page}) → ${toLine} (p${toPos.page})`;
       return { content: [{ type: 'text', text: `${desc}, ${color} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'set_understanding') {
+    const { doc, startLine, endLine, status, userId, displayName } = args;
+    if (!doc || startLine == null || endLine == null || !status) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
+    }
+    try {
+      const uid = userId || process.env.FLEET_ID || 'unknown';
+      const uname = displayName || process.env.FLEET_NAME || uid;
+      const uidSafe = uid.replace(/[^a-zA-Z0-9]/g, '');
+
+      // If status is 'unchecked', delete existing understanding-line shapes for this range
+      if (status === 'unchecked') {
+        const allShapes = await fetchShapes(doc, 'understanding-line');
+        const toDelete = allShapes.filter(s =>
+          s.props?.userId === uid &&
+          s.props?.startLine >= startLine &&
+          s.props?.endLine <= endLine
+        );
+        for (const s of toDelete) {
+          await deleteShapeRest(doc, s.id);
+        }
+        return { content: [{ type: 'text', text: `Understanding: cleared lines ${startLine}–${endLine} for ${uname}` }] };
+      }
+
+      // Look up canvas positions for start and end lines
+      const startPos = lookupLine(doc, startLine);
+      const endPos = lookupLine(doc, endLine);
+      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
+      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
+
+      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
+      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
+
+      // Determine user index (how many other users already have understanding lines)
+      let userIndex = 0;
+      try {
+        const existing = await fetchShapes(doc, 'understanding-line');
+        const otherUsers = new Set(existing.filter(s => s.props?.userId !== uid).map(s => s.props?.userId));
+        userIndex = otherUsers.size;
+      } catch {}
+
+      // Position in left margin, stacked per user
+      const MARGIN_X = -12;
+      const USER_GAP = 4;
+      const BAR_WIDTH = 3;
+      const x = MARGIN_X - (userIndex * USER_GAP);
+      const y = Math.min(startCanvas.y, endCanvas.y) - 5;
+      const h = Math.max(20, Math.abs(endCanvas.y - startCanvas.y) + 10);
+
+      // Deterministic shape ID for upsert
+      const shapeId = `shape:umap-${uidSafe}-${startLine}-${endLine}`;
+      const shapeIndex = await getNextShapeIndex(doc);
+
+      const shape = {
+        id: shapeId,
+        type: 'understanding-line',
+        typeName: 'shape',
+        x, y,
+        rotation: 0,
+        isLocked: true,
+        opacity: 1,
+        index: shapeIndex,
+        props: {
+          w: BAR_WIDTH,
+          h,
+          userId: uid,
+          displayName: uname,
+          startLine,
+          endLine,
+          status,
+          userIndex,
+        },
+        meta: { createdAt: Date.now() },
+        parentId: 'page:page',
+      };
+
+      // Try update first, fall back to create
+      try {
+        await updateShapeRest(doc, shapeId, { props: shape.props, y: shape.y });
+      } catch {
+        await createShapeRest(doc, shape);
+      }
+
+      const lineCount = endLine - startLine + 1;
+      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}" for ${uname} (${shapeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'get_understanding') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const shapes = await fetchShapes(doc, 'understanding-line');
+      if (shapes.length === 0) {
+        return { content: [{ type: 'text', text: 'No understanding map data.' }] };
+      }
+      // Group by user
+      const byUser = {};
+      for (const s of shapes) {
+        const uid = s.props?.userId || 'unknown';
+        if (!byUser[uid]) byUser[uid] = { displayName: s.props?.displayName || uid, ranges: [] };
+        byUser[uid].ranges.push({ start: s.props?.startLine, end: s.props?.endLine, status: s.props?.status });
+      }
+      let summary = '';
+      for (const [uid, data] of Object.entries(byUser)) {
+        const approved = data.ranges.filter(r => r.status === 'approved').length;
+        const understood = data.ranges.filter(r => r.status === 'understood').length;
+        summary += `${data.displayName}: ${approved} approved range(s), ${understood} understood-not-satisfied range(s)\n`;
+        for (const r of data.ranges.sort((a, b) => a.start - b.start)) {
+          summary += `  lines ${r.start}–${r.end}: ${r.status}\n`;
+        }
+      }
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'get_highlight_feedback') {
+    const { doc, unaddressed_only } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
+      let feedback = data.feedback || [];
+      if (unaddressed_only) {
+        feedback = feedback.filter(f => !f.addressed);
+      }
+      if (feedback.length === 0) {
+        return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
+      }
+      // Format feedback for agent consumption
+      const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
+      const lines = feedback.map(f => {
+        const icon = ICONS[f.type] || '📌';
+        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
+        const status = f.addressed ? ' [addressed]' : '';
+        const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
+        return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
+      });
+      const summary = `**${feedback.length} highlight feedback item(s) on ${doc}:**\n\n${lines.join('\n')}`;
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'mark_highlight_addressed') {
+    const { doc, id } = args;
+    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
+    try {
+      const shapeId = id.startsWith('shape:') ? id : `shape:${id}`;
+      await updateShapeRest(doc, shapeId, {
+        opacity: 0.3,
+        meta: { addressed: true },
+      });
+      return { content: [{ type: 'text', text: `Marked addressed: ${shapeId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'place_response_bar') {
+    const { doc, highlightId, responseId } = args;
+    if (!doc || !highlightId || !responseId) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, highlightId, responseId' }], isError: true };
+    }
+    try {
+      const hlId = highlightId.startsWith('shape:') ? highlightId : `shape:${highlightId}`;
+      const highlight = await fetchShape(doc, hlId);
+      if (!highlight) return { content: [{ type: 'text', text: `Highlight ${hlId} not found` }], isError: true };
+
+      // Get highlight bounds from its segments
+      const bounds = highlight.props?.segments?.[0]?.path
+        ? { x: highlight.x, y: highlight.y, w: 6, h: 60 }
+        : { x: highlight.x, y: highlight.y, w: 6, h: 60 };
+
+      // Compute bar position: right margin, spanning highlight height
+      // Use page width to position in right margin
+      const pageW = getPageWidth(doc);
+      const barX = pageW + 5;
+      const barY = highlight.y;
+      // Estimate height from segments or use a default
+      let barH = 60;
+      if (highlight.props?.segments) {
+        const ys = [];
+        for (const seg of highlight.props.segments) {
+          // Segments are base64 encoded paths — just use shape bounds estimation
+          ys.push(0);
+        }
+        // Rough height from number of segments × line height
+        barH = Math.max(20, highlight.props.segments.length * 16);
+      }
+
+      const shapeId = generateShapeId();
+      const shapeIndex = await getNextShapeIndex(doc);
+      const shape = {
+        id: shapeId,
+        type: 'reading-assist-bar',
+        typeName: 'shape',
+        x: barX,
+        y: barY,
+        rotation: 0,
+        isLocked: false,
+        opacity: 1,
+        index: shapeIndex,
+        props: {
+          w: 6,
+          h: barH,
+          highlightId: hlId,
+          responseId: responseId.startsWith('shape:') ? responseId : `shape:${responseId}`,
+          color: highlight.props?.color || 'yellow',
+        },
+        meta: {
+          createdAt: Date.now(),
+          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
+        },
+        parentId: 'page:page',
+      };
+
+      await createShapeRest(doc, shape);
+      return { content: [{ type: 'text', text: `Response bar placed: ${shapeId} for highlight ${hlId}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_version') {
+    const doc = args?.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      const ts = args?.timestamp;
+      const limit = args?.limit || 20;
+
+      if (ts) {
+        // Find the active version at that time
+        const { version } = await serverFetch(`/api/projects/${doc}/history/shadow?timestamp=${ts}`);
+        if (!version) return { content: [{ type: 'text', text: 'No version found at that time' }] };
+        const date = new Date(version.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        return { content: [{ type: 'text', text: `${date}  ${version.hash.slice(0, 7)}  ${version.message}` }] };
+      }
+
+      const { versions } = await serverFetch(`/api/projects/${doc}/history/shadow?limit=${limit}`);
+      if (!versions || versions.length === 0) return { content: [{ type: 'text', text: 'No shadow repo history. Versions are recorded after each build.' }] };
+
+      const lines = versions.map(v => {
+        const date = new Date(v.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        return `${date}  ${v.hash.slice(0, 7)}  ${v.message}`;
+      });
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_checkout') {
+    const doc = args?.doc;
+    let ref = args?.ref;
+    if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
+    try {
+      // If ref looks like a time (contains ':' or words like 'ago'), resolve to a hash first
+      const isTimeRef = /\d{4}-\d{2}|ago|minutes?|hours?|days?|:/.test(ref);
+      let resolvedHash = ref;
+
+      if (isTimeRef) {
+        // Try to parse as unix ms if it's all digits
+        const timeArg = /^\d+$/.test(ref) ? ref : encodeURIComponent(ref);
+        const endpoint = /^\d+$/.test(ref)
+          ? `/api/projects/${doc}/history/shadow?timestamp=${ref}`
+          : `/api/projects/${doc}/history/shadow/at?time=${timeArg}`;
+        const { version } = await serverFetch(endpoint);
+        if (!version) return { content: [{ type: 'text', text: `No version found for time: ${ref}` }], isError: true };
+        resolvedHash = version.hash;
+      }
+
+      // Checkout: restores source to this ref and triggers build
+      await serverFetch(`/api/projects/${doc}/history/shadow/${resolvedHash}/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+
+      // Wait for build to complete (poll build status)
+      const deadline = Date.now() + 180_000;
+      let buildDone = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000));
+        const status = await serverFetch(`/api/projects/${doc}`);
+        if (status.buildStatus === 'success' || status.buildStatus === 'failed') {
+          buildDone = true;
+          break;
+        }
+      }
+
+      const result = isTimeRef
+        ? `Checked out ${doc} at ${ref} (shadow ref ${resolvedHash.slice(0, 7)}).`
+        : `Checked out ${doc} at shadow ref ${resolvedHash.slice(0, 7)}.`;
+
+      return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'doc_diff') {
+    const doc = args?.doc;
+    const ref1 = args?.ref1;
+    const ref2 = args?.ref2 || 'HEAD';
+    if (!doc || !ref1) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref1' }], isError: true };
+    try {
+      const { diff } = await serverFetch(`/api/projects/${doc}/history/shadow/diff?ref1=${encodeURIComponent(ref1)}&ref2=${encodeURIComponent(ref2)}`);
+      if (!diff || diff.trim() === '') {
+        return { content: [{ type: 'text', text: `No source changes between ${ref1.slice(0, 7)} and ${ref2 === 'HEAD' ? 'HEAD' : ref2.slice(0, 7)}` }] };
+      }
+      // Truncate very long diffs
+      const lines = diff.split('\n');
+      const truncated = lines.length > 200 ? lines.slice(0, 200).join('\n') + `\n\n[... ${lines.length - 200} more lines truncated]` : diff;
+      return { content: [{ type: 'text', text: truncated }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

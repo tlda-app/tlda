@@ -1,0 +1,203 @@
+/* FleetHUD — toggle pill + expanded panel */
+
+/* Collapsed pill — sits in the build-pills-row */
+.fleet-pill-container {
+  position: relative;
+  pointer-events: all;
+}
+
+.fleet-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.06);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(120, 120, 120, 0.45);
+  cursor: pointer;
+  pointer-events: all;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.fleet-pill:hover {
+  color: rgba(80, 80, 80, 0.7);
+}
+
+/* Expanded HUD — full overlay with fleet shapes, positioned by JS */
+/* z-index 999: must match or exceed tldraw UI chrome since stacking contexts
+   prevent z-index competition across boundaries anyway */
+.fleet-hud-wrap {
+  position: fixed;
+  z-index: 999;
+  pointer-events: none;
+}
+
+.fleet-hud-wrap > .clip-panel {
+  pointer-events: auto;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.fleet-hud-wrap .clip-panel-canvas {
+  background: transparent !important;
+  pointer-events: auto;
+}
+/* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
+.fleet-hud-wrap [class*="watermark"] {
+  display: none !important;
+}
+/* Disable Chrome zoom:2 fix inside the HUD — the HUD tldraw instance
+   has its own scaling and the doubling breaks hit testing */
+.fleet-hud-wrap .tl-canvas__in-front {
+  zoom: 1 !important;
+}
+
+.fleet-hud-controls {
+  display: flex;
+  gap: 2px;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.fleet-hud-lock {
+  border: none;
+  background: none;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  opacity: 0.15;
+  transition: opacity 0.2s;
+}
+.fleet-hud-lock:hover {
+  opacity: 0.6;
+}
+
+.fleet-hud-close {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.15);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+.fleet-hud-close:hover {
+  color: rgba(100, 100, 100, 0.6);
+}
+
+.fleet-hud-layout {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.30);
+  font-size: 13px;
+  cursor: grab;
+  padding: 2px 4px;
+  line-height: 1;
+  letter-spacing: -1px;
+  transition: color 0.2s;
+}
+.fleet-hud-layout:hover {
+  color: rgba(100, 100, 100, 0.6);
+}
+
+/* Layout mode overlay — bounding-box handle for group move */
+.fleet-layout-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  cursor: default;
+}
+.fleet-layout-overlay {
+  position: fixed;
+  z-index: 999;
+  cursor: grab;
+  box-sizing: border-box;
+  border: 2px dashed rgba(100, 120, 200, 0.55);
+  border-radius: 6px;
+  background: rgba(100, 120, 200, 0.04);
+  pointer-events: all;
+  user-select: none;
+  touch-action: none;
+}
+.fleet-layout-overlay:active {
+  cursor: grabbing;
+}
+.fleet-layout-overlay-hint {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 120, 200, 0.7);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Layout mode active — disable interactivity on fleet shape content
+   so the overlay captures all pointer events without accidentally triggering
+   chat lines, agent rows, etc. */
+body.fleet-layout-active .fleet-hud-wrap .tl-html-container {
+  pointer-events: none !important;
+}
+
+/* When HUD is open, hide fleet shapes in the main canvas so the HUD is
+   the sole view — prevents "two copies" confusion and clarifies what you're editing.
+   The HUD's shapes (.fleet-hud-wrap inside) are explicitly restored. */
+body.fleet-hud-open .tl-canvas .fleet-shape {
+  visibility: hidden;
+  pointer-events: none;
+}
+body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
+  visibility: visible;
+  pointer-events: all;
+}
+
+/* Ghost rect shown when dragging a pill over an empty grid slot */
+.fleet-drop-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 298;
+  border: 2px dashed rgba(120, 120, 200, 0.5);
+  border-radius: 6px;
+  background: rgba(100, 100, 200, 0.06);
+}
+html[data-theme="dark"] .fleet-drop-ghost {
+  border-color: rgba(160, 140, 255, 0.45);
+  background: rgba(120, 100, 220, 0.08);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .fleet-hud-layout {
+  color: rgba(255, 255, 255, 0.30);
+}
+html[data-theme="dark"] .fleet-hud-layout:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+html[data-theme="dark"] .fleet-layout-overlay {
+  border-color: rgba(140, 160, 255, 0.5);
+  background: rgba(120, 140, 255, 0.05);
+}
+html[data-theme="dark"] .fleet-layout-overlay-hint {
+  color: rgba(140, 160, 255, 0.7);
+}
+
+html[data-theme="dark"] .fleet-pill {
+  background: rgba(20, 20, 32, 0.7);
+  color: rgba(160, 160, 160, 0.5);
+}
+html[data-theme="dark"] .fleet-pill:hover {
+  color: rgba(200, 200, 200, 0.7);
+}
+html[data-theme="dark"] .fleet-hud-close {
+  color: rgba(255, 255, 255, 0.15);
+}
+html[data-theme="dark"] .fleet-hud-close:hover {
+  color: rgba(255, 255, 255, 0.6);
+}

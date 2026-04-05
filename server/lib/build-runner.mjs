@@ -27,8 +27,11 @@ import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal } from './sync-rooms.mjs'
+import { broadcastSignal, putShape } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
+import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
+import { appendBuildEntry } from './changelog.mjs'
+import { emitBuildComplete } from './webhooks.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -550,7 +553,7 @@ async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
     signalReload(name, null)
   }
 
-  return { pageCount, newHashes }
+  return { pageCount, newHashes, changedPages: changedPageNums }
 }
 
 /** Phase 3: Extract macros from preamble. */
@@ -579,7 +582,8 @@ async function extractSynctex(ctx) {
 
   // The extractor derives synctex.gz location from the .tex path's directory.
   // Copy synctex.gz next to the source .tex so the script finds both.
-  cpSync(synctexFile, join(srcDir, `${texBase}.synctex.gz`))
+  // mainFile may have a subdir prefix (e.g. "revision/foo.tex"), so use dirname(mainFile).
+  cpSync(synctexFile, join(srcDir, dirname(mainFile), `${texBase}.synctex.gz`))
 
   addLog('Extracting synctex lookup...')
   const synctexStart = Date.now()
@@ -611,6 +615,68 @@ async function computeProofPairing(ctx) {
   } catch (e) {
     addLog(`Proof pairing failed (non-fatal): ${e.message}`)
   }
+}
+
+/** Phase 6: Generate theorem-map.json from .aux file. */
+async function generateTheoremMap(ctx) {
+  const { texBase, texDir, srcDir, buildDir, outDir, addLog } = ctx
+  const auxFile = join(buildDir, `${texBase}.aux`)
+  if (!existsSync(auxFile)) {
+    addLog('No .aux file, skipping theorem map')
+    return
+  }
+
+  const PREFIXES = ['thm:', 'lem:', 'prop:', 'cor:', 'def:', 'ass:']
+  const auxText = readFileSync(auxFile, 'utf8')
+
+  // Parse \newlabel{LABEL}{{NUMBER}{PAGE}{TITLE}{...}} — skip @cref variants
+  const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
+  const entries = []
+  let m
+  while ((m = re.exec(auxText)) !== null) {
+    const [, label, number, page, title] = m
+    if (!PREFIXES.some(p => label.startsWith(p))) continue
+    const pageNum = parseInt(page, 10)
+    if (isNaN(pageNum)) continue
+    entries.push({ label, type: label.split(':')[0], number: number.trim(), page: pageNum, title: title.trim() })
+  }
+
+  if (entries.length === 0) {
+    addLog('Theorem map: no entries found')
+    return
+  }
+
+  // Find source line by searching .tex files in texDir (non-recursive)
+  const texFilesInDir = (dir) => {
+    try { return readdirSync(dir).filter(f => f.endsWith('.tex')).map(f => join(dir, f)) }
+    catch { return [] }
+  }
+  const texFiles = [...new Set([...texFilesInDir(texDir), ...(texDir !== srcDir ? texFilesInDir(srcDir) : [])])]
+
+  for (const entry of entries) {
+    const pattern = `\\label{${entry.label}}`
+    for (const texFile of texFiles) {
+      try {
+        const lines = readFileSync(texFile, 'utf8').split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(pattern)) {
+            entry.file = basename(texFile)
+            entry.line = i + 1
+            break
+          }
+        }
+        if (entry.line != null) break
+      } catch {}
+    }
+  }
+
+  const map = {}
+  for (const entry of entries) map[entry.label] = entry
+
+  const tmpPath = join(buildDir, 'theorem-map.json')
+  writeFileSync(tmpPath, JSON.stringify(map, null, 2))
+  publishFile(tmpPath, join(outDir, 'theorem-map.json'))
+  addLog(`Theorem map: ${entries.length} entries`)
 }
 
 /** Cache build state (.aux, .bbl, etc.) for next incremental build. */
@@ -736,6 +802,9 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const hasSynctex = await extractSynctex(ctx)
     if (hasSynctex) await computeProofPairing(ctx)
 
+    // Phase 6: Theorem map
+    await generateTheoremMap(ctx)
+
     // Finalize
     updateProject(name, {
       pages: svgResult.pageCount,
@@ -744,9 +813,34 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     })
     saveBuildCache(ctx)
 
+    // Append changelog entry with TeX diff
+    try {
+      const clEntry = appendBuildEntry(name, svgResult.changedPages, Object.values(svgResult.newHashes).join(''))
+      if (clEntry) ctx.addLog(`Changelog: ${svgResult.changedPages.length} page(s), diff ${clEntry.texDiff.length} chars`)
+    } catch (e) {
+      ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
+    }
+
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
+
+    // Update doc-version sentinel shape with source git commit hash (non-blocking)
+    updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
+      ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+    })
+
+    // Commit source snapshot to shadow repo and cache SVGs (non-blocking)
+    commitSnapshot(name).then(result => {
+      if (result) {
+        cacheSvgSnapshot(name, result.hash).catch(e => {
+          ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
+        })
+      }
+    }).catch(e => {
+      ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
+    })
 
     status.building = false
     status.phase = 'done'
@@ -765,6 +859,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
     signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
+    emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
@@ -815,4 +910,44 @@ function signalReload(name, pages) {
   } catch (e) {
     console.error(`[build:${name}] Failed to send reload signal: ${e.message}`)
   }
+}
+
+/**
+ * Update the doc-version sentinel shape in the Yjs room with the current
+ * source git commit hash. Fire-and-forget — call without await.
+ */
+async function updateDocVersionSentinel(name, srcDir) {
+  let commitHash = 'unknown'
+  if (srcDir && existsSync(srcDir)) {
+    try {
+      const { stdout } = await execAsync('git rev-parse HEAD', { cwd: srcDir, timeout: 5000 })
+      commitHash = stdout.trim()
+    } catch {
+      // Not a git repo, or no commits yet — leave as 'unknown'
+    }
+  }
+
+  const docName = `doc-${name}`
+  const sentinel = {
+    id: 'shape:doc-version--sentinel',
+    typeName: 'shape',
+    type: 'doc-version',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    index: 'a0',
+    parentId: 'page:page',
+    isLocked: true,
+    opacity: 0,
+    meta: {},
+    props: {
+      w: 1,
+      h: 1,
+      commitHash,
+      timestamp: Date.now(),
+    },
+  }
+
+  await putShape(docName, sentinel)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)}`)
 }

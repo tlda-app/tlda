@@ -83,13 +83,16 @@ function pageToCanvas(pageNum) {
 }
 
 // Convert synctex/PDF coordinates to canvas coordinates
+// +72pt offset: synctex coords start at TeX origin (72pt from page edge),
+// but the SVG viewBox starts at -72 and the page shape covers the full viewBox.
+const VIEWBOX_OFFSET = 72
 function pdfToCanvas(page, pdfX, pdfY) {
   const pageBounds = pageToCanvas(page)
   const scaleX = PAGE_WIDTH / PDF_WIDTH
   const scaleY = PAGE_HEIGHT / PDF_HEIGHT
 
-  const canvasX = pageBounds.x + pdfX * scaleX
-  const canvasY = pageBounds.y + pdfY * scaleY
+  const canvasX = pageBounds.x + (pdfX + VIEWBOX_OFFSET) * scaleX
+  const canvasY = pageBounds.y + (pdfY + VIEWBOX_OFFSET) * scaleY
 
   return { x: canvasX, y: canvasY }
 }

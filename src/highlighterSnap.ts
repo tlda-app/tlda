@@ -107,7 +107,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   // Find which svg-page shape this highlight overlaps
   const allShapes = editor.getCurrentPageShapes()
   const pageShape = allShapes.find(s => {
-    if (s.type !== 'svg-page') return false
+    if ((s.type as string) !== 'svg-page') return false
     const pageBounds = editor.getShapePageBounds(s.id)
     if (!pageBounds) return false
     return bounds.maxY > pageBounds.minY && bounds.minY < pageBounds.maxY
@@ -394,12 +394,12 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
 /** Look up source line from canvas position using the document's page layout. */
 function getSourceLine(x: number, y: number, editor: Editor): number | null {
   const pages = editor.getCurrentPageShapes()
-    .filter(s => s.type === 'svg-page')
-    .sort((a, b) => a.y - b.y)
+    .filter(s => (s.type as string) === 'svg-page')
+    .sort((a, b) => (a as any).y - (b as any).y)
     .map(s => ({
       bounds: {
-        x: s.x,
-        y: s.y,
+        x: (s as any).x,
+        y: (s as any).y,
         width: (s.props as any).w,
         height: (s.props as any).h,
       },

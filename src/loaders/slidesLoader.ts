@@ -3,7 +3,6 @@ import {
   AssetRecordType,
   createShapeId,
 } from 'tldraw'
-import { PAGE_GAP } from '../layoutConstants'
 import type { SvgPage, SvgDocument } from './types'
 
 export interface SlidePageEntry {
@@ -16,10 +15,14 @@ export interface SlidePageEntry {
   indexv?: number
 }
 
+/** Gap between slides on the spatial canvas (px) — large enough that adjacent
+ *  slides stay off-screen at any viewport aspect ratio when zoomed to contain */
+export const SLIDE_GAP = 500
+
 /**
  * Load a slides document (Quarto reveal.js deck).
- * All slides on a single TLDraw page, stacked vertically like SVG pages.
- * Each slide is an HtmlPageShape iframe loading the same HTML file at a different slide index.
+ * All slides laid out left-to-right on a SINGLE TLDraw canvas.
+ * Camera navigation moves between slides; RevealJS fragments advance within each slide.
  */
 export async function loadSlidesDocument(
   name: string,
@@ -32,26 +35,23 @@ export async function loadSlidesDocument(
 
   console.log(`Found ${pageInfos.length} slides`)
 
-  const gap = PAGE_GAP
-  let top = 0
   const pages: SvgPage[] = pageInfos.map((info, i) => {
     const pageId = `${name}-slide-${i}`
-    // Build URL with reveal.js (indexh, indexv) coordinates
     const h = info.indexh ?? info.slideIndex
     const v = info.indexv ?? 0
     const url = basePath + info.file + `?_tldaH=${h}&_tldaV=${v}`
-    const page: SvgPage = {
+    // Horizontal layout: each slide offset by (width + gap) * index
+    const x = i * (info.width + SLIDE_GAP)
+    return {
       src: url,
-      bounds: new Box(0, top, info.width, info.height),
+      bounds: new Box(x, 0, info.width, info.height),
       assetId: AssetRecordType.createId(pageId),
       shapeId: createShapeId(pageId),
       width: info.width,
       height: info.height,
     }
-    top += info.height + gap
-    return page
   })
 
-  console.log(`Slides document ready (${pageInfos.length} slides)`)
+  console.log(`Slides document ready (${pageInfos.length} slides, spatial canvas)`)
   return { name, pages, basePath, format: 'slides' }
 }

@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 
-import { createShapeId, toRichText } from 'tldraw'
+import { toRichText } from 'tldraw'
 import type { Editor, TLShapeId, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { loadLookup, type LookupEntry } from '../synctexLookup'
@@ -70,7 +70,7 @@ function cleanupAllErrorShapes(editor: Editor) {
 export function BuildErrorOverlay({
   mainEditor,
   errors,
-  reloadErrors,
+  reloadErrors: _reloadErrors,
   doc,
   shapeUtils,
   tools,

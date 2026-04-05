@@ -83,7 +83,7 @@ export async function anchorShape(
       type: shape.type,
       meta: {
         ...shape.meta,
-        sourceAnchor: activeCluster.anchor,
+        sourceAnchor: activeCluster.anchor as any,
         clusterId: activeCluster.clusterId,
         anchorCanvasX: activeCluster.anchorCanvasX,
         anchorCanvasY: activeCluster.anchorCanvasY,
@@ -118,7 +118,7 @@ export async function anchorShape(
     type: shape.type,
     meta: {
       ...shape.meta,
-      sourceAnchor: anchor,
+      sourceAnchor: anchor as any,
       clusterId,
       anchorCanvasX: shape.x,
       anchorCanvasY: shape.y,
