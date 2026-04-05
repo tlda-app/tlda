@@ -193,7 +193,7 @@ function TaskInboxComponent({ shape }: { shape: any }) {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: 16, minHeight: 0 }}>
           {!item ? (
             <div style={{
               display: 'flex',
