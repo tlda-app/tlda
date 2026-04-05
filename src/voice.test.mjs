@@ -36,6 +36,7 @@ class MockSpeechRecognition {
   constructor() { mockRec = this }
   start() { startCount++ }
   stop() { this.onend?.() }
+  abort() {}
 }
 
 // ---- Mock document ----
@@ -153,8 +154,10 @@ function reset() {
   assert.equal(startCount, 1, 'initial start')
   assert.ok(isRecording())
 
-  // 8 seconds with no onresult → watchdog fires → restart
+  // 8s silence → watchdog fires (aborts old, schedules 250ms restart)
   tick(8000)
+  assert.equal(startCount, 1, 'recognition not yet restarted — waiting 250ms')
+  tick(250)   // 250ms abort-delay fires → new recognition started
   assert.equal(startCount, 2, 'watchdog should have restarted recognition')
   assert.ok(isRecording(), 'should still be recording after watchdog restart')
 

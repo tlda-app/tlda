@@ -314,6 +314,12 @@ function _setupRecognition() {
   _recognition.interimResults = true
   _recognition.lang = 'en-US'
 
+  _recognition.onsoundstart = () => {
+    // Any audio activity resets the watchdog — connection is alive
+    clearTimeout(_watchdogTimer)
+    _watchdogTimer = setTimeout(watchdogRestart, 8000)
+  }
+
   _recognition.onresult = (e) => {
     // Reset watchdog — we're hearing speech
     clearTimeout(_watchdogTimer)
@@ -397,13 +403,29 @@ function _setupRecognition() {
 
 function watchdogRestart() {
   if (!_recording) return
-  _setupRecognition()
-  try {
-    _recognition.start()
-    _watchdogTimer = setTimeout(watchdogRestart, 8000)
-  } catch (err) {
-    console.warn('voice: watchdog restart failed', err)
+  // The old connection is hung — abort() rather than stop(), which can also hang.
+  const dying = _recognition
+  if (dying) {
+    dying.onresult = null
+    dying.onend = null
+    dying.onsoundstart = null
+    try { dying.abort() } catch {}
   }
+  _recognition = null
+  clearTimeout(_watchdogTimer)
+  _watchdogTimer = null
+  // Brief delay to let Chrome fully release the mic before claiming it again.
+  setTimeout(() => {
+    if (!_recording) return
+    _setupRecognition()
+    try {
+      _recognition.start()
+      _watchdogTimer = setTimeout(watchdogRestart, 8000)
+    } catch (err) {
+      console.warn('voice: watchdog restart failed', err)
+      _watchdogTimer = setTimeout(watchdogRestart, 8000)  // always reschedule
+    }
+  }, 250)
 }
 
 function startRecording() {
@@ -556,6 +578,34 @@ export function initVoice() {
       if (e.data === 'mic-start') stopRecording()
     }
   }
+
+  // Tab visibility: returning to a hidden tab can silently kill the speech connection.
+  // Abort the potentially-dead instance and restart when tab becomes visible again.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && _recording) {
+      const dying = _recognition
+      if (dying) {
+        dying.onresult = null
+        dying.onend = null
+        dying.onsoundstart = null
+        try { dying.abort() } catch {}
+      }
+      _recognition = null
+      clearTimeout(_watchdogTimer)
+      _watchdogTimer = null
+      setTimeout(() => {
+        if (!_recording) return
+        _setupRecognition()
+        try {
+          _recognition.start()
+          _watchdogTimer = setTimeout(watchdogRestart, 8000)
+        } catch (err) {
+          console.warn('voice: visibilitychange restart failed', err)
+          _watchdogTimer = setTimeout(watchdogRestart, 8000)
+        }
+      }, 250)
+    }
+  })
 
   console.log('voice: initialized v4 — BroadcastChannel:', !!_micChannel, '— Right Shift tap to toggle, double-tap to send')
   return true
