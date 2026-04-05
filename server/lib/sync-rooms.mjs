@@ -29,6 +29,8 @@ const customShapeSchemas = {
       activeTab: T.optional(T.number),
       done: T.optional(T.boolean),
       collapsed: T.optional(T.boolean),
+      docName: T.optional(T.string),
+      docView: T.optional(T.boolean),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
@@ -227,6 +229,39 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',
+      sequence: [],
+    }),
+  },
+  'cluster': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.cluster',
+      sequence: [],
+    }),
+  },
+  'playback-frame': {
+    props: {
+      w: T.number,
+      h: T.number,
+      playbackId: T.string,
+      mode: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.playback-frame',
+      sequence: [],
+    }),
+  },
+  'terminal': {
+    props: {
+      w: T.number,
+      h: T.number,
+      agentId: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.terminal',
       sequence: [],
     }),
   },

@@ -232,8 +232,9 @@ function usePillDrag() {
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
-  const agents = useFleetAgents()
-  const tasks = useFleetTasks()
+  const frameId = shape.parentId as string | undefined
+  const agents = useFleetAgents(frameId)
+  const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
 
   // Build task lookup: agent id → active task
@@ -476,7 +477,7 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const nameOpacity = agent.dead ? 0.3 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.5 : 0.3
+  const nameOpacity = agent.dead ? 0.4 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}`}>

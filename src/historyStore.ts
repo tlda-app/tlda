@@ -137,3 +137,34 @@ export async function waitForGitBuild(
 export function snapshotPageUrl(docName: string, snapshotId: string, page: number): string {
   return `${serverBase}/docs/${docName}/history/${snapshotId}/page-${page}.svg`
 }
+
+/**
+ * Shadow version entry — one build commit in the shadow repo.
+ */
+export interface ShadowVersion {
+  hash: string
+  timestamp: number
+  message: string
+}
+
+/**
+ * Fetch shadow repo versions for a project. Returns newest-first.
+ */
+export async function fetchShadowVersions(docName: string, limit = 50): Promise<ShadowVersion[]> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow?limit=${limit}`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.versions || []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Get the URL for a shadow snapshot's SVG page.
+ * Shadow snapshots are cached as shadow-{hash7} in the history dir.
+ */
+export function shadowSnapshotPageUrl(docName: string, hash: string, page: number): string {
+  return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/page-${page}.svg`
+}

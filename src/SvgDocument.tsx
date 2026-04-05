@@ -26,6 +26,8 @@ import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
+import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
@@ -35,6 +37,12 @@ import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
+import { FleetChatTool } from './tools/FleetChatTool'
+import { FleetAgentsTool } from './tools/FleetAgentsTool'
+import { FleetSearchTool } from './tools/FleetSearchTool'
+import { ClusterTool } from './tools/ClusterTool'
+import { TerminalTool } from './tools/TerminalTool'
+import { PlaybackTool } from './tools/PlaybackTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -79,6 +87,10 @@ import { useSyncedPlayback } from './hooks/useSyncedPlayback'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
+import { useFootControl } from './hooks/useFootControl'
+import { FootControlDebug } from './footControlDebug'
+import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
@@ -292,11 +304,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Spatial timeline overlay — activity scatter plot
   const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
 
+  // Shadow history scrubber
+  const {
+    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+  } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
+
+  // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
+  const footEnabled = new URLSearchParams(window.location.search).has('foot')
+  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
 
   useYjsSignals({
     editorRef, document,
@@ -569,7 +591,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     buildWarnings,
     timelineActive,
     onToggleTimeline: toggleTimeline,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline])
+    shadowHistoryVisible: shadowVisible,
+    onToggleShadowHistory: toggleShadowOverlay,
+    shadowHistoryVersionCount: shadowVersions.length,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions.length])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -579,12 +604,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, PlaybackTool, TerminalTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -633,6 +658,35 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         kbd: 't',
         onSelect: () => _editor.setCurrentTool('text-select'),
       }
+      // Register fleet shape placement tools (toolbar overflow only, no kbd shortcut)
+      tools['fleet-chat'] = {
+        id: 'fleet-chat',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>) as any,
+        label: 'Fleet Chat',
+        onSelect: () => _editor.setCurrentTool('fleet-chat'),
+      }
+      tools['fleet-agents'] = {
+        id: 'fleet-agents',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="9" cy="7" r="4" />
+          <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          <path d="M21 21v-2a4 4 0 0 0-3-3.85" />
+        </svg>) as any,
+        label: 'Fleet Agents',
+        onSelect: () => _editor.setCurrentTool('fleet-agents'),
+      }
+      tools['fleet-search'] = {
+        id: 'fleet-search',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>) as any,
+        label: 'Fleet Search',
+        onSelect: () => _editor.setCurrentTool('fleet-search'),
+      }
       // Register browse tool — pointer with starburst sparkle (interactive pages)
       tools['select'] = {
         id: 'select',
@@ -654,6 +708,34 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         </svg>) as any,
         label: 'Browse',
         onSelect: () => _editor.setCurrentTool('select'),
+      }
+      // Register cluster tool — server/grid icon
+      tools['cluster'] = {
+        id: 'cluster',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          {/* Server rack outline */}
+          <rect x="2" y="2" width="14" height="5" rx="1" />
+          <rect x="2" y="8" width="14" height="5" rx="1" />
+          {/* Status dots */}
+          <circle cx="13.5" cy="4.5" r="0.8" fill="currentColor" stroke="none" />
+          <circle cx="13.5" cy="10.5" r="0.8" fill="currentColor" stroke="none" />
+          {/* Progress bar hint */}
+          <line x1="4" y1="15" x2="9" y2="15" strokeWidth="2" />
+          <line x1="9" y1="15" x2="14" y2="15" strokeWidth="1" strokeOpacity="0.3" />
+        </svg>) as any,
+        label: 'Cluster Monitor',
+        onSelect: () => _editor.setCurrentTool('cluster'),
+      }
+      // Register playback-frame tool (kbd 'p')
+      tools['playback-frame'] = {
+        id: 'playback-frame',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="3" width="14" height="12" rx="2" />
+          <polygon points="7,7 7,11 12,9" fill="currentColor" stroke="none" />
+        </svg>) as any,
+        label: 'Playback',
+        kbd: 'p',
+        onSelect: () => _editor.setCurrentTool('playback-frame'),
       }
       return tools
     },
@@ -714,6 +796,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
+      {shadowVisible && (
+        <ShadowHistoryOverlay
+          versions={shadowVersions}
+          activeIdx={shadowActiveIdx}
+          loading={shadowLoading}
+          onScrub={handleShadowScrub}
+          onClose={hideShadowOverlay}
+        />
+      )}
       <div className="build-pills-row">
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <PlaybackPill state={playbackState} />
@@ -745,6 +836,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
 
   return (
+    <>
     <DocContext.Provider value={docContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
@@ -1105,6 +1197,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
+    {footEnabled && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    </>
   )
 }
 

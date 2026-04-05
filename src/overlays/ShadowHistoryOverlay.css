@@ -1,0 +1,172 @@
+/* Shadow history scrubber overlay — floating bar at bottom of canvas */
+
+.shadow-scrubber {
+  position: fixed;
+  bottom: 56px; /* above tldraw's bottom toolbar */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+
+  min-width: 340px;
+  max-width: 620px;
+  pointer-events: all;
+  user-select: none;
+  color: rgba(226, 232, 240, 0.85);
+  font-size: 11px;
+  font-family: var(--tl-font-sans, system-ui, sans-serif);
+}
+
+/* Open button — attached to the bottom bar, activates the scrubber */
+.shadow-scrubber-open-btn {
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 499;
+
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.65);
+  color: rgba(148, 163, 184, 0.5);
+  font-size: 11px;
+  font-family: var(--tl-font-sans, system-ui, sans-serif);
+  cursor: pointer;
+  pointer-events: all;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+  backdrop-filter: blur(4px);
+}
+.shadow-scrubber-open-btn:hover {
+  color: rgba(226, 232, 240, 0.8);
+  background: rgba(15, 23, 42, 0.82);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+/* Step buttons */
+.shadow-scrubber-step {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.shadow-scrubber-step:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.15);
+}
+.shadow-scrubber-step:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* Range slider */
+.shadow-scrubber-range {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.2);
+  outline: none;
+  cursor: pointer;
+  min-width: 120px;
+}
+.shadow-scrubber-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.9);
+  cursor: pointer;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s;
+}
+.shadow-scrubber-range::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+.shadow-scrubber-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.9);
+  cursor: pointer;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Label area */
+.shadow-scrubber-label {
+  flex: none;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(148, 163, 184, 0.75);
+  font-size: 11px;
+}
+.shadow-scrubber-label .shadow-current-badge {
+  color: rgba(99, 102, 241, 0.85);
+  font-weight: 600;
+}
+.shadow-scrubber-label .shadow-time {
+  opacity: 0.75;
+}
+.shadow-scrubber-loading {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+/* Position counter */
+.shadow-scrubber-pos {
+  flex: none;
+  font-size: 10px;
+  color: rgba(148, 163, 184, 0.45);
+  min-width: 32px;
+  text-align: center;
+}
+
+/* Close button */
+.shadow-scrubber-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: rgba(148, 163, 184, 0.5);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.shadow-scrubber-close:hover {
+  color: rgba(226, 232, 240, 0.85);
+  background: rgba(148, 163, 184, 0.15);
+}
+
+/* Dark theme — already matches the dark bg, so minimal overrides needed */
+.tl-theme__dark .shadow-scrubber {
+  background: rgba(15, 23, 42, 0.92);
+}

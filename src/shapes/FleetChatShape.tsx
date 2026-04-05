@@ -43,9 +43,37 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = 'http://localhost:5199'
 
+// Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
+// where path is relative to the dropped folder root (e.g. "figures/foo.png")
+async function traverseDirectory(entry: FileSystemEntry, prefix = ''): Promise<{ file: File, path: string }[]> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
+    return [{ file, path: prefix + entry.name }]
+  }
+  const dirEntry = entry as FileSystemDirectoryEntry
+  const reader = dirEntry.createReader()
+  const results: { file: File, path: string }[] = []
+  let batch: FileSystemEntry[]
+  do {
+    batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej))
+    for (const child of batch) {
+      results.push(...await traverseDirectory(child, prefix + entry.name + '/'))
+    }
+  } while (batch.length > 0)
+  return results
+}
+
 // Upload a markdown file, rewriting local image refs to stable URLs for any
-// companion image files present in the same drop event.
-async function uploadMarkdownWithImages(mdFile: File, companions: File[]): Promise<string> {
+// companion files present in the same drop event.
+// companions: { file, path } pairs where path is relative to the drop root.
+// mdRelPath: path of the md file itself relative to the drop root (for resolving relative image refs).
+// warnOnUnresolved: if true and some image refs couldn't be matched, appends a hint to the returned link.
+async function uploadMarkdownWithImages(
+  mdFile: File,
+  companions: { file: File, path: string }[],
+  mdRelPath?: string,
+  warnOnUnresolved?: boolean,
+): Promise<string> {
   const text = await mdFile.text()
   // Find local image paths: ![alt](path) where path is not http
   const localPathRe = /!\[[^\]]*\]\(([^)]+)\)/g
@@ -54,15 +82,21 @@ async function uploadMarkdownWithImages(mdFile: File, companions: File[]): Promi
   while ((m = localPathRe.exec(text)) !== null) {
     if (!m[1].startsWith('http')) localPaths.add(m[1])
   }
-  // Upload companions that match a local path by filename
+  // Directory of the md file relative to the drop root (e.g. "report/" or "")
+  const mdDir = mdRelPath ? mdRelPath.split('/').slice(0, -1).join('/') : ''
+  // Upload companions that match a local path by relative path or basename fallback
   const urlMap = new Map<string, string>()
   for (const localPath of localPaths) {
-    const base = localPath.split('/').pop() || localPath
-    const match = companions.find(f => f.name === base)
+    const ref = localPath.replace(/^\.\//, '')
+    const resolvedPath = mdDir ? `${mdDir}/${ref}` : ref
+    const base = ref.split('/').pop() || ref
+    const match =
+      companions.find(c => c.path === resolvedPath) ||
+      companions.find(c => c.file.name === base)
     if (!match) continue
     try {
       const fd = new FormData()
-      fd.append('file', match, match.name)
+      fd.append('file', match.file, match.file.name)
       const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
       if (!r.ok) continue
       const { url } = await r.json()
@@ -80,7 +114,14 @@ async function uploadMarkdownWithImages(mdFile: File, companions: File[]): Promi
   const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
   if (!r.ok) throw new Error(`markdown upload failed: ${r.status}`)
   const { url, name } = await r.json()
-  return `[${name}](${FLEET_API}${url})`
+  let link = `[${name}](${FLEET_API}${url})`
+  if (warnOnUnresolved && localPaths.size > 0) {
+    const hasUnresolved = [...localPaths].some(p => !urlMap.has(p))
+    if (hasUnresolved) {
+      link += '\n⚠️ Some images couldn\'t be uploaded — drag the containing folder instead of the file.'
+    }
+  }
+  return link
 }
 
 // --- Voice + trackpad input (global, one-time init) ---
@@ -196,7 +237,7 @@ const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
-function makeCtx(agents: any[], tasks: any[]) {
+function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
@@ -231,6 +272,7 @@ function makeCtx(agents: any[], tasks: any[]) {
     renderMarkdown: tldaRenderMarkdown,
     highlightSyntax,
     langFromFilePath,
+    preambleMacros,
   }
 }
 
@@ -246,8 +288,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
 
 
-  // DNF filter: [[a,b],[c]] means (a AND b) OR c
-  const dnfFilter = (filter.length > 0 ? filter : null) as string[][] | null
+  // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
+  const dnfFilter = filter.length > 0 ? filter : null
 
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)
@@ -268,12 +310,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
 
-  // Live data from fleet-data.mjs via SSE
-  const agents = useFleetAgents()
-  const liveEvents = useFleetEvents(dnfFilter)
-  const tasks = useFleetTasks()
-  const thinkingAgents = useFleetThinking(dnfFilter)
-  const compactingAgents = useFleetCompacting(dnfFilter)
+  // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
+  const frameId = shape.parentId as string | undefined
+  const agents = useFleetAgents(frameId)
+  const liveEvents = useFleetEvents(dnfFilter, frameId)
+  const tasks = useFleetTasks(frameId)
+  const thinkingAgents = useFleetThinking(dnfFilter, frameId)
+  const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Input history (up/down arrow navigation like terminal)
@@ -328,8 +371,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }, { source: 'all', scope: 'document' })
   }, [editor])
 
+  // Preamble macros — fetched once per doc from /api/projects/:name/macros
+  const [preambleMacros, setPreambleMacros] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!doc?.docName) return
+    fetch(`/api/projects/${doc.docName}/macros`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
+      .catch(() => {})
+  }, [doc?.docName])
+
   // Build context and render messages
-  const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
+  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
 
   const chatMessages = useMemo(() => {
     const sorted = events
@@ -640,26 +693,55 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (!e.dataTransfer?.types.includes('Files')) return
       e.preventDefault()
       e.stopPropagation()
-      const files = [...(e.dataTransfer.files || [])]
-      if (!files.length) return
-      for (const file of files) {
-        try {
-          let link: string
-          if (file.name.endsWith('.md') || file.type === 'text/markdown') {
-            link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
-          } else {
-            const formData = new FormData()
-            formData.append('file', file, file.name)
-            const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-            if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-            const { url, name } = await resp.json()
-            link = file.type.startsWith('image/')
-              ? `![${name}](${FLEET_API}${url})`
-              : `[${name}](${FLEET_API}${url})`
+
+      // Use items API to support folder drops
+      const items = e.dataTransfer.items ? [...e.dataTransfer.items] : []
+      let entries: { file: File, path: string }[] = []
+      let isFlat = true
+
+      if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+        for (const item of items) {
+          const entry = item.webkitGetAsEntry()
+          if (entry) {
+            if (entry.isDirectory) isFlat = false
+            entries.push(...await traverseDirectory(entry))
           }
+        }
+      } else {
+        for (const f of [...(e.dataTransfer.files || [])]) {
+          entries.push({ file: f, path: f.name })
+        }
+      }
+
+      if (!entries.length) return
+
+      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+      for (const { file, path } of mdEntries) {
+        try {
+          const companions = entries.filter(e => e.path !== path)
+          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
         } catch (err) {
-          console.error('[fleet-chat] file upload failed:', err)
+          console.error('[fleet-chat] folder-drag md upload error', err)
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
+        }
+      }
+      for (const { file } of otherEntries) {
+        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+        try {
+          const formData = new FormData()
+          formData.append('file', file, file.name)
+          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+          const { url, name } = await resp.json()
+          const link = file.type.startsWith('image/')
+            ? `![${name}](${FLEET_API}${url})`
+            : `[${name}](${FLEET_API}${url})`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
+        } catch (err) {
+          console.error('[fleet-chat] folder-drag file upload error', err)
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
         }
       }
@@ -1031,10 +1113,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const docName = mdCard.dataset.doc || ''
+          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
+          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
+          const value = docName ? `doc:${docName}` : `file:${filePath}`
           drag = {
-            pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
-            displayName: name, color: '#9370db', content: filePath,
+            pillId: null, pillType: 'doc' as any, value,
+            displayName: name, color: '#63a0db', content: filePath || docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -1559,23 +1645,53 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 const ta = e.currentTarget
 
                 // External file drops — upload to fleet server, insert markdown link
-                const files = [...(e.dataTransfer?.files || [])]
-                if (files.length > 0) {
-                  for (const file of files) {
+                const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
+                let entries: { file: File, path: string }[] = []
+                let isFlat = true
+
+                if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
+                  for (const item of dtItems) {
+                    const entry = item.webkitGetAsEntry()
+                    if (entry) {
+                      if (entry.isDirectory) isFlat = false
+                      entries.push(...await traverseDirectory(entry))
+                    }
+                  }
+                } else {
+                  for (const f of [...(e.dataTransfer?.files || [])]) {
+                    entries.push({ file: f, path: f.name })
+                  }
+                }
+
+                if (entries.length > 0) {
+                  const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+                  const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+                  for (const { file, path } of mdEntries) {
                     try {
-                      let link: string
-                      if (file.name.endsWith('.md') || file.type === 'text/markdown') {
-                        link = await uploadMarkdownWithImages(file, files.filter(f => f !== file))
-                      } else {
-                        const formData = new FormData()
-                        formData.append('file', file, file.name)
-                        const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-                        if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                        const { url, name } = await resp.json()
-                        link = file.type.startsWith('image/')
-                          ? `![${name}](${FLEET_API}${url})`
-                          : `[${name}](${FLEET_API}${url})`
-                      }
+                      const companions = entries.filter(en => en.path !== path)
+                      const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
+                      const pos = ta.selectionStart || ta.value.length
+                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+                      ta.dispatchEvent(new Event('input', { bubbles: true }))
+                    } catch (err) {
+                      console.error('[fleet-chat] file upload failed:', err)
+                      const pos = ta.selectionStart || ta.value.length
+                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
+                      ta.dispatchEvent(new Event('input', { bubbles: true }))
+                    }
+                  }
+                  for (const { file } of otherEntries) {
+                    if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+                    try {
+                      const formData = new FormData()
+                      formData.append('file', file, file.name)
+                      const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+                      if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                      const { url, name } = await resp.json()
+                      const link = file.type.startsWith('image/')
+                        ? `![${name}](${FLEET_API}${url})`
+                        : `[${name}](${FLEET_API}${url})`
                       const pos = ta.selectionStart || ta.value.length
                       ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
