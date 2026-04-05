@@ -32,6 +32,8 @@ export type ClickEvent = 'click' | 'dblclick' | 'enter' | 'whistle-start' | 'whi
 export interface ClickDetectorOptions {
   doubleClickMs?: number   // window for double-click detection (default: 300)
   cooldownMs?: number      // ignore events within this window after a detected event (default: 400)
+  whistleEnabled?: boolean // enable whistle detection (default: true)
+  hissEnabled?: boolean    // enable hiss detection (default: true)
 }
 
 // Tongue click: energy concentrated in high frequencies (>2kHz), very fast attack
@@ -50,6 +52,8 @@ const HISS_SPECTRAL_FLATNESS_MIN = 0.3  // geometric/arithmetic mean ratio — h
 export function createClickDetector(options: ClickDetectorOptions = {}) {
   const doubleClickMs = options.doubleClickMs ?? 300
   const cooldownMs = options.cooldownMs ?? 400
+  let whistleEnabled = options.whistleEnabled ?? true
+  let hissEnabled = options.hissEnabled ?? true
 
   let audioCtx: AudioContext | null = null
   let analyser: AnalyserNode | null = null
@@ -188,9 +192,9 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     const adaptiveThreshold = noiseFloor * triggerRatio
 
     // --- Whistle detection: sustained tonal energy in 500–5kHz ---
-    const whistleBandEnergy = getBandEnergy(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ)
-    const purity = getSpectralPurity(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ)
-    const isWhistleFrame = whistleBandEnergy > adaptiveThreshold && purity > WHISTLE_PURITY_THRESHOLD
+    const whistleBandEnergy = whistleEnabled ? getBandEnergy(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ) : 0
+    const purity = whistleEnabled ? getSpectralPurity(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ) : 0
+    const isWhistleFrame = whistleEnabled && whistleBandEnergy > adaptiveThreshold && purity > WHISTLE_PURITY_THRESHOLD
 
     if (isWhistleFrame) {
       whistleFrameCount++
@@ -209,8 +213,8 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     }
 
     // --- Hiss detection: sustained broadband energy with flat spectrum ---
-    const flatness = getSpectralFlatness(data, sampleRate, 200, nyquist * 0.8)
-    const isHissFrame = totalEnergy > adaptiveThreshold && flatness > HISS_SPECTRAL_FLATNESS_MIN && !isWhistleFrame
+    const flatness = hissEnabled ? getSpectralFlatness(data, sampleRate, 200, nyquist * 0.8) : 0
+    const isHissFrame = hissEnabled && totalEnergy > adaptiveThreshold && flatness > HISS_SPECTRAL_FLATNESS_MIN && !isWhistleFrame
 
     if (isHissFrame) {
       hissFrameCount++
@@ -301,7 +305,16 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   function setTriggerRatio(r: number) { triggerRatio = Math.max(1.1, r) }
   function getTriggerRatio() { return triggerRatio }
 
-  return { start, stop, on, setTriggerRatio, getTriggerRatio }
+  function setWhistleEnabled(v: boolean) {
+    whistleEnabled = v
+    if (!v && whistleActive) { whistleActive = false; whistleFrameCount = 0; emit('whistle-end') }
+  }
+  function setHissEnabled(v: boolean) {
+    hissEnabled = v
+    if (!v && hissActive) { hissActive = false; hissFrameCount = 0; emit('hiss-end') }
+  }
+
+  return { start, stop, on, setTriggerRatio, getTriggerRatio, setWhistleEnabled, setHissEnabled }
 }
 
 export type ClickDetector = ReturnType<typeof createClickDetector>
