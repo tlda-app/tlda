@@ -804,21 +804,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — only if user was already at bottom
-  const prevScrollHeight = useRef(0)
+  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send
+  const userScrolledUp = useRef(false)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const onScroll = () => { prevScrollHeight.current = el.scrollHeight }
-    prevScrollHeight.current = el.scrollHeight
+    const onScroll = () => {
+      userScrolledUp.current = el.scrollTop + el.clientHeight < el.scrollHeight - 30
+    }
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
   useLayoutEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
-    if (wasAtBottom) el.scrollTop = el.scrollHeight
+    if (!userScrolledUp.current) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
 
   // After images inside the log load, they expand the scroll height. Scroll to
@@ -1587,6 +1587,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.style.height = 'auto'
                       resetTranscript()
                       restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
@@ -1603,6 +1605,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.style.height = 'auto'
                       resetTranscript()
                       restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   }
                 }
