@@ -790,33 +790,18 @@ export async function initVoice() {
     return false
   }
 
-  // Right Shift: tap = toggle recording, double-tap = send
+  // Right Shift: tap = toggle recording. Enter sends (handled by FleetChatShape).
   // Use capture phase so tldraw's stopPropagation doesn't block us
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
 
-    const now = Date.now()
-    const gap = now - _lastTapTime
-    _lastTapTime = now
-
-    // Clear pending single-tap
-    clearTimeout(_singleTapTimer)
-
-    if (gap < DOUBLE_TAP_MS) {
-      // Double-tap → send
-      sendCurrentText()
-      _lastTapTime = 0
+    // Simple toggle — no double-tap detection, no send
+    if (_recording) {
+      stopRecording()
     } else {
-      // Wait to see if it's a double-tap
-      _singleTapTimer = setTimeout(() => {
-        if (_recording) {
-          stopRecording()
-        } else {
-          startRecording()
-        }
-      }, DOUBLE_TAP_MS)
+      startRecording()
     }
   }, true) // capture phase
 
