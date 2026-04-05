@@ -253,6 +253,11 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   if (textarea !== _activeTextarea) {
     _interimTranscript = ''
     _finalTranscript = ''
+    // Clear accumulated audio so whisper doesn't transcribe old-chat audio into new target
+    if (_useWhisper) {
+      if (_whisperAbort) { _whisperAbort.abort(); _whisperAbort = null }
+      _audioChunks = []
+    }
     // Clean up old listener
     if (_inputListener && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListener)
@@ -577,6 +582,7 @@ async function whisperTranscribe(blob, signal) {
 }
 
 // Sequential transcription loop — at most one request in-flight at a time.
+// Sends ALL accumulated audio each cycle so whisper has full context.
 // resetTranscript() aborts the in-flight request via _whisperAbort, so
 // there are no stale results to race with.
 async function whisperLoop(mimeType, gen) {
