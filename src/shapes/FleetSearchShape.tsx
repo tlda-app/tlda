@@ -59,8 +59,8 @@ function formatTime(ts: string | number): string {
 
 function truncate(text: string, max: number): string {
   if (!text) return ''
-  // Strip HTML tags for preview
-  const plain = text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+  // Strip HTML tags and FTS highlight markers for preview
+  const plain = text.replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
   if (plain.length <= max) return plain
   return plain.slice(0, max) + '…'
 }
@@ -330,7 +330,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}>
-                {truncate(r.text || r.message || r.body || '', 120)}
+                {truncate(r.snippet || r.text || r.message || r.body || '', 120)}
               </div>
             </div>
           ))}
