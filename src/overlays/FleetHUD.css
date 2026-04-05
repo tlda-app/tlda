@@ -56,31 +56,25 @@
   zoom: 1 !important;
 }
 
-/* Controls bar — drag handle strip at top of HUD panel */
 .fleet-hud-controls {
   display: flex;
   gap: 2px;
   z-index: 1000;
   pointer-events: auto;
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-}
-.fleet-hud-controls:active {
-  cursor: grabbing;
 }
 
-/* Braille dot grid — visual drag affordance */
-.fleet-hud-drag-indicator {
+.fleet-hud-lock {
+  border: none;
+  background: none;
   font-size: 13px;
+  cursor: pointer;
   padding: 2px 4px;
   line-height: 1;
-  color: rgba(100, 100, 100, 0.20);
-  transition: color 0.2s;
-  pointer-events: none;
+  opacity: 0.15;
+  transition: opacity 0.2s;
 }
-.fleet-hud-controls:hover .fleet-hud-drag-indicator {
-  color: rgba(100, 100, 100, 0.55);
+.fleet-hud-lock:hover {
+  opacity: 0.6;
 }
 
 .fleet-hud-close {
@@ -97,14 +91,60 @@
   color: rgba(100, 100, 100, 0.6);
 }
 
-/* 8 resize handles — positioned absolute on corners + edges of fleet-hud-wrap */
-.fleet-hud-resize-handle {
+.fleet-hud-layout {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.30);
+  font-size: 13px;
+  cursor: grab;
+  padding: 2px 4px;
+  line-height: 1;
+  letter-spacing: -1px;
+  transition: color 0.2s;
+}
+.fleet-hud-layout:hover {
+  color: rgba(100, 100, 100, 0.6);
+}
+
+/* Layout mode overlay — bounding-box handle for group move */
+.fleet-layout-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  cursor: default;
+}
+.fleet-layout-overlay {
+  position: fixed;
+  z-index: 999;
+  cursor: grab;
+  box-sizing: border-box;
+  border: 2px dashed rgba(100, 120, 200, 0.55);
+  border-radius: 6px;
+  background: rgba(100, 120, 200, 0.04);
+  pointer-events: all;
+  user-select: none;
+  touch-action: none;
+}
+.fleet-layout-overlay:active {
+  cursor: grabbing;
+}
+.fleet-layout-overlay-hint {
   position: absolute;
-  width: 8px;
-  height: 8px;
-  pointer-events: auto;
-  z-index: 1001;
-  /* Invisible by default — cursor is the only affordance */
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 120, 200, 0.7);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Layout mode active — disable interactivity on fleet shape content
+   so the overlay captures all pointer events without accidentally triggering
+   chat lines, agent rows, etc. */
+body.fleet-layout-active .fleet-hud-wrap .tl-html-container {
+  pointer-events: none !important;
 }
 
 /* When HUD is open, hide fleet shapes in the main canvas so the HUD is
@@ -134,11 +174,18 @@ html[data-theme="dark"] .fleet-drop-ghost {
 }
 
 /* Dark mode */
-html[data-theme="dark"] .fleet-hud-drag-indicator {
-  color: rgba(255, 255, 255, 0.20);
+html[data-theme="dark"] .fleet-hud-layout {
+  color: rgba(255, 255, 255, 0.30);
 }
-html[data-theme="dark"] .fleet-hud-controls:hover .fleet-hud-drag-indicator {
-  color: rgba(255, 255, 255, 0.55);
+html[data-theme="dark"] .fleet-hud-layout:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+html[data-theme="dark"] .fleet-layout-overlay {
+  border-color: rgba(140, 160, 255, 0.5);
+  background: rgba(120, 140, 255, 0.05);
+}
+html[data-theme="dark"] .fleet-layout-overlay-hint {
+  color: rgba(140, 160, 255, 0.7);
 }
 
 html[data-theme="dark"] .fleet-pill {

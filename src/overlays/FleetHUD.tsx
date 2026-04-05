@@ -68,26 +68,104 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
   )
 }
 
-// Resize handle definitions: id, cursor, CSS position, dy direction
-// dy: +1 = dragging south (positive clientY) increases height
-//     -1 = dragging north (negative clientY) increases height
-//      0 = east/west only (no height change in height-only resize model)
-type ResizeHandle = {
-  id: string
-  cursor: string
-  style: React.CSSProperties
-  dy: number
+/**
+ * Ephemeral layout overlay — bounding-box handle around the entire fleet HUD.
+ * Drag to reposition all fleet shapes as a group. Esc or click outside cancels.
+ *
+ * Coordinate system:
+ *   - Horizontal: canvas coordinates — dragging left/right updates shape canvas X.
+ *   - Vertical: screen coordinates — dragging up/down updates the panel's screen Y offset.
+ */
+interface FleetGroupOverlayProps {
+  panelLeft: number
+  panelTop: number
+  panelWidth: number
+  panelHeight: number
+  mainEditor: Editor
+  onCommit: (screenDx: number, screenDy: number) => void
+  onCancel: () => void
 }
-const RESIZE_HANDLES: ResizeHandle[] = [
-  { id: 'nw', cursor: 'nw-resize', style: { top: 0, left: 0 }, dy: -1 },
-  { id: 'n',  cursor: 'n-resize',  style: { top: 0, left: '50%', transform: 'translateX(-50%)' }, dy: -1 },
-  { id: 'ne', cursor: 'ne-resize', style: { top: 0, right: 0 }, dy: -1 },
-  { id: 'e',  cursor: 'e-resize',  style: { top: '50%', right: 0, transform: 'translateY(-50%)' }, dy: 0 },
-  { id: 'se', cursor: 'se-resize', style: { bottom: 0, right: 0 }, dy: 1 },
-  { id: 's',  cursor: 's-resize',  style: { bottom: 0, left: '50%', transform: 'translateX(-50%)' }, dy: 1 },
-  { id: 'sw', cursor: 'sw-resize', style: { bottom: 0, left: 0 }, dy: 1 },
-  { id: 'w',  cursor: 'w-resize',  style: { top: '50%', left: 0, transform: 'translateY(-50%)' }, dy: 0 },
-]
+
+function FleetGroupOverlay({
+  panelLeft,
+  panelTop,
+  panelWidth,
+  panelHeight,
+  onCommit,
+  onCancel,
+}: FleetGroupOverlayProps) {
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ startX: number; startY: number } | null>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const isDraggingRef = useRef(false)
+
+  // Esc cancels
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [onCancel])
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    overlayRef.current?.setPointerCapture(e.pointerId)
+    dragRef.current = { startX: e.clientX, startY: e.clientY }
+    isDraggingRef.current = false
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return
+    const dx = e.clientX - dragRef.current.startX
+    const dy = e.clientY - dragRef.current.startY
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDraggingRef.current = true
+    setDragOffset({ x: dx, y: dy })
+  }
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (!dragRef.current) return
+    const dx = e.clientX - dragRef.current.startX
+    const dy = e.clientY - dragRef.current.startY
+    dragRef.current = null
+    setDragOffset({ x: 0, y: 0 })
+    if (isDraggingRef.current) {
+      onCommit(dx, dy)
+    } else {
+      // Tap without drag = exit layout mode
+      onCancel()
+    }
+  }
+
+  return (
+    <>
+      {/* Backdrop — clicking outside the overlay cancels layout mode */}
+      <div
+        className="fleet-layout-backdrop"
+        onPointerDown={(e) => { e.stopPropagation(); onCancel() }}
+      />
+      {/* Bounding-box overlay over the HUD */}
+      <div
+        ref={overlayRef}
+        className="fleet-layout-overlay"
+        style={{
+          left: panelLeft + dragOffset.x,
+          top: panelTop + dragOffset.y,
+          width: panelWidth,
+          height: panelHeight,
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+      >
+        <div className="fleet-layout-overlay-hint">
+          Drag to move · Esc to cancel
+        </div>
+      </div>
+    </>
+  )
+}
 
 export function FleetHUD({
   mainEditor,
@@ -97,26 +175,14 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
-
+  const [layoutMode, setLayoutMode] = useState(false)
   // Screen-space Y offset for the HUD panel — vertical positioning in screen coords.
   // Fleet shapes stay at fixed screen Y regardless of canvas zoom/pan.
   const [screenYOffset, setScreenYOffset] = useState(() =>
     parseFloat(localStorage.getItem('fleet-hud-y-offset') || '0') || 0
   )
-
-  // User-set panel height (null = auto 80vh). Persisted in localStorage.
-  const [userPanelH, setUserPanelH] = useState<number | null>(() => {
-    const v = localStorage.getItem('fleet-hud-panel-h')
-    return v ? parseFloat(v) : null
-  })
-
-  // Live drag offset for the controls bar drag — applied as CSS offset during drag,
-  // then committed to screenYOffset + shape canvas X on pointerup.
-  const [panelDragOffset, setPanelDragOffset] = useState({ x: 0, y: 0 })
-
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
-  const barRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
   // Reactively update fleet bounds when shapes change.
@@ -175,6 +241,16 @@ export function FleetHUD({
     return () => document.body.classList.remove('fleet-hud-open')
   }, [expanded, fleetBounds])
 
+  // Body class for layout mode — CSS disables pointer-events on shape content
+  useEffect(() => {
+    if (layoutMode) {
+      document.body.classList.add('fleet-layout-active')
+    } else {
+      document.body.classList.remove('fleet-layout-active')
+    }
+    return () => document.body.classList.remove('fleet-layout-active')
+  }, [layoutMode])
+
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
@@ -204,92 +280,32 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded, fleetBounds])
 
-  // ── Controls bar drag (move whole panel) ──────────────────────────────────
-
-  const barDragRef = useRef<{ startX: number; startY: number } | null>(null)
-
-  const onBarPointerDown = useCallback((e: React.PointerEvent) => {
-    // Only trigger on the bar itself, not buttons
-    if ((e.target as HTMLElement).closest('button')) return
-    e.preventDefault()
-    e.stopPropagation()
-    barRef.current?.setPointerCapture(e.pointerId)
-    barDragRef.current = { startX: e.clientX, startY: e.clientY }
-  }, [])
-
-  const onBarPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!barDragRef.current) return
-    const dx = e.clientX - barDragRef.current.startX
-    const dy = e.clientY - barDragRef.current.startY
-    setPanelDragOffset({ x: dx, y: dy })
-  }, [])
-
-  const onBarPointerUp = useCallback((e: React.PointerEvent) => {
-    if (!barDragRef.current) return
-    const dx = e.clientX - barDragRef.current.startX
-    const dy = e.clientY - barDragRef.current.startY
-    barDragRef.current = null
-    setPanelDragOffset({ x: 0, y: 0 })
-
-    // Commit horizontal: move fleet shapes in canvas coords
-    if (Math.abs(dx) > 1) {
-      const cam = mainEditor.getCamera()
-      const canvasDx = dx / cam.z
-      const fleetShapes = mainEditor.getCurrentPageShapes()
-        .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-      if (fleetShapes.length > 0) {
-        mainEditor.store.put(
-          fleetShapes.map(s => ({ ...s as any, x: (s as any).x + canvasDx }))
-        )
-      }
+  // Commit layout drag — moves fleet shapes in canvas X, adjusts screen Y offset.
+  const handleLayoutCommit = useCallback((screenDx: number, screenDy: number) => {
+    setLayoutMode(false)
+    // Horizontal: convert screen pixels → canvas units, update each shape's canvas X
+    const cam = mainEditor.getCamera()
+    const canvasDx = screenDx / cam.z
+    const fleetShapes = mainEditor.getCurrentPageShapes()
+      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+    if (canvasDx !== 0 && fleetShapes.length > 0) {
+      mainEditor.store.put(
+        fleetShapes.map(s => ({ ...s as any, x: (s as any).x + canvasDx }))
+      )
     }
-
-    // Commit vertical: update screen-space Y offset
-    if (Math.abs(dy) > 1) {
+    // Vertical: update screen-space Y offset (clamped so HUD stays on screen)
+    if (screenDy !== 0) {
       setScreenYOffset(prev => {
-        const next = prev + dy
+        const next = prev + screenDy
         localStorage.setItem('fleet-hud-y-offset', String(next))
         return next
       })
     }
   }, [mainEditor])
 
-  // ── Resize handles ────────────────────────────────────────────────────────
-
-  const resizeDragRef = useRef<{
-    startY: number
-    startH: number
-    dy: number
-  } | null>(null)
-
-  const onResizePointerDown = useCallback((e: React.PointerEvent, handleDy: number, currentH: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-    resizeDragRef.current = { startY: e.clientY, startH: currentH, dy: handleDy }
+  const handleLayoutCancel = useCallback(() => {
+    setLayoutMode(false)
   }, [])
-
-  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!resizeDragRef.current) return
-    const { startY, startH, dy } = resizeDragRef.current
-    if (dy === 0) return
-    const delta = (e.clientY - startY) * dy
-    const newH = Math.max(200, Math.min(window.innerHeight * 0.95, startH + delta))
-    setUserPanelH(newH)
-  }, [])
-
-  const onResizePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!resizeDragRef.current) return
-    const { startY, startH, dy } = resizeDragRef.current
-    resizeDragRef.current = null
-    if (dy === 0) return
-    const delta = (e.clientY - startY) * dy
-    const newH = Math.max(200, Math.min(window.innerHeight * 0.95, startH + delta))
-    setUserPanelH(newH)
-    localStorage.setItem('fleet-hud-panel-h', String(newH))
-  }, [])
-
-  // ─────────────────────────────────────────────────────────────────────────
 
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
@@ -315,43 +331,37 @@ export function FleetHUD({
   }
 
   // Expanded: CanvasClipPanel with fleet region
-  // effectivePanelH: user-set height, or auto 80vh
-  // Width follows aspect ratio: panelWidth = fleetBounds.w * zoom
-  const effectivePanelH = userPanelH ?? (window.innerHeight * 0.8)
-  const zoom = effectivePanelH / fleetBounds.h
+  // Auto-zoom: fit all fleet shapes within 80% screen height, width follows aspect ratio
+  // Docked to right edge of viewport, vertically centered + screenYOffset
+  const panelHeight = window.innerHeight * 0.8
+  const zoom = panelHeight / fleetBounds.h
   const panelWidth = fleetBounds.w * zoom
-  const panelLeft = hudRight - panelWidth + panelDragOffset.x
-  const adjustedTop = (window.innerHeight - effectivePanelH) / 2 + screenYOffset + panelDragOffset.y
+  const panelLeft = hudRight - panelWidth
+  const adjustedTop = (window.innerHeight - panelHeight) / 2 + screenYOffset
 
   return (
     <>
       {ghost}
-      <div
-        className="fleet-hud-wrap"
-        ref={hudRef}
-        style={{ left: panelLeft, top: adjustedTop, width: panelWidth, height: effectivePanelH }}
-      >
-        {/* 8 resize handles — corners + edges */}
-        {RESIZE_HANDLES.map(h => (
-          <div
-            key={h.id}
-            className="fleet-hud-resize-handle"
-            style={{ cursor: h.cursor, ...h.style }}
-            onPointerDown={e => onResizePointerDown(e, h.dy, effectivePanelH)}
-            onPointerMove={onResizePointerMove}
-            onPointerUp={onResizePointerUp}
-          />
-        ))}
-
-        {/* Controls bar — drag handle for moving the panel */}
-        <div
-          ref={barRef}
-          className="fleet-hud-controls"
-          onPointerDown={onBarPointerDown}
-          onPointerMove={onBarPointerMove}
-          onPointerUp={onBarPointerUp}
-        >
-          <span className="fleet-hud-drag-indicator" title="Drag to move">⠿</span>
+      {layoutMode && (
+        <FleetGroupOverlay
+          panelLeft={panelLeft}
+          panelTop={adjustedTop}
+          panelWidth={panelWidth}
+          panelHeight={panelHeight}
+          mainEditor={mainEditor}
+          onCommit={handleLayoutCommit}
+          onCancel={handleLayoutCancel}
+        />
+      )}
+      <div className="fleet-hud-wrap" ref={hudRef} style={{ left: panelLeft, top: adjustedTop }}>
+        <div className="fleet-hud-controls">
+          <button
+            className="fleet-hud-layout"
+            onClick={() => setLayoutMode(m => !m)}
+            title="Move / reposition HUD"
+          >
+            ⊞
+          </button>
           <button
             className="fleet-hud-close"
             onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
@@ -360,7 +370,6 @@ export function FleetHUD({
             ×
           </button>
         </div>
-
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={fleetBounds}
