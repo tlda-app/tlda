@@ -45,6 +45,39 @@ function labelColor(name: string): string {
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
 }
 
+// --- Service health polling ---
+interface ServiceHealth {
+  tlda: { ok: boolean; uptime?: number }
+  fleet: { ok: boolean; error?: string | null; uptime?: number }
+  sync: { ok: boolean }
+}
+
+function useServiceHealth(): ServiceHealth | null {
+  const [health, setHealth] = useState<ServiceHealth | null>(null)
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>
+    let mounted = true
+
+    async function check() {
+      try {
+        const r = await fetch('/health/services', { signal: AbortSignal.timeout(3000) })
+        if (r.ok && mounted) setHealth(await r.json())
+        else if (mounted) setHealth({ tlda: { ok: true }, fleet: { ok: false, error: 'HTTP ' + r.status }, sync: { ok: true } })
+      } catch {
+        // If we can't reach /health/services, the tlda server itself is down
+        if (mounted) setHealth({ tlda: { ok: false }, fleet: { ok: false, error: 'unreachable' }, sync: { ok: false } })
+      }
+    }
+
+    check()
+    timer = setInterval(check, 15_000) // poll every 15s
+    return () => { mounted = false; clearInterval(timer) }
+  }, [])
+
+  return health
+}
+
 const STALE_THRESHOLD = 600_000  // 10 minutes
 
 function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
@@ -284,6 +317,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const [showStale, setShowStale] = useState(false)
   const [showDead, setShowDead] = useState(false)
   const unreadCounts = useFleetUnreadCounts()
+  const serviceHealth = useServiceHealth()
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -431,6 +465,15 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           )}
         </div>
 
+        {/* Service health dots */}
+        {serviceHealth && (
+          <div className="fleet-agents-health">
+            <HealthDot ok={serviceHealth.tlda.ok} label="tlda" />
+            <HealthDot ok={serviceHealth.fleet.ok} label="fleet" detail={serviceHealth.fleet.error} />
+            <HealthDot ok={serviceHealth.sync.ok} label="sync" />
+          </div>
+        )}
+
         {/* Footer */}
         <div className="fleet-agents-footer">
           <span>
@@ -452,6 +495,15 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         </div>
       </div>
     </HTMLContainer>
+  )
+}
+
+function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
+  return (
+    <span className="fleet-health-dot-item" title={ok ? `${label}: ok` : `${label}: ${detail || 'down'}`}>
+      <span className={`fleet-health-indicator ${ok ? 'ok' : 'down'}`} />
+      <span className="fleet-health-label">{label}</span>
+    </span>
   )
 }
 

@@ -58,6 +58,25 @@ router.get('/meta', requireRead, (req, res) => {
   res.json(meta)
 })
 
+// GET /health — check sync health for all docs that have a snapshot
+router.get('/health', requireRead, (req, res) => {
+  const health = {}
+  const dir = getProjectsDir()
+  for (const project of listProjects()) {
+    const snapPath = join(dir, project.name, 'sync-snapshot.json')
+    if (!existsSync(snapPath)) continue
+    try {
+      const room = getOrCreateRoom(syncRoomName(project.name))
+      const snapshot = room.getCurrentSnapshot()
+      const shapes = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
+      health[project.name] = { ok: true, shapes }
+    } catch (e) {
+      health[project.name] = { ok: false, error: e.message }
+    }
+  }
+  res.json(health)
+})
+
 // GET /events/stream — Global SSE stream of project-level events (doc-arrived, etc.)
 router.get('/events/stream', requireRead, (req, res) => {
   res.writeHead(200, {
@@ -434,6 +453,34 @@ router.post('/:name/snapshot', requireRw, (req, res) => {
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /:name/sync/clear — delete the sync snapshot so the room resets on next connect
+router.post('/:name/sync/clear', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  try {
+    // Replace with an empty snapshot (no shapes)
+    const emptySnapshot = { documents: [], schema: undefined }
+    replaceRoomSnapshot(syncRoomName(req.params.name), emptySnapshot)
+    res.json({ ok: true, message: `Sync data cleared for ${req.params.name}` })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /:name/sync/health — check if a doc's sync room can load without errors
+router.get('/:name/sync/health', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  try {
+    const room = getOrCreateRoom(syncRoomName(req.params.name))
+    const snapshot = room.getCurrentSnapshot()
+    const shapeCount = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
+    res.json({ ok: true, shapes: shapeCount })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
   }
 })
 

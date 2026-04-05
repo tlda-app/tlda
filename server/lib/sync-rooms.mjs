@@ -492,15 +492,34 @@ export function getOrCreateRoom(docName) {
       notifyChangeListeners(docName, changes)
     },
   }
+
+  let room
   if (snapshot) {
-    opts.initialSnapshot = snapshot
-    // Seed changelog baseline from loaded snapshot
-    prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+    try {
+      opts.initialSnapshot = snapshot
+      room = new TLSocketRoom(opts)
+      // Seed changelog baseline from loaded snapshot
+      prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+      console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
+    } catch (e) {
+      // Snapshot is incompatible (schema migration failure, corrupt data, etc.)
+      // Back up the bad snapshot and start fresh
+      console.error(`[sync] Failed to load snapshot for ${docName}: ${e.message}`)
+      const path = snapshotPath(docName)
+      try {
+        renameSync(path, path + '.broken')
+        console.log(`[sync] Backed up broken snapshot: ${path}.broken`)
+      } catch {}
+      delete opts.initialSnapshot
+      room = new TLSocketRoom(opts)
+      console.log(`[sync] Room created: ${docName} (fresh — snapshot was incompatible)`)
+    }
+  } else {
+    room = new TLSocketRoom(opts)
+    console.log(`[sync] Room created: ${docName}`)
   }
 
-  const room = new TLSocketRoom(opts)
   rooms.set(docName, room)
-  console.log(`[sync] Room created: ${docName}${snapshot ? ' (loaded snapshot)' : ''}`)
   return room
 }
 

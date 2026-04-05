@@ -1668,6 +1668,41 @@ async function cmdDoctor() {
     } catch {}
   }
 
+  // 8. Fleet server
+  {
+    const fleetUrl = process.env.FLEET_SERVER || 'http://localhost:5199'
+    try {
+      const res = await fetch(`${fleetUrl}/api/state`, { signal: AbortSignal.timeout(2000) })
+      if (res.ok) {
+        const data = await res.json()
+        const agentCount = (data.agents || []).filter(a => !a.dead && !a.human).length
+        ok(`Fleet server running at ${fleetUrl} (${agentCount} active agents)`)
+      } else {
+        fail(`Fleet server returned ${res.status}`, 'Check fleet server logs')
+        issues++
+      }
+    } catch {
+      fail(`Fleet server not reachable at ${fleetUrl}`)
+      issues++
+    }
+  }
+
+  // 9. Sync health (docs with broken sync stores)
+  if (serverRunning) {
+    try {
+      const health = await api('GET', '/api/projects/health', null, { timeoutMs: 5000 })
+      const broken = Object.entries(health).filter(([, v]) => !v.ok)
+      if (broken.length === 0) {
+        ok('All doc sync stores healthy')
+      } else {
+        for (const [name, info] of broken) {
+          fail(`Doc "${name}" sync broken: ${info.error}`, `POST /api/projects/${name}/sync/clear`)
+          issues++
+        }
+      }
+    } catch {}
+  }
+
   console.log()
   if (issues === 0) {
     console.log(green(bold('All checks passed.')))

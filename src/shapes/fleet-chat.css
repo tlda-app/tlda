@@ -1003,6 +1003,49 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   font-size: 9px;
 }
 
+/* --- Health dots --- */
+
+.fleet-agents-shape .fleet-agents-health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
+  font-size: 8px;
+  opacity: 0.35;
+  flex-shrink: 0;
+  transition: opacity 0.3s;
+}
+
+.fleet-agents-shape:hover .fleet-agents-health {
+  opacity: 0.7;
+}
+
+.fleet-health-dot-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.fleet-health-indicator {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.fleet-health-indicator.ok {
+  background: #22c55e;
+}
+
+.fleet-health-indicator.down {
+  background: #ef4444;
+}
+
+.fleet-health-label {
+  opacity: 0.7;
+}
+
 .fleet-agents-shape .fleet-agents-footer {
   height: 20px;
   padding: 0 6px 0 8px;

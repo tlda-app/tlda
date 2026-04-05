@@ -441,11 +441,17 @@ function DocumentPicker({ manifest, onSelect }: {
   const [search, setSearch] = useState('')
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
+  const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
       .then(r => r.ok ? r.json() : {})
       .then(setMeta)
+      .catch(() => {})
+    // Fetch sync health for all docs
+    fetch(`${ASSET_BASE}/api/projects/health`)
+      .then(r => r.ok ? r.json() : {})
+      .then(setDocHealth)
       .catch(() => {})
   }, [])
 
@@ -537,20 +543,28 @@ function DocumentPicker({ manifest, onSelect }: {
           </tr>
         </thead>
         <tbody>
-          {entries.map(([key, config]) => (
-            <tr key={key} onClick={() => onSelect(key, config)}>
-              <td><a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a></td>
-              <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
-              <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
-              <td className="picker-archive">
-                <button
-                  className="archive-btn"
-                  title="Archive"
-                  onClick={(e) => archiveProject(key, e)}
-                >&times;</button>
-              </td>
-            </tr>
-          ))}
+          {entries.map(([key, config]) => {
+            const health = docHealth[key]
+            const isBroken = health && !health.ok
+            return (
+              <tr key={key} onClick={() => onSelect(key, config)} className={isBroken ? 'picker-row-broken' : ''}>
+                <td>
+                  {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
+                  <a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                  {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
+                </td>
+                <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
+                <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
+                <td className="picker-archive">
+                  <button
+                    className="archive-btn"
+                    title="Archive"
+                    onClick={(e) => archiveProject(key, e)}
+                  >&times;</button>
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
       {archivedFiltered.length > 0 && (
