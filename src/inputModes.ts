@@ -39,3 +39,10 @@ export function subscribeInputModes(fn: () => void): () => void {
   listeners.add(fn)
   return () => { listeners.delete(fn) }
 }
+
+// Stable getter refs for useSyncExternalStore (one per mode, avoids re-render churn)
+export const getFootEnabled = () => state.foot
+export const getClicksEnabled = () => state.clicks
+export const getWhistleEnabled = () => state.whistle
+export const getHissEnabled = () => state.hiss
+export const getVoiceEnabled = () => state.voice

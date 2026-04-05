@@ -90,6 +90,7 @@ import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
 import { FootControlDebug } from './footControlDebug'
+import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
@@ -317,9 +318,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
 
+  // Input mode toggles (localStorage-persisted, per-feature on/off)
+  const footEnabled = useSyncExternalStore(subscribeInputModes, getFootEnabled)
+  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
+  const whistleEnabled = useSyncExternalStore(subscribeInputModes, getWhistleEnabled)
+  const hissEnabled = useSyncExternalStore(subscribeInputModes, getHissEnabled)
+
   // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
-  const footEnabled = new URLSearchParams(window.location.search).has('foot')
-  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
+  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
+    enabled: footEnabled || clicksEnabled,
+    whistleEnabled,
+    hissEnabled,
+  })
 
   useYjsSignals({
     editorRef, document,
@@ -1198,7 +1208,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    {footEnabled && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    {(footEnabled || clicksEnabled) && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
     </>
   )
 }
