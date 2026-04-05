@@ -21,6 +21,7 @@ let _mediaRecorder = null      // MediaRecorder instance
 let _audioChunks = []          // accumulated audio data chunks
 let _whisperAbort = null       // AbortController — cancel in-flight transcription on reset/stop
 let _whisperLoopRunning = false // true while the sequential transcription loop is active
+let _whisperLoopGen = 0          // incremented on each startWhisperRecording — stale loops exit
 
 // Math mode — when on, aggressive replacements for Greek letters
 // (replaces common English words that sound like Greek letters)
@@ -578,18 +579,18 @@ async function whisperTranscribe(blob, signal) {
 // Sequential transcription loop — at most one request in-flight at a time.
 // resetTranscript() aborts the in-flight request via _whisperAbort, so
 // there are no stale results to race with.
-async function whisperLoop(mimeType) {
+async function whisperLoop(mimeType, gen) {
   _whisperLoopRunning = true
-  while (_recording) {
+  while (_recording && gen === _whisperLoopGen) {
     // Wait 3s between transcriptions
     await new Promise(r => setTimeout(r, 3000))
-    if (!_recording || _audioChunks.length === 0) continue
+    if (!_recording || gen !== _whisperLoopGen || _audioChunks.length === 0) continue
     const ac = new AbortController()
     _whisperAbort = ac
     try {
       const blob = new Blob(_audioChunks, { type: mimeType })
       const text = await whisperTranscribe(blob, ac.signal)
-      if (_recording && text && !ac.signal.aborted) {
+      if (_recording && gen === _whisperLoopGen && text && !ac.signal.aborted) {
         fillTextarea(text)
       }
     } catch (err) {
@@ -603,8 +604,9 @@ async function whisperLoop(mimeType) {
 }
 
 function startWhisperRecording() {
+  const gen = ++_whisperLoopGen  // invalidate any stale loop
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    if (!_recording) { stream.getTracks().forEach(t => t.stop()); return }
+    if (!_recording || gen !== _whisperLoopGen) { stream.getTracks().forEach(t => t.stop()); return }
     _micStream = stream
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : 'audio/webm'
@@ -616,7 +618,7 @@ function startWhisperRecording() {
     }
 
     _mediaRecorder.start(1000) // ondataavailable every 1s
-    whisperLoop(mimeType)
+    whisperLoop(mimeType, gen)
   }).catch(err => {
     console.warn('voice: mic access failed', err)
     _recording = false
@@ -790,33 +792,18 @@ export async function initVoice() {
     return false
   }
 
-  // Right Shift: tap = toggle recording, double-tap = send
+  // Right Shift: tap = toggle recording. Enter sends (handled by FleetChatShape).
   // Use capture phase so tldraw's stopPropagation doesn't block us
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
 
-    const now = Date.now()
-    const gap = now - _lastTapTime
-    _lastTapTime = now
-
-    // Clear pending single-tap
-    clearTimeout(_singleTapTimer)
-
-    if (gap < DOUBLE_TAP_MS) {
-      // Double-tap → send
-      sendCurrentText()
-      _lastTapTime = 0
+    // Simple toggle — no double-tap detection, no send
+    if (_recording) {
+      stopRecording()
     } else {
-      // Wait to see if it's a double-tap
-      _singleTapTimer = setTimeout(() => {
-        if (_recording) {
-          stopRecording()
-        } else {
-          startRecording()
-        }
-      }, DOUBLE_TAP_MS)
+      startRecording()
     }
   }, true) // capture phase
 
@@ -866,7 +853,15 @@ export function toggleRecording() {
   if (_recording) { stopRecording() } else { startRecording() }
 }
 
-export { sendCurrentText }
+// Stop → clear → start. Used by Enter-send so the user can keep talking
+// without pressing Right Shift again. No-ops if not recording.
+export function restartRecording() {
+  if (!_recording) return
+  stopRecording()
+  startRecording()
+}
+
+export { sendCurrentText, stopRecording }
 
 // --- State queries for external UI ---
 

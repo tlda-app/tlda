@@ -25,7 +25,7 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
@@ -1586,6 +1586,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
                     }
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
@@ -1601,6 +1602,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
                     }
                   }
                 }
