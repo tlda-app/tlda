@@ -1248,7 +1248,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    {(footEnabled || clicksEnabled) && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
     </>
   )
 }
