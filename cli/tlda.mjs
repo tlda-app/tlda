@@ -116,8 +116,9 @@ function getToken() {
 
 const isTTY = process.stderr.isTTY
 const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
-const green = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
-const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
+const green  = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
+const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s
+const red    = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
 const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
@@ -1917,6 +1918,100 @@ async function inferProjectName() {
   return basename(dir)
 }
 
+// --- Whisper server management ---
+
+const WHISPER_PID_FILE = join(homedir(), '.config', 'tlda', 'whisper.pid')
+const WHISPER_LOG_FILE = join(homedir(), '.config', 'tlda', 'whisper.log')
+const WHISPER_MODEL = join(homedir(), '.local', 'share', 'whisper-cpp', 'models', 'ggml-small.en.bin')
+const WHISPER_PORT = 8178
+
+async function cmdWhisper() {
+  const sub = getPositional(0) || 'start'
+  const { execSync, spawn } = await import('child_process')
+
+  function readWhisperPid() {
+    try { return parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim()) } catch { return null }
+  }
+
+  function isWhisperRunning() {
+    const pid = readWhisperPid()
+    if (!pid) return false
+    try { process.kill(pid, 0); return true } catch { return false }
+  }
+
+  if (sub === 'start') {
+    if (isWhisperRunning()) {
+      console.log(green('Whisper server already running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+      return
+    }
+
+    // Check binary
+    let whisperBin
+    try { whisperBin = execSync('which whisper-server', { stdio: 'pipe' }).toString().trim() } catch {
+      console.error(red('whisper-server not found. Install with: brew install whisper-cpp'))
+      process.exit(1)
+    }
+
+    // Check model
+    if (!existsSync(WHISPER_MODEL)) {
+      console.error(red(`Model not found: ${WHISPER_MODEL}`))
+      console.error('Download with:')
+      console.error(`  mkdir -p ~/.local/share/whisper-cpp/models`)
+      console.error(`  curl -L "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin" -o "${WHISPER_MODEL}"`)
+      process.exit(1)
+    }
+
+    const logFd = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
+    const child = spawn(whisperBin, [
+      '-m', WHISPER_MODEL,
+      '--port', String(WHISPER_PORT),
+      '--convert',
+    ], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    })
+    child.unref()
+    writeFileSync(WHISPER_PID_FILE, String(child.pid))
+    // Wait for server to be ready
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
+        if (res.ok) {
+          console.log(green('Whisper server started') + ` (pid ${child.pid}, port ${WHISPER_PORT}, model: small.en)`)
+          return
+        }
+      } catch {}
+    }
+    console.log(yellow('Whisper server spawned') + ` (pid ${child.pid}) — model loading may take a moment`)
+  } else if (sub === 'stop') {
+    const pid = readWhisperPid()
+    if (pid && isWhisperRunning()) {
+      process.kill(pid, 'SIGTERM')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+      console.log(green('Whisper server stopped'))
+    } else {
+      console.log('Whisper server not running')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+    }
+  } else if (sub === 'status') {
+    if (isWhisperRunning()) {
+      console.log(green('running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+    } else {
+      console.log('not running')
+    }
+  } else if (sub === 'log') {
+    if (existsSync(WHISPER_LOG_FILE)) {
+      const { execSync: exec } = await import('child_process')
+      process.stdout.write(exec(`tail -30 "${WHISPER_LOG_FILE}"`, { encoding: 'utf8' }))
+    } else {
+      console.log('No whisper log file')
+    }
+  } else {
+    console.log('Usage: tlda whisper [start|stop|status|log]')
+  }
+}
+
 // --- Ensure server is running ---
 
 async function ensureServer() {
@@ -2159,6 +2254,7 @@ async function main() {
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
+      case 'whisper': await cmdWhisper(); break
       case 'doctor': await cmdDoctor(); break
       default:
         console.log(`tlda — tlda CLI
@@ -2183,6 +2279,7 @@ Commands:
   preview <name> [page ...]  Rasterize SVG pages to PNG
   remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
+  whisper        Manage local whisper speech server [start|stop|status|log]
   doctor         Check and fix common setup issues
   completions    Output zsh completion script
 
