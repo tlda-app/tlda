@@ -13,13 +13,183 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useCallback, useRef, useMemo } from 'react'
-import { searchFleet, fetchSharedDocs, useFleetAgents } from '../fleet-data-adapter'
+import { useState, useCallback, useRef, useMemo, useEffect, useLayoutEffect } from 'react'
+import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
+import katex from 'katex'
+import MarkdownIt from 'markdown-it'
+// @ts-ignore — vanilla JS module
+import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+// @ts-ignore — vanilla JS module
+import { renderActivityGroup } from '../fleet/activity-render.mjs'
+// @ts-ignore — vanilla JS module
+import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { appendToken } from '../authToken'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 500
+
+// --- Markdown renderer (shared with FleetChatShape) ---
+const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
+md.renderer.rules.fence = (tokens: any[], idx: number) => {
+  const token = tokens[idx]
+  const lang = token.info.trim()
+  const code = token.content
+  const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
+}
+
+function searchRenderMarkdown(escapedHtml: string): string {
+  let text = escapedHtml
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  text = text.replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '')
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex: string) => {
+    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false }) }
+    catch { return `<div class="math-display">${esc(tex)}</div>` }
+  })
+  text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex: string) => {
+    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false }) }
+    catch { return `<span class="math-inline">${esc(tex)}</span>` }
+  })
+  let result = md.render(text)
+  const trimmed = result.trim()
+  if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
+    result = trimmed.slice(3, -4)
+  }
+  result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
+  return result
+}
+
+// Nick color system for embedded chat
+const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
+const nickHex = ['#7a9ec8','#9370db','#c8956a','#6aafb0','#b87a95','#c8b060']
+const nickMap = new Map<string, string>()
+const nickHexMap = new Map<string, string>()
+let nickIdx = 0
+
+function makeChatCtx(agents: any[], tasks: any[]) {
+  const agentLabel = (id: string) => {
+    if (!id) return '[unknown]'
+    const a = agents.find((a: any) => a.id === id)
+    if (a) return a.friendly_name || a.id
+    return typeof id === 'string' ? id : String(id)
+  }
+  const getNickClass = (id: string) => {
+    if (!id) return 'nick-agent-0'
+    const a = agents.find((a: any) => a.id === id)
+    if (a?.human) return 'nick-human'
+    if (!nickMap.has(id)) {
+      const idx = nickIdx % nickColors.length
+      nickMap.set(id, nickColors[idx])
+      nickHexMap.set(id, nickHex[idx])
+      nickIdx++
+    }
+    return nickMap.get(id)!
+  }
+  return {
+    agentLabel, getNickClass,
+    getAgentColor: (id: string) => nickHexMap.get(id) || '#9370db',
+    isHumanId: (id: string) => !!(agents.find((a: any) => a.id === id)?.human),
+    getAgents: () => agents,
+    getTasks: () => tasks,
+    tldaToken: null as string | null,
+    renderMarkdown: searchRenderMarkdown,
+    highlightSyntax,
+    langFromFilePath,
+    preambleMacros: {},
+  }
+}
+
+// --- Embedded chat view for search results ---
+function EmbeddedChatView({ agentFilter, scrollToTs, onBack }: {
+  agentFilter: [string, string][][]
+  scrollToTs?: string
+  onBack: () => void
+}) {
+  const agents = useFleetAgents()
+  const tasks = useFleetTasks()
+  const events = useFleetEvents(agentFilter)
+  const chatLogRef = useRef<HTMLDivElement>(null)
+  const scrolledRef = useRef(false)
+
+  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+
+  const chatMessages = useMemo(() => {
+    return events
+      .filter((m: any) => {
+        const t = m.type
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
+      })
+      .filter((m: any) => !m._timer)
+      .sort((a: any, b: any) => {
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
+        return ta - tb
+      })
+  }, [events])
+
+  const renderedHtml = useMemo(() => {
+    const parts: string[] = []
+    let activityGroup: any[] = []
+    function flushActivity() {
+      if (activityGroup.length === 0) return
+      parts.push(`<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`)
+      activityGroup = []
+    }
+    for (const m of chatMessages) {
+      if (m._activity) {
+        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
+        activityGroup.push(m)
+      } else {
+        flushActivity()
+        const line = renderChatLine(m, ctx)
+        if (line) parts.push(line)
+      }
+    }
+    flushActivity()
+    return parts.join('')
+  }, [chatMessages, ctx])
+
+  // Scroll to target timestamp after render
+  useLayoutEffect(() => {
+    if (!scrollToTs || !chatLogRef.current || scrolledRef.current) return
+    const targetTs = new Date(scrollToTs).getTime()
+    // Find the chat-line closest to this timestamp
+    const lines = chatLogRef.current.querySelectorAll('[data-msg-ts]')
+    let closest: Element | null = null
+    let closestDiff = Infinity
+    for (const line of lines) {
+      const ts = new Date((line as HTMLElement).dataset.msgTs || '').getTime()
+      const diff = Math.abs(ts - targetTs)
+      if (diff < closestDiff) { closestDiff = diff; closest = line }
+    }
+    if (closest) {
+      closest.scrollIntoView({ block: 'center' })
+      closest.classList.add('chat-line-highlight')
+      setTimeout(() => closest!.classList.remove('chat-line-highlight'), 3000)
+      scrolledRef.current = true
+    }
+  }, [renderedHtml, scrollToTs])
+
+  return (
+    <div className="fleet-search-embedded-chat">
+      <div
+        className="fleet-search-chat-back"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => { e.stopPropagation(); onBack() }}
+      >
+        ← back to results
+      </div>
+      <div
+        ref={chatLogRef}
+        className="fleet-chat-log"
+        dangerouslySetInnerHTML={{ __html: renderedHtml }}
+        style={{ flex: 1, overflowY: 'auto', fontSize: 10 }}
+      />
+    </div>
+  )
+}
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-search' as const
@@ -129,9 +299,8 @@ function FleetSearchComponent({ shape }: { shape: any }) {
   const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
-  const [contextMessages, setContextMessages] = useState<any[]>([])
-  const [contextLoading, setContextLoading] = useState(false)
+  // When a result is clicked, show the real chat view for that agent
+  const [chatView, setChatView] = useState<{ agentFilter: [string, string][][]; scrollToTs: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -158,7 +327,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       setResults([])
       setDocResults([])
       setSearched(false)
-      setExpandedIdx(null)
+      setChatView(null)
       return
     }
 
@@ -174,7 +343,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
 
     setLoading(true)
     setSearched(true)
-    setExpandedIdx(null)
+    setChatView(null)
 
     // Build search — pass FTS query to API, filter results client-side
     const searchQuery = ftsQuery || '*'
@@ -232,34 +401,13 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     setLoading(false)
   }, [agentIdByName, agentName])
 
-  // Load context around a search result (3 messages before/after)
-  const loadContext = useCallback(async (result: any, idx: number) => {
-    if (expandedIdx === idx) {
-      setExpandedIdx(null)
-      setContextMessages([])
-      return
-    }
-    setExpandedIdx(idx)
-    setContextLoading(true)
-
-    // Search for messages near this timestamp from the same agent
-    const fromName = agentName(result.from)
-    try {
-      const nearby = await searchFleet(`from:${fromName}`, 20)
-      // Sort by timestamp and find messages around the target
-      const sorted = nearby
-        .filter((r: any) => r.timestamp)
-        .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-      const targetTs = new Date(result.timestamp).getTime()
-      const targetIdx = sorted.findIndex((r: any) => Math.abs(new Date(r.timestamp).getTime() - targetTs) < 5000)
-      const start = Math.max(0, targetIdx - 3)
-      const end = Math.min(sorted.length, targetIdx + 4)
-      setContextMessages(sorted.slice(start, end))
-    } catch {
-      setContextMessages([])
-    }
-    setContextLoading(false)
-  }, [expandedIdx, agentName])
+  // Build a DNF filter for the agent involved in a search result
+  const openChatForResult = useCallback((result: any) => {
+    // Build filter: [[["name", agentFriendlyName]]]
+    const name = agentName(result.from)
+    const filter: [string, string][][] = [[['name', name]]]
+    setChatView({ agentFilter: filter, scrollToTs: result.timestamp })
+  }, [agentName])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value
@@ -278,14 +426,13 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      if (expandedIdx !== null) {
-        setExpandedIdx(null)
-        setContextMessages([])
+      if (chatView) {
+        setChatView(null)
       } else {
         editor.setEditingShape(null)
       }
     }
-  }, [doSearch, query, editor, expandedIdx])
+  }, [doSearch, query, editor, chatView])
 
   // Parse current filters for display
   const { filters: activeFilters } = useMemo(() => parseSearchQuery(query), [query])
@@ -380,7 +527,14 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Results */}
+        {/* Results or embedded chat */}
+        {chatView ? (
+          <EmbeddedChatView
+            agentFilter={chatView.agentFilter}
+            scrollToTs={chatView.scrollToTs}
+            onBack={() => setChatView(null)}
+          />
+        ) : (
         <div
           className="fleet-search-results"
           style={{
@@ -435,97 +589,56 @@ function FleetSearchComponent({ shape }: { shape: any }) {
             </div>
           )}
           {results.map((r: any, i: number) => (
-            <div key={i}>
-              <div
-                className={`fleet-search-result${expandedIdx === i ? ' expanded' : ''}`}
-                onPointerDown={(e) => { stopEventPropagation(e) }}
-                onPointerUp={(e) => {
-                  e.stopPropagation()
-                  loadContext(r, i)
-                }}
-              >
-                {/* Timestamp + sender */}
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  marginBottom: 1,
-                }}>
-                  <span style={{ fontSize: 9, opacity: 0.5 }}>
-                    {formatTime(r.timestamp)}
-                  </span>
-                  <span style={{
-                    fontSize: 10,
-                    fontWeight: 500,
-                    opacity: 0.7,
-                  }}>
-                    {agentName(r.from)}
-                  </span>
-                  {r.to && (
-                    <>
-                      <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
-                      <span style={{ fontSize: 10, opacity: 0.5 }}>
-                        {agentName(r.to)}
-                      </span>
-                    </>
-                  )}
-                </div>
-                {/* Message preview — show more lines when expanded */}
-                <div style={{
+            <div
+              key={i}
+              className="fleet-search-result"
+              onPointerDown={(e) => { stopEventPropagation(e) }}
+              onPointerUp={(e) => {
+                e.stopPropagation()
+                openChatForResult(r)
+              }}
+            >
+              {/* Timestamp + sender */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                marginBottom: 1,
+              }}>
+                <span style={{ fontSize: 9, opacity: 0.5 }}>
+                  {formatTime(r.timestamp)}
+                </span>
+                <span style={{
                   fontSize: 10,
+                  fontWeight: 500,
                   opacity: 0.7,
-                  lineHeight: 1.3,
-                  overflow: 'hidden',
-                  textOverflow: expandedIdx === i ? undefined : 'ellipsis',
-                  whiteSpace: expandedIdx === i ? 'pre-wrap' : 'nowrap',
-                  maxHeight: expandedIdx === i ? 'none' : undefined,
                 }}>
-                  {expandedIdx === i
-                    ? truncate(r.snippet || r.text || r.message || r.body || '', 500)
-                    : truncate(r.snippet || r.text || r.message || r.body || '', 120)
-                  }
-                </div>
+                  {agentName(r.from)}
+                </span>
+                {r.to && (
+                  <>
+                    <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
+                    <span style={{ fontSize: 10, opacity: 0.5 }}>
+                      {agentName(r.to)}
+                    </span>
+                  </>
+                )}
               </div>
-              {/* Context messages when expanded */}
-              {expandedIdx === i && (
-                <div className="fleet-search-context">
-                  {contextLoading && (
-                    <div style={{ padding: '4px 10px', opacity: 0.3, fontSize: 9 }}>loading context…</div>
-                  )}
-                  {!contextLoading && contextMessages.length > 0 && (
-                    <>
-                      <div className="fleet-search-context-header">Context</div>
-                      {contextMessages.map((cm: any, ci: number) => {
-                        const isTarget = Math.abs(
-                          new Date(cm.timestamp).getTime() - new Date(r.timestamp).getTime()
-                        ) < 5000
-                        return (
-                          <div
-                            key={ci}
-                            className={`fleet-search-context-msg${isTarget ? ' target' : ''}`}
-                          >
-                            <span style={{ fontSize: 8, opacity: 0.4 }}>{formatTime(cm.timestamp)}</span>
-                            {' '}
-                            <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.6 }}>{agentName(cm.from)}</span>
-                            {cm.to && (
-                              <>
-                                <span style={{ fontSize: 7, opacity: 0.2 }}> → </span>
-                                <span style={{ fontSize: 9, opacity: 0.4 }}>{agentName(cm.to)}</span>
-                              </>
-                            )}
-                            <div style={{ fontSize: 9, opacity: isTarget ? 0.8 : 0.5, lineHeight: 1.3, marginTop: 1 }}>
-                              {truncate(cm.snippet || cm.text || cm.message || cm.body || '', 200)}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </>
-                  )}
-                </div>
-              )}
+              {/* Message preview */}
+              <div style={{
+                fontSize: 10,
+                opacity: 0.7,
+                lineHeight: 1.3,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {truncate(r.snippet || r.text || r.message || r.body || '', 120)}
+              </div>
             </div>
           ))}
         </div>
+        )}
 
         {/* Footer */}
         <div style={{

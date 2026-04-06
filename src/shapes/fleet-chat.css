@@ -1337,6 +1337,40 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   border-left: 2px solid rgba(100, 140, 255, 0.4);
 }
 
+/* --- Embedded chat view in search --- */
+
+.fleet-search-embedded-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+.fleet-search-chat-back {
+  padding: 4px 10px;
+  font-size: 9px;
+  opacity: 0.5;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.fleet-search-chat-back:hover {
+  opacity: 0.8;
+}
+.fleet-search-embedded-chat .fleet-chat-log {
+  font-size: 10px;
+  padding: 4px 0;
+}
+
+/* Highlight a chat line when scrolled to from search */
+@keyframes chat-line-flash {
+  0% { background: rgba(100, 140, 255, 0.2); }
+  100% { background: transparent; }
+}
+.chat-line-highlight {
+  animation: chat-line-flash 3s ease-out;
+}
+
 /* --- Reference chips (dropped from drag) --- */
 
 .fleet-chat-shape .ref-chip {
