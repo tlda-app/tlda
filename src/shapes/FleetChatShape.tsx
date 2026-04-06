@@ -534,19 +534,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
-    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    // Convert tlda URLs (with ?doc=) to ref-chips (not iframes).
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
         if (!isTldaUrl(url)) return _match
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const id = 'tlda-' + btoa(url).slice(0, 16)
-        // Add embed=1 then append auth token
-        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
-        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
         const openUrl = url.replace(/"/g, '&quot;')
-        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
+        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
       }
     )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
