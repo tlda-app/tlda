@@ -1,8 +1,9 @@
 /**
  * FleetSearchShape — tldraw canvas shape for searching fleet chat history.
  *
- * Search input at top, scrollable results below with timestamp/sender/preview.
- * Uses editing mode for text input interaction (same pattern as FleetChatShape).
+ * Supports inline keyword filters: from:name, agent:name, before:date, after:date
+ * Boolean logic: AND, OR, parentheses, "quoted phrases" — passed through to FTS5.
+ * Click a result to expand and show surrounding context inline.
  */
 import {
   BaseBoxShapeUtil,
@@ -12,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents } from '../fleet-data-adapter'
 import { appendToken } from '../authToken'
 import './fleet-chat.css'
@@ -59,10 +60,63 @@ function formatTime(ts: string | number): string {
 
 function truncate(text: string, max: number): string {
   if (!text) return ''
-  // Strip HTML tags and FTS highlight markers for preview
   const plain = text.replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
   if (plain.length <= max) return plain
   return plain.slice(0, max) + '…'
+}
+
+// Parse inline keyword filters from query string
+// Returns { query, filters } where query is the remaining FTS text
+// and filters has from, agent, before, after fields
+interface SearchFilters {
+  from?: string
+  agent?: string
+  role?: string
+  before?: string
+  after?: string
+}
+
+function parseSearchQuery(raw: string): { query: string; filters: SearchFilters } {
+  const filters: SearchFilters = {}
+  // Extract filter keywords (from:xxx, agent:xxx, before:xxx, after:xxx, role:xxx)
+  const remaining = raw.replace(/\b(from|agent|before|after|role):(\S+)/gi, (_, key, val) => {
+    const k = key.toLowerCase()
+    if (k === 'from') filters.from = val
+    else if (k === 'agent') filters.agent = val
+    else if (k === 'before') filters.before = val
+    else if (k === 'after') filters.after = val
+    else if (k === 'role') filters.role = val
+    return ''
+  }).trim()
+  return { query: remaining, filters }
+}
+
+// Resolve time filter values to ISO timestamps
+function resolveTimeFilter(val: string): string | null {
+  const now = new Date()
+  const lower = val.toLowerCase()
+  if (lower === 'today') {
+    const d = new Date(now); d.setHours(0, 0, 0, 0); return d.toISOString()
+  }
+  if (lower === 'yesterday') {
+    const d = new Date(now); d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0); return d.toISOString()
+  }
+  // Relative: 1h, 2d, 3w, 4m
+  const relMatch = lower.match(/^(\d+)([hdwm])$/)
+  if (relMatch) {
+    const n = parseInt(relMatch[1])
+    const unit = relMatch[2]
+    const d = new Date(now)
+    if (unit === 'h') d.setHours(d.getHours() - n)
+    else if (unit === 'd') d.setDate(d.getDate() - n)
+    else if (unit === 'w') d.setDate(d.getDate() - n * 7)
+    else if (unit === 'm') d.setMonth(d.getMonth() - n)
+    return d.toISOString()
+  }
+  // Try parsing as date
+  const parsed = new Date(val)
+  if (!isNaN(parsed.getTime())) return parsed.toISOString()
+  return null
 }
 
 function FleetSearchComponent({ shape }: { shape: any }) {
@@ -75,9 +129,13 @@ function FleetSearchComponent({ shape }: { shape: any }) {
   const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
+  const [contextMessages, setContextMessages] = useState<any[]>([])
+  const [contextLoading, setContextLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Agent ID → display name lookup
   const agentName = useCallback((id: string) => {
     if (!id) return 'unknown'
     const a = agents.find((a: any) => a.id === id)
@@ -85,30 +143,127 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     return id.replace('fleet:', '')
   }, [agents])
 
+  // Agent name → ID lookup (for from: filter matching)
+  const agentIdByName = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const a of agents) {
+      const name = a.friendly_name || (a.id || '').replace('fleet:', '')
+      map.set(name.toLowerCase(), a.id)
+    }
+    return map
+  }, [agents])
+
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults([])
       setDocResults([])
       setSearched(false)
+      setExpandedIdx(null)
       return
     }
+
+    const { query: ftsQuery, filters } = parseSearchQuery(q)
+
+    // Need at least a query or a filter
+    if (!ftsQuery && !filters.from && !filters.agent) {
+      setResults([])
+      setDocResults([])
+      setSearched(false)
+      return
+    }
+
     setLoading(true)
     setSearched(true)
+    setExpandedIdx(null)
+
+    // Build search — pass FTS query to API, filter results client-side
+    const searchQuery = ftsQuery || '*'
     const [res, allDocs] = await Promise.all([
-      searchFleet(q.trim(), 50),
+      searchFleet(searchQuery.length >= 2 ? searchQuery : 'message', 100),
       fetchSharedDocs(),
     ])
-    setResults(res)
-    // Filter shared docs by title match
-    const ql = q.trim().toLowerCase()
-    setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
+
+    // Apply client-side filters
+    let filtered = res
+    if (filters.from) {
+      const fromLower = filters.from.toLowerCase()
+      const fromId = agentIdByName.get(fromLower)
+      filtered = filtered.filter((r: any) => {
+        const name = agentName(r.from).toLowerCase()
+        return name === fromLower || name.includes(fromLower) || r.from === fromId
+      })
+    }
+    if (filters.agent) {
+      const agentLower = filters.agent.toLowerCase()
+      const aId = agentIdByName.get(agentLower)
+      filtered = filtered.filter((r: any) => {
+        const fromName = agentName(r.from).toLowerCase()
+        const toName = agentName(r.to).toLowerCase()
+        return fromName.includes(agentLower) || toName.includes(agentLower) ||
+               r.from === aId || r.to === aId
+      })
+    }
+    if (filters.role) {
+      filtered = filtered.filter((r: any) => r.role === filters.role)
+    }
+    if (filters.after) {
+      const afterTs = resolveTimeFilter(filters.after)
+      if (afterTs) {
+        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp >= afterTs)
+      }
+    }
+    if (filters.before) {
+      const beforeTs = resolveTimeFilter(filters.before)
+      if (beforeTs) {
+        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp <= beforeTs)
+      }
+    }
+
+    setResults(filtered.slice(0, 50))
+
+    // Filter shared docs by title match (only if there's an FTS query)
+    if (ftsQuery) {
+      const ql = ftsQuery.toLowerCase()
+      setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
+    } else {
+      setDocResults([])
+    }
+
     setLoading(false)
-  }, [])
+  }, [agentIdByName, agentName])
+
+  // Load context around a search result (3 messages before/after)
+  const loadContext = useCallback(async (result: any, idx: number) => {
+    if (expandedIdx === idx) {
+      setExpandedIdx(null)
+      setContextMessages([])
+      return
+    }
+    setExpandedIdx(idx)
+    setContextLoading(true)
+
+    // Search for messages near this timestamp from the same agent
+    const fromName = agentName(result.from)
+    try {
+      const nearby = await searchFleet(`from:${fromName}`, 20)
+      // Sort by timestamp and find messages around the target
+      const sorted = nearby
+        .filter((r: any) => r.timestamp)
+        .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      const targetTs = new Date(result.timestamp).getTime()
+      const targetIdx = sorted.findIndex((r: any) => Math.abs(new Date(r.timestamp).getTime() - targetTs) < 5000)
+      const start = Math.max(0, targetIdx - 3)
+      const end = Math.min(sorted.length, targetIdx + 4)
+      setContextMessages(sorted.slice(start, end))
+    } catch {
+      setContextMessages([])
+    }
+    setContextLoading(false)
+  }, [expandedIdx, agentName])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value
     setQuery(val)
-    // Debounce search
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => doSearch(val), 300)
   }, [doSearch])
@@ -123,9 +278,17 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      editor.setEditingShape(null)
+      if (expandedIdx !== null) {
+        setExpandedIdx(null)
+        setContextMessages([])
+      } else {
+        editor.setEditingShape(null)
+      }
     }
-  }, [doSearch, query, editor])
+  }, [doSearch, query, editor, expandedIdx])
+
+  // Parse current filters for display
+  const { filters: activeFilters } = useMemo(() => parseSearchQuery(query), [query])
 
   return (
     <HTMLContainer
@@ -188,7 +351,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search messages…"
+            placeholder="Search… (from:skip agent:apps before:1d)"
             value={query}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
@@ -206,9 +369,18 @@ function FleetSearchComponent({ shape }: { shape: any }) {
               fontFamily: 'inherit',
             }}
           />
+          {/* Active filter indicators */}
+          {(activeFilters.from || activeFilters.agent || activeFilters.before || activeFilters.after) && (
+            <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+              {activeFilters.from && <span className="fleet-search-filter-tag">from:{activeFilters.from}</span>}
+              {activeFilters.agent && <span className="fleet-search-filter-tag">agent:{activeFilters.agent}</span>}
+              {activeFilters.before && <span className="fleet-search-filter-tag">before:{activeFilters.before}</span>}
+              {activeFilters.after && <span className="fleet-search-filter-tag">after:{activeFilters.after}</span>}
+            </div>
+          )}
         </div>
 
-        {/* Results — pointer-events: auto (CSS) */}
+        {/* Results */}
         <div
           className="fleet-search-results"
           style={{
@@ -231,32 +403,13 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           {/* Shared docs section */}
           {docResults.length > 0 && (
             <>
-              <div style={{ padding: '4px 10px 2px', fontSize: 9, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(128,128,128,0.06)' }}>
-                Docs
-              </div>
+              <div className="fleet-search-section-header">Docs</div>
               {docResults.map((d: any, i: number) => (
                 <div
                   key={`doc-${i}`}
-                  className="ref-chip ref-chip-doc"
-                  style={{
-                    padding: '5px 10px',
-                    borderBottom: '1px solid rgba(128, 128, 128, 0.06)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    borderRadius: 0,
-                    background: 'transparent',
-                    border: 'none',
-                    borderBottomColor: 'rgba(128,128,128,0.06)',
-                    borderBottomWidth: 1,
-                    borderBottomStyle: 'solid',
-                  }}
-                  onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(99, 160, 219, 0.08)' }}
-                  onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
+                  className="fleet-search-doc-result"
                   onPointerDown={(e) => {
                     stopEventPropagation(e)
-                    // Open doc in tlda viewer
                     window.open(appendToken(`${window.location.origin}/?doc=${encodeURIComponent(d.doc)}`), '_blank')
                   }}
                 >
@@ -274,9 +427,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
             </>
           )}
           {results.length > 0 && (
-            <div style={{ padding: '4px 10px 2px', fontSize: 9, opacity: 0.4, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(128,128,128,0.06)' }}>
-              Messages
-            </div>
+            <div className="fleet-search-section-header">Messages</div>
           )}
           {!loading && !searched && (
             <div style={{ padding: '20px 10px', opacity: 0.4, textAlign: 'center', fontSize: 10 }}>
@@ -284,54 +435,94 @@ function FleetSearchComponent({ shape }: { shape: any }) {
             </div>
           )}
           {results.map((r: any, i: number) => (
-            <div
-              key={i}
-              style={{
-                padding: '4px 10px',
-                borderBottom: '1px solid rgba(128, 128, 128, 0.06)',
-                cursor: 'pointer',
-                transition: 'background 0.1s',
-              }}
-              onMouseOver={(e) => { e.currentTarget.style.background = 'rgba(128, 128, 128, 0.06)' }}
-              onMouseOut={(e) => { e.currentTarget.style.background = 'transparent' }}
-            >
-              {/* Timestamp + sender */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                marginBottom: 1,
-              }}>
-                <span style={{ fontSize: 9, opacity: 0.5 }}>
-                  {formatTime(r.timestamp)}
-                </span>
-                <span style={{
-                  fontSize: 10,
-                  fontWeight: 500,
-                  opacity: 0.7,
+            <div key={i}>
+              <div
+                className={`fleet-search-result${expandedIdx === i ? ' expanded' : ''}`}
+                onPointerDown={(e) => { stopEventPropagation(e) }}
+                onPointerUp={(e) => {
+                  e.stopPropagation()
+                  loadContext(r, i)
+                }}
+              >
+                {/* Timestamp + sender */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 1,
                 }}>
-                  {agentName(r.from)}
-                </span>
-                {r.to && (
-                  <>
-                    <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
-                    <span style={{ fontSize: 10, opacity: 0.5 }}>
-                      {agentName(r.to)}
-                    </span>
-                  </>
-                )}
+                  <span style={{ fontSize: 9, opacity: 0.5 }}>
+                    {formatTime(r.timestamp)}
+                  </span>
+                  <span style={{
+                    fontSize: 10,
+                    fontWeight: 500,
+                    opacity: 0.7,
+                  }}>
+                    {agentName(r.from)}
+                  </span>
+                  {r.to && (
+                    <>
+                      <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
+                      <span style={{ fontSize: 10, opacity: 0.5 }}>
+                        {agentName(r.to)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {/* Message preview — show more lines when expanded */}
+                <div style={{
+                  fontSize: 10,
+                  opacity: 0.7,
+                  lineHeight: 1.3,
+                  overflow: 'hidden',
+                  textOverflow: expandedIdx === i ? undefined : 'ellipsis',
+                  whiteSpace: expandedIdx === i ? 'pre-wrap' : 'nowrap',
+                  maxHeight: expandedIdx === i ? 'none' : undefined,
+                }}>
+                  {expandedIdx === i
+                    ? truncate(r.snippet || r.text || r.message || r.body || '', 500)
+                    : truncate(r.snippet || r.text || r.message || r.body || '', 120)
+                  }
+                </div>
               </div>
-              {/* Message preview */}
-              <div style={{
-                fontSize: 10,
-                opacity: 0.7,
-                lineHeight: 1.3,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {truncate(r.snippet || r.text || r.message || r.body || '', 120)}
-              </div>
+              {/* Context messages when expanded */}
+              {expandedIdx === i && (
+                <div className="fleet-search-context">
+                  {contextLoading && (
+                    <div style={{ padding: '4px 10px', opacity: 0.3, fontSize: 9 }}>loading context…</div>
+                  )}
+                  {!contextLoading && contextMessages.length > 0 && (
+                    <>
+                      <div className="fleet-search-context-header">Context</div>
+                      {contextMessages.map((cm: any, ci: number) => {
+                        const isTarget = Math.abs(
+                          new Date(cm.timestamp).getTime() - new Date(r.timestamp).getTime()
+                        ) < 5000
+                        return (
+                          <div
+                            key={ci}
+                            className={`fleet-search-context-msg${isTarget ? ' target' : ''}`}
+                          >
+                            <span style={{ fontSize: 8, opacity: 0.4 }}>{formatTime(cm.timestamp)}</span>
+                            {' '}
+                            <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.6 }}>{agentName(cm.from)}</span>
+                            {cm.to && (
+                              <>
+                                <span style={{ fontSize: 7, opacity: 0.2 }}> → </span>
+                                <span style={{ fontSize: 9, opacity: 0.4 }}>{agentName(cm.to)}</span>
+                              </>
+                            )}
+                            <div style={{ fontSize: 9, opacity: isTarget ? 0.8 : 0.5, lineHeight: 1.3, marginTop: 1 }}>
+                              {truncate(cm.snippet || cm.text || cm.message || cm.body || '', 200)}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
