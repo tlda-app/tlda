@@ -126,11 +126,18 @@ export function HudLayoutOverlay() {
       const target = e.target as HTMLElement
       if (!target) return
 
-      // Done button
-      if (target.classList?.contains('hud-container-exit-btn')) {
-        e.stopImmediatePropagation()
-        e.preventDefault()
-        return
+      // Click outside the container → exit layout mode
+      const overlay = overlayRef.current
+      if (overlay && !overlay.contains(target)) {
+        // Check the click isn't on a fleet shape (which is inside the container bounds
+        // but rendered as a separate DOM element)
+        const isFleetShape = target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"]')
+        if (!isFleetShape) {
+          e.stopImmediatePropagation()
+          e.preventDefault()
+          toggleLayoutMode(editor)
+          return
+        }
       }
 
       // Resize handle
@@ -207,16 +214,6 @@ export function HudLayoutOverlay() {
     }
 
     function onPointerUp(e: PointerEvent) {
-      const target = e.target as HTMLElement
-
-      // Done button
-      if (target?.classList?.contains('hud-container-exit-btn')) {
-        e.stopImmediatePropagation()
-        e.preventDefault()
-        toggleLayoutMode(editor)
-        return
-      }
-
       if (!_resizeState) return
       e.stopImmediatePropagation()
       _resizeState = null
@@ -260,23 +257,20 @@ export function HudLayoutOverlay() {
         zIndex: 500,
       }}
     >
+      {/* Container border — plain tldraw-style selection box */}
       <div style={{
         position: 'absolute', inset: 0,
-        border: '2px dashed rgba(147, 112, 219, 0.4)',
-        borderRadius: 8,
-        background: 'rgba(147, 112, 219, 0.03)',
+        border: '1.5px solid rgba(59, 130, 246, 0.5)',
+        borderRadius: 4,
         pointerEvents: 'none',
       }} />
-
-      <span className="hud-container-label" style={{ pointerEvents: 'none' }}>Layout Mode</span>
-
-      <button className="hud-container-exit-btn" style={{ pointerEvents: 'auto' }}>Done</button>
 
       {HANDLES.map((handle) => {
         const style: React.CSSProperties = {
           position: 'absolute',
           width: HANDLE_SIZE, height: HANDLE_SIZE,
-          background: 'rgba(147, 112, 219, 0.6)',
+          background: 'rgba(59, 130, 246, 0.8)',
+          border: '1px solid white',
           borderRadius: 2,
           pointerEvents: 'auto',
           cursor: handle === 'right' ? 'ew-resize'
