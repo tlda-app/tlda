@@ -269,11 +269,17 @@ async function fetchLastMessage(agentName: string): Promise<{ text: string; ts: 
   const cached = lastMessageCache.get(agentName)
   if (cached && Date.now() - cached.fetched < 30_000) return cached
   try {
-    const results = await searchFleet(`from:${agentName}`, 1)
-    if (results.length > 0) {
-      const r = results[0]
-      const text = (r.snippet || r.text || r.message || r.body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
-      const ts = new Date(r.timestamp).getTime()
+    // Search for the agent name — the API does FTS, then we filter client-side
+    const results = await searchFleet(agentName, 20)
+    // Find messages actually from this agent
+    const fromAgent = results.filter((r: any) => {
+      const fromName = (r.from || '').replace('fleet:', '')
+      return fromName === agentName || fromName.includes(agentName)
+    })
+    const match = fromAgent[0] || results[0]
+    if (match) {
+      const text = (match.snippet || match.text || match.message || match.body || '').replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
+      const ts = match.timestamp ? new Date(match.timestamp).getTime() : Date.now()
       const entry = { text, ts, fetched: Date.now() }
       lastMessageCache.set(agentName, entry)
       return entry
@@ -298,7 +304,8 @@ function useLastMessages(agents: any[]): Record<string, string> {
       setMessages(map)
     })
     return () => { mounted = false }
-  }, [agents.map(a => a.id).join(',')])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents.length])
 
   return messages
 }
