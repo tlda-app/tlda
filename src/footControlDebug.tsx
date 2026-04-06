@@ -97,11 +97,11 @@ export function FootControlDebug({ footController, clickDetector, visible = true
         fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 8,
         boxShadow: '0 2px 12px rgba(0,0,0,0.4)', cursor: 'pointer', userSelect: 'none',
         border: '1px solid #1f2937',
-        opacity: anyActive ? 0.85 : 0.1,
+        opacity: anyActive ? 0.85 : 0.35,
         transition: 'opacity 0.3s ease',
       }} onClick={() => setCollapsed(false)}
          onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
-         onMouseLeave={e => (e.currentTarget.style.opacity = anyActive ? '0.85' : '0.1')}>
+         onMouseLeave={e => (e.currentTarget.style.opacity = anyActive ? '0.85' : '0.35')}>
         <span style={{ color: anyActive ? '#a78bfa' : '#6b7280' }}>⬡</span>
         <span style={{ color: '#6b7280', fontSize: 10 }}>
           {activeCount > 0 ? `${activeCount} on` : 'input'}
