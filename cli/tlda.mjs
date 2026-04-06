@@ -17,7 +17,7 @@
  */
 
 import { resolve, basename, dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -1556,6 +1556,52 @@ async function cmdDoctor() {
       }
     } catch (e) {
       fail(`Server failed to start: ${e.message}`, 'tlda server log')
+      issues++
+    }
+  }
+
+  // 3b. SPA serves pages (not just health endpoint)
+  if (serverRunning) {
+    const token = getToken()
+    const tokenParam = token ? `?token=${token}` : ''
+    try {
+      const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+      const body = await res.text()
+      if (res.ok && body.includes('<div id="root">')) {
+        ok('SPA serves pages')
+      } else if (res.status === 404 || !body.includes('<div id="root">')) {
+        fail('SPA not serving — bundle may be missing or stale', 'npm run build')
+        issues++
+      } else {
+        fail(`SPA returned ${res.status}`)
+        issues++
+      }
+    } catch (e) {
+      fail(`SPA check failed: ${e.message}`)
+      issues++
+    }
+  }
+
+  // 3c. Bundle freshness — is dist/ newer than latest source commit?
+  {
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const distIndex = join(ctdRoot, 'dist', 'index.html')
+    if (existsSync(distIndex)) {
+      const distMtime = statSync(distIndex).mtimeMs
+      try {
+        const { execSync: ex } = await import('child_process')
+        const commitTs = parseInt(ex('git log -1 --format=%ct -- src/ vite.config.ts index.html package.json', { cwd: ctdRoot, stdio: 'pipe' }).toString().trim(), 10) * 1000
+        if (distMtime >= commitTs) {
+          ok('Bundle is current')
+        } else {
+          const agoMin = Math.round((Date.now() - distMtime) / 60000)
+          warn(`Bundle is stale (built ${agoMin}m ago, source changed since)`, 'npm run build')
+        }
+      } catch {
+        ok('Bundle exists (freshness check skipped — no git)')
+      }
+    } else {
+      fail('No built bundle (dist/index.html missing)', 'npm run build')
       issues++
     }
   }
