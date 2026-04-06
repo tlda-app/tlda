@@ -17,6 +17,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 
 
 const DEFAULT_W = 340
@@ -148,101 +149,6 @@ function usePillDrag() {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 
-  // Always-on document capture listeners so they're registered before any
-  // dynamic listeners (including tldraw's own per-drag listeners). When no
-  // drag is active the null-check exits immediately — zero overhead.
-  // Pill stays in the HUD editor throughout; screenToPage uses HUD coords,
-  // which share the same camera as the main canvas. dropPillOnTarget routes
-  // shape creation to the main editor via __tldraw_editor__.
-  useEffect(() => {
-    function onMove(e: PointerEvent) {
-      const drag = dragRef.current
-      if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
-
-      const dx = e.clientX - drag.startX
-      const dy = e.clientY - drag.startY
-
-      if (!drag.started) {
-        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
-        drag.started = true
-
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        const measureEl = document.createElement('span')
-        measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
-        measureEl.textContent = drag.displayName
-        document.body.appendChild(measureEl)
-        const pw = measureEl.offsetWidth
-        const ph = measureEl.offsetHeight
-        document.body.removeChild(measureEl)
-        const pillId = createShapeId()
-        editor.run(() => {
-          editor.createShape({
-            id: pillId,
-            type: 'fleet-pill' as any,
-            x: pagePos.x - pw / 2,
-            y: pagePos.y - ph / 2,
-            props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
-          })
-        }, { history: 'ignore' })
-        drag.pillId = pillId as unknown as string
-        // Reset tldraw's state machine — it saw our pointerdown but will never see pointerup
-        // (we stopImmediatePropagation those). editor.cancel() resets it without cancelling
-        // the real pointer stream (unlike dispatching a DOM pointercancel, which stops all
-        // further real pointer events for this pointerId and leaves the pill stuck).
-        editor.cancel()
-        return
-      }
-
-      if (drag.pillId) {
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        const pillShape = editor.getShape(drag.pillId as any) as any
-        const pw = pillShape?.props?.w || 70
-        const ph = pillShape?.props?.h || 18
-        editor.run(() => {
-          editor.updateShape({
-            id: drag.pillId as any,
-            type: 'fleet-pill' as any,
-            x: pagePos.x - pw / 2,
-            y: pagePos.y - ph / 2,
-          })
-        }, { history: 'ignore' })
-        // Publish slot for ghost preview (uses main editor for page coords)
-        const mainEditor = (window as any).__tldraw_editor__
-        const targetEditor = mainEditor || editor
-        dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
-        dropGhostBus.dispatchEvent(new CustomEvent('change'))
-      }
-    }
-
-    function onUp(e: PointerEvent) {
-      const drag = dragRef.current
-      if (!drag) return
-      e.stopImmediatePropagation()
-      dragRef.current = null
-
-      if (!drag.started || !drag.pillId) return
-
-      // Clear ghost before drop
-      dropGhostState.slot = null
-      dropGhostBus.dispatchEvent(new CustomEvent('change'))
-
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
-      editor.run(() => {
-        try { editor.deleteShapes([drag.pillId as any]) } catch {}
-      }, { history: 'ignore' })
-    }
-
-    document.addEventListener('pointermove', onMove, { capture: true })
-    document.addEventListener('pointerup', onUp, { capture: true })
-    return () => {
-      document.removeEventListener('pointermove', onMove, { capture: true })
-      document.removeEventListener('pointerup', onUp, { capture: true })
-    }
-  }, [editor])
-
   const startDrag = useCallback((
     e: React.PointerEvent,
     pillType: 'agent' | 'label',
@@ -256,7 +162,81 @@ function usePillDrag() {
       pillId: null, pillType, value, displayName, color,
       startX: e.clientX, startY: e.clientY, started: false,
     }
-  }, [])
+
+    // Claim the shared drag coordinator — one global listener pair handles
+    // move/up events, eliminating capture-phase registration races.
+    dragCoordinator.claim(
+      // onMove
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        if (!drag) return
+
+        const dx = ev.clientX - drag.startX
+        const dy = ev.clientY - drag.startY
+
+        if (!drag.started) {
+          if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+          drag.started = true
+
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const measureEl = document.createElement('span')
+          measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+          measureEl.textContent = drag.displayName
+          document.body.appendChild(measureEl)
+          const pw = measureEl.offsetWidth
+          const ph = measureEl.offsetHeight
+          document.body.removeChild(measureEl)
+          const pillId = createShapeId()
+          editor.run(() => {
+            editor.createShape({
+              id: pillId,
+              type: 'fleet-pill' as any,
+              x: pagePos.x - pw / 2,
+              y: pagePos.y - ph / 2,
+              props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
+            })
+          }, { history: 'ignore' })
+          drag.pillId = pillId as unknown as string
+          editor.cancel()
+          return
+        }
+
+        if (drag.pillId) {
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pillShape = editor.getShape(drag.pillId as any) as any
+          const pw = pillShape?.props?.w || 70
+          const ph = pillShape?.props?.h || 18
+          editor.run(() => {
+            editor.updateShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: pagePos.x - pw / 2,
+              y: pagePos.y - ph / 2,
+            })
+          }, { history: 'ignore' })
+          const mainEditor = (window as any).__tldraw_editor__
+          const targetEditor = mainEditor || editor
+          dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
+          dropGhostBus.dispatchEvent(new CustomEvent('change'))
+        }
+      },
+      // onUp
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        dragRef.current = null
+        if (!drag || !drag.started || !drag.pillId) return
+
+        dropGhostState.slot = null
+        dropGhostBus.dispatchEvent(new CustomEvent('change'))
+
+        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+        editor.run(() => {
+          try { editor.deleteShapes([drag.pillId as any]) } catch {}
+        }, { history: 'ignore' })
+      },
+    )
+  }, [editor])
 
   return { startDrag }
 }

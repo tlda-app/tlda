@@ -32,6 +32,7 @@ import { initTrackpad } from '../fleet/trackpad.mjs'
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
@@ -1218,15 +1219,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
       e.preventDefault()
       dragRef.current = drag
 
-      document.addEventListener('pointermove', onPointerMove, { capture: true })
-      document.addEventListener('pointerup', onPointerUp, { capture: true })
+      // Use shared drag coordinator instead of per-drag capture listeners
+      dragCoordinator.claim(onPointerMove, onPointerUp)
     }
 
     function onPointerMove(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
+      // stopImmediatePropagation/preventDefault handled by dragCoordinator
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
       if (!drag.started) {
@@ -1348,11 +1348,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     function onPointerUp(e: PointerEvent) {
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Coordinator handles listener cleanup and stopImmediatePropagation
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
       // Clear membrane glow
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
@@ -1371,9 +1369,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Also clean up move/up in case they were left attached (e.g. unmount during drag)
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Release coordinator if this component unmounts during a drag
+      if (dragRef.current) dragCoordinator.release()
     }
   }, [editor])
 
