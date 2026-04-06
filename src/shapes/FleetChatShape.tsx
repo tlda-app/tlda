@@ -31,7 +31,7 @@ import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
@@ -473,7 +473,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const content = ref?.content || ''
+      // Resolve content: shape-backed chips use the tldraw store; others use the chipContentStore
+      const content = ref?.content || chipContentStore.get(token) || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
       const isImage = typePrefix === 'img'
@@ -940,6 +941,23 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  // Detect impossible filter: filter is set but no AND group can match any known agent
+  const isImpossibleFilter = useMemo(() => {
+    if (filter.length === 0) return false
+    const allIds = agents.map((a: any) => {
+      const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+      return { id: a.id, labels }
+    })
+    // Also include human
+    allIds.push({ id: 'fleet:skip', labels: ['skip', 'fleet:skip'] })
+    // For each OR clause, check if there's any agent that matches ALL terms
+    return !filter.some(clause =>
+      allIds.some(agent =>
+        clause.every(([_role, label]) => agent.labels.includes(label))
+      )
+    )
+  }, [filterKey, agents])
+
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
 
@@ -1014,29 +1032,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       const names = agentNamesRef.current
 
-      // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
+      // Only intercept on draggable elements — nick spans are NOT drag handles
+      // (text selection takes priority; agent filter pills come from the agents panel)
+      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
 
-      // Agent name
-      const nickSpan = target.closest('.chat-nick span[class*="nick-"]') as HTMLElement
-      if (nickSpan) {
-        const line = nickSpan.closest('.chat-line') as HTMLElement
-        const agentId = line?.dataset.msgFrom
-        if (agentId) {
-          drag = {
-            pillId: null, pillType: 'agent', value: agentId,
-            displayName: nickSpan.textContent?.replace(/:$/, '') || agentId,
-            color: '#7a9ec8', startX: e.clientX, startY: e.clientY,
-            started: false, captureEl: logEl, pointerId: e.pointerId,
-          }
-        }
-      }
-
       // Timestamp → message reference
-      if (!drag) {
+      {
         const tsEl = target.closest('.chat-ts') as HTMLElement
         if (tsEl) {
           const line = tsEl.closest('.chat-line') as HTMLElement
@@ -1464,11 +1468,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
           {chatMessages.length === 0 ? (
             <div style={{
               padding: '20px 8px',
-              opacity: 0.3,
+              opacity: isImpossibleFilter ? 0.6 : 0.3,
               textAlign: 'center',
               fontSize: 10,
+              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
             }}>
-              {filter.length > 0 ? 'No messages' : 'No filter set'}
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
