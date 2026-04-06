@@ -131,17 +131,24 @@ export function linkifyDocRefs(html: string): string {
     parts.push({ text: html.slice(lastIdx), isTag: false })
   }
 
-  // Track nesting to skip inside <a>, <code>, <pre>, and existing doc-link spans
+  // Track nesting to skip inside <a>, <code>, <pre>, doc-link spans, and ref-chip spans
   let skipDepth = 0
   const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
   const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
-  const DOC_LINK_OPEN = /^<span\s[^>]*class="[^"]*doc-link/i
+  const SPAN_SKIP_OPEN = /^<span\s[^>]*class="[^"]*(?:doc-link|ref-chip)/i
+  const SPAN_OPEN = /^<span[\s>]/i
 
   const result: string[] = []
   for (const part of parts) {
     if (part.isTag) {
-      if (SKIP_OPEN.test(part.text) || DOC_LINK_OPEN.test(part.text)) skipDepth++
-      else if (SKIP_CLOSE.test(part.text) && skipDepth > 0) skipDepth = Math.max(0, skipDepth - 1)
+      if (skipDepth > 0) {
+        // Inside a skip region: track all span nesting to exit correctly
+        if (SPAN_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth--
+      } else {
+        if (SKIP_OPEN.test(part.text) || SPAN_SKIP_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      }
       result.push(part.text)
       continue
     }

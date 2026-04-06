@@ -6,9 +6,10 @@
  * Collapses to a small pill when minimized.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react'
 import type { FootController, FootControlState } from './footControl'
 import type { ClickDetector } from './clickDetect'
+import { subscribeInputModes, getInputMode, toggleInputMode, type InputMode } from './inputModes'
 
 interface Props {
   footController: FootController | null
@@ -16,12 +17,31 @@ interface Props {
   visible?: boolean
 }
 
+const INPUT_MODES: { id: InputMode; label: string; color: string }[] = [
+  { id: 'foot', label: 'pedals', color: '#a78bfa' },
+  { id: 'clicks', label: 'clicks', color: '#60a5fa' },
+  { id: 'whistle', label: 'whistle', color: '#34d399' },
+  { id: 'hiss', label: 'hiss', color: '#fbbf24' },
+  { id: 'voice', label: 'voice', color: '#f472b6' },
+]
+
+let _cachedSnapshot: boolean[] = INPUT_MODES.map(m => getInputMode(m.id))
+const getModeSnapshot = () => {
+  const next = INPUT_MODES.map(m => getInputMode(m.id))
+  if (next.every((v, i) => v === _cachedSnapshot[i])) return _cachedSnapshot
+  _cachedSnapshot = next
+  return next
+}
+
 export function FootControlDebug({ footController, clickDetector, visible = true }: Props) {
+  const modeStates = useSyncExternalStore(subscribeInputModes, getModeSnapshot)
+  const anyActive = modeStates.some(Boolean)
+
   const [state, setState] = useState<FootControlState | null>(null)
   const [sensitivity, setSensitivity] = useState(3.0)
   const [micActive, setMicActive] = useState(false)
   const [micError, setMicError] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
   const [debugOpen, setDebugOpen] = useState(false)
   const [events, setEvents] = useState<string[]>([])
   const [simRudder, setSimRudder] = useState(0)
@@ -65,6 +85,8 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   const heading = state?.heading ?? -Math.PI / 2
   const gamepadOk = !!state?.gamepadConnected
 
+  const activeCount = modeStates.filter(Boolean).length
+
   // ── Collapsed pill ────────────────────────────────────────────────────────
   if (collapsed) {
     return (
@@ -75,10 +97,15 @@ export function FootControlDebug({ footController, clickDetector, visible = true
         fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 8,
         boxShadow: '0 2px 12px rgba(0,0,0,0.4)', cursor: 'pointer', userSelect: 'none',
         border: '1px solid #1f2937',
-      }} onClick={() => setCollapsed(false)}>
-        <span style={{ color: gamepadOk ? '#4ade80' : '#6b7280' }}>⬡</span>
-        <span style={{ color: micActive ? '#4ade80' : '#6b7280' }}>◎</span>
-        <span style={{ color: '#6b7280', fontSize: 10 }}>foot</span>
+        opacity: anyActive ? 0.85 : 0.35,
+        transition: 'opacity 0.3s ease',
+      }} onClick={() => setCollapsed(false)}
+         onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
+         onMouseLeave={e => (e.currentTarget.style.opacity = anyActive ? '0.85' : '0.35')}>
+        <span style={{ color: anyActive ? '#a78bfa' : '#6b7280' }}>⬡</span>
+        <span style={{ color: '#6b7280', fontSize: 10 }}>
+          {activeCount > 0 ? `${activeCount} on` : 'input'}
+        </span>
       </div>
     )
   }
@@ -95,25 +122,50 @@ export function FootControlDebug({ footController, clickDetector, visible = true
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <span style={{ fontWeight: 700, color: '#a78bfa', letterSpacing: '0.05em' }}>foot control</span>
+        <span style={{ fontWeight: 700, color: '#a78bfa', letterSpacing: '0.05em' }}>input modes</span>
         <button onClick={() => setCollapsed(true)} style={{
           background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer',
           fontSize: 14, lineHeight: 1, padding: '0 2px',
         }}>−</button>
       </div>
 
-      {/* Status row */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 10, alignItems: 'center' }}>
+      {/* Input mode toggles */}
+      <div style={{ marginBottom: 10 }}>
+        {INPUT_MODES.map((mode, i) => (
+          <div key={mode.id} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '3px 0',
+          }}>
+            <span style={{ color: modeStates[i] ? mode.color : '#4b5563', fontSize: 11 }}>
+              {mode.label}
+            </span>
+            <button onClick={() => toggleInputMode(mode.id)} style={{
+              width: 32, height: 16, borderRadius: 8, border: 'none', cursor: 'pointer',
+              background: modeStates[i] ? mode.color : '#374151',
+              position: 'relative', transition: 'background 0.2s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, width: 12, height: 12, borderRadius: 6,
+                background: '#fff', transition: 'left 0.2s',
+                left: modeStates[i] ? 18 : 2,
+              }} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Status row (only when foot/clicks active) */}
+      {anyActive && <div style={{ display: 'flex', gap: 12, marginBottom: 10, alignItems: 'center' }}>
         <span style={{ color: gamepadOk ? '#4ade80' : '#6b7280', fontSize: 11 }}>
           {gamepadOk ? '⬡ pedals' : '○ no pedals'}
         </span>
         <span style={{ color: micActive ? '#4ade80' : '#6b7280', fontSize: 11 }}>
           {micActive ? '◎ mic on' : '◎ mic off'}
         </span>
-      </div>
+      </div>}
 
-      {/* Mic control */}
-      {clickDetector && (
+      {/* Mic control (shown when any mic-based mode is on) */}
+      {clickDetector && anyActive && (
         <div style={{ marginBottom: 10 }}>
           {!micActive ? (
             <button onClick={startMic} style={{
@@ -133,7 +185,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
       )}
 
       {/* Sensitivity */}
-      {clickDetector && (
+      {clickDetector && anyActive && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: '#9ca3af', marginBottom: 3, fontSize: 11 }}>
             click sensitivity — {sensitivity.toFixed(1)}×
@@ -149,16 +201,16 @@ export function FootControlDebug({ footController, clickDetector, visible = true
         </div>
       )}
 
-      {/* Response curve */}
-      {footController && (
+      {/* Response curve (foot mode only) */}
+      {footController && modeStates[0] && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: '#9ca3af', marginBottom: 3, fontSize: 11 }}>response curve</div>
           <CurveEditor footController={footController} />
         </div>
       )}
 
-      {/* Compass (compact) */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#6b7280', fontSize: 11 }}>
+      {/* Compass (foot mode only) */}
+      {modeStates[0] && <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#6b7280', fontSize: 11 }}>
         <svg width={36} height={36} style={{ flexShrink: 0 }}>
           <circle cx={18} cy={18} r={14} fill="none" stroke="#1f2937" strokeWidth={1.5} />
           <line x1={18} y1={18} x2={18 + Math.cos(heading)*12} y2={18 + Math.sin(heading)*12}
@@ -171,10 +223,10 @@ export function FootControlDebug({ footController, clickDetector, visible = true
             {state?.cursorX.toFixed(0)}, {state?.cursorY.toFixed(0)}
           </div>
         </div>
-      </div>
+      </div>}
 
-      {/* Debug section (collapsed by default) */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #1f2937', paddingTop: 6 }}>
+      {/* Debug section (collapsed by default, foot mode only) */}
+      {modeStates[0] && <div style={{ marginTop: 8, borderTop: '1px solid #1f2937', paddingTop: 6 }}>
         <button onClick={() => setDebugOpen(o => !o)} style={{
           background: 'none', border: 'none', color: '#4b5563', cursor: 'pointer',
           fontSize: 11, fontFamily: 'monospace', padding: 0,
@@ -200,7 +252,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
             </div>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   )
 }
