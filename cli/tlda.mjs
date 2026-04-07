@@ -1467,6 +1467,105 @@ function getPort() {
   try { return new URL(getServer()).port || '5176' } catch { return '5176' }
 }
 
+async function cmdDeploy() {
+  const { execSync } = await import('child_process')
+  const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const distIndex = join(ctdRoot, 'dist', 'index.html')
+  const token = getToken()
+
+  const step = (label) => process.stdout.write(dim(`  ${label}... `))
+  const pass = (msg) => console.log(green('✓') + (msg ? ' ' + msg : ''))
+  const die = (msg) => { console.log(red('✗') + ' ' + msg); process.exit(1) }
+
+  console.log(bold('tlda deploy'))
+  console.log()
+
+  // 1. Build
+  step('Building SPA (npm run build)')
+  try {
+    execSync('npm run build', { cwd: ctdRoot, stdio: 'pipe', timeout: 180_000 })
+  } catch (e) {
+    die('Build failed: ' + (e.stderr?.toString().trim().split('\n').pop() || e.message))
+  }
+  pass()
+
+  // 2. Verify bundle
+  step('Verifying dist/index.html')
+  if (!existsSync(distIndex)) die('dist/index.html not found after build')
+  const distSize = statSync(distIndex).size
+  if (distSize < 100) die(`dist/index.html is suspiciously small (${distSize} bytes)`)
+  pass(`${Math.round(distSize / 1024)}KB`)
+
+  // 3. Restart server
+  step('Stopping server')
+  try { execSync('node ' + JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs')) + ' server stop', { stdio: 'pipe', timeout: 10_000 }) } catch {}
+  pass()
+
+  step('Starting server')
+  try {
+    execSync('node ' + JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 15_000 })
+  } catch (e) {
+    die('Server failed to start: ' + e.message)
+  }
+  pass()
+
+  // 4. Wait for server ready
+  step('Waiting for server')
+  const serverUrl = getServer()
+  let serverReady = false
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
+      if (res.ok) { serverReady = true; break }
+    } catch {}
+  }
+  if (!serverReady) die(`Server not responding at ${serverUrl}/health after 10s`)
+  pass(serverUrl)
+
+  // 5. Verify SPA renders
+  step('Verifying SPA serves pages')
+  const tokenParam = token ? `?token=${token}` : ''
+  try {
+    const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const body = await res.text()
+    if (!res.ok) die(`SPA returned ${res.status}`)
+    if (!body.includes('<div id="root">')) die('SPA response missing app root')
+    pass()
+  } catch (e) {
+    die(`SPA check failed: ${e.message}`)
+  }
+
+  // 6. Verify a doc page loads (find first available project)
+  step('Verifying doc page loads')
+  try {
+    const projRes = await fetch(`${serverUrl}/api/projects${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    if (projRes.ok) {
+      const data = await projRes.json()
+      const projects = data.projects || data || []
+      const first = projects[0]
+      if (first?.name) {
+        const docRes = await fetch(`${serverUrl}/?doc=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docBody = await docRes.text()
+        if (docRes.ok && docBody.includes('<div id="root">')) {
+          pass(first.name)
+        } else {
+          die(`Doc page for "${first.name}" returned ${docRes.status}`)
+        }
+      } else {
+        pass('(no projects to test)')
+      }
+    } else {
+      pass('(projects API unavailable)')
+    }
+  } catch (e) {
+    die(`Doc page check failed: ${e.message}`)
+  }
+
+  console.log()
+  console.log(green(bold('Deploy complete.')))
+}
+
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
   const autoFix = process.argv.includes('--fix')
@@ -2381,6 +2480,7 @@ async function main() {
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'whisper': await cmdWhisper(); break
+      case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
       default:
         console.log(`tlda — tlda CLI
@@ -2406,6 +2506,7 @@ Commands:
   remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
+  deploy         Build, restart server, verify SPA renders
   doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 
