@@ -9,6 +9,7 @@
  *   GET    /:name               Project info
  *   DELETE /:name               Remove project
  *   GET    /:name/files         List source files
+ *   GET    /:name/source/:file  Read source file content
  *   POST   /:name/push          Push files + trigger build
  *   POST   /:name/build         Trigger rebuild
  *   GET    /:name/build/status  Build status + log
@@ -20,7 +21,7 @@ import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
-  listSourceFiles, hashSourceFiles, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
+  listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
@@ -55,6 +56,25 @@ router.get('/meta', requireRead, (req, res) => {
     }
   }
   res.json(meta)
+})
+
+// GET /health — check sync health for all docs that have a snapshot
+router.get('/health', requireRead, (req, res) => {
+  const health = {}
+  const dir = getProjectsDir()
+  for (const project of listProjects()) {
+    const snapPath = join(dir, project.name, 'sync-snapshot.json')
+    if (!existsSync(snapPath)) continue
+    try {
+      const room = getOrCreateRoom(syncRoomName(project.name))
+      const snapshot = room.getCurrentSnapshot()
+      const shapes = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
+      health[project.name] = { ok: true, shapes }
+    } catch (e) {
+      health[project.name] = { ok: false, error: e.message }
+    }
+  }
+  res.json(health)
 })
 
 // GET /events/stream — Global SSE stream of project-level events (doc-arrived, etc.)
@@ -152,6 +172,31 @@ router.get('/:name/files', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ files: listSourceFiles(req.params.name) })
+})
+
+// Read a specific source file's content
+router.get('/:name/source/:file', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  try {
+    const content = readSourceFile(req.params.name, req.params.file)
+    if (content === null) return res.status(404).json({ error: 'File not found' })
+    res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Preamble macros (KaTeX-compatible, parsed during build from main tex file)
+router.get('/:name/macros', requireRead, (req, res) => {
+  const outputPath = join(getOutputDir(req.params.name), 'macros.json')
+  if (!existsSync(outputPath)) return res.json({ macros: {} })
+  try {
+    const data = JSON.parse(readFileSync(outputPath, 'utf8'))
+    res.json({ macros: data.macros || {} })
+  } catch {
+    res.json({ macros: {} })
+  }
 })
 
 // Source file hashes (for incremental push)
@@ -408,6 +453,34 @@ router.post('/:name/snapshot', requireRw, (req, res) => {
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /:name/sync/clear — delete the sync snapshot so the room resets on next connect
+router.post('/:name/sync/clear', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  try {
+    // Replace with an empty snapshot (no shapes)
+    const emptySnapshot = { documents: [], schema: undefined }
+    replaceRoomSnapshot(syncRoomName(req.params.name), emptySnapshot)
+    res.json({ ok: true, message: `Sync data cleared for ${req.params.name}` })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /:name/sync/health — check if a doc's sync room can load without errors
+router.get('/:name/sync/health', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  try {
+    const room = getOrCreateRoom(syncRoomName(req.params.name))
+    const snapshot = room.getCurrentSnapshot()
+    const shapeCount = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
+    res.json({ ok: true, shapes: shapeCount })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
   }
 })
 

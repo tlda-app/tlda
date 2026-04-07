@@ -91,6 +91,62 @@
   color: rgba(100, 100, 100, 0.6);
 }
 
+.fleet-hud-layout {
+  border: none;
+  background: none;
+  color: rgba(100, 100, 100, 0.30);
+  font-size: 13px;
+  cursor: grab;
+  padding: 2px 4px;
+  line-height: 1;
+  letter-spacing: -1px;
+  transition: color 0.2s;
+}
+.fleet-hud-layout:hover {
+  color: rgba(100, 100, 100, 0.6);
+}
+
+/* Layout mode overlay — bounding-box handle for group move */
+.fleet-layout-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  cursor: default;
+}
+.fleet-layout-overlay {
+  position: fixed;
+  z-index: 999;
+  cursor: grab;
+  box-sizing: border-box;
+  border: 2px dashed rgba(100, 120, 200, 0.55);
+  border-radius: 6px;
+  background: rgba(100, 120, 200, 0.04);
+  pointer-events: all;
+  user-select: none;
+  touch-action: none;
+}
+.fleet-layout-overlay:active {
+  cursor: grabbing;
+}
+.fleet-layout-overlay-hint {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(100, 120, 200, 0.7);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Layout mode active — disable interactivity on fleet shape content
+   so the overlay captures all pointer events without accidentally triggering
+   chat lines, agent rows, etc. */
+body.fleet-layout-active .fleet-hud-wrap .tl-html-container {
+  pointer-events: none !important;
+}
+
 /* When HUD is open, hide fleet shapes in the main canvas so the HUD is
    the sole view — prevents "two copies" confusion and clarifies what you're editing.
    The HUD's shapes (.fleet-hud-wrap inside) are explicitly restored. */
@@ -118,6 +174,20 @@ html[data-theme="dark"] .fleet-drop-ghost {
 }
 
 /* Dark mode */
+html[data-theme="dark"] .fleet-hud-layout {
+  color: rgba(255, 255, 255, 0.30);
+}
+html[data-theme="dark"] .fleet-hud-layout:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+html[data-theme="dark"] .fleet-layout-overlay {
+  border-color: rgba(140, 160, 255, 0.5);
+  background: rgba(120, 140, 255, 0.05);
+}
+html[data-theme="dark"] .fleet-layout-overlay-hint {
+  color: rgba(140, 160, 255, 0.7);
+}
+
 html[data-theme="dark"] .fleet-pill {
   background: rgba(20, 20, 32, 0.7);
   color: rgba(160, 160, 160, 0.5);

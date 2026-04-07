@@ -25,23 +25,106 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = 'http://localhost:5199'
+
+// Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
+// where path is relative to the dropped folder root (e.g. "figures/foo.png")
+async function traverseDirectory(entry: FileSystemEntry, prefix = ''): Promise<{ file: File, path: string }[]> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
+    return [{ file, path: prefix + entry.name }]
+  }
+  const dirEntry = entry as FileSystemDirectoryEntry
+  const reader = dirEntry.createReader()
+  const results: { file: File, path: string }[] = []
+  let batch: FileSystemEntry[]
+  do {
+    batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej))
+    for (const child of batch) {
+      results.push(...await traverseDirectory(child, prefix + entry.name + '/'))
+    }
+  } while (batch.length > 0)
+  return results
+}
+
+// Upload a markdown file, rewriting local image refs to stable URLs for any
+// companion files present in the same drop event.
+// companions: { file, path } pairs where path is relative to the drop root.
+// mdRelPath: path of the md file itself relative to the drop root (for resolving relative image refs).
+// warnOnUnresolved: if true and some image refs couldn't be matched, appends a hint to the returned link.
+async function uploadMarkdownWithImages(
+  mdFile: File,
+  companions: { file: File, path: string }[],
+  mdRelPath?: string,
+  warnOnUnresolved?: boolean,
+): Promise<string> {
+  const text = await mdFile.text()
+  // Find local image paths: ![alt](path) where path is not http
+  const localPathRe = /!\[[^\]]*\]\(([^)]+)\)/g
+  const localPaths = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = localPathRe.exec(text)) !== null) {
+    if (!m[1].startsWith('http')) localPaths.add(m[1])
+  }
+  // Directory of the md file relative to the drop root (e.g. "report/" or "")
+  const mdDir = mdRelPath ? mdRelPath.split('/').slice(0, -1).join('/') : ''
+  // Upload companions that match a local path by relative path or basename fallback
+  const urlMap = new Map<string, string>()
+  for (const localPath of localPaths) {
+    const ref = localPath.replace(/^\.\//, '')
+    const resolvedPath = mdDir ? `${mdDir}/${ref}` : ref
+    const base = ref.split('/').pop() || ref
+    const match =
+      companions.find(c => c.path === resolvedPath) ||
+      companions.find(c => c.file.name === base)
+    if (!match) continue
+    try {
+      const fd = new FormData()
+      fd.append('file', match.file, match.file.name)
+      const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+      if (!r.ok) continue
+      const { url } = await r.json()
+      urlMap.set(localPath, `${FLEET_API}${url}`)
+    } catch {}
+  }
+  // Rewrite markdown and upload
+  let rewritten = text
+  for (const [orig, stable] of urlMap) {
+    rewritten = rewritten.split(`](${orig})`).join(`](${stable})`)
+  }
+  const rewrittenFile = new File([new Blob([rewritten], { type: 'text/markdown' })], mdFile.name, { type: 'text/markdown' })
+  const fd = new FormData()
+  fd.append('file', rewrittenFile, rewrittenFile.name)
+  const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+  if (!r.ok) throw new Error(`markdown upload failed: ${r.status}`)
+  const { url, name } = await r.json()
+  let link = `[${name}](${FLEET_API}${url})`
+  if (warnOnUnresolved && localPaths.size > 0) {
+    const hasUnresolved = [...localPaths].some(p => !urlMap.has(p))
+    if (hasUnresolved) {
+      link += '\n⚠️ Some images couldn\'t be uploaded — drag the containing folder instead of the file.'
+    }
+  }
+  return link
+}
 
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
@@ -108,6 +191,31 @@ function tldaRenderMarkdown(escapedHtml: string): string {
   return result
 }
 
+// --- Viewer context helper ---
+
+function gatherViewerContext(editor: any, doc: any) {
+  if (!editor || !doc) return null
+  const camera = editor.getCamera()
+  const viewport = editor.getViewportPageBounds()
+  const visiblePages: number[] = []
+  if (doc.pages && viewport) {
+    doc.pages.forEach((page: any, i: number) => {
+      const b = page.bounds
+      if (!b) return
+      // Page is visible if it overlaps the viewport
+      if (b.x + b.width > viewport.minX && b.x < viewport.maxX &&
+          b.y + b.height > viewport.minY && b.y < viewport.maxY) {
+        visiblePages.push(i + 1)
+      }
+    })
+  }
+  return {
+    doc: doc.docName || null,
+    page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
+    camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
+  }
+}
+
 // --- Shape definition ---
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
@@ -156,7 +264,7 @@ const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
-function makeCtx(agents: any[], tasks: any[]) {
+function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
@@ -191,12 +299,14 @@ function makeCtx(agents: any[], tasks: any[]) {
     renderMarkdown: tldaRenderMarkdown,
     highlightSyntax,
     langFromFilePath,
+    preambleMacros,
   }
 }
 
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   // Expose editor to trackpad input adapter
   _tldaEditor = editor
   const doc = useContext(DocContext)
@@ -289,8 +399,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }, { source: 'all', scope: 'document' })
   }, [editor])
 
+  // Preamble macros — fetched once per doc from /api/projects/:name/macros
+  const [preambleMacros, setPreambleMacros] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!doc?.docName) return
+    fetch(`/api/projects/${doc.docName}/macros`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
+      .catch(() => {})
+  }, [doc?.docName])
+
   // Build context and render messages
-  const ctx = useMemo(() => makeCtx(agents, tasks), [agents, tasks])
+  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
 
   const chatMessages = useMemo(() => {
     const sorted = events
@@ -381,7 +501,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const content = ref?.content || ''
+      // Resolve content: shape-backed chips use the tldraw store; others use the chipContentStore
+      const content = ref?.content || chipContentStore.get(token) || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
       const isImage = typePrefix === 'img'
@@ -416,19 +537,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
-    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    // Convert tlda URLs (with ?doc=) to ref-chips (not iframes).
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
         if (!isTldaUrl(url)) return _match
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const id = 'tlda-' + btoa(url).slice(0, 16)
-        // Add embed=1 then append auth token
-        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
-        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
         const openUrl = url.replace(/"/g, '&quot;')
-        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
+        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
       }
     )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
@@ -586,6 +702,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
   // anywhere on the chat shape before tldraw can create a canvas image shape.
+  // Files are uploaded to the fleet server and referenced by stable URL.
   useEffect(() => {
     const el = shapeContainerRef.current
     if (!el) return
@@ -600,34 +717,56 @@ function FleetChatComponent({ shape }: { shape: any }) {
       if (!e.dataTransfer?.types.includes('Files')) return
       e.preventDefault()
       e.stopPropagation()
-      const files = [...(e.dataTransfer.files || [])]
-      if (!files.length) return
-      for (const file of files) {
-        if (file.type.startsWith('image/')) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve(reader.result as string)
-            reader.onerror = reject
-            reader.readAsDataURL(file)
-          })
-          const assetId = `asset:img-${Date.now().toString(36)}`
-          const assetRecord = {
-            id: assetId as any, typeName: 'asset', type: 'image',
-            props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
-            meta: {},
-          } as any
-          const mainEd = (window as any).__tldraw_editor__ || editor
-          mainEd.store.put([assetRecord])
-          if (mainEd !== editor) editor.store.put([assetRecord])
-          const assetUid = assetId.slice('asset:'.length)
-          const token = `«img:${file.name}#${assetUid}»`
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
-        } else {
-          let content = ''
-          try { content = await file.text() } catch {}
-          const uid = Date.now().toString(36).slice(-4)
-          const token = `«file:${file.name}#${uid}»`
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: token } }))
+
+      // Use items API to support folder drops
+      const items = e.dataTransfer.items ? [...e.dataTransfer.items] : []
+      let entries: { file: File, path: string }[] = []
+      let isFlat = true
+
+      if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+        for (const item of items) {
+          const entry = item.webkitGetAsEntry()
+          if (entry) {
+            if (entry.isDirectory) isFlat = false
+            entries.push(...await traverseDirectory(entry))
+          }
+        }
+      } else {
+        for (const f of [...(e.dataTransfer.files || [])]) {
+          entries.push({ file: f, path: f.name })
+        }
+      }
+
+      if (!entries.length) return
+
+      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+      for (const { file, path } of mdEntries) {
+        try {
+          const companions = entries.filter(e => e.path !== path)
+          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
+        } catch (err) {
+          console.error('[fleet-chat] folder-drag md upload error', err)
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
+        }
+      }
+      for (const { file } of otherEntries) {
+        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+        try {
+          const formData = new FormData()
+          formData.append('file', file, file.name)
+          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+          const { url, name } = await resp.json()
+          const link = file.type.startsWith('image/')
+            ? `![${name}](${FLEET_API}${url})`
+            : `[${name}](${FLEET_API}${url})`
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
+        } catch (err) {
+          console.error('[fleet-chat] folder-drag file upload error', err)
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
         }
       }
     }
@@ -689,21 +828,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — only if user was already at bottom
-  const prevScrollHeight = useRef(0)
+  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send
+  const userScrolledUp = useRef(false)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const onScroll = () => { prevScrollHeight.current = el.scrollHeight }
-    prevScrollHeight.current = el.scrollHeight
+    const onScroll = () => {
+      userScrolledUp.current = el.scrollTop + el.clientHeight < el.scrollHeight - 30
+    }
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
   useLayoutEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
-    if (wasAtBottom) el.scrollTop = el.scrollHeight
+    if (!userScrolledUp.current) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
 
   // After images inside the log load, they expand the scroll height. Scroll to
@@ -825,6 +964,23 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  // Detect impossible filter: filter is set but no AND group can match any known agent
+  const isImpossibleFilter = useMemo(() => {
+    if (filter.length === 0) return false
+    const allIds = agents.map((a: any) => {
+      const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+      return { id: a.id, labels }
+    })
+    // Also include human
+    allIds.push({ id: 'fleet:skip', labels: ['skip', 'fleet:skip'] })
+    // For each OR clause, check if there's any agent that matches ALL terms
+    return !filter.some(clause =>
+      allIds.some(agent =>
+        clause.every(([_role, label]) => agent.labels.includes(label))
+      )
+    )
+  }, [filterKey, agents])
+
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
 
@@ -899,29 +1055,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       const names = agentNamesRef.current
 
-      // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
+      // Only intercept on draggable elements — nick spans are NOT drag handles
+      // (text selection takes priority; agent filter pills come from the agents panel)
+      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
 
-      // Agent name
-      const nickSpan = target.closest('.chat-nick span[class*="nick-"]') as HTMLElement
-      if (nickSpan) {
-        const line = nickSpan.closest('.chat-line') as HTMLElement
-        const agentId = line?.dataset.msgFrom
-        if (agentId) {
-          drag = {
-            pillId: null, pillType: 'agent', value: agentId,
-            displayName: nickSpan.textContent?.replace(/:$/, '') || agentId,
-            color: '#7a9ec8', startX: e.clientX, startY: e.clientY,
-            started: false, captureEl: logEl, pointerId: e.pointerId,
-          }
-        }
-      }
-
       // Timestamp → message reference
-      if (!drag) {
+      {
         const tsEl = target.closest('.chat-ts') as HTMLElement
         if (tsEl) {
           const line = tsEl.closest('.chat-line') as HTMLElement
@@ -998,10 +1140,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const docName = mdCard.dataset.doc || ''
+          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
+          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
+          const value = docName ? `doc:${docName}` : `file:${filePath}`
           drag = {
-            pillId: null, pillType: 'doc' as any, value: `file:${filePath}`,
-            displayName: name, color: '#9370db', content: filePath,
+            pillId: null, pillType: 'doc' as any, value,
+            displayName: name, color: '#63a0db', content: filePath || docName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -1070,15 +1216,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
       e.preventDefault()
       dragRef.current = drag
 
-      document.addEventListener('pointermove', onPointerMove, { capture: true })
-      document.addEventListener('pointerup', onPointerUp, { capture: true })
+      // Use shared drag coordinator instead of per-drag capture listeners
+      dragCoordinator.claim(onPointerMove, onPointerUp)
     }
 
     function onPointerMove(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
+      // stopImmediatePropagation/preventDefault handled by dragCoordinator
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
       if (!drag.started) {
@@ -1200,11 +1345,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     function onPointerUp(e: PointerEvent) {
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Coordinator handles listener cleanup and stopImmediatePropagation
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
       // Clear membrane glow
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
@@ -1223,9 +1366,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Also clean up move/up in case they were left attached (e.g. unmount during drag)
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Release coordinator if this component unmounts during a drag
+      if (dragRef.current) dragCoordinator.release()
     }
   }, [editor])
 
@@ -1264,7 +1406,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
@@ -1345,11 +1487,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
           {chatMessages.length === 0 ? (
             <div style={{
               padding: '20px 8px',
-              opacity: 0.3,
+              opacity: isImpossibleFilter ? 0.6 : 0.3,
               textAlign: 'center',
               fontSize: 10,
+              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
             }}>
-              {filter.length > 0 ? 'No messages' : 'No filter set'}
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
@@ -1461,12 +1606,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
@@ -1476,12 +1625,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   }
                 }
@@ -1496,13 +1649,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{
@@ -1525,46 +1680,61 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 e.stopPropagation()
                 const ta = e.currentTarget
 
-                // External file drops
-                const files = [...(e.dataTransfer?.files || [])]
-                if (files.length > 0) {
-                  for (const file of files) {
-                    const uid = Date.now().toString(36).slice(-4)
-                    if (file.type.startsWith('image/')) {
-                      // Image → read as base64 data URL, store as tldraw asset (persistent), insert chip
-                      const dataUrl = await new Promise<string>((resolve, reject) => {
-                        const reader = new FileReader()
-                        reader.onload = () => resolve(reader.result as string)
-                        reader.onerror = reject
-                        reader.readAsDataURL(file)
-                      })
-                      const assetId = `asset:img-${Date.now().toString(36)}`
-                      const assetRecord = {
-                        id: assetId as any, typeName: 'asset', type: 'image',
-                        props: { src: dataUrl, name: file.name, w: 0, h: 0, mimeType: file.type || 'image/png', isAnimated: false },
-                        meta: {},
-                      } as any
-                      // Put in main editor (persisted to server) and HUD editor (immediate imageSrcs update)
-                      const mainEd = (window as any).__tldraw_editor__ || editor
-                      mainEd.store.put([assetRecord])
-                      if (mainEd !== editor) editor.store.put([assetRecord])
-                      const assetUid = assetId.slice('asset:'.length)
-                      const token = `«img:${file.name}#${assetUid}»`
+                // External file drops — upload to fleet server, insert markdown link
+                const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
+                let entries: { file: File, path: string }[] = []
+                let isFlat = true
+
+                if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
+                  for (const item of dtItems) {
+                    const entry = item.webkitGetAsEntry()
+                    if (entry) {
+                      if (entry.isDirectory) isFlat = false
+                      entries.push(...await traverseDirectory(entry))
+                    }
+                  }
+                } else {
+                  for (const f of [...(e.dataTransfer?.files || [])]) {
+                    entries.push({ file: f, path: f.name })
+                  }
+                }
+
+                if (entries.length > 0) {
+                  const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+                  const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+                  for (const { file, path } of mdEntries) {
+                    try {
+                      const companions = entries.filter(en => en.path !== path)
+                      const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
                       const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else if (file.type.startsWith('text/') || /\.(txt|md|tex|json|js|ts|py|r|css|html|csv|yaml|yml|toml|sh|sql|xml)$/i.test(file.name)) {
-                      // Text/code file → read contents, insert as file chip
-                      const text = await file.text()
-                      const token = `«file:${file.name}#${uid}»`
+                    } catch (err) {
+                      console.error('[fleet-chat] file upload failed:', err)
                       const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } else {
-                      // Other file → name-only chip
-                      const token = `«file:${file.name}#${uid}»`
+                    }
+                  }
+                  for (const { file } of otherEntries) {
+                    if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+                    try {
+                      const formData = new FormData()
+                      formData.append('file', file, file.name)
+                      const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+                      if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                      const { url, name } = await resp.json()
+                      const link = file.type.startsWith('image/')
+                        ? `![${name}](${FLEET_API}${url})`
+                        : `[${name}](${FLEET_API}${url})`
                       const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + token + ta.value.slice(pos)
+                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+                      ta.dispatchEvent(new Event('input', { bubbles: true }))
+                    } catch (err) {
+                      console.error('[fleet-chat] file upload failed:', err)
+                      const pos = ta.selectionStart || ta.value.length
+                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
                       ta.dispatchEvent(new Event('input', { bubbles: true }))
                     }
                   }

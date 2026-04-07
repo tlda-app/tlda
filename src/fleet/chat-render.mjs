@@ -214,12 +214,12 @@ export function renderChatLine(m, ctx) {
       if (isImage && fileUrl) {
         return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
       }
-      const isMd = /\.md$/.test(att.path || '')
-      const cls = isMd ? 'md-file-card' : 'md-file-card file-card-generic'
-      const linkAttr = fileUrl ? `data-url="${fileUrl}"` : ''
-      return `<div class="${cls}" data-path="${filePath}" ${linkAttr}><span class="md-file-chip">${name}</span>${isMd ? '<div class="md-file-body"></div>' : ''}</div>`
+      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
+      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
     }
-    return `<span class="md-file-card file-card-generic"><span class="md-file-chip">att:${idx}</span></span>`
+    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
   })
   const sender = (getAgents()).find(a => a.id === m.from)
   const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
@@ -247,7 +247,22 @@ export function renderChatLine(m, ctx) {
       const parts = (a.source || '').split(':')
       const docName = parts.slice(3).join(':') || parts[parts.length - 1] || 'doc'
       const filePath = a.path || ''
-      return `<span class="ref-chip" data-path="${esc(filePath)}" data-doc="${esc(docName)}" draggable="true">${esc(docName)}</span>`
+      // Extract title from explicit field or first heading in content
+      let title = a.title || ''
+      if (!title && a.text) {
+        const m = a.text.match(/^#\s+(.+)$/m)
+        if (m) title = m[1].trim()
+      }
+      if (!title) title = docName
+      // Determine file type from path extension
+      const ext = filePath.split('.').pop()?.toLowerCase() || ''
+      const isImage = /^(png|jpg|jpeg|gif|svg|webp)$/.test(ext)
+      // Image shared-docs: render inline at 75% width
+      if (isImage && a.url) {
+        return `<img class="chat-image chat-image-shared-doc" src="${esc(a.url)}" alt="${esc(title)}" title="${esc(title)}">`
+      }
+      const icon = isImage ? '🖼' : ext === 'pdf' ? '📕' : '📄'
+      return `<span class="ref-chip ref-chip-doc" data-path="${esc(filePath)}" data-doc="${esc(docName)}" data-title="${esc(title)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(title)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''

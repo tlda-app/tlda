@@ -42,6 +42,7 @@ const SVG_TOOLS = [
   'highlight',    // 2: double-tap zone
   'eraser',       // 3: double-tap zone
   'math-note',
+  'cluster',
   'arrow',
   'laser',
   'text-select',
@@ -51,7 +52,11 @@ const SVG_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'fleet-chat',
+  'fleet-agents',
+  'fleet-search',
   'playback-frame',
+  'terminal',
 ]
 
 const HTML_TOOLS = [
@@ -60,6 +65,7 @@ const HTML_TOOLS = [
   'highlight',    // 2: double-tap zone
   'eraser',       // 3: double-tap zone
   'math-note',
+  'cluster',
   'arrow',
   'laser',
   'select',
@@ -70,6 +76,9 @@ const HTML_TOOLS = [
   'ellipse',
   'line',
   'asset',
+  'fleet-chat',
+  'fleet-agents',
+  'fleet-search',
   'playback-frame',
 ]
 

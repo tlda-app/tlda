@@ -48,6 +48,10 @@ export interface PanelContextValue {
   // Spatial timeline overlay
   timelineActive?: boolean
   onToggleTimeline?: () => void
+  // Shadow history scrubber
+  shadowHistoryVisible?: boolean
+  onToggleShadowHistory?: () => void
+  shadowHistoryVersionCount?: number
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

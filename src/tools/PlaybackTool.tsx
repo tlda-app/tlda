@@ -12,7 +12,7 @@ export class PlaybackTool extends StateNode {
     const id = createShapeId()
     editor.createShape({
       id,
-      type: 'playback-frame',
+      type: 'playback-frame' as any,
       x: point.x - FRAME_W / 2,
       y: point.y,
       props: { w: FRAME_W, h: FRAME_H, playbackId: '', mode: 'free' },

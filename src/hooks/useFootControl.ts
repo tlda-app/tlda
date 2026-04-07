@@ -1,0 +1,703 @@
+/**
+ * useFootControl — React hook integrating foot pedal control + click detection.
+ *
+ * Wires footControl.ts + clickDetect.ts to a tldraw editor:
+ *   - Gamepads: cursor movement + camera pan via heading
+ *   - Tongue click: click / dblclick (context-sensitive: drag-start on draggables, Enter in text fields)
+ *   - Lip pop: Enter
+ *
+ * Enable/disable via the `enabled` option (e.g. behind a settings toggle).
+ */
+
+import { useEffect, useRef, useState } from 'react'
+import type { Editor } from 'tldraw'
+import { DefaultColorStyle } from 'tldraw'
+import { createFootController } from '../footControl'
+import { createClickDetector } from '../clickDetect'
+
+export interface UseFootControlOptions {
+  enabled: boolean
+  whistleEnabled?: boolean
+  hissEnabled?: boolean
+}
+
+export function useFootControl(editor: Editor | null, options: UseFootControlOptions) {
+  const { enabled, whistleEnabled = true, hissEnabled = true } = options
+  const footRef = useRef<ReturnType<typeof createFootController> | null>(null)
+  const clickRef = useRef<ReturnType<typeof createClickDetector> | null>(null)
+  const [footInstance, setFootInstance] = useState<ReturnType<typeof createFootController> | null>(null)
+  const [clickInstance, setClickInstance] = useState<ReturnType<typeof createClickDetector> | null>(null)
+
+  useEffect(() => {
+    if (!enabled || !editor) return
+
+    // Track interactive element under foot cursor for enter/leave events.
+    // pointerenter doesn't bubble, so we dispatch to the interactive ancestor
+    // (e.g. the <button>, not the <img> inside it) so Radix tooltip triggers fire.
+    let prevFootInteractive: Element | null = null
+    let footPanelOpen = false  // tracks whether foot cursor has the doc-panel open
+
+    // Smart cursor move: dispatch DOM hover events + tldraw editor events
+    const onCursorMove = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)
+      // Use interactive ancestor for enter/leave (pointerenter doesn't bubble).
+      // null when not over an interactive element — prevents cycling on bare canvas
+      // where elementFromPoint returns a different child element every frame.
+      const interactive = findInteractiveHtml(el)
+
+      if (interactive !== prevFootInteractive) {
+        if (prevFootInteractive) {
+          prevFootInteractive.dispatchEvent(new PointerEvent('pointerleave', {
+            bubbles: false, cancelable: true,
+            clientX: x, clientY: y,
+            pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
+          }))
+        }
+        if (interactive) {
+          interactive.dispatchEvent(new PointerEvent('pointerenter', {
+            bubbles: false, cancelable: true,
+            clientX: x, clientY: y,
+            pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
+          }))
+        }
+        prevFootInteractive = interactive
+      }
+
+      // pointermove to actual element — bubbles up through the tree
+      if (el) {
+        el.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, cancelable: true,
+          clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: -1, buttons: 0,
+        }))
+      }
+
+      // Drive tldraw editor state machine only when foot cursor is on the actual canvas.
+      // Skip for HUD/clip panels AND for any interactive HTML element — sending pointer_move
+      // to the editor state machine while hovering toolbar causes visual cycling.
+      const isOverInteractive = !!findInteractiveHtml(el)
+      if (!el?.closest('.fleet-hud-wrap, .clip-panel') && !isOverInteractive) {
+        editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
+      }
+
+      // CSS :hover doesn't respond to synthetic pointer events, so the doc-panel can't
+      // reveal itself when the foot cursor enters the right-edge zone. Add/remove the
+      // doc-panel-open class based on foot cursor position instead.
+      const panelEl = document.querySelector('.doc-panel') as HTMLElement | null
+      if (panelEl) {
+        const inZone = x >= panelEl.getBoundingClientRect().left
+        if (inZone !== footPanelOpen) {
+          footPanelOpen = inZone
+          panelEl.classList.toggle('doc-panel-open', inZone)
+        }
+      }
+    }
+
+    const foot = createFootController(editor, { onCursorMove })
+    const click = createClickDetector({ whistleEnabled, hissEnabled })
+    footRef.current = foot
+    clickRef.current = click
+    setFootInstance(foot)
+    setClickInstance(click)
+
+    // Two-cursor model: foot cursor and OS cursor are independent.
+    // OS cursor: shown normally; hidden (cursor:none) when foot pedals are active.
+    // Foot cursor: shown at full opacity when pedals active; fades when mouse takes over.
+    let mouseX = window.innerWidth / 2
+    let mouseY = window.innerHeight / 2
+    let lastHandMove = 0
+    let lastFootMove = 0
+
+    // Dynamic cursor-hide style — toggled based on active input
+    const cursorHideStyle = document.createElement('style')
+    cursorHideStyle.id = 'fc-cursor-hide'
+    document.head.appendChild(cursorHideStyle)
+
+    // Route clicks to whichever cursor moved most recently
+    const clickX = () => lastFootMove >= lastHandMove ? foot.state.cursorX : mouseX
+    const clickY = () => lastFootMove >= lastHandMove ? foot.state.cursorY : mouseY
+
+    // Drag state: double-click starts drag, single click drops
+    let isDragging = false      // tldraw shape drag via editor.dispatch
+    let isDomDragging = false   // HTML element drag via DOM pointer events
+    let domDragTarget: Element | null = null  // element that started the DOM drag
+    let prevDragX = 0           // last X used to compute arrow-key steps for ARIA sliders
+
+    // Wire click events to tldraw
+    const offClick = click.on('click', () => {
+      const x = clickX(), y = clickY()
+      if (isDomDragging) {
+        console.log('[foot-control] dom-drop at', x, y)
+        flashAt(x, y, '#f97316')
+        const dropTarget = document.elementFromPoint(x, y)
+        // Dispatch to element, then bubble via window — covers both capture and bubble handlers
+        dropTarget?.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+        }))
+        dropTarget?.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        window.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: false, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        isDomDragging = false
+        domDragTarget = null
+        return
+      }
+      if (isDragging) {
+        // Drop: send pointer_up to release the tldraw drag
+        console.log('[foot-control] drop at', x, y)
+        flashAt(x, y, '#f97316')
+        dispatchPointerMove(editor, x, y)
+        editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_up', ...tlPtr(x, y) })
+        isDragging = false
+        return
+      }
+      console.log('[foot-control] click at', x, y)
+      flashAt(x, y, '#60a5fa')
+      // Skip pointer_move to tldraw when clicking interactive elements (buttons, links).
+      // Sending pointer_move at toolbar coordinates after the cursor has moved causes cycling —
+      // tldraw sees a momentary "cursor at button" event that flips tool/cursor state.
+      if (!findInteractiveHtml(document.elementFromPoint(x, y))) {
+        dispatchPointerMove(editor, x, y)
+      }
+      dispatchClick(editor, x, y, true)
+      dispatchClick(editor, x, y, false)
+    })
+    const offDbl = click.on('dblclick', () => {
+      const x = clickX(), y = clickY()
+      flashAt(x, y, '#a78bfa')
+      dispatchPointerMove(editor, x, y)
+      const pagePoint = editor.screenToPage({ x, y })
+      const shape = editor.getShapeAtPoint(pagePoint) ?? editor.getShapeAtPoint(pagePoint, { hitInside: true, margin: 0 })
+      console.log('[foot-control] dblclick at', x, y, '→ shape:', shape?.type, shape?.id)
+      const domEl = document.elementFromPoint(x, y)
+      const dragResult = dispatchContextualDblClick(editor, x, y)
+      isDragging = dragResult === 'tldraw'
+      isDomDragging = dragResult === 'dom'
+      if (isDomDragging) {
+        domDragTarget = domEl
+        prevDragX = x
+        // Focus slider (ARIA or native range) so it accepts keyboard events
+        const sliderEl = (domEl?.closest('[role="slider"]') || domEl?.closest('input[type="range"]')) as HTMLElement | null
+        sliderEl?.focus()
+      }
+      console.log('[foot-control] drag:', dragResult)
+    })
+    const offEnter = click.on('enter', () => {
+      const x = clickX(), y = clickY()
+      flashAt(x, y, '#34d399')
+      dispatchEnter(editor, x, y)
+    })
+
+    // Tapering ray — cone that narrows to nothing in the heading direction
+    const rayEl = document.createElement('div')
+    rayEl.style.cssText = `
+      position: fixed; pointer-events: none; z-index: 99997;
+      width: 350px; height: 16px;
+      transform-origin: 0 50%;
+      opacity: 0.15;
+      transition: opacity 0.4s ease;
+    `
+    rayEl.innerHTML = `
+      <svg width="350" height="16" viewBox="0 0 350 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="fc-ray-fade" x1="0" y1="0" x2="350" y2="0" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="rgb(139,92,246)" stop-opacity="0.55"/>
+            <stop offset="50%" stop-color="rgb(139,92,246)" stop-opacity="0.15"/>
+            <stop offset="100%" stop-color="rgb(139,92,246)" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon points="0,3 350,8 0,13" fill="url(#fc-ray-fade)"/>
+      </svg>
+    `
+    document.body.appendChild(rayEl)
+
+    // Custom cursor element — mirrors current tldraw cursor shape
+    const cursorEl = document.createElement('div')
+    cursorEl.style.cssText = `
+      position: fixed; pointer-events: none; z-index: 99999;
+      opacity: 0.15;
+      transition: opacity 0.4s ease;
+    `
+    document.body.appendChild(cursorEl)
+
+    // setActiveInput / mouse listener — defined here so rayEl + cursorEl are in scope
+    let mouseIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+    function setActiveInput(which: 'foot' | 'mouse') {
+      if (which === 'foot') {
+        // Scope to .tl-container only — global cursor:none suppresses CSS :hover on doc-panel
+        cursorHideStyle.textContent = '.tl-container, .tl-container *, .tl-container *::before, .tl-container *::after { cursor: none !important; }'
+      } else {
+        cursorHideStyle.textContent = ''
+        rayEl.style.opacity = '0.08'
+        cursorEl.style.opacity = '0.08'
+      }
+    }
+
+    // Track mouse movement to switch to mouse mode — no capture, no interception
+    const onPointerMove = (e: PointerEvent) => {
+      if (!e.isTrusted) return
+      if (e.pointerType !== 'mouse') return
+      mouseX = e.clientX; mouseY = e.clientY; lastHandMove = performance.now()
+      setActiveInput('mouse')
+      if (mouseIdleTimer) clearTimeout(mouseIdleTimer)
+      mouseIdleTimer = setTimeout(() => {
+        if (performance.now() - lastFootMove < 3000) setActiveInput('foot')
+      }, 1500)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+
+    // tldraw container — we read --tl-cursor from computed style (unaffected by cursor: none override)
+    const tldrawContainerEl = document.querySelector('.tl-container') as HTMLElement | null
+
+    let idleTimer: ReturnType<typeof setTimeout> | null = null
+    foot.onStateChange(s => {
+      const deg = s.heading * 180 / Math.PI
+      rayEl.style.left = s.cursorX + 'px'
+      rayEl.style.top = (s.cursorY - 8) + 'px'
+      rayEl.style.transform = `rotate(${deg + 180}deg)`
+
+      // Update cursor element to mirror tldraw's current cursor
+      updateCursorEl(cursorEl, tldrawContainerEl, s.cursorX, s.cursorY)
+
+      // Update tail color to match current tool color
+      const color = getToolColor(editor)
+      const stops = rayEl.querySelectorAll('stop') as NodeListOf<SVGStopElement>
+      stops.forEach(stop => { stop.style.stopColor = color })
+
+      const isMoving = Math.abs(s.rudderAxis) > 0.05 || Math.abs(s.cursorAxis) > 0.05 || Math.abs(s.panAxis) > 0.05
+      if (isMoving) {
+        lastFootMove = performance.now()
+        setActiveInput('foot')
+        rayEl.style.opacity = '0.85'
+        cursorEl.style.opacity = '1'
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+        idleTimer = setTimeout(() => { rayEl.style.opacity = '0.15'; cursorEl.style.opacity = '0.15' }, 600)
+        // Feed pointermove to document for DOM drag handlers (e.g. agent labels)
+        if (isDomDragging) {
+          const ariaSlider = domDragTarget?.closest('[role="slider"]') as HTMLElement | null
+          const nativeRange = domDragTarget?.closest('input[type="range"]') as HTMLElement | null
+          const sliderEl = ariaSlider || nativeRange
+          if (sliderEl) {
+            // ARIA sliders (tldraw custom slider) and native range inputs both respond to
+            // ArrowLeft/ArrowRight keyboard events when focused. One step per ~6px of travel.
+            const dx = s.cursorX - prevDragX
+            const steps = Math.trunc(Math.abs(dx) / 6)
+            if (steps > 0) {
+              const key = dx > 0 ? 'ArrowRight' : 'ArrowLeft'
+              for (let i = 0; i < steps; i++) {
+                sliderEl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, code: key }))
+                sliderEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key, code: key }))
+              }
+              prevDragX = s.cursorX
+            }
+          } else {
+            document.dispatchEvent(new PointerEvent('pointermove', {
+              bubbles: true, clientX: s.cursorX, clientY: s.cursorY,
+              pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+            }))
+          }
+        }
+      }
+    })
+
+    // Space = sim click, double-Space = sim dblclick/drag-start (for testing)
+    // First Space waits 400ms for a second; double-Space fires drag-start instead.
+    let spacePendingTimer: ReturnType<typeof setTimeout> | null = null
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat) return
+      const active = document.activeElement
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || (active as HTMLElement).isContentEditable)) return
+      e.preventDefault()
+      const x = clickX(), y = clickY()
+      if (isDomDragging) {
+        console.log('[foot-control] space-dom-drop at', x, y)
+        flashAt(x, y, '#f97316')
+        const dropTarget = document.elementFromPoint(x, y)
+        dropTarget?.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+        }))
+        dropTarget?.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        window.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: false, clientX: x, clientY: y,
+          pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 0,
+        }))
+        isDomDragging = false
+        domDragTarget = null
+        return
+      }
+      if (isDragging) {
+        console.log('[foot-control] space-drop at', x, y)
+        flashAt(x, y, '#f97316')
+        dispatchPointerMove(editor, x, y)
+        editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_up', ...tlPtr(x, y) })
+        isDragging = false
+        return
+      }
+      if (spacePendingTimer !== null) {
+        // Second Space within 400ms = double-Space drag-start
+        clearTimeout(spacePendingTimer)
+        spacePendingTimer = null
+        console.log('[foot-control] double-space drag-start at', x, y)
+        flashAt(x, y, '#a78bfa')
+        dispatchPointerMove(editor, x, y)
+        const domElSpace = document.elementFromPoint(x, y)
+        const dragResult = dispatchContextualDblClick(editor, x, y)
+        isDragging = dragResult === 'tldraw'
+        isDomDragging = dragResult === 'dom'
+        if (isDomDragging) {
+          domDragTarget = domElSpace
+          prevDragX = x
+          const sliderEl = (domElSpace?.closest('[role="slider"]') || domElSpace?.closest('input[type="range"]')) as HTMLElement | null
+          sliderEl?.focus()
+        }
+        console.log('[foot-control] drag:', dragResult)
+        return
+      }
+      // First Space — wait to see if a second follows
+      spacePendingTimer = setTimeout(() => {
+        spacePendingTimer = null
+        console.log('[foot-control] space-click at', x, y)
+        flashAt(x, y, '#f59e0b')
+        dispatchPointerMove(editor, x, y)
+        dispatchClick(editor, x, y, true)
+        dispatchClick(editor, x, y, false)
+      }, 400)
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    foot.start()
+    click.start().catch(err => console.warn('[foot-control] mic access denied:', err))
+
+    return () => {
+      cursorHideStyle.remove()
+      foot.stop()
+      click.stop()
+      offClick(); offDbl(); offEnter()
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      if (idleTimer) clearTimeout(idleTimer)
+      if (mouseIdleTimer) clearTimeout(mouseIdleTimer)
+      if (spacePendingTimer) clearTimeout(spacePendingTimer)
+      document.querySelector('.doc-panel')?.classList.remove('doc-panel-open')
+      rayEl.remove()
+      cursorEl.remove()
+      footRef.current = null
+      clickRef.current = null
+      setFootInstance(null)
+      setClickInstance(null)
+    }
+  }, [enabled, editor])
+
+  // Update whistle/hiss toggles at runtime without tearing down the detector
+  useEffect(() => {
+    clickRef.current?.setWhistleEnabled(whistleEnabled)
+  }, [whistleEnabled])
+  useEffect(() => {
+    clickRef.current?.setHissEnabled(hissEnabled)
+  }, [hissEnabled])
+
+  return { footInstance, clickInstance }
+}
+
+function flashAt(x: number, y: number, color: string) {
+  const el = document.createElement('div')
+  el.style.cssText = `position:fixed;left:${x-12}px;top:${y-12}px;width:24px;height:24px;border-radius:50%;background:${color};opacity:0.7;pointer-events:none;z-index:99999;animation:fc-flash 350ms ease-out forwards;`
+  if (!document.getElementById('fc-flash-style')) {
+    const s = document.createElement('style')
+    s.id = 'fc-flash-style'
+    s.textContent = `@keyframes fc-flash{0%{transform:scale(0.3);opacity:0.7}100%{transform:scale(2);opacity:0}}`
+    document.head.appendChild(s)
+  }
+  document.body.appendChild(el)
+  el.addEventListener('animationend', () => el.remove())
+}
+
+// Map tldraw color names to CSS colors for the tail indicator
+const TLDRAW_COLOR_CSS: Record<string, string> = {
+  black: '#1d1d1d', grey: '#9b9b9b', white: '#f9f9f9',
+  red: '#e03131', 'light-red': '#ff9b9b',
+  orange: '#e67c00', 'light-orange': '#ffa94d',
+  yellow: '#f4b400',
+  green: '#099268', 'light-green': '#62df64',
+  blue: '#4465e9', 'light-blue': '#7ac3f4',
+  violet: '#7b5ea7', 'light-violet': '#b4a0ff',
+}
+
+function getToolColor(editor: Editor): string {
+  try {
+    const name = editor.getStyleForNextShape(DefaultColorStyle)
+    return TLDRAW_COLOR_CSS[name] ?? '#9b9b9b'
+  } catch {
+    return '#9b9b9b'
+  }
+}
+
+function getTarget(_editor: Editor, x: number, y: number): Element | null {
+  return document.elementFromPoint(x, y)
+}
+
+const TEXT_INPUT_TYPES = new Set(['text', 'email', 'password', 'search', 'tel', 'url', 'number', ''])
+
+function isTextInput(el: Element | null): boolean {
+  if (!el) return false
+  const tag = el.tagName.toLowerCase()
+  if (tag === 'input') return TEXT_INPUT_TYPES.has((el as HTMLInputElement).type.toLowerCase())
+  if (tag === 'textarea') return true
+  if ((el as HTMLElement).isContentEditable) return true
+  return false
+}
+
+/** Build tldraw pointer event info — replaces getPointerInfo without needing a real DOM event */
+function tlPtr(x: number, y: number) {
+  return {
+    point: { x, y, z: 0.5 },
+    shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false,
+    pointerId: 1, button: 0, isPen: false,
+  }
+}
+
+function dispatchPointerMove(editor: Editor, x: number, y: number) {
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_move', ...tlPtr(x, y) })
+}
+
+const INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [contenteditable]'
+// Non-draggable subset: elements that respond to .click() but shouldn't start pointer drags
+const NON_DRAGGABLE_SELECTOR = 'button, a, [role="button"], [role="link"]'
+
+function findInteractiveHtml(el: Element | null): HTMLElement | null {
+  if (!el) return null
+  // Check the element and its ancestors — elementFromPoint may return <img> inside <button>
+  const found = el.closest(INTERACTIVE_SELECTOR) as HTMLElement | null
+  if (found) return found
+  // Track HighlighterSlider zone for enter/leave — pointerenter/leave make slider dots appear
+  const zone = el.closest('.desktop-hl-zone') as HTMLElement | null
+  if (zone) return zone
+  if ((el as HTMLElement).isContentEditable) return el as HTMLElement
+  return null
+}
+
+function isOverHud(x: number, y: number): boolean {
+  return !!document.elementFromPoint(x, y)?.closest('.fleet-hud-wrap, .clip-panel, .desktop-hl-zone')
+}
+
+function dispatchClick(editor: Editor, x: number, y: number, isDown: boolean) {
+  const el = document.elementFromPoint(x, y)
+
+  // Text inputs / contenteditable: focus + synthetic click.
+  // Untrusted pointer events don't auto-focus — must call .focus() explicitly.
+  // elementFromPoint may return a wrapper div — .closest() climbs up to find the real input.
+  const textInput = el
+    ? (isTextInput(el) ? el as HTMLElement
+      : el.closest('input, textarea, [contenteditable="true"], [contenteditable=""]') as HTMLElement | null)
+    : null
+  if (textInput) {
+    if (!isDown) {
+      textInput.focus?.()
+      textInput.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+    }
+    return
+  }
+
+  const nonDraggable = el?.closest(NON_DRAGGABLE_SELECTOR) as HTMLElement | null
+
+  // Buttons/links: handle via .click() only, never via editor dispatch.
+  // Sending pointer_down to the tldraw canvas for these leaves the editor in a stuck
+  // "pointer down on canvas" state that causes visual cycling.
+  if (nonDraggable) {
+    if (!isDown) {
+      nonDraggable.focus?.()
+      nonDraggable.click?.()
+    }
+    return
+  }
+
+  // HUD inner editor: DOM pointer events
+  if (isOverHud(x, y)) {
+    el?.dispatchEvent(new PointerEvent(isDown ? 'pointerdown' : 'pointerup', {
+      bubbles: true, cancelable: true, clientX: x, clientY: y,
+      pointerType: 'mouse', isPrimary: true, pointerId: 1,
+      button: 0, buttons: isDown ? 1 : 0,
+    }))
+    return
+  }
+
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: isDown ? 'pointer_down' : 'pointer_up', ...tlPtr(x, y) })
+}
+
+/** Returns 'tldraw' | 'dom' | false indicating what kind of drag was started */
+function dispatchContextualDblClick(editor: Editor, x: number, y: number): 'tldraw' | 'dom' | false {
+  const target = getTarget(editor, x, y)
+
+  if (isTextInput(target)) {
+    target?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }))
+    target?.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }))
+    return false
+  }
+
+  // Try DOM element first — catches React onPointerDown handlers (e.g. agent label spans)
+  // that live inside tldraw shapes but handle their own drag.
+  // Exclude standard interactive elements (toolbar buttons, sliders, etc.) — those aren't
+  // draggable in the fleet-agent-label sense, and treating them as DOM drags causes cycling.
+  const el = document.elementFromPoint(x, y)
+  // Exclude .desktop-hl-zone from isTldrawCanvas — it lives inside .tl-canvas but is a DOM
+  // widget that handles its own pointer events (HighlighterSlider zone)
+  const isTldrawCanvas = el?.closest('.tl-canvas') && !el?.closest('[data-shape-id]') && !el?.closest('.desktop-hl-zone')
+  const isNonDraggable = !!el?.closest(NON_DRAGGABLE_SELECTOR)
+  if (el && !isTldrawCanvas && !isNonDraggable) {
+    el.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: x, clientY: y,
+      pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+    }))
+    // Kick off a small move to cross DRAG_THRESHOLD (5px) so the pill shape is created immediately
+    document.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: x + 6, clientY: y,
+      pointerType: 'mouse', isPrimary: true, pointerId: 1, button: 0, buttons: 1,
+    }))
+    return 'dom'
+  }
+
+  // Cursor is on bare tldraw canvas — use tldraw shape dispatch
+  const pagePoint = editor.screenToPage({ x, y })
+  const shape = editor.getShapeAtPoint(pagePoint) ?? editor.getShapeAtPoint(pagePoint, { hitInside: true, margin: 0 })
+  if (shape) {
+    editor.dispatch({ type: 'pointer', target: 'shape', shape, name: 'pointer_down', ...tlPtr(x, y) })
+    return 'tldraw'
+  }
+
+  // Default: double-click on canvas
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_down', ...tlPtr(x, y) })
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'pointer_up', ...tlPtr(x, y) })
+  editor.dispatch({ type: 'pointer', target: 'canvas', name: 'double_click' as any, ...tlPtr(x, y) })
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Cursor emulation — mirrors tldraw's CSS cursor at the foot cursor position
+// ---------------------------------------------------------------------------
+
+const CURSOR_SVGS: Record<string, { svg: string; hx: number; hy: number }> = {
+  default: {
+    hx: 3, hy: 1,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20"><path d="M3 1 L3 15 L6 12 L8.5 17.5 L10.5 16.5 L8 11 L12 11 Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>`,
+  },
+  crosshair: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><line x1="10" y1="1" x2="10" y2="8" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="10" y1="12" x2="10" y2="19" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="10" x2="8" y2="10" stroke="black" stroke-width="1.5" stroke-linecap="round"/><line x1="12" y1="10" x2="19" y2="10" stroke="black" stroke-width="1.5" stroke-linecap="round"/><circle cx="10" cy="10" r="1.5" fill="black"/></svg>`,
+  },
+  pointer: {
+    hx: 5, hy: 1,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="20" viewBox="0 0 14 20"><path d="M5 1 C4 1 3 2 3 3 L3 12 L1 10 C0 9 0 10 1 11 L5 16 C6 18 8 19 10 19 L11 19 C13 19 14 17 14 15 L14 9 C14 8 13 7 12 7 L11 7 L11 3 C11 2 10 1 9 1 L8 1 L8 3 C8 3 8 3 8 3 L8 3 C8 2 7 1 6 1 L5 1 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  move: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 1 L7 5 L9 5 L9 11 L11 11 L11 5 L13 5 Z M10 19 L7 15 L9 15 L9 11 L11 11 L11 15 L13 15 Z M1 10 L5 7 L5 9 L9 9 L9 11 L5 11 L5 13 Z M19 10 L15 7 L15 9 L11 9 L11 11 L15 11 L15 13 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  text: {
+    hx: 4, hy: 9,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="18" viewBox="0 0 8 18"><line x1="4" y1="0" x2="4" y2="18" stroke="black" stroke-width="1.5"/><line x1="0" y1="0" x2="8" y2="0" stroke="black" stroke-width="1.5"/><line x1="0" y1="18" x2="8" y2="18" stroke="black" stroke-width="1.5"/></svg>`,
+  },
+  grab: {
+    hx: 10, hy: 6,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M7 4 C7 3 6 2 5 2 C4 2 3 3 3 4 L3 11 M7 4 C7 3 8 2 9 2 C10 2 11 3 11 4 L11 9 M11 9 C11 8 12 7 13 7 C14 7 15 8 15 9 L15 13 C15 16 13 18 10 18 L8 18 C5 18 3 16 3 13 L3 11" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 4 L7 9 M9 3 L9 9" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  },
+  grabbing: {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M5 9 C5 8 6 7 7 7 L13 7 C14 7 15 8 15 9 L15 13 C15 16 13 18 10 18 L8 18 C5 18 3 16 3 13 L3 9 C3 8 4 7 5 7 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'ew-resize': {
+    hx: 10, hy: 6,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="12" viewBox="0 0 20 12"><path d="M1 6 L5 2 L5 5 L15 5 L15 2 L19 6 L15 10 L15 7 L5 7 L5 10 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'ns-resize': {
+    hx: 6, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="20" viewBox="0 0 12 20"><path d="M6 1 L2 5 L5 5 L5 15 L2 15 L6 19 L10 15 L7 15 L7 5 L10 5 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'nwse-resize': {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M2 2 L9 2 L7 4 L14 11 L16 9 L16 16 L9 16 L11 14 L4 7 L2 9 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+  'nesw-resize': {
+    hx: 10, hy: 10,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M18 2 L11 2 L13 4 L6 11 L4 9 L4 16 L11 16 L9 14 L16 7 L18 9 Z" fill="black" stroke="white" stroke-width="0.5" paint-order="stroke"/></svg>`,
+  },
+}
+
+function parseTlCursor(cursorVal: string): { src: string; hx: number; hy: number } | null {
+  // tldraw cursor values look like: url("data:image/svg+xml,...") 12 8, default
+  // Handle double-quoted URL
+  const dbl = cursorVal.match(/url\("(data:[^"]+)"\)\s+(\d+)\s+(\d+)/)
+  if (dbl) return { src: dbl[1], hx: parseInt(dbl[2]), hy: parseInt(dbl[3]) }
+  // Handle single-quoted URL
+  const sgl = cursorVal.match(/url\('(data:[^']+)'\)\s+(\d+)\s+(\d+)/)
+  if (sgl) return { src: sgl[1], hx: parseInt(sgl[2]), hy: parseInt(sgl[3]) }
+  // Unquoted
+  const unq = cursorVal.match(/url\((data:[^\s)]+)\)\s+(\d+)\s+(\d+)/)
+  if (unq) return { src: unq[1], hx: parseInt(unq[2]), hy: parseInt(unq[3]) }
+  return null
+}
+
+let _cursorImgEl: HTMLImageElement | null = null
+let _cursorLastSrc = ''
+
+function updateCursorEl(cursorEl: HTMLElement, containerEl: HTMLElement | null, x: number, y: number) {
+  // Read tldraw's --tl-cursor custom property — resolves to full cursor spec.
+  // getPropertyValue reads the CSS variable even when cursor: none !important is in effect.
+  const tlCursorVal = containerEl
+    ? getComputedStyle(containerEl).getPropertyValue('--tl-cursor').trim()
+    : ''
+
+  const parsed = parseTlCursor(tlCursorVal)
+
+  let src: string
+  let hx: number, hy: number
+
+  if (parsed) {
+    // Re-encode the data URI for use as img src.
+    // tldraw's SVG is partially encoded (%23 for #, but unencoded < > ')
+    // and may contain bare % (e.g. "180%") — use a safe per-sequence decoder.
+    const svgContent = parsed.src.replace(/^data:image\/svg\+xml,/, '')
+    const svgDecoded = svgContent.replace(/%([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    src = 'data:image/svg+xml,' + encodeURIComponent(svgDecoded)
+    hx = parsed.hx
+    hy = parsed.hy
+  } else {
+    // Fall back to our hand-drawn default arrow
+    const entry = CURSOR_SVGS.default
+    src = 'data:image/svg+xml,' + encodeURIComponent(entry.svg)
+    hx = entry.hx; hy = entry.hy
+  }
+
+  cursorEl.style.left = (x - hx) + 'px'
+  cursorEl.style.top = (y - hy) + 'px'
+
+  if (!_cursorImgEl || _cursorImgEl.parentElement !== cursorEl) {
+    _cursorImgEl = document.createElement('img')
+    _cursorImgEl.style.cssText = 'display:block;'
+    cursorEl.innerHTML = ''
+    cursorEl.appendChild(_cursorImgEl)
+    _cursorLastSrc = ''
+  }
+  if (_cursorLastSrc !== src) {
+    _cursorImgEl.src = src
+    _cursorLastSrc = src
+  }
+}
+
+function dispatchEnter(editor: Editor, x: number, y: number) {
+  const target = getTarget(editor, x, y)
+  const focused = document.activeElement
+
+  const dispatchTarget = (isTextInput(focused) ? focused : isTextInput(target) ? target : document.body) as Element
+  dispatchTarget.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }))
+  dispatchTarget.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter' }))
+}

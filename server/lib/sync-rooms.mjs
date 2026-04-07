@@ -10,6 +10,7 @@ import { createTLSchema, defaultShapeSchemas, defaultBindingSchemas, DefaultColo
 import { T } from '@tldraw/validate'
 import { createMigrationSequence } from '@tldraw/store'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs'
+import { readFile, writeFile, rename, mkdir, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
 
@@ -29,6 +30,8 @@ const customShapeSchemas = {
       activeTab: T.optional(T.number),
       done: T.optional(T.boolean),
       collapsed: T.optional(T.boolean),
+      docName: T.optional(T.string),
+      docView: T.optional(T.boolean),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
@@ -230,6 +233,16 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'cluster': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.cluster',
+      sequence: [],
+    }),
+  },
   'playback-frame': {
     props: {
       w: T.number,
@@ -239,6 +252,17 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.playback-frame',
+      sequence: [],
+    }),
+  },
+  'terminal': {
+    props: {
+      w: T.number,
+      h: T.number,
+      agentId: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.terminal',
       sequence: [],
     }),
   },
@@ -296,17 +320,17 @@ function loadSnapshot(docName) {
 }
 
 /**
- * Save a room snapshot to disk (atomic write).
+ * Save a room snapshot to disk (atomic write, async to avoid blocking event loop).
  */
-function saveSnapshot(docName, room) {
+async function saveSnapshot(docName, room) {
   const path = snapshotPath(docName)
   const dir = dirname(path)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  if (!existsSync(dir)) await mkdir(dir, { recursive: true })
 
   const snapshot = room.getCurrentSnapshot()
   const tmp = path + '.tmp'
-  writeFileSync(tmp, JSON.stringify(snapshot))
-  renameSync(tmp, path)
+  await writeFile(tmp, JSON.stringify(snapshot))
+  await rename(tmp, path)
 }
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -469,15 +493,34 @@ export function getOrCreateRoom(docName) {
       notifyChangeListeners(docName, changes)
     },
   }
+
+  let room
   if (snapshot) {
-    opts.initialSnapshot = snapshot
-    // Seed changelog baseline from loaded snapshot
-    prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+    try {
+      opts.initialSnapshot = snapshot
+      room = new TLSocketRoom(opts)
+      // Seed changelog baseline from loaded snapshot
+      prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+      console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
+    } catch (e) {
+      // Snapshot is incompatible (schema migration failure, corrupt data, etc.)
+      // Back up the bad snapshot and start fresh
+      console.error(`[sync] Failed to load snapshot for ${docName}: ${e.message}`)
+      const path = snapshotPath(docName)
+      try {
+        renameSync(path, path + '.broken')
+        console.log(`[sync] Backed up broken snapshot: ${path}.broken`)
+      } catch {}
+      delete opts.initialSnapshot
+      room = new TLSocketRoom(opts)
+      console.log(`[sync] Room created: ${docName} (fresh — snapshot was incompatible)`)
+    }
+  } else {
+    room = new TLSocketRoom(opts)
+    console.log(`[sync] Room created: ${docName}`)
   }
 
-  const room = new TLSocketRoom(opts)
   rooms.set(docName, room)
-  console.log(`[sync] Room created: ${docName}${snapshot ? ' (loaded snapshot)' : ''}`)
   return room
 }
 

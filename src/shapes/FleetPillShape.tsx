@@ -20,6 +20,11 @@ const PILL_H = 18
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
 
+/** Content store for chip hover previews — keyed by «token» string, value is preview text.
+ *  Populated when a content pill is dropped; read by the chip renderer for hover previews.
+ *  Survives within a session but not across page reloads. */
+export const chipContentStore = new Map<string, string>()
+
 
 /**
  * Module-level state for filter overlay drop preview.
@@ -140,8 +145,9 @@ export function dropPillOnTarget(
       // in the token so chips can be resolved live via editor.getShape() after reload.
       const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
         ? pill.props.value : undefined
-      const uid = sourceShapeId || Date.now().toString(36).slice(-4)
+      const uid = sourceShapeId || Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
       const token = `«${pillType}:${displayName}#${uid}»`
+      if (content) chipContentStore.set(token, content)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },
       }))
@@ -157,11 +163,14 @@ export function dropPillOnTarget(
           ? filterDropPreview.toPreview
           : filterDropPreview.fromPreview
       if (preview) {
+        const wasLocked = hitShape.isLocked
+        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
         createEditor.updateShape({
           id: hitShape.id,
           type: 'fleet-chat' as any,
           props: { filter: preview },
         })
+        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
 
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
@@ -190,11 +199,14 @@ export function dropPillOnTarget(
         ]
       }
     }
+    const wasLocked = hitShape.isLocked
+    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
     createEditor.updateShape({
       id: hitShape.id,
       type: 'fleet-chat' as any,
       props: { ...hitShape.props, filter: newFilter },
     })
+    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))

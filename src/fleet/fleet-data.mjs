@@ -108,6 +108,17 @@ export function getActivity(agentId) { return _events.filter(e => e._activity &&
 export function getHumanId() { return _humanId }
 export function getPreambleMacros(target = 'default') { return _preambles[target] || {} }
 
+// Returns { agentId: count } for unread messages from agents to the human
+export function getUnreadCountsForHuman() {
+  const counts = {}
+  for (const ev of _events) {
+    if (ev.type === 'chat' && !ev.read && ev.to === _humanId && ev.from) {
+      counts[ev.from] = (counts[ev.from] || 0) + 1
+    }
+  }
+  return counts
+}
+
 export function getAgent(id) {
   return _agents.find(a => a.id === id || a.friendly_name === id)
 }
@@ -119,6 +130,7 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
+  if (opts.context) body.context = opts.context
   return fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -131,6 +143,14 @@ export async function respawnAgent(id) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: id, respawn: true }),
+  })
+}
+
+export async function spawnAgent(model) {
+  return fetch('/api/spawn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
   })
 }
 

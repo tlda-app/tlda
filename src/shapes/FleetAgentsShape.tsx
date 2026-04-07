@@ -15,8 +15,10 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
+import { toggleLayoutMode, useLayoutMode } from './HudLayoutMode'
 
 
 const DEFAULT_W = 340
@@ -43,6 +45,39 @@ function labelColor(name: string): string {
   let h = 0
   for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
+}
+
+// --- Service health polling ---
+interface ServiceHealth {
+  tlda: { ok: boolean; uptime?: number }
+  fleet: { ok: boolean; error?: string | null; uptime?: number }
+  sync: { ok: boolean }
+}
+
+function useServiceHealth(): ServiceHealth | null {
+  const [health, setHealth] = useState<ServiceHealth | null>(null)
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>
+    let mounted = true
+
+    async function check() {
+      try {
+        const r = await fetch('/health/services', { signal: AbortSignal.timeout(3000) })
+        if (r.ok && mounted) setHealth(await r.json())
+        else if (mounted) setHealth({ tlda: { ok: true }, fleet: { ok: false, error: 'HTTP ' + r.status }, sync: { ok: true } })
+      } catch {
+        // If we can't reach /health/services, the tlda server itself is down
+        if (mounted) setHealth({ tlda: { ok: false }, fleet: { ok: false, error: 'unreachable' }, sync: { ok: false } })
+      }
+    }
+
+    check()
+    timer = setInterval(check, 15_000) // poll every 15s
+    return () => { mounted = false; clearInterval(timer) }
+  }, [])
+
+  return health
 }
 
 const STALE_THRESHOLD = 600_000  // 10 minutes
@@ -115,101 +150,6 @@ function usePillDrag() {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 
-  // Always-on document capture listeners so they're registered before any
-  // dynamic listeners (including tldraw's own per-drag listeners). When no
-  // drag is active the null-check exits immediately — zero overhead.
-  // Pill stays in the HUD editor throughout; screenToPage uses HUD coords,
-  // which share the same camera as the main canvas. dropPillOnTarget routes
-  // shape creation to the main editor via __tldraw_editor__.
-  useEffect(() => {
-    function onMove(e: PointerEvent) {
-      const drag = dragRef.current
-      if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
-
-      const dx = e.clientX - drag.startX
-      const dy = e.clientY - drag.startY
-
-      if (!drag.started) {
-        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
-        drag.started = true
-
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        const measureEl = document.createElement('span')
-        measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
-        measureEl.textContent = drag.displayName
-        document.body.appendChild(measureEl)
-        const pw = measureEl.offsetWidth
-        const ph = measureEl.offsetHeight
-        document.body.removeChild(measureEl)
-        const pillId = createShapeId()
-        editor.run(() => {
-          editor.createShape({
-            id: pillId,
-            type: 'fleet-pill' as any,
-            x: pagePos.x - pw / 2,
-            y: pagePos.y - ph / 2,
-            props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
-          })
-        }, { history: 'ignore' })
-        drag.pillId = pillId as unknown as string
-        // Reset tldraw's state machine — it saw our pointerdown but will never see pointerup
-        // (we stopImmediatePropagation those). editor.cancel() resets it without cancelling
-        // the real pointer stream (unlike dispatching a DOM pointercancel, which stops all
-        // further real pointer events for this pointerId and leaves the pill stuck).
-        editor.cancel()
-        return
-      }
-
-      if (drag.pillId) {
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-        const pillShape = editor.getShape(drag.pillId as any) as any
-        const pw = pillShape?.props?.w || 70
-        const ph = pillShape?.props?.h || 18
-        editor.run(() => {
-          editor.updateShape({
-            id: drag.pillId as any,
-            type: 'fleet-pill' as any,
-            x: pagePos.x - pw / 2,
-            y: pagePos.y - ph / 2,
-          })
-        }, { history: 'ignore' })
-        // Publish slot for ghost preview (uses main editor for page coords)
-        const mainEditor = (window as any).__tldraw_editor__
-        const targetEditor = mainEditor || editor
-        dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
-        dropGhostBus.dispatchEvent(new CustomEvent('change'))
-      }
-    }
-
-    function onUp(e: PointerEvent) {
-      const drag = dragRef.current
-      if (!drag) return
-      e.stopImmediatePropagation()
-      dragRef.current = null
-
-      if (!drag.started || !drag.pillId) return
-
-      // Clear ghost before drop
-      dropGhostState.slot = null
-      dropGhostBus.dispatchEvent(new CustomEvent('change'))
-
-      const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
-      dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
-      editor.run(() => {
-        try { editor.deleteShapes([drag.pillId as any]) } catch {}
-      }, { history: 'ignore' })
-    }
-
-    document.addEventListener('pointermove', onMove, { capture: true })
-    document.addEventListener('pointerup', onUp, { capture: true })
-    return () => {
-      document.removeEventListener('pointermove', onMove, { capture: true })
-      document.removeEventListener('pointerup', onUp, { capture: true })
-    }
-  }, [editor])
-
   const startDrag = useCallback((
     e: React.PointerEvent,
     pillType: 'agent' | 'label',
@@ -223,19 +163,143 @@ function usePillDrag() {
       pillId: null, pillType, value, displayName, color,
       startX: e.clientX, startY: e.clientY, started: false,
     }
-  }, [])
+
+    // Claim the shared drag coordinator — one global listener pair handles
+    // move/up events, eliminating capture-phase registration races.
+    dragCoordinator.claim(
+      // onMove
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        if (!drag) return
+
+        const dx = ev.clientX - drag.startX
+        const dy = ev.clientY - drag.startY
+
+        if (!drag.started) {
+          if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+          drag.started = true
+
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const measureEl = document.createElement('span')
+          measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+          measureEl.textContent = drag.displayName
+          document.body.appendChild(measureEl)
+          const pw = measureEl.offsetWidth
+          const ph = measureEl.offsetHeight
+          document.body.removeChild(measureEl)
+          const pillId = createShapeId()
+          editor.run(() => {
+            editor.createShape({
+              id: pillId,
+              type: 'fleet-pill' as any,
+              x: pagePos.x - pw / 2,
+              y: pagePos.y - ph / 2,
+              props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
+            })
+          }, { history: 'ignore' })
+          drag.pillId = pillId as unknown as string
+          editor.cancel()
+          return
+        }
+
+        if (drag.pillId) {
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pillShape = editor.getShape(drag.pillId as any) as any
+          const pw = pillShape?.props?.w || 70
+          const ph = pillShape?.props?.h || 18
+          editor.run(() => {
+            editor.updateShape({
+              id: drag.pillId as any,
+              type: 'fleet-pill' as any,
+              x: pagePos.x - pw / 2,
+              y: pagePos.y - ph / 2,
+            })
+          }, { history: 'ignore' })
+          const mainEditor = (window as any).__tldraw_editor__
+          const targetEditor = mainEditor || editor
+          dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
+          dropGhostBus.dispatchEvent(new CustomEvent('change'))
+        }
+      },
+      // onUp
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        dragRef.current = null
+        if (!drag || !drag.started || !drag.pillId) return
+
+        dropGhostState.slot = null
+        dropGhostBus.dispatchEvent(new CustomEvent('change'))
+
+        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+        editor.run(() => {
+          try { editor.deleteShapes([drag.pillId as any]) } catch {}
+        }, { history: 'ignore' })
+      },
+    )
+  }, [editor])
 
   return { startDrag }
 }
 
 
+// Fetch last message per agent from search API (batched, cached)
+const lastMessageCache = new Map<string, { text: string; ts: number; fetched: number }>()
+
+async function fetchLastMessage(agentName: string): Promise<{ text: string; ts: number } | null> {
+  const cached = lastMessageCache.get(agentName)
+  if (cached && Date.now() - cached.fetched < 30_000) return cached
+  try {
+    // Search for the agent name — the API does FTS, then we filter client-side
+    const results = await searchFleet(agentName, 20)
+    // Find messages actually from this agent
+    const fromAgent = results.filter((r: any) => {
+      const fromName = (r.from || '').replace('fleet:', '')
+      return fromName === agentName || fromName.includes(agentName)
+    })
+    const match = fromAgent[0] || results[0]
+    if (match) {
+      const text = (match.snippet || match.text || match.message || match.body || '').replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
+      const ts = match.timestamp ? new Date(match.timestamp).getTime() : Date.now()
+      const entry = { text, ts, fetched: Date.now() }
+      lastMessageCache.set(agentName, entry)
+      return entry
+    }
+  } catch {}
+  return null
+}
+
+function useLastMessages(agents: any[]): Record<string, string> {
+  const [messages, setMessages] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let mounted = true
+    const names = agents.map(a => agentDisplayName(a))
+    Promise.all(names.map(async (name) => {
+      const msg = await fetchLastMessage(name)
+      return [name, msg?.text || ''] as const
+    })).then(pairs => {
+      if (!mounted) return
+      const map: Record<string, string> = {}
+      for (const [name, text] of pairs) if (text) map[name] = text
+      setMessages(map)
+    })
+    return () => { mounted = false }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents.length])
+
+  return messages
+}
+
 function FleetAgentsComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -261,25 +325,32 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     return task
   }, [activeTasks])
 
-  // Categorize and sort agents
-  const { aliveAgents, staleAgents } = useMemo(() => {
-    const alive: any[] = []
-    const stale: any[] = []
+  // Categorize and sort agents — stale agents are inline, not collapsed
+  const { activeAgents, deadAgents } = useMemo(() => {
+    const active: any[] = []
+    const dead: any[] = []
     for (const a of agents) {
       if (a.human) continue
       const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
       const enriched = { ...a, _ts: ts }
       const cat = agentCategory(a)
-      if (cat === 'alive') alive.push(enriched)
-      else if (cat === 'stale') stale.push(enriched)
-      // dead agents not shown
+      if (cat === 'dead') dead.push(enriched)
+      else active.push(enriched) // alive + stale together
     }
-    alive.sort((a: any, b: any) => b._ts - a._ts)
-    stale.sort((a: any, b: any) => b._ts - a._ts)
-    return { aliveAgents: alive, staleAgents: stale }
+    active.sort((a: any, b: any) => b._ts - a._ts)
+    dead.sort((a: any, b: any) => b._ts - a._ts)
+    return { activeAgents: active, deadAgents: dead }
   }, [agents])
 
-  const [showStale, setShowStale] = useState(false)
+  const staleCount = useMemo(() => activeAgents.filter(a => agentCategory(a) === 'stale').length, [activeAgents])
+  const aliveCount = activeAgents.length - staleCount
+
+  // Fetch last messages for visible agents
+  const lastMessages = useLastMessages(activeAgents)
+
+  const [showDead, setShowDead] = useState(false)
+  const unreadCounts = useFleetUnreadCounts()
+  const serviceHealth = useServiceHealth()
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -297,7 +368,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'hidden',
       }}
     >
@@ -327,12 +398,12 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
             ×
           </button>
           <button
-            className="fleet-layout-btn"
+            className={`fleet-layout-btn${layoutMode ? ' active' : ''}`}
             onPointerUp={(e) => {
               e.stopPropagation()
-              editor.select(shape.id)
+              toggleLayoutMode(editor)
             }}
-            title="Resize / move"
+            title={layoutMode ? 'Exit layout mode' : 'Enter layout mode'}
           >
             ⊞
           </button>
@@ -342,49 +413,64 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
         <div
           className="fleet-agents-header"
         >
+          <span className="fleet-agents-unread-dot" />
           <span className="fleet-agents-col-name">Agent</span>
           <span className="fleet-agents-col-seen">Seen</span>
           <span className="fleet-agents-col-task">Task</span>
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
-        {/* Agent rows — scrollable */}
+        {/* Agent rows — scrollable. Alive + stale inline, only dead collapses */}
         <div className="fleet-agents-body">
-          {aliveAgents.length === 0 && staleAgents.length === 0 ? (
+          {activeAgents.length === 0 && deadAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : (
             <>
-              {aliveAgents.map((agent: any) => (
-                <AgentRow
-                  key={agent.id}
-                  agent={agent}
-                  task={getTaskForAgent(agent.id)}
-                  onStartDrag={startDrag}
-                />
-              ))}
+              {activeAgents.map((agent: any) => {
+                const isStale = agentCategory(agent) === 'stale'
+                return (
+                  <AgentRow
+                    key={agent.id}
+                    agent={agent}
+                    task={getTaskForAgent(agent.id)}
+                    unreadCount={unreadCounts[agent.id] || 0}
+                    dimmed={isStale}
+                    canRespawn={isStale}
+                    expanded={expandedId === agent.id}
+                    lastMessage={lastMessages[agentDisplayName(agent)] || ''}
+                    onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
+                    onStartDrag={startDrag}
+                  />
+                )
+              })}
 
-              {staleAgents.length > 0 && (
+              {deadAgents.length > 0 && (
                 <>
                   <div
                     className="fleet-agents-section-header"
                     onPointerDown={(e) => e.stopPropagation()}
                     onPointerUp={(e) => {
                       e.stopPropagation()
-                      setShowStale(!showStale)
+                      setShowDead(!showDead)
                     }}
                   >
                     <span className="fleet-agents-section-toggle">
-                      {showStale ? '▾' : '▸'}
+                      {showDead ? '▾' : '▸'}
                     </span>
-                    <span>stale</span>
-                    <span className="fleet-agents-section-count">({staleAgents.length})</span>
+                    <span>dead</span>
+                    <span className="fleet-agents-section-count">({deadAgents.length})</span>
                   </div>
-                  {showStale && staleAgents.map((agent: any) => (
+                  {showDead && deadAgents.map((agent: any) => (
                     <AgentRow
                       key={agent.id}
                       agent={agent}
                       task={getTaskForAgent(agent.id)}
+                      unreadCount={unreadCounts[agent.id] || 0}
                       dimmed
+                      canRespawn
+                      expanded={expandedId === agent.id}
+                      lastMessage=""
+                      onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
                       onStartDrag={startDrag}
                     />
                   ))}
@@ -394,13 +480,45 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           )}
         </div>
 
+        {/* Service health dots */}
+        {serviceHealth && (
+          <div className="fleet-agents-health">
+            <HealthDot ok={serviceHealth.tlda.ok} label="tlda" />
+            <HealthDot ok={serviceHealth.fleet.ok} label="fleet" detail={serviceHealth.fleet.error} />
+            <HealthDot ok={serviceHealth.sync.ok} label="sync" />
+          </div>
+        )}
+
         {/* Footer */}
         <div className="fleet-agents-footer">
-          {aliveAgents.length} online
-          {staleAgents.length > 0 && <span style={{ marginLeft: 6 }}>· {staleAgents.length} stale</span>}
+          <span>
+            {aliveCount} online
+            {staleCount > 0 && <span style={{ marginLeft: 6 }}>· {staleCount} stale</span>}
+          </span>
+          <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
+            <button
+              className="fleet-agents-spawn-btn"
+              title="Spawn Sonnet agent"
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6') }}
+            >+S</button>
+            <button
+              className="fleet-agents-spawn-btn"
+              title="Spawn Opus agent"
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6') }}
+            >+O</button>
+          </span>
         </div>
       </div>
     </HTMLContainer>
+  )
+}
+
+function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
+  return (
+    <span className="fleet-health-dot-item" title={ok ? `${label}: ok` : `${label}: ${detail || 'down'}`}>
+      <span className={`fleet-health-indicator ${ok ? 'ok' : 'down'}`} />
+      <span className="fleet-health-label">{label}</span>
+    </span>
   )
 }
 
@@ -408,11 +526,21 @@ function AgentRow({
   agent,
   task,
   dimmed,
+  canRespawn,
+  unreadCount,
+  expanded,
+  lastMessage,
+  onToggleExpand,
   onStartDrag,
 }: {
   agent: any
   task: any
   dimmed?: boolean
+  canRespawn?: boolean
+  unreadCount: number
+  expanded: boolean
+  lastMessage: string
+  onToggleExpand: () => void
   onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 }) {
   const taskDesc = task?.title || task?.description || ''
@@ -422,42 +550,85 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const nameOpacity = agent.dead ? 0.3 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.5 : 0.3
+  const nameOpacity = agent.dead ? 0.4 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
 
   return (
-    <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}`}>
-      {/* Status dot — removed, activity shown via name opacity */}
+    <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
+      {/* Line 1: compact row. Click row to expand (except name, which is draggable) */}
+      <div className="fleet-agents-row-main">
+        {/* Unread dot — click toggles expand */}
+        <span
+          className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
+        />
 
-      {/* Agent name — draggable, opacity reflects activity */}
-      <span
-        className="fleet-agents-col-name fleet-agents-pill"
-        style={{ color, opacity: nameOpacity }}
-        onPointerDown={(e) => onStartDrag(e, 'agent', name, name, color)}
-      >
-        {name}
-      </span>
+        {/* Agent name — draggable (drag to create pill filter) */}
+        <span
+          className={`fleet-agents-col-name fleet-agents-pill`}
+          style={{ color, opacity: nameOpacity }}
+          onPointerDown={(e) => onStartDrag(e, 'agent', name, name, color)}
+        >
+          {name}
+        </span>
 
-      {/* Seen */}
-      <span className="fleet-agents-col-seen">{ago}</span>
+        {/* Seen — click toggles expand */}
+        <span
+          className="fleet-agents-col-seen"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
+        >{ago}</span>
 
-      {/* Task */}
-      <span className="fleet-agents-col-task" title={taskDesc}>
-        {taskDesc ? taskDesc.substring(0, 50) : ''}
-      </span>
+        {/* Task — click toggles expand */}
+        <span
+          className="fleet-agents-col-task"
+          title={taskDesc}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
+        >
+          {taskDesc ? taskDesc.substring(0, 50) : ''}
+        </span>
 
-      {/* Labels — draggable chips */}
-      <span className="fleet-agents-col-labels">
-        {labels.map((label: string) => (
+        {/* Respawn button (stale + dead agents) */}
+        {canRespawn && (
           <span
-            key={label}
-            className="fleet-agents-label-chip"
-            style={{ background: labelColor(label) }}
-            onPointerDown={(e) => onStartDrag(e, 'label', label, label, labelColor(label))}
+            className="fleet-agents-respawn-btn"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
+            title="Respawn agent"
           >
-            {label}
+            ⟳
           </span>
-        ))}
-      </span>
+        )}
+
+        {/* Labels — draggable chips */}
+        <span className="fleet-agents-col-labels">
+          {labels.map((label: string) => (
+            <span
+              key={label}
+              className="fleet-agents-label-chip"
+              style={{ background: labelColor(label) }}
+              onPointerDown={(e) => onStartDrag(e, 'label', label, label, labelColor(label))}
+            >
+              {label}
+            </span>
+          ))}
+        </span>
+      </div>
+
+      {/* Lines 2-3: expanded detail (task + last message) */}
+      {expanded && (
+        <div className="fleet-agents-row-detail" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="fleet-agents-detail-task">
+            {taskDesc || '(no task)'}
+          </div>
+          {lastMessage && (
+            <div className="fleet-agents-detail-message">
+              "{lastMessage.length > 80 ? lastMessage.substring(0, 80) + '…' : lastMessage}"
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

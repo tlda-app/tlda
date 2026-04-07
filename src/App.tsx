@@ -61,9 +61,11 @@ interface DiffConfig {
   buildStatus?: string
 }
 
+type ErrorType = 'not-found' | 'auth' | 'generic'
+
 type State =
   | { phase: 'loading'; message: string; roomId: string }
-  | { phase: 'error'; message: string }
+  | { phase: 'error'; message: string; errorType?: ErrorType }
   | { phase: 'picker'; manifest: Record<string, DocConfig> }
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
   | { phase: 'book'; bookName: string; members: BookMember[] }
@@ -76,6 +78,31 @@ const ASSET_BASE = (() => {
   if (!ws) return ''  // same-origin: relative URLs work
   return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
 })()
+
+// Fetch a single document config from the API — fast path for ?doc=X
+async function fetchDocConfig(docName: string): Promise<DocConfig | null> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const url = `${ASSET_BASE}/api/projects/${docName}`
+    const resp = await fetch(url, { signal: controller.signal })
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
+    }
+    if (resp.status === 404) return null
+    if (!resp.ok) return null
+    const data = await resp.json()
+    data.basePath = `${ASSET_BASE}/docs/${docName}/`
+    return data as DocConfig
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      throw new Error('Server not responding. Try reloading.')
+    }
+    throw e
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 // Fetch document manifest at runtime — derives basePath from key
 async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
@@ -145,7 +172,8 @@ function App() {
           try {
             manifest = await fetchManifest()
           } catch (e) {
-            setState({ phase: 'error', message: (e as Error).message })
+            const msg = (e as Error).message
+            setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
             return
           }
           const docs = Object.keys(manifest)
@@ -178,19 +206,28 @@ function App() {
     const abort = loadAbort = new AbortController()
     const { signal } = abort
 
-    let manifest: Record<string, DocConfig>
+    // Fast path: fetch single doc config instead of full manifest
+    let config: DocConfig | null
     try {
-      manifest = await fetchManifest()
+      config = await fetchDocConfig(docName)
     } catch (e) {
-      setState({ phase: 'error', message: (e as Error).message })
+      const msg = (e as Error).message
+      setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
       return
     }
     if (gen !== loadGeneration) return  // superseded
 
-    const config = manifest[docName]
-
-    // Book format: resolve member docs and render BookViewer
+    // Book format: needs full manifest to resolve member docs
     if (config?.format === 'book' && config.members) {
+      let manifest: Record<string, DocConfig>
+      try {
+        manifest = await fetchManifest()
+      } catch (e) {
+        const msg = (e as Error).message
+        setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
+        return
+      }
+      if (gen !== loadGeneration) return
       const members: BookMember[] = config.members
         .map(key => {
           const memberConfig = manifest[key]
@@ -212,23 +249,24 @@ function App() {
 
     // If project is missing, still building, or has no pages yet, poll until ready
     if (!config || config.buildStatus === 'building' || config.pages === 0) {
-      const label = config?.name || docName
-      setState({ phase: 'loading', message: config ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
+      if (!config) {
+        setState({ phase: 'error', message: `Document "${docName}" not found.`, errorType: 'not-found' })
+        return
+      }
+      const label = config.name || docName
+      setState({ phase: 'loading', message: config.buildStatus === 'building' ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
       const waitForBuild = async () => {
         while (gen === loadGeneration) {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
-          // Re-fetch manifest to check for updated page count / build status
           try {
-            const m = await fetchManifest(true)
-            const c = m[docName]
+            const c = await fetchDocConfig(docName)
             if (c && c.pages > 0 && c.buildStatus !== 'building') break
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
               setState({ phase: 'error', message: e.message })
               return
             }
-            /* keep polling for other errors */
           }
         }
         if (gen === loadGeneration) loadDocument(docName, roomId)
@@ -276,18 +314,21 @@ function App() {
 
       if (gen !== loadGeneration) return  // superseded during fetch
 
-      // For non-diff docs, check if a matching diff doc exists
+      // For non-diff docs, check if a matching diff doc exists (lazy manifest fetch — not on critical path)
       let diffConfig: DiffConfig | undefined
       if (config.format !== 'diff') {
-        const diffEntry = Object.values(manifest).find(
-          c => c.format === 'diff' && c.sourceDoc === docName
-        )
-        if (diffEntry) {
-          const diffBasePath = diffEntry.basePath.startsWith('/')
-            ? diffEntry.basePath.slice(1)
-            : diffEntry.basePath
-          diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
-        }
+        try {
+          const manifest = await fetchManifest()
+          const diffEntry = Object.values(manifest).find(
+            c => c.format === 'diff' && c.sourceDoc === docName
+          )
+          if (diffEntry) {
+            const diffBasePath = diffEntry.basePath.startsWith('/')
+              ? diffEntry.basePath.slice(1)
+              : diffEntry.basePath
+            diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
+          }
+        } catch { /* diff lookup is optional — don't block on it */ }
       }
 
       setState({ phase: 'svg', document, roomId, diffConfig })
@@ -322,7 +363,13 @@ function App() {
         }
       } catch { /* ignore status check failure */ }
 
-      setState({ phase: 'error', message: `Failed to load "${docName}": ${(e as Error).message}` })
+      const msg = (e as Error).message
+      const isAuth = msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized') || msg.includes('Forbidden') || msg.includes('Authentication')
+      setState({
+        phase: 'error',
+        message: isAuth ? 'Authentication required. Add ?token=TOKEN to the URL.' : `Failed to load "${docName}": ${msg}`,
+        errorType: isAuth ? 'auth' : 'generic',
+      })
     }
   }
 
@@ -342,9 +389,17 @@ function App() {
     case 'error':
       return (
         <div className="App">
-          <div className="LoadingScreen">
-            <h2>Error</h2>
-            <p>{state.message}</p>
+          <div className="ErrorScreen">
+            <div className="error-icon">
+              {state.errorType === 'not-found' ? '404' : state.errorType === 'auth' ? '🔒' : '⚠'}
+            </div>
+            <h2 className="error-title">
+              {state.errorType === 'not-found' ? 'Document not found'
+                : state.errorType === 'auth' ? 'Authentication required'
+                : 'Something went wrong'}
+            </h2>
+            <p className="error-message">{state.message}</p>
+            <a className="error-home-link" href="/">← All documents</a>
           </div>
         </div>
       )
@@ -409,11 +464,17 @@ function DocumentPicker({ manifest, onSelect }: {
   const [search, setSearch] = useState('')
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
+  const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
       .then(r => r.ok ? r.json() : {})
       .then(setMeta)
+      .catch(() => {})
+    // Fetch sync health for all docs
+    fetch(`${ASSET_BASE}/api/projects/health`)
+      .then(r => r.ok ? r.json() : {})
+      .then(setDocHealth)
       .catch(() => {})
   }, [])
 
@@ -505,20 +566,28 @@ function DocumentPicker({ manifest, onSelect }: {
           </tr>
         </thead>
         <tbody>
-          {entries.map(([key, config]) => (
-            <tr key={key} onClick={() => onSelect(key, config)}>
-              <td><a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a></td>
-              <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
-              <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
-              <td className="picker-archive">
-                <button
-                  className="archive-btn"
-                  title="Archive"
-                  onClick={(e) => archiveProject(key, e)}
-                >&times;</button>
-              </td>
-            </tr>
-          ))}
+          {entries.map(([key, config]) => {
+            const health = docHealth[key]
+            const isBroken = health && !health.ok
+            return (
+              <tr key={key} onClick={() => onSelect(key, config)} className={isBroken ? 'picker-row-broken' : ''}>
+                <td>
+                  {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
+                  <a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                  {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
+                </td>
+                <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
+                <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
+                <td className="picker-archive">
+                  <button
+                    className="archive-btn"
+                    title="Archive"
+                    onClick={(e) => archiveProject(key, e)}
+                  >&times;</button>
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
       {archivedFiltered.length > 0 && (

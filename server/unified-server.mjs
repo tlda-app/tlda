@@ -78,6 +78,35 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
+// Services health — checks tlda server (self), fleet server, Yjs sync
+app.get('/health/services', async (req, res) => {
+  const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
+  const services = {
+    tlda: { ok: true, uptime: process.uptime() },
+    fleet: { ok: false, error: null },
+    sync: { ok: true },
+  }
+
+  // Check fleet server (uses /api/state — fleet has no /health endpoint)
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 2000)
+    const r = await fetch(`${FLEET_URL}/api/state`, { signal: ctrl.signal })
+    clearTimeout(timer)
+    if (r.ok) {
+      const data = await r.json()
+      const agents = (data.agents || []).filter(a => !a.dead && !a.human).length
+      services.fleet = { ok: true, agents }
+    } else {
+      services.fleet = { ok: false, error: `HTTP ${r.status}` }
+    }
+  } catch (e) {
+    services.fleet = { ok: false, error: e.message }
+  }
+
+  res.json(services)
+})
+
 // Cookie login — set token as cookie, redirect to viewer
 app.get('/auth/login', loginRoute)
 
@@ -101,7 +130,7 @@ app.get('/api/local-image', requireRead, (req, res) => {
   const mimeType = mimeLookup(expanded) || 'application/octet-stream'
   res.set('Content-Type', mimeType)
   res.set('Cache-Control', 'public, max-age=3600')
-  res.sendFile(resolve(expanded))
+  res.sendFile(resolve(expanded), { dotfiles: 'allow' })
 })
 
 // ---------- Doc asset serving ----------
@@ -130,7 +159,7 @@ app.use('/docs', (req, res, next) => {
           const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
           if (existsSync(assetPath)) {
             res.set('Cache-Control', 'public, max-age=3600')
-            return res.sendFile(resolve(assetPath))
+            return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
           }
         }
       }
@@ -159,7 +188,7 @@ app.use('/docs', (req, res, next) => {
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
-      return res.sendFile(resolve(histPath))
+      return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
     return res.status(404).json({ error: 'Not found' })
   }
@@ -311,7 +340,7 @@ app.use('/docs', (req, res, next) => {
         // Fall through to sendFile on error
       }
     }
-    return res.sendFile(resolve(projectPath))
+    return res.sendFile(resolve(projectPath), { dotfiles: 'allow' })
   }
 
   res.status(404).json({ error: 'Not found' })

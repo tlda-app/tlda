@@ -12,10 +12,13 @@ import {
   getEvents,
   getAgents,
   getTasks,
+  getUnreadCountsForHuman,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
   matchesFilter,
+  respawnAgent as _respawnAgent,
+  spawnAgent as _spawnAgent,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -220,7 +223,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
  * Subscribe to thinking/status events for agents matching the filter.
  * Returns a Map of agentId → timestamp when thinking started (ms).
  */
-export function useFleetThinking(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
+export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
   const [thinking, setThinking] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
@@ -353,7 +356,7 @@ export function useFleetThinking(dnfFilter?: string[][] | null, frameId?: string
  * Subscribe to compacting events for agents matching the filter.
  * Returns a Map of agentId → timestamp when compacting started (ms).
  */
-export function useFleetCompacting(dnfFilter?: string[][] | null, frameId?: string): Map<string, number> {
+export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
   const [compacting, setCompacting] = useState<Map<string, number>>(new Map())
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
 
@@ -419,7 +422,47 @@ export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   return data.results || data || []
 }
 
+export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: string; path: string; agent: string; agent_name: string; shared_at: string }>> {
+  try {
+    const res = await fetch(`${DASHBOARD_URL}/api/shared-docs`)
+    if (!res.ok) return []
+    return await res.json()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Returns a map of agentId → unread count for messages from that agent to the human.
+ * Updates live when messages arrive or read receipts come in.
+ */
+export function useFleetUnreadCounts(): Record<string, number> {
+  const [counts, setCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setCounts(getUnreadCountsForHuman())
+      unsub = subscribe('messages', null, () => {
+        setCounts(getUnreadCountsForHuman())
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return counts
+}
+
 // --- Write API (re-exported) ---
 
 export const sendMessage = _sendMessage
+export const respawnAgent = _respawnAgent
+export const spawnAgent = _spawnAgent
 export { loadBefore, fetchHistory }

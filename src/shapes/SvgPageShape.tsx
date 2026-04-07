@@ -199,7 +199,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            overflow: 'hidden',
+            overflow: 'visible',
             pointerEvents: 'all',
           }}
         >
