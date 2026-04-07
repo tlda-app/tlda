@@ -17,7 +17,7 @@
  */
 
 import { resolve, basename, dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -116,8 +116,9 @@ function getToken() {
 
 const isTTY = process.stderr.isTTY
 const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
-const green = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
-const red   = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
+const green  = (s) => isTTY ? `\x1b[32m${s}\x1b[0m` : s
+const yellow = (s) => isTTY ? `\x1b[33m${s}\x1b[0m` : s
+const red    = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
 const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
@@ -1466,8 +1467,109 @@ function getPort() {
   try { return new URL(getServer()).port || '5176' } catch { return '5176' }
 }
 
+async function cmdDeploy() {
+  const { execSync } = await import('child_process')
+  const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const distIndex = join(ctdRoot, 'dist', 'index.html')
+  const token = getToken()
+
+  const step = (label) => process.stdout.write(dim(`  ${label}... `))
+  const pass = (msg) => console.log(green('✓') + (msg ? ' ' + msg : ''))
+  const die = (msg) => { console.log(red('✗') + ' ' + msg); process.exit(1) }
+
+  console.log(bold('tlda deploy'))
+  console.log()
+
+  // 1. Build
+  step('Building SPA (npm run build)')
+  try {
+    execSync('npm run build', { cwd: ctdRoot, stdio: 'pipe', timeout: 180_000 })
+  } catch (e) {
+    die('Build failed: ' + (e.stderr?.toString().trim().split('\n').pop() || e.message))
+  }
+  pass()
+
+  // 2. Verify bundle
+  step('Verifying dist/index.html')
+  if (!existsSync(distIndex)) die('dist/index.html not found after build')
+  const distSize = statSync(distIndex).size
+  if (distSize < 100) die(`dist/index.html is suspiciously small (${distSize} bytes)`)
+  pass(`${Math.round(distSize / 1024)}KB`)
+
+  // 3. Restart server
+  step('Stopping server')
+  try { execSync('node ' + JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs')) + ' server stop', { stdio: 'pipe', timeout: 10_000 }) } catch {}
+  pass()
+
+  step('Starting server')
+  try {
+    execSync('node ' + JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 15_000 })
+  } catch (e) {
+    die('Server failed to start: ' + e.message)
+  }
+  pass()
+
+  // 4. Wait for server ready
+  step('Waiting for server')
+  const serverUrl = getServer()
+  let serverReady = false
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
+      if (res.ok) { serverReady = true; break }
+    } catch {}
+  }
+  if (!serverReady) die(`Server not responding at ${serverUrl}/health after 10s`)
+  pass(serverUrl)
+
+  // 5. Verify SPA renders
+  step('Verifying SPA serves pages')
+  const tokenParam = token ? `?token=${token}` : ''
+  try {
+    const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const body = await res.text()
+    if (!res.ok) die(`SPA returned ${res.status}`)
+    if (!body.includes('<div id="root">')) die('SPA response missing app root')
+    pass()
+  } catch (e) {
+    die(`SPA check failed: ${e.message}`)
+  }
+
+  // 6. Verify a doc page loads (find first available project)
+  step('Verifying doc page loads')
+  try {
+    const projRes = await fetch(`${serverUrl}/api/projects${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    if (projRes.ok) {
+      const data = await projRes.json()
+      const projects = data.projects || data || []
+      const first = projects[0]
+      if (first?.name) {
+        const docRes = await fetch(`${serverUrl}/?doc=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docBody = await docRes.text()
+        if (docRes.ok && docBody.includes('<div id="root">')) {
+          pass(first.name)
+        } else {
+          die(`Doc page for "${first.name}" returned ${docRes.status}`)
+        }
+      } else {
+        pass('(no projects to test)')
+      }
+    } else {
+      pass('(projects API unavailable)')
+    }
+  } catch (e) {
+    die(`Doc page check failed: ${e.message}`)
+  }
+
+  console.log()
+  console.log(green(bold('Deploy complete.')))
+}
+
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
+  const autoFix = process.argv.includes('--fix')
+  const fixes = []  // { label, fn } — accumulated during checks, run at end if --fix
   const ok  = (msg) => console.log(green('✓') + ' ' + msg)
   const fail = (msg, fix) => {
     console.log(red('✗') + ' ' + msg)
@@ -1557,6 +1659,77 @@ async function cmdDoctor() {
       fail(`Server failed to start: ${e.message}`, 'tlda server log')
       issues++
     }
+  }
+
+  // 3b. SPA serves pages (not just health endpoint)
+  let needsRebuild = false
+  if (serverRunning) {
+    const token = getToken()
+    const tokenParam = token ? `?token=${token}` : ''
+    try {
+      const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+      const body = await res.text()
+      if (res.ok && body.includes('<div id="root">')) {
+        ok('SPA serves pages')
+      } else if (res.status === 404 || !body.includes('<div id="root">')) {
+        fail('SPA not serving — bundle may be missing or stale', 'npm run build')
+        needsRebuild = true
+        issues++
+      } else {
+        fail(`SPA returned ${res.status}`)
+        issues++
+      }
+    } catch (e) {
+      fail(`SPA check failed: ${e.message}`)
+      issues++
+    }
+  }
+
+  // 3c. Bundle freshness — is dist/ newer than latest source commit?
+  {
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const distIndex = join(ctdRoot, 'dist', 'index.html')
+    if (existsSync(distIndex)) {
+      const distMtime = statSync(distIndex).mtimeMs
+      try {
+        const { execSync: ex } = await import('child_process')
+        const commitTs = parseInt(ex('git log -1 --format=%ct -- src/ vite.config.ts index.html package.json', { cwd: ctdRoot, stdio: 'pipe' }).toString().trim(), 10) * 1000
+        if (distMtime >= commitTs) {
+          ok('Bundle is current')
+        } else {
+          const agoMin = Math.round((Date.now() - distMtime) / 60000)
+          warn(`Bundle is stale (built ${agoMin}m ago, source changed since)`, 'npm run build')
+          needsRebuild = true
+        }
+      } catch {
+        ok('Bundle exists (freshness check skipped — no git)')
+      }
+    } else {
+      fail('No built bundle (dist/index.html missing)', 'npm run build')
+      needsRebuild = true
+      issues++
+    }
+  }
+
+  if (needsRebuild) {
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    fixes.push({
+      label: 'Rebuild SPA bundle',
+      fn: () => {
+        console.log(dim('  Running npm run build...'))
+        execSync('npm run build', { cwd: ctdRoot, stdio: 'inherit', timeout: 120000 })
+      }
+    })
+    fixes.push({
+      label: 'Restart server',
+      fn: () => {
+        const tldaCmd = JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs'))
+        console.log(dim('  Stopping server...'))
+        try { execSync(`node ${tldaCmd} server stop`, { stdio: 'pipe', timeout: 10000 }) } catch {}
+        console.log(dim('  Starting server...'))
+        execSync(`node ${tldaCmd} server start`, { stdio: 'pipe', timeout: 15000 })
+      }
+    })
   }
 
   // 4. launchd (auto-restart on login)
@@ -1667,11 +1840,64 @@ async function cmdDoctor() {
     } catch {}
   }
 
+  // 8. Fleet server
+  {
+    const fleetUrl = process.env.FLEET_SERVER || 'http://localhost:5199'
+    try {
+      const res = await fetch(`${fleetUrl}/api/state`, { signal: AbortSignal.timeout(2000) })
+      if (res.ok) {
+        const data = await res.json()
+        const agentCount = (data.agents || []).filter(a => !a.dead && !a.human).length
+        ok(`Fleet server running at ${fleetUrl} (${agentCount} active agents)`)
+      } else {
+        fail(`Fleet server returned ${res.status}`, 'Check fleet server logs')
+        issues++
+      }
+    } catch {
+      fail(`Fleet server not reachable at ${fleetUrl}`)
+      issues++
+    }
+  }
+
+  // 9. Sync health (docs with broken sync stores)
+  if (serverRunning) {
+    try {
+      const health = await api('GET', '/api/projects/health', null, { timeoutMs: 5000 })
+      const broken = Object.entries(health).filter(([, v]) => !v.ok)
+      if (broken.length === 0) {
+        ok('All doc sync stores healthy')
+      } else {
+        for (const [name, info] of broken) {
+          fail(`Doc "${name}" sync broken: ${info.error}`, `POST /api/projects/${name}/sync/clear`)
+          issues++
+        }
+      }
+    } catch {}
+  }
+
+  // --- Auto-fix ---
+  if (autoFix && fixes.length > 0) {
+    console.log()
+    console.log(bold(`Fixing ${fixes.length} issue${fixes.length === 1 ? '' : 's'}...`))
+    for (const fix of fixes) {
+      console.log(cyan(`→ ${fix.label}`))
+      try {
+        fix.fn()
+        ok(fix.label)
+      } catch (e) {
+        fail(`${fix.label}: ${e.message}`)
+      }
+    }
+  }
+
   console.log()
-  if (issues === 0) {
+  if (issues === 0 && fixes.length === 0) {
     console.log(green(bold('All checks passed.')))
+  } else if (autoFix && fixes.length > 0) {
+    console.log(green(bold('Fixes applied. Re-run `tlda doctor` to verify.')))
   } else {
     console.log(red(bold(`${issues} issue${issues === 1 ? '' : 's'} found.`)))
+    if (fixes.length > 0) console.log(dim(`Run \`tlda doctor --fix\` to auto-fix.`))
     process.exit(1)
   }
 }
@@ -1917,6 +2143,100 @@ async function inferProjectName() {
   return basename(dir)
 }
 
+// --- Whisper server management ---
+
+const WHISPER_PID_FILE = join(homedir(), '.config', 'tlda', 'whisper.pid')
+const WHISPER_LOG_FILE = join(homedir(), '.config', 'tlda', 'whisper.log')
+const WHISPER_MODEL = join(homedir(), '.local', 'share', 'whisper-cpp', 'models', 'ggml-small.en.bin')
+const WHISPER_PORT = 8178
+
+async function cmdWhisper() {
+  const sub = getPositional(0) || 'start'
+  const { execSync, spawn } = await import('child_process')
+
+  function readWhisperPid() {
+    try { return parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim()) } catch { return null }
+  }
+
+  function isWhisperRunning() {
+    const pid = readWhisperPid()
+    if (!pid) return false
+    try { process.kill(pid, 0); return true } catch { return false }
+  }
+
+  if (sub === 'start') {
+    if (isWhisperRunning()) {
+      console.log(green('Whisper server already running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+      return
+    }
+
+    // Check binary
+    let whisperBin
+    try { whisperBin = execSync('which whisper-server', { stdio: 'pipe' }).toString().trim() } catch {
+      console.error(red('whisper-server not found. Install with: brew install whisper-cpp'))
+      process.exit(1)
+    }
+
+    // Check model
+    if (!existsSync(WHISPER_MODEL)) {
+      console.error(red(`Model not found: ${WHISPER_MODEL}`))
+      console.error('Download with:')
+      console.error(`  mkdir -p ~/.local/share/whisper-cpp/models`)
+      console.error(`  curl -L "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin" -o "${WHISPER_MODEL}"`)
+      process.exit(1)
+    }
+
+    const logFd = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
+    const child = spawn(whisperBin, [
+      '-m', WHISPER_MODEL,
+      '--port', String(WHISPER_PORT),
+      '--convert',
+    ], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    })
+    child.unref()
+    writeFileSync(WHISPER_PID_FILE, String(child.pid))
+    // Wait for server to be ready
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
+        if (res.ok) {
+          console.log(green('Whisper server started') + ` (pid ${child.pid}, port ${WHISPER_PORT}, model: small.en)`)
+          return
+        }
+      } catch {}
+    }
+    console.log(yellow('Whisper server spawned') + ` (pid ${child.pid}) — model loading may take a moment`)
+  } else if (sub === 'stop') {
+    const pid = readWhisperPid()
+    if (pid && isWhisperRunning()) {
+      process.kill(pid, 'SIGTERM')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+      console.log(green('Whisper server stopped'))
+    } else {
+      console.log('Whisper server not running')
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+    }
+  } else if (sub === 'status') {
+    if (isWhisperRunning()) {
+      console.log(green('running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
+    } else {
+      console.log('not running')
+    }
+  } else if (sub === 'log') {
+    if (existsSync(WHISPER_LOG_FILE)) {
+      const { execSync: exec } = await import('child_process')
+      process.stdout.write(exec(`tail -30 "${WHISPER_LOG_FILE}"`, { encoding: 'utf8' }))
+    } else {
+      console.log('No whisper log file')
+    }
+  } else {
+    console.log('Usage: tlda whisper [start|stop|status|log]')
+  }
+}
+
 // --- Ensure server is running ---
 
 async function ensureServer() {
@@ -2159,6 +2479,8 @@ async function main() {
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
+      case 'whisper': await cmdWhisper(); break
+      case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
       default:
         console.log(`tlda — tlda CLI
@@ -2183,7 +2505,9 @@ Commands:
   preview <name> [page ...]  Rasterize SVG pages to PNG
   remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
-  doctor         Check and fix common setup issues
+  whisper        Manage local whisper speech server [start|stop|status|log]
+  deploy         Build, restart server, verify SPA renders
+  doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.

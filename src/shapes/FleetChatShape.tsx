@@ -25,18 +25,20 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, toggleRecording, sendCurrentText } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -189,6 +191,31 @@ function tldaRenderMarkdown(escapedHtml: string): string {
   return result
 }
 
+// --- Viewer context helper ---
+
+function gatherViewerContext(editor: any, doc: any) {
+  if (!editor || !doc) return null
+  const camera = editor.getCamera()
+  const viewport = editor.getViewportPageBounds()
+  const visiblePages: number[] = []
+  if (doc.pages && viewport) {
+    doc.pages.forEach((page: any, i: number) => {
+      const b = page.bounds
+      if (!b) return
+      // Page is visible if it overlaps the viewport
+      if (b.x + b.width > viewport.minX && b.x < viewport.maxX &&
+          b.y + b.height > viewport.minY && b.y < viewport.maxY) {
+        visiblePages.push(i + 1)
+      }
+    })
+  }
+  return {
+    doc: doc.docName || null,
+    page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
+    camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
+  }
+}
+
 // --- Shape definition ---
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
@@ -279,6 +306,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   // Expose editor to trackpad input adapter
   _tldaEditor = editor
   const doc = useContext(DocContext)
@@ -473,7 +501,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const content = ref?.content || ''
+      // Resolve content: shape-backed chips use the tldraw store; others use the chipContentStore
+      const content = ref?.content || chipContentStore.get(token) || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
       const isImage = typePrefix === 'img'
@@ -508,19 +537,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
-    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    // Convert tlda URLs (with ?doc=) to ref-chips (not iframes).
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
         if (!isTldaUrl(url)) return _match
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const id = 'tlda-' + btoa(url).slice(0, 16)
-        // Add embed=1 then append auth token
-        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
-        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
         const openUrl = url.replace(/"/g, '&quot;')
-        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
+        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
       }
     )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
@@ -804,21 +828,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — only if user was already at bottom
-  const prevScrollHeight = useRef(0)
+  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send
+  const userScrolledUp = useRef(false)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const onScroll = () => { prevScrollHeight.current = el.scrollHeight }
-    prevScrollHeight.current = el.scrollHeight
+    const onScroll = () => {
+      userScrolledUp.current = el.scrollTop + el.clientHeight < el.scrollHeight - 30
+    }
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
   useLayoutEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    const wasAtBottom = el.scrollTop + el.clientHeight >= prevScrollHeight.current - 30
-    if (wasAtBottom) el.scrollTop = el.scrollHeight
+    if (!userScrolledUp.current) el.scrollTop = el.scrollHeight
   }, [linkedHtml])
 
   // After images inside the log load, they expand the scroll height. Scroll to
@@ -940,6 +964,23 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  // Detect impossible filter: filter is set but no AND group can match any known agent
+  const isImpossibleFilter = useMemo(() => {
+    if (filter.length === 0) return false
+    const allIds = agents.map((a: any) => {
+      const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+      return { id: a.id, labels }
+    })
+    // Also include human
+    allIds.push({ id: 'fleet:skip', labels: ['skip', 'fleet:skip'] })
+    // For each OR clause, check if there's any agent that matches ALL terms
+    return !filter.some(clause =>
+      allIds.some(agent =>
+        clause.every(([_role, label]) => agent.labels.includes(label))
+      )
+    )
+  }, [filterKey, agents])
+
   // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ?? undefined
 
@@ -1014,29 +1055,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       const names = agentNamesRef.current
 
-      // Only intercept on draggable elements
-      const isDraggable = target.closest('.chat-nick span[class*="nick-"], .chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
+      // Only intercept on draggable elements — nick spans are NOT drag handles
+      // (text selection takes priority; agent filter pills come from the agents panel)
+      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
       if (!isDraggable) return
 
       let drag: typeof dragRef.current = null
 
-      // Agent name
-      const nickSpan = target.closest('.chat-nick span[class*="nick-"]') as HTMLElement
-      if (nickSpan) {
-        const line = nickSpan.closest('.chat-line') as HTMLElement
-        const agentId = line?.dataset.msgFrom
-        if (agentId) {
-          drag = {
-            pillId: null, pillType: 'agent', value: agentId,
-            displayName: nickSpan.textContent?.replace(/:$/, '') || agentId,
-            color: '#7a9ec8', startX: e.clientX, startY: e.clientY,
-            started: false, captureEl: logEl, pointerId: e.pointerId,
-          }
-        }
-      }
-
       // Timestamp → message reference
-      if (!drag) {
+      {
         const tsEl = target.closest('.chat-ts') as HTMLElement
         if (tsEl) {
           const line = tsEl.closest('.chat-line') as HTMLElement
@@ -1189,15 +1216,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
       e.preventDefault()
       dragRef.current = drag
 
-      document.addEventListener('pointermove', onPointerMove, { capture: true })
-      document.addEventListener('pointerup', onPointerUp, { capture: true })
+      // Use shared drag coordinator instead of per-drag capture listeners
+      dragCoordinator.claim(onPointerMove, onPointerUp)
     }
 
     function onPointerMove(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
+      // stopImmediatePropagation/preventDefault handled by dragCoordinator
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
       if (!drag.started) {
@@ -1319,11 +1345,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     function onPointerUp(e: PointerEvent) {
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Coordinator handles listener cleanup and stopImmediatePropagation
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
       // Clear membrane glow
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
@@ -1342,9 +1366,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Also clean up move/up in case they were left attached (e.g. unmount during drag)
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Release coordinator if this component unmounts during a drag
+      if (dragRef.current) dragCoordinator.release()
     }
   }, [editor])
 
@@ -1383,7 +1406,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
@@ -1464,11 +1487,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
           {chatMessages.length === 0 ? (
             <div style={{
               padding: '20px 8px',
-              opacity: 0.3,
+              opacity: isImpossibleFilter ? 0.6 : 0.3,
               textAlign: 'center',
               fontSize: 10,
+              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
             }}>
-              {filter.length > 0 ? 'No messages' : 'No filter set'}
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
             <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
@@ -1580,12 +1606,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
@@ -1595,12 +1625,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      for (const t of sendTargets) sendMessage(t, text, {})
+                      const context = gatherViewerContext(editor, doc)
+                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
+                      restartRecording()
+                      userScrolledUp.current = false
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   }
                 }
@@ -1615,13 +1649,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  for (const t of targets) sendMessage(t, text)
+                  const context = gatherViewerContext(editor, doc)
+                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{

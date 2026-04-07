@@ -75,6 +75,10 @@ class MockBroadcastChannel {
 }
 global.BroadcastChannel = MockBroadcastChannel
 
+// ---- Mock fetch (whisper detection fails → falls back to Web Speech API) ----
+global.fetch = () => Promise.reject(new Error('no whisper'))
+global.AbortSignal = { timeout: () => ({}) }
+
 // ---- Setup window before import ----
 global.window = { SpeechRecognition: MockSpeechRecognition }
 
@@ -94,7 +98,7 @@ function reset() {
 
 // ---- Test 1: Happy path ----
 {
-  initVoice()
+  await initVoice()
   const ta = makeTextarea()
   setVoiceTarget(ta, [], {})
   reset()

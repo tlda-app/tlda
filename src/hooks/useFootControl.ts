@@ -17,10 +17,12 @@ import { createClickDetector } from '../clickDetect'
 
 export interface UseFootControlOptions {
   enabled: boolean
+  whistleEnabled?: boolean
+  hissEnabled?: boolean
 }
 
 export function useFootControl(editor: Editor | null, options: UseFootControlOptions) {
-  const { enabled } = options
+  const { enabled, whistleEnabled = true, hissEnabled = true } = options
   const footRef = useRef<ReturnType<typeof createFootController> | null>(null)
   const clickRef = useRef<ReturnType<typeof createClickDetector> | null>(null)
   const [footInstance, setFootInstance] = useState<ReturnType<typeof createFootController> | null>(null)
@@ -92,7 +94,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     }
 
     const foot = createFootController(editor, { onCursorMove })
-    const click = createClickDetector()
+    const click = createClickDetector({ whistleEnabled, hissEnabled })
     footRef.current = foot
     clickRef.current = click
     setFootInstance(foot)
@@ -395,6 +397,14 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       setClickInstance(null)
     }
   }, [enabled, editor])
+
+  // Update whistle/hiss toggles at runtime without tearing down the detector
+  useEffect(() => {
+    clickRef.current?.setWhistleEnabled(whistleEnabled)
+  }, [whistleEnabled])
+  useEffect(() => {
+    clickRef.current?.setHissEnabled(hissEnabled)
+  }, [hissEnabled])
 
   return { footInstance, clickInstance }
 }

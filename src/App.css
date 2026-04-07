@@ -153,6 +153,21 @@
   text-decoration: underline;
 }
 
+.error-clear-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.error-clear-btn:hover {
+  background: #dc2626;
+}
+
 .PickerScreen {
   font-family: system-ui, -apple-system, sans-serif;
   padding: 2rem;
@@ -205,6 +220,34 @@
 .picker-date {
   color: #94a3b8;
   white-space: nowrap;
+}
+
+.picker-row-broken {
+  background: #fef2f2;
+}
+
+.picker-row-broken:hover {
+  background: #fee2e2 !important;
+}
+
+.picker-health-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.picker-error-hint {
+  display: block;
+  font-size: 0.7rem;
+  color: #dc2626;
+  opacity: 0.7;
+  margin-top: 2px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
 }
 
 .picker-archive {

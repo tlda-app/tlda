@@ -1,38 +1,59 @@
 /**
- * clickDetect.ts — Web Audio transient detector for tongue clicks and lip pops.
+ * clickDetect.ts — Web Audio gesture detector for non-speech mouth sounds.
  *
  * Runs a parallel pipeline alongside speech recognition (no interference).
- * Detects two distinct non-speech sounds:
+ * Detects five distinct non-speech gestures:
  *   - Tongue click (alveolar "tck"): broadband sharp transient, fast attack
- *   - Lip pop (bilabial): lower-frequency transient
+ *   - Double click: two tongue clicks within DOUBLE_CLICK_MS
+ *   - Lip pop (bilabial): lower-frequency transient → 'enter'
+ *   - Whistle: sustained narrow-band energy in 500–5kHz
+ *   - Hiss: sustained broadband energy without sharp attack
  *
  * Emits:
- *   'click'   — single tongue click
- *   'dblclick' — two tongue clicks within DOUBLE_CLICK_MS
- *   'enter'   — lip pop
+ *   'click'         — single tongue click
+ *   'dblclick'      — two tongue clicks within DOUBLE_CLICK_MS
+ *   'enter'         — lip pop
+ *   'whistle-start' — whistle onset
+ *   'whistle-end'   — whistle offset
+ *   'hiss-start'    — hiss onset
+ *   'hiss-end'      — hiss offset
  *
  * Usage:
  *   const cd = createClickDetector()
  *   await cd.start()
  *   cd.on('click', () => { ... })
- *   cd.on('dblclick', () => { ... })
- *   cd.on('enter', () => { ... })
+ *   cd.on('whistle-start', () => { ... })
+ *   cd.on('hiss-start', () => { ... })
  *   cd.stop()
  */
 
-export type ClickEvent = 'click' | 'dblclick' | 'enter'
+export type ClickEvent = 'click' | 'dblclick' | 'enter' | 'whistle-start' | 'whistle-end' | 'hiss-start' | 'hiss-end'
 
 export interface ClickDetectorOptions {
   doubleClickMs?: number   // window for double-click detection (default: 300)
   cooldownMs?: number      // ignore events within this window after a detected event (default: 400)
+  whistleEnabled?: boolean // enable whistle detection (default: true)
+  hissEnabled?: boolean    // enable hiss detection (default: true)
 }
 
 // Tongue click: energy concentrated in high frequencies (>2kHz), very fast attack
 const TONGUE_CLICK_LOW_BAND = 2000   // Hz, lower bound of tongue click detection
 
+// Whistle: sustained narrow-band energy in 500–5kHz with high spectral purity
+const WHISTLE_LOW_HZ = 500
+const WHISTLE_HIGH_HZ = 5000
+const WHISTLE_SUSTAIN_FRAMES = 8       // ~130ms at 60fps before onset fires
+const WHISTLE_PURITY_THRESHOLD = 0.6   // peak bin energy / total band energy — high = tonal
+
+// Hiss: sustained broadband energy (flat spectrum, no sharp attack)
+const HISS_SUSTAIN_FRAMES = 12          // ~200ms at 60fps before onset fires
+const HISS_SPECTRAL_FLATNESS_MIN = 0.3  // geometric/arithmetic mean ratio — high = flat/noisy
+
 export function createClickDetector(options: ClickDetectorOptions = {}) {
   const doubleClickMs = options.doubleClickMs ?? 300
   const cooldownMs = options.cooldownMs ?? 400
+  let whistleEnabled = options.whistleEnabled ?? true
+  let hissEnabled = options.hissEnabled ?? true
 
   let audioCtx: AudioContext | null = null
   let analyser: AnalyserNode | null = null
@@ -44,12 +65,24 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     ['click', []],
     ['dblclick', []],
     ['enter', []],
+    ['whistle-start', []],
+    ['whistle-end', []],
+    ['hiss-start', []],
+    ['hiss-end', []],
   ])
 
   let lastClickTime = 0
   let pendingClick = false
   let pendingClickTimer: ReturnType<typeof setTimeout> | null = null
   let lastEventTime = 0
+
+  // Whistle state
+  let whistleFrameCount = 0
+  let whistleActive = false
+
+  // Hiss state
+  let hissFrameCount = 0
+  let hissActive = false
 
   function emit(event: ClickEvent) {
     for (const fn of handlers.get(event) ?? []) fn()
@@ -91,6 +124,49 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     return Math.sqrt(sum / (highBin - lowBin + 1))
   }
 
+  /**
+   * Spectral purity in a band: ratio of peak bin energy to total band energy.
+   * High (>0.6) = tonal (whistle). Low = broadband noise.
+   */
+  function getSpectralPurity(data: Float32Array, sampleRate: number, lowHz: number, highHz: number): number {
+    const binWidth = sampleRate / (data.length * 2)
+    const lowBin = Math.floor(lowHz / binWidth)
+    const highBin = Math.min(Math.ceil(highHz / binWidth), data.length - 1)
+    let peak = 0
+    let total = 0
+    for (let i = lowBin; i <= highBin; i++) {
+      const linear = Math.pow(10, data[i] / 20)
+      const e = linear * linear
+      if (e > peak) peak = e
+      total += e
+    }
+    return total > 0 ? peak / total : 0
+  }
+
+  /**
+   * Spectral flatness (Wiener entropy): geometric mean / arithmetic mean of bin powers.
+   * 1.0 = perfectly flat (white noise). 0.0 = all energy in one bin (pure tone).
+   * Hiss has high flatness; whistle has low flatness.
+   */
+  function getSpectralFlatness(data: Float32Array, sampleRate: number, lowHz: number, highHz: number): number {
+    const binWidth = sampleRate / (data.length * 2)
+    const lowBin = Math.floor(lowHz / binWidth)
+    const highBin = Math.min(Math.ceil(highHz / binWidth), data.length - 1)
+    const n = highBin - lowBin + 1
+    if (n <= 0) return 0
+    let logSum = 0
+    let arithmeticSum = 0
+    for (let i = lowBin; i <= highBin; i++) {
+      const linear = Math.pow(10, data[i] / 20)
+      const e = linear * linear + 1e-20  // avoid log(0)
+      logSum += Math.log(e)
+      arithmeticSum += e
+    }
+    const geometricMean = Math.exp(logSum / n)
+    const arithmeticMean = arithmeticSum / n
+    return arithmeticMean > 0 ? geometricMean / arithmeticMean : 0
+  }
+
   // Adaptive noise floor: slow EMA of quiet-frame energy.
   // Threshold = noiseFloor * triggerRatio. Self-calibrates to mic/room.
   let noiseFloor = 1e-4          // initial estimate, will converge quickly
@@ -115,8 +191,51 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
     // Adaptive threshold: purely relative to noise floor (no hard minimum — lapel mics have low amplitude)
     const adaptiveThreshold = noiseFloor * triggerRatio
 
-    // Transient detection: sharp rise AND above adaptive threshold
-    const isTransient = totalEnergy > adaptiveThreshold && totalEnergy > prevEnergy * ATTACK_RATIO
+    // --- Whistle detection: sustained tonal energy in 500–5kHz ---
+    const whistleBandEnergy = whistleEnabled ? getBandEnergy(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ) : 0
+    const purity = whistleEnabled ? getSpectralPurity(data, sampleRate, WHISTLE_LOW_HZ, WHISTLE_HIGH_HZ) : 0
+    const isWhistleFrame = whistleEnabled && whistleBandEnergy > adaptiveThreshold && purity > WHISTLE_PURITY_THRESHOLD
+
+    if (isWhistleFrame) {
+      whistleFrameCount++
+      if (!whistleActive && whistleFrameCount >= WHISTLE_SUSTAIN_FRAMES) {
+        whistleActive = true
+        console.log('[click-detect] whistle-start — energy:', whistleBandEnergy.toFixed(4), 'purity:', purity.toFixed(2))
+        emit('whistle-start')
+      }
+    } else {
+      if (whistleActive) {
+        whistleActive = false
+        console.log('[click-detect] whistle-end')
+        emit('whistle-end')
+      }
+      whistleFrameCount = 0
+    }
+
+    // --- Hiss detection: sustained broadband energy with flat spectrum ---
+    const flatness = hissEnabled ? getSpectralFlatness(data, sampleRate, 200, nyquist * 0.8) : 0
+    const isHissFrame = hissEnabled && totalEnergy > adaptiveThreshold && flatness > HISS_SPECTRAL_FLATNESS_MIN && !isWhistleFrame
+
+    if (isHissFrame) {
+      hissFrameCount++
+      if (!hissActive && hissFrameCount >= HISS_SUSTAIN_FRAMES) {
+        hissActive = true
+        console.log('[click-detect] hiss-start — energy:', totalEnergy.toFixed(4), 'flatness:', flatness.toFixed(2))
+        emit('hiss-start')
+      }
+    } else {
+      if (hissActive) {
+        hissActive = false
+        console.log('[click-detect] hiss-end')
+        emit('hiss-end')
+      }
+      hissFrameCount = 0
+    }
+
+    // --- Transient detection (tongue click / lip pop) ---
+    // Only check transients when not in a sustained gesture
+    const isTransient = !whistleActive && !hissActive &&
+      totalEnergy > adaptiveThreshold && totalEnergy > prevEnergy * ATTACK_RATIO
 
     if (isTransient) {
       const highEnergy = getBandEnergy(data, sampleRate, TONGUE_CLICK_LOW_BAND, nyquist * 0.9)
@@ -129,8 +248,8 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
         console.log('[click-detect] transient unclassified — energy:', totalEnergy.toFixed(4), 'highRatio:', highRatio.toFixed(2))
       }
       // Don't update noise floor on transient frames
-    } else {
-      // Update noise floor only on quiet frames
+    } else if (!isWhistleFrame && !isHissFrame) {
+      // Update noise floor only on quiet frames (not during any gesture)
       noiseFloor = noiseFloor * (1 - NOISE_FLOOR_ALPHA) + totalEnergy * NOISE_FLOOR_ALPHA
     }
 
@@ -166,6 +285,9 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   function stop() {
     if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
     if (pendingClickTimer) { clearTimeout(pendingClickTimer); pendingClickTimer = null }
+    // End any active sustained gestures
+    if (whistleActive) { whistleActive = false; emit('whistle-end') }
+    if (hissActive) { hissActive = false; emit('hiss-end') }
     source?.disconnect()
     audioCtx?.close()
     stream?.getTracks().forEach(t => t.stop())
@@ -183,7 +305,16 @@ export function createClickDetector(options: ClickDetectorOptions = {}) {
   function setTriggerRatio(r: number) { triggerRatio = Math.max(1.1, r) }
   function getTriggerRatio() { return triggerRatio }
 
-  return { start, stop, on, setTriggerRatio, getTriggerRatio }
+  function setWhistleEnabled(v: boolean) {
+    whistleEnabled = v
+    if (!v && whistleActive) { whistleActive = false; whistleFrameCount = 0; emit('whistle-end') }
+  }
+  function setHissEnabled(v: boolean) {
+    hissEnabled = v
+    if (!v && hissActive) { hissActive = false; hissFrameCount = 0; emit('hiss-end') }
+  }
+
+  return { start, stop, on, setTriggerRatio, getTriggerRatio, setWhistleEnabled, setHissEnabled }
 }
 
 export type ClickDetector = ReturnType<typeof createClickDetector>

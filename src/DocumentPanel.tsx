@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { useClickActions } from './hooks/useClickActions'
+import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote } from './tools/VoiceNoteTool'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
@@ -808,8 +809,8 @@ export function SemanticHighlightPill() { return null }
 function VoiceNoteButtonInner() {
   const editor = useEditor()
   const [recording, setRecording] = useState(false)
-  const footMode = new URLSearchParams(window.location.search).has('foot')
-  useClickActions(editor, footMode)
+  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
+  useClickActions(editor, clicksEnabled)
   const recRef = useRef<any>(null)
   const transcriptRef = useRef('')
 

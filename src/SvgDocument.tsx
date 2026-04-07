@@ -27,9 +27,11 @@ import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { HudLayoutOverlay, registerLayoutSideEffects } from './shapes/HudLayoutMode'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
+import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
@@ -91,6 +93,7 @@ import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
 import { FootControlDebug } from './footControlDebug'
+import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
@@ -318,9 +321,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
 
+  // Input mode toggles (localStorage-persisted, per-feature on/off)
+  const footEnabled = useSyncExternalStore(subscribeInputModes, getFootEnabled)
+  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
+  const whistleEnabled = useSyncExternalStore(subscribeInputModes, getWhistleEnabled)
+  const hissEnabled = useSyncExternalStore(subscribeInputModes, getHissEnabled)
+
   // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
-  const footEnabled = new URLSearchParams(window.location.search).has('foot')
-  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, { enabled: footEnabled })
+  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
+    enabled: footEnabled || clicksEnabled,
+    whistleEnabled,
+    hissEnabled,
+  })
 
   useYjsSignals({
     editorRef, document,
@@ -606,7 +618,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
@@ -631,6 +643,46 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     assets: INLINE_ASSETS,
     onCustomMessageReceived: onCustomMessage,
   })
+
+  // --- Sync error handling ---
+  // When the sync store hits an error (e.g. ValidationError from unknown shape types),
+  // show an error screen instead of an infinite spinner.
+  if (storeWithStatus.status === 'error') {
+    const err = storeWithStatus.error
+    const errMsg = err?.message || String(err) || 'Unknown sync error'
+    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation')
+    return (
+      <div className="App">
+        <div className="ErrorScreen">
+          <div className="error-icon">⚠</div>
+          <h2 className="error-title">Document sync failed</h2>
+          <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
+          {isValidation && (
+            <p className="error-message" style={{ marginTop: 8 }}>
+              This usually means the sync store contains shapes from an incompatible build.
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+            <button
+              className="error-clear-btn"
+              onClick={async () => {
+                try {
+                  const resp = await fetch(`/api/projects/${document.name}/sync/clear`, { method: 'POST' })
+                  if (resp.ok) window.location.reload()
+                  else alert(`Failed to clear: ${resp.statusText}`)
+                } catch (e) {
+                  alert(`Failed to clear: ${(e as Error).message}`)
+                }
+              }}
+            >
+              Clear broken shapes
+            </button>
+            <a className="error-home-link" href="/">← All documents</a>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -901,6 +953,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
             setRefViewerRefsLocal([{ label: anchorId, region }])
           })
+
+          // Register HUD layout mode side effects (container ↔ fleet shape sync)
+          registerLayoutSideEffects(editor)
 
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
@@ -1193,13 +1248,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <NoteDropHandler />
       <MarkdownDropHandler />
       <TocDropTargetManager />
+      <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    {footEnabled && <FootControlDebug footController={footInstance} clickDetector={clickInstance} />}
+    <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
     </>
   )
 }

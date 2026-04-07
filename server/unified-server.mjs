@@ -78,6 +78,35 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
+// Services health — checks tlda server (self), fleet server, Yjs sync
+app.get('/health/services', async (req, res) => {
+  const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
+  const services = {
+    tlda: { ok: true, uptime: process.uptime() },
+    fleet: { ok: false, error: null },
+    sync: { ok: true },
+  }
+
+  // Check fleet server (uses /api/state — fleet has no /health endpoint)
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 2000)
+    const r = await fetch(`${FLEET_URL}/api/state`, { signal: ctrl.signal })
+    clearTimeout(timer)
+    if (r.ok) {
+      const data = await r.json()
+      const agents = (data.agents || []).filter(a => !a.dead && !a.human).length
+      services.fleet = { ok: true, agents }
+    } else {
+      services.fleet = { ok: false, error: `HTTP ${r.status}` }
+    }
+  } catch (e) {
+    services.fleet = { ok: false, error: e.message }
+  }
+
+  res.json(services)
+})
+
 // Cookie login — set token as cookie, redirect to viewer
 app.get('/auth/login', loginRoute)
 
