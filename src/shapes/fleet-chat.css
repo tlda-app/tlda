@@ -1770,3 +1770,20 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .cluster-shape:hover .cluster-footer {
   opacity: 1;
 }
+
+/* --- HUD Container (transient layout mode container) --- */
+.hud-container-shape {
+  border: 2px dashed rgba(147, 112, 219, 0.4);
+  border-radius: 8px;
+  background: rgba(147, 112, 219, 0.03);
+  transition: border-color 0.2s;
+}
+.hud-container-shape:hover {
+  border-color: rgba(147, 112, 219, 0.6);
+}
+
+/* Layout button active state */
+.fleet-shape .fleet-layout-btn.active {
+  opacity: 1 !important;
+  color: #9370db;
+}
