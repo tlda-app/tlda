@@ -17,7 +17,7 @@
  */
 
 import { resolve, basename, dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -1469,6 +1469,8 @@ function getPort() {
 
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
+  const autoFix = process.argv.includes('--fix')
+  const fixes = []  // { label, fn } — accumulated during checks, run at end if --fix
   const ok  = (msg) => console.log(green('✓') + ' ' + msg)
   const fail = (msg, fix) => {
     console.log(red('✗') + ' ' + msg)
@@ -1558,6 +1560,77 @@ async function cmdDoctor() {
       fail(`Server failed to start: ${e.message}`, 'tlda server log')
       issues++
     }
+  }
+
+  // 3b. SPA serves pages (not just health endpoint)
+  let needsRebuild = false
+  if (serverRunning) {
+    const token = getToken()
+    const tokenParam = token ? `?token=${token}` : ''
+    try {
+      const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+      const body = await res.text()
+      if (res.ok && body.includes('<div id="root">')) {
+        ok('SPA serves pages')
+      } else if (res.status === 404 || !body.includes('<div id="root">')) {
+        fail('SPA not serving — bundle may be missing or stale', 'npm run build')
+        needsRebuild = true
+        issues++
+      } else {
+        fail(`SPA returned ${res.status}`)
+        issues++
+      }
+    } catch (e) {
+      fail(`SPA check failed: ${e.message}`)
+      issues++
+    }
+  }
+
+  // 3c. Bundle freshness — is dist/ newer than latest source commit?
+  {
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const distIndex = join(ctdRoot, 'dist', 'index.html')
+    if (existsSync(distIndex)) {
+      const distMtime = statSync(distIndex).mtimeMs
+      try {
+        const { execSync: ex } = await import('child_process')
+        const commitTs = parseInt(ex('git log -1 --format=%ct -- src/ vite.config.ts index.html package.json', { cwd: ctdRoot, stdio: 'pipe' }).toString().trim(), 10) * 1000
+        if (distMtime >= commitTs) {
+          ok('Bundle is current')
+        } else {
+          const agoMin = Math.round((Date.now() - distMtime) / 60000)
+          warn(`Bundle is stale (built ${agoMin}m ago, source changed since)`, 'npm run build')
+          needsRebuild = true
+        }
+      } catch {
+        ok('Bundle exists (freshness check skipped — no git)')
+      }
+    } else {
+      fail('No built bundle (dist/index.html missing)', 'npm run build')
+      needsRebuild = true
+      issues++
+    }
+  }
+
+  if (needsRebuild) {
+    const ctdRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    fixes.push({
+      label: 'Rebuild SPA bundle',
+      fn: () => {
+        console.log(dim('  Running npm run build...'))
+        execSync('npm run build', { cwd: ctdRoot, stdio: 'inherit', timeout: 120000 })
+      }
+    })
+    fixes.push({
+      label: 'Restart server',
+      fn: () => {
+        const tldaCmd = JSON.stringify(join(ctdRoot, 'cli', 'tlda.mjs'))
+        console.log(dim('  Stopping server...'))
+        try { execSync(`node ${tldaCmd} server stop`, { stdio: 'pipe', timeout: 10000 }) } catch {}
+        console.log(dim('  Starting server...'))
+        execSync(`node ${tldaCmd} server start`, { stdio: 'pipe', timeout: 15000 })
+      }
+    })
   }
 
   // 4. launchd (auto-restart on login)
@@ -1703,11 +1776,29 @@ async function cmdDoctor() {
     } catch {}
   }
 
+  // --- Auto-fix ---
+  if (autoFix && fixes.length > 0) {
+    console.log()
+    console.log(bold(`Fixing ${fixes.length} issue${fixes.length === 1 ? '' : 's'}...`))
+    for (const fix of fixes) {
+      console.log(cyan(`→ ${fix.label}`))
+      try {
+        fix.fn()
+        ok(fix.label)
+      } catch (e) {
+        fail(`${fix.label}: ${e.message}`)
+      }
+    }
+  }
+
   console.log()
-  if (issues === 0) {
+  if (issues === 0 && fixes.length === 0) {
     console.log(green(bold('All checks passed.')))
+  } else if (autoFix && fixes.length > 0) {
+    console.log(green(bold('Fixes applied. Re-run `tlda doctor` to verify.')))
   } else {
     console.log(red(bold(`${issues} issue${issues === 1 ? '' : 's'} found.`)))
+    if (fixes.length > 0) console.log(dim(`Run \`tlda doctor --fix\` to auto-fix.`))
     process.exit(1)
   }
 }
@@ -2315,7 +2406,7 @@ Commands:
   remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
-  doctor         Check and fix common setup issues
+  doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.
