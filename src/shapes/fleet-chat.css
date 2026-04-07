@@ -333,7 +333,8 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 /* --- Draggable elements in chat --- */
-.fleet-chat-shape .chat-nick span[class*="nick-"],
+/* Only timestamps and attachment-type elements are drag handles.
+   Nick spans and message text are selectable/copyable. */
 .fleet-chat-shape .chat-ts,
 .fleet-chat-shape .chat-activity-card,
 .fleet-chat-shape .code-block-header,
@@ -342,6 +343,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .tlda-card {
   cursor: grab;
   touch-action: none;
+  user-select: none;
 }
 
 /* --- Chat line base --- */
@@ -350,6 +352,9 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   font-size: 11px;
   line-height: 1.5;
   word-break: break-word;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
 }
 
 .fleet-chat-shape .chat-line.from-user {

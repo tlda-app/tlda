@@ -214,12 +214,12 @@ export function renderChatLine(m, ctx) {
       if (isImage && fileUrl) {
         return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
       }
-      const isMd = /\.md$/.test(att.path || '')
-      const cls = isMd ? 'md-file-card' : 'md-file-card file-card-generic'
-      const linkAttr = fileUrl ? `data-url="${fileUrl}"` : ''
-      return `<div class="${cls}" data-path="${filePath}" ${linkAttr}><span class="md-file-chip">${name}</span>${isMd ? '<div class="md-file-body"></div>' : ''}</div>`
+      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
+      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
     }
-    return `<span class="md-file-card file-card-generic"><span class="md-file-chip">att:${idx}</span></span>`
+    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
   })
   const sender = (getAgents()).find(a => a.id === m.from)
   const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
