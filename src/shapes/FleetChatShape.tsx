@@ -37,6 +37,7 @@ import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { TerminalCard } from './TerminalCard'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -343,6 +344,24 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
+
+  // Terminal cards — set of agent IDs with open terminal cards
+  const [terminalCards, setTerminalCards] = useState<Set<string>>(() => new Set())
+  const openTerminal = useCallback((agentId: string) => {
+    setTerminalCards(prev => new Set(prev).add(agentId))
+  }, [])
+  const closeTerminal = useCallback((agentId: string) => {
+    setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
+  }, [])
+
+  // Auto-open terminal cards when a "terminal_card" event arrives
+  useEffect(() => {
+    for (const e of liveEvents) {
+      if (e._evType === 'terminal_card' && e.from && !terminalCards.has(e.from)) {
+        openTerminal(e.from)
+      }
+    }
+  }, [liveEvents, terminalCards, openTerminal])
 
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
@@ -1519,6 +1538,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 {' '}<ElapsedTime startMs={startTs} />
               </div>
             ))}
+          {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
+          {[...terminalCards].map(agentId => (
+            <TerminalCard
+              key={`terminal-${agentId}`}
+              agentId={agentId}
+              agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
+              onDismiss={() => closeTerminal(agentId)}
+            />
+          ))}
         </div>
 
         {/* Doc-link hover preview — positioned relative to shape container */}
@@ -1600,6 +1628,28 @@ function FleetChatComponent({ shape }: { shape: any }) {
                   const val = ta.value
                   if (val.trim() === '') {
                     e.preventDefault() // suppress on empty
+                    return
+                  }
+                  // /terminal command — open terminal card for target agent
+                  const termMatch = val.trim().match(/^\/terminal\s*(.*)$/i)
+                  if (termMatch) {
+                    e.preventDefault()
+                    const arg = termMatch[1].trim()
+                    // Find agent by name or ID
+                    let targetId = ''
+                    if (arg) {
+                      const match = agents.find((a: any) =>
+                        a.friendly_name === arg || a.id === arg || a.id?.endsWith(arg)
+                      )
+                      targetId = match?.id || arg
+                    } else if (sendTargets.length > 0) {
+                      targetId = sendTargets[0]
+                    }
+                    if (targetId) {
+                      openTerminal(targetId)
+                      ta.value = ''
+                      ta.style.height = 'auto'
+                    }
                     return
                   }
                   // Get text before cursor on current line
