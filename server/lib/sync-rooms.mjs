@@ -10,6 +10,7 @@ import { createTLSchema, defaultShapeSchemas, defaultBindingSchemas, DefaultColo
 import { T } from '@tldraw/validate'
 import { createMigrationSequence } from '@tldraw/store'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs'
+import { readFile, writeFile, rename, mkdir, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
 
@@ -319,17 +320,17 @@ function loadSnapshot(docName) {
 }
 
 /**
- * Save a room snapshot to disk (atomic write).
+ * Save a room snapshot to disk (atomic write, async to avoid blocking event loop).
  */
-function saveSnapshot(docName, room) {
+async function saveSnapshot(docName, room) {
   const path = snapshotPath(docName)
   const dir = dirname(path)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  if (!existsSync(dir)) await mkdir(dir, { recursive: true })
 
   const snapshot = room.getCurrentSnapshot()
   const tmp = path + '.tmp'
-  writeFileSync(tmp, JSON.stringify(snapshot))
-  renameSync(tmp, path)
+  await writeFile(tmp, JSON.stringify(snapshot))
+  await rename(tmp, path)
 }
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */

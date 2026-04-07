@@ -1067,20 +1067,48 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   opacity: 0.7;
 }
 
-/* --- Agent row --- */
+/* --- Agent row (expandable 1→3 lines) --- */
 
 .fleet-agents-shape .fleet-agents-row {
   display: flex;
-  align-items: center;
-  height: 24px;
-  padding: 0 8px;
+  flex-direction: column;
+  padding: 0;
   transition: background 0.1s;
 }
 .fleet-agents-shape .fleet-agents-row:hover {
   background: rgba(100, 140, 255, 0.05);
 }
 .fleet-agents-shape .fleet-agents-row.dimmed {
+  opacity: 0.5;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed:hover {
+  opacity: 0.7;
+}
+.fleet-agents-shape .fleet-agents-row-main {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+.fleet-agents-shape .fleet-agents-row-detail {
+  padding: 0 8px 4px 18px;
+  font-size: 8px;
+  line-height: 1.4;
+}
+.fleet-agents-shape .fleet-agents-detail-task {
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-agents-shape .fleet-agents-detail-message {
   opacity: 0.4;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
 }
 
 /* --- Column widths --- */
@@ -1145,7 +1173,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   opacity: 0.75;
 }
 
-/* --- Section headers (stale) --- */
+/* --- Section headers (dead) --- */
 
 .fleet-agents-shape .fleet-agents-section-header {
   display: flex;
@@ -1202,11 +1230,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   background: #7a9ec8;
 }
 
-/* --- Respawnable agent name --- */
+/* --- Respawn button in row --- */
 
-.fleet-agents-shape .fleet-agents-col-name.respawnable {
-  cursor: pointer;
-  text-decoration: underline dotted;
+.fleet-agents-shape .fleet-agents-respawn-btn {
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn {
+  opacity: 0.6;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn {
+  opacity: 0;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn {
+  opacity: 0.5;
 }
 
 /* --- Spawn buttons --- */
@@ -1230,6 +1268,112 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
+}
+
+/* --- Search shape enhancements --- */
+
+.fleet-search-filter-tag {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(100, 140, 255, 0.12);
+  color: rgba(100, 140, 255, 0.8);
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 14px;
+}
+
+.fleet-search-section-header {
+  padding: 4px 10px 2px;
+  font-size: 9px;
+  opacity: 0.4;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+}
+
+.fleet-search-doc-result {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6;
+  transition: background 0.1s;
+}
+.fleet-search-doc-result:hover {
+  background: rgba(99, 160, 219, 0.08);
+}
+
+.fleet-search-result {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-search-result:hover {
+  background: rgba(128, 128, 128, 0.06);
+}
+.fleet-search-result.expanded {
+  background: rgba(100, 140, 255, 0.04);
+  border-left: 2px solid rgba(100, 140, 255, 0.3);
+}
+
+.fleet-search-context {
+  padding: 2px 8px 6px 12px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  background: rgba(128, 128, 128, 0.02);
+}
+.fleet-search-context-header {
+  font-size: 8px;
+  opacity: 0.3;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 3px;
+  padding-top: 2px;
+}
+.fleet-search-context-msg {
+  padding: 2px 6px;
+  border-radius: 2px;
+  margin-bottom: 1px;
+}
+.fleet-search-context-msg.target {
+  background: rgba(100, 140, 255, 0.08);
+  border-left: 2px solid rgba(100, 140, 255, 0.4);
+}
+
+/* --- Embedded chat view in search --- */
+
+.fleet-search-embedded-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+.fleet-search-chat-back {
+  padding: 4px 10px;
+  font-size: 9px;
+  opacity: 0.5;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.fleet-search-chat-back:hover {
+  opacity: 0.8;
+}
+.fleet-search-embedded-chat .fleet-chat-log {
+  font-size: 10px;
+  padding: 4px 0;
+}
+
+/* Highlight a chat line when scrolled to from search */
+@keyframes chat-line-flash {
+  0% { background: rgba(100, 140, 255, 0.2); }
+  100% { background: transparent; }
+}
+.chat-line-highlight {
+  animation: chat-line-flash 3s ease-out;
 }
 
 /* --- Reference chips (dropped from drag) --- */
