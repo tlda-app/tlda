@@ -269,7 +269,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           // Build token from active tab content
           const text = (current.props.text as string) || ''
           const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
-          const token = `«annotation:${displayName}»`
+          // Embed the shape ID so FleetChatShape can resolve it via editor.getShape()
+          const token = `«annotation:${displayName}#${current.id}»`
           const wasLocked = (chat as any).isLocked
           if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
           chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
