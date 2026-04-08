@@ -106,6 +106,18 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
+  // --- Terminal attention card (permission prompt auto-pop) ---
+  if (m._evType === 'terminal_attention') {
+    const ts = timeShort(m.timestamp)
+    const label = esc(m._agentLabel || agentLabel(m.from))
+    const reason = esc(m._reason || 'needs attention')
+    const agentCls = getNickClass(m.from)
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-attention" data-lc-type="attention">
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${label}</span></span></div>
+      </div></div>`
+  }
+
   // --- Task lifecycle cards ---
   if (m._evType === 'delegate') {
     const ts = timeShort(m.timestamp)

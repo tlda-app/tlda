@@ -354,10 +354,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
     setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
   }, [])
 
-  // Auto-open terminal cards when a "terminal_card" event arrives
+  // Auto-open terminal cards when a "terminal_card" or "terminal_attention" event arrives
   useEffect(() => {
     for (const e of liveEvents) {
-      if (e._evType === 'terminal_card' && e.from && !terminalCards.has(e.from)) {
+      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention') && e.from && !terminalCards.has(e.from)) {
         openTerminal(e.from)
       }
     }

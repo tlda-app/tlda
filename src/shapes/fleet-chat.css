@@ -509,6 +509,13 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   color: var(--text-dim);
 }
 .fleet-chat-shape .lifecycle-card .lc-criterion { padding: 1px 0; }
+.fleet-chat-shape .lifecycle-card.lc-attention {
+  border-color: rgba(255, 170, 0, 0.3);
+  background: rgba(255, 170, 0, 0.05);
+}
+.fleet-chat-shape .lifecycle-card.lc-attention .lc-icon {
+  color: #ffaa00;
+}
 .fleet-chat-shape .lifecycle-card .lc-chain {
   display: inline-flex;
   gap: 3px;

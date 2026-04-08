@@ -395,6 +395,11 @@ function convertChatEvent(e) {
     msg._description = e.text || ''
     msg._taskId = e.metadata?.taskId || e.task_id || ''
     msg._agent = e.agent_id || e.from || ''
+  } else if (type === 'terminal_attention') {
+    msg._evType = 'terminal_attention'
+    msg._reason = e.metadata?.reason || ''
+    msg._agentLabel = e.metadata?.agentLabel || ''
+    msg._snippet = e.metadata?.snippet || ''
   } else if (type === 'terminal_user' || type === 'terminal_assistant') {
     msg._evType = type
     msg._source = e.source || 'terminal'
