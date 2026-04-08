@@ -72,10 +72,18 @@ type RawHighlightSignal = { x: number; y: number; page: number; timestamp: numbe
 const scrollHandle = bus.register<RawScrollSignal>({ key: 'signal:forward-scroll' })
 const highlightHandle = bus.register<RawHighlightSignal>({ key: 'signal:forward-highlight' })
 
-type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
+type RawScrollToElementSignal = { id: string; timestamp: number }
+const scrollToElementHandle = bus.register<RawScrollToElementSignal>({ key: 'signal:scroll-to-element' })
+
+type RawSetChatTargetSignal = { agent: string; panel?: string; chatShapeId?: string; timestamp: number }
+const setChatTargetHandle = bus.register<RawSetChatTargetSignal>({ key: 'signal:set-chat-target' })
+
+type ForwardSyncCallback = (signal: ForwardSyncSignal | { type: 'scroll-to-element'; id: string } | { type: 'set-chat-target'; agent: string; panel?: string }) => void
 const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
 scrollHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...s }) })
 highlightHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...s }) })
+scrollToElementHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll-to-element', id: s.id }) })
+setChatTargetHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'set-chat-target', agent: s.agent, panel: s.panel, chatShapeId: s.chatShapeId }) })
 
 export function onForwardSync(cb: ForwardSyncCallback) {
   forwardSyncCallbacks.add(cb)

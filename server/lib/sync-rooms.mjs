@@ -209,6 +209,26 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-tasks': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-tasks',
+      sequence: [],
+    }),
+  },
+  'fleet-inbox': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-inbox',
+      sequence: [],
+    }),
+  },
   'inline-doc': {
     props: {
       w: T.number,
@@ -263,6 +283,16 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.terminal',
+      sequence: [],
+    }),
+  },
+  'task-inbox': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.task-inbox',
       sequence: [],
     }),
   },

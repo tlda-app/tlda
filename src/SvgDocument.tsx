@@ -330,6 +330,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
   const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
     enabled: footEnabled || clicksEnabled,
+    clicksEnabled,
     whistleEnabled,
     hissEnabled,
   })

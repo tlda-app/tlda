@@ -19,6 +19,7 @@ import {
   matchesFilter,
   respawnAgent as _respawnAgent,
   spawnAgent as _spawnAgent,
+  isConnected as _isConnected,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -495,6 +496,32 @@ export function useFleetUnreadCounts(): Record<string, number> {
   }, [])
 
   return counts
+}
+
+// --- Connection state hook ---
+
+export function useFleetConnection(): boolean {
+  const [connected, setConnected] = useState(true)
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setConnected(_isConnected())
+      unsub = subscribe('connection', null, (ev: any) => {
+        setConnected(ev.connected)
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return connected
 }
 
 // --- Write API (re-exported) ---

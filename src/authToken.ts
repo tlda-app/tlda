@@ -14,6 +14,13 @@ export function initToken() {
   const params = new URLSearchParams(window.location.search)
   _token = params.get('token')
 
+  // Persist token in localStorage so Safari doesn't depend on cookies
+  if (_token) {
+    try { localStorage.setItem('tlda_token', _token) } catch {}
+  } else {
+    try { _token = localStorage.getItem('tlda_token') } catch {}
+  }
+
   if (_token) {
     // When SPA is on a different origin than the sync server (e.g. GitHub Pages → Fly.io),
     // also inject auth for requests to the sync/asset server.

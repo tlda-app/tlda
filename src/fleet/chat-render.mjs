@@ -1,7 +1,7 @@
 // chat-render.mjs — Standalone chat line renderer.
 //
-// Extracted from chat.mjs so it can be used in both the dashboard
-// and tldraw FleetChatShape without module-global dependencies.
+// Extracted from chat.mjs for use in tldraw FleetChatShape
+// without module-global dependencies.
 //
 // Usage:
 //   import { renderChatLine } from './chat-render.mjs'
@@ -203,12 +203,27 @@ export function renderChatLine(m, ctx) {
     </div>` + text
   }
 
+  // Convert uploaded file links into chips — <a href="/api/files/name.ext">name.ext</a> → ref-chip
+  // This handles files drag-dropped from Finder (uploaded, inserted as markdown links)
+  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/files\/([^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, fileName, label) => {
+    const ext = fileName.split('.').pop()?.toLowerCase() || ''
+    const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/.test(ext)
+    if (isImage) {
+      return `<img class="chat-image" src="${url}" alt="${esc(label)}">`
+    }
+    const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+    return `<span class="ref-chip ref-chip-doc" data-url="${esc(url)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
+  })
+
   // Replace remaining {{att:N}} markers (standalone, not in markdown image syntax)
   text = text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
     const att = m._inlineAttachments?.[+idx]
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
+      if (att.broken) {
+        return `<span class="ref-chip ref-chip-broken" data-path="${filePath}" title="File not found: ${filePath}"><span class="ref-chip-doc-icon">\u26A0</span>${name}</span>`
+      }
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) {

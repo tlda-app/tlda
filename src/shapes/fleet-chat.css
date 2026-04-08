@@ -993,8 +993,22 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   flex-shrink: 0;
 }
 
+.fleet-agents-shape .fleet-agents-sort-toggle {
+  margin-left: auto;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 8px;
+  user-select: none;
+  transition: opacity 0.2s;
+  padding: 0 2px;
+}
+.fleet-agents-shape .fleet-agents-sort-toggle:hover {
+  opacity: 0.9;
+}
+
 .fleet-agents-shape .fleet-agents-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -1144,7 +1158,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
-  width: 28px;
+  width: 42px;
   flex-shrink: 0;
   text-align: right;
   font-size: 9px;

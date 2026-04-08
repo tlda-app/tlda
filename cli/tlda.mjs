@@ -2030,6 +2030,13 @@ ${tokenEnvLines.join('\n')}
       } catch { break } // connection refused = stopped
     }
 
+    // Also stop whisper if running
+    try {
+      const wPid = parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim())
+      if (wPid) { try { process.kill(wPid, 'SIGTERM') } catch {} }
+      try { unlinkSync(WHISPER_PID_FILE) } catch {}
+    } catch {}
+
     console.log(green('Server stopped.'))
     return
   }
@@ -2062,6 +2069,25 @@ ${tokenEnvLines.join('\n')}
       const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
       if (res.ok) {
         console.log('Server already running.')
+        // Ensure whisper is running too
+        try {
+          const wr = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
+          if (!wr.ok) throw new Error()
+        } catch {
+          try {
+            const wb = (await import('child_process')).execSync('which whisper-server', { stdio: 'pipe' }).toString().trim()
+            if (existsSync(WHISPER_MODEL)) {
+              const { spawn: sw } = await import('child_process')
+              const wl = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
+              const wc = sw(wb, ['-m', WHISPER_MODEL, '--port', String(WHISPER_PORT), '--convert'], {
+                detached: true, stdio: ['ignore', wl, wl],
+              })
+              wc.unref()
+              writeFileSync(WHISPER_PID_FILE, String(wc.pid))
+              console.log(dim(`  Whisper: starting (pid ${wc.pid}, port ${WHISPER_PORT})`))
+            }
+          } catch {}
+        }
         return
       }
     } catch {
@@ -2114,6 +2140,31 @@ ${tokenEnvLines.join('\n')}
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
+
+          // Auto-start whisper server for voice input
+          try {
+            const whisperRes = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
+            if (whisperRes.ok) {
+              console.log(dim(`  Whisper: already running (port ${WHISPER_PORT})`))
+            }
+          } catch {
+            // Whisper not running — try to start it
+            try {
+              const whisperBin = (await import('child_process')).execSync('which whisper-server', { stdio: 'pipe' }).toString().trim()
+              if (existsSync(WHISPER_MODEL)) {
+                const { spawn: spawnWhisper } = await import('child_process')
+                const wLogFd = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
+                const wChild = spawnWhisper(whisperBin, ['-m', WHISPER_MODEL, '--port', String(WHISPER_PORT), '--convert'], {
+                  detached: true, stdio: ['ignore', wLogFd, wLogFd],
+                })
+                wChild.unref()
+                writeFileSync(WHISPER_PID_FILE, String(wChild.pid))
+                console.log(dim(`  Whisper: starting (pid ${wChild.pid}, port ${WHISPER_PORT})`))
+              }
+            } catch {
+              // whisper-server not installed — skip silently
+            }
+          }
           return
         }
       } catch {}

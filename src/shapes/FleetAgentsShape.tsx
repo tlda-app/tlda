@@ -80,6 +80,9 @@ function useServiceHealth(): ServiceHealth | null {
   return health
 }
 
+type SortKey = 'seen' | 'name' | 'status'
+const SORT_CYCLE: SortKey[] = ['seen', 'name', 'status']
+
 const STALE_THRESHOLD = 600_000  // 10 minutes
 
 function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
@@ -300,29 +303,23 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<SortKey>('seen')
+  const [sortAsc, setSortAsc] = useState(false)
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
     return tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
   }, [tasks])
 
-  const getTaskForAgent = useCallback((agentId: string) => {
-    let task = activeTasks.find((t: any) => (t.agent || t.assignee) === agentId && !t.synthetic)
-    if (!task) {
-      const shortId = agentId.replace(/-.*$/, '')
-      task = activeTasks.find((t: any) => {
-        const tid = (t.agent || t.assignee || '').replace(/-.*$/, '')
-        return tid === shortId && !t.synthetic
-      })
-    }
-    if (!task) {
-      const shortId = agentId.replace(/-.*$/, '')
-      task = activeTasks.find((t: any) => {
-        const tid = (t.agent || t.assignee || '').replace(/-.*$/, '')
-        return tid === shortId
-      })
-    }
-    return task
+  const getTasksForAgent = useCallback((agentId: string): any[] => {
+    const shortId = agentId.replace(/-.*$/, '')
+    const matches = activeTasks.filter((t: any) => {
+      const assignee = t.agent || t.assignee || ''
+      if (assignee === agentId) return true
+      return assignee.replace(/-.*$/, '') === shortId
+    })
+    // Prefer non-synthetic tasks, but include all
+    return matches.length > 0 ? matches : []
   }, [activeTasks])
 
   // Categorize and sort agents — stale agents are inline, not collapsed
@@ -337,10 +334,21 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       if (cat === 'dead') dead.push(enriched)
       else active.push(enriched) // alive + stale together
     }
-    active.sort((a: any, b: any) => b._ts - a._ts)
+    const dir = sortAsc ? 1 : -1
+    const sortFn = (a: any, b: any) => {
+      if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
+      if (sortKey === 'status') {
+        const order = { alive: 0, stale: 1, dead: 2 }
+        const ca = order[agentCategory(a) as keyof typeof order] ?? 1
+        const cb = order[agentCategory(b) as keyof typeof order] ?? 1
+        return dir * (ca - cb) || b._ts - a._ts
+      }
+      return dir * (b._ts - a._ts) // 'seen' — most recent first (default desc)
+    }
+    active.sort(sortFn)
     dead.sort((a: any, b: any) => b._ts - a._ts)
     return { activeAgents: active, deadAgents: dead }
-  }, [agents])
+  }, [agents, sortKey, sortAsc])
 
   const staleCount = useMemo(() => activeAgents.filter(a => agentCategory(a) === 'stale').length, [activeAgents])
   const aliveCount = activeAgents.length - staleCount
@@ -409,14 +417,24 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           </button>
         </div>
 
-        {/* Header */}
+        {/* Header with sort toggle */}
         <div
           className="fleet-agents-header"
+          onPointerDown={(e) => stopEventPropagation(e)}
         >
           <span className="fleet-agents-unread-dot" />
-          <span className="fleet-agents-col-name">Agent</span>
-          <span className="fleet-agents-col-seen">Seen</span>
-          <span className="fleet-agents-col-task">Task</span>
+          <span className="fleet-agents-col-name fleet-agents-sort-header"
+            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'name') setSortAsc(p => !p); else { setSortKey('name'); setSortAsc(false) } }}
+            style={{ cursor: 'pointer' }}
+          >Agent {sortKey === 'name' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          <span className="fleet-agents-col-seen fleet-agents-sort-header"
+            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'seen') setSortAsc(p => !p); else { setSortKey('seen'); setSortAsc(false) } }}
+            style={{ cursor: 'pointer' }}
+          >Seen {sortKey === 'seen' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          <span className="fleet-agents-col-task fleet-agents-sort-header"
+            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'status') setSortAsc(p => !p); else { setSortKey('status'); setSortAsc(false) } }}
+            style={{ cursor: 'pointer' }}
+          >Task {sortKey === 'status' ? (sortAsc ? '▴' : '▾') : ''}</span>
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
@@ -432,7 +450,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                   <AgentRow
                     key={agent.id}
                     agent={agent}
-                    task={getTaskForAgent(agent.id)}
+                    tasks={getTasksForAgent(agent.id)}
                     unreadCount={unreadCounts[agent.id] || 0}
                     dimmed={isStale}
                     canRespawn={isStale}
@@ -464,7 +482,7 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
                     <AgentRow
                       key={agent.id}
                       agent={agent}
-                      task={getTaskForAgent(agent.id)}
+                      tasks={getTasksForAgent(agent.id)}
                       unreadCount={unreadCounts[agent.id] || 0}
                       dimmed
                       canRespawn
@@ -524,7 +542,7 @@ function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?:
 
 function AgentRow({
   agent,
-  task,
+  tasks,
   dimmed,
   canRespawn,
   unreadCount,
@@ -534,7 +552,7 @@ function AgentRow({
   onStartDrag,
 }: {
   agent: any
-  task: any
+  tasks: any[]
   dimmed?: boolean
   canRespawn?: boolean
   unreadCount: number
@@ -543,7 +561,8 @@ function AgentRow({
   onToggleExpand: () => void
   onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 }) {
-  const taskDesc = task?.title || task?.description || ''
+  const firstTask = tasks[0]
+  const taskDesc = firstTask?.title || firstTask?.description || ''
   const name = agentDisplayName(agent)
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
@@ -554,42 +573,33 @@ function AgentRow({
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
-      {/* Line 1: compact row. Click row to expand (except name, which is draggable) */}
-      <div className="fleet-agents-row-main">
-        {/* Unread dot — click toggles expand */}
-        <span
-          className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`}
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
-        />
+      {/* Line 1: compact row. Click anywhere to expand (name + labels are draggable, respawn is its own action) */}
+      <div
+        className="fleet-agents-row-main"
+        onPointerDown={(e) => stopEventPropagation(e)}
+        onPointerUp={(e) => {
+          e.stopPropagation()
+          onToggleExpand()
+        }}
+      >
+        <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
-        {/* Agent name — draggable (drag to create pill filter) */}
+        {/* Agent name — draggable (drag to create pill filter). Stops row click via onStartDrag's stopEventPropagation */}
         <span
           className={`fleet-agents-col-name fleet-agents-pill`}
           style={{ color, opacity: nameOpacity }}
-          onPointerDown={(e) => onStartDrag(e, 'agent', name, name, color)}
+          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
         >
           {name}
         </span>
 
-        {/* Seen — click toggles expand */}
-        <span
-          className="fleet-agents-col-seen"
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
-        >{ago}</span>
+        <span className="fleet-agents-col-seen">{ago}</span>
 
-        {/* Task — click toggles expand */}
-        <span
-          className="fleet-agents-col-task"
-          title={taskDesc}
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => { e.stopPropagation(); onToggleExpand() }}
-        >
+        <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}
         </span>
 
-        {/* Respawn button (stale + dead agents) */}
+        {/* Respawn button — its own action, not expand */}
         {canRespawn && (
           <span
             className="fleet-agents-respawn-btn"
@@ -602,7 +612,7 @@ function AgentRow({
         )}
 
         {/* Labels — draggable chips */}
-        <span className="fleet-agents-col-labels">
+        <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
           {labels.map((label: string) => (
             <span
               key={label}
@@ -616,12 +626,16 @@ function AgentRow({
         </span>
       </div>
 
-      {/* Lines 2-3: expanded detail (task + last message) */}
+      {/* Expanded detail: all tasks + last message */}
       {expanded && (
-        <div className="fleet-agents-row-detail" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="fleet-agents-detail-task">
-            {taskDesc || '(no task)'}
-          </div>
+        <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
+          {tasks.length === 0 ? (
+            <div className="fleet-agents-detail-task">(no task)</div>
+          ) : tasks.map((t: any, i: number) => (
+            <div key={t.id || i} className="fleet-agents-detail-task">
+              {t.title || t.description || '(untitled task)'}
+            </div>
+          ))}
           {lastMessage && (
             <div className="fleet-agents-detail-message">
               "{lastMessage.length > 80 ? lastMessage.substring(0, 80) + '…' : lastMessage}"
