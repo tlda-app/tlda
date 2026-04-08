@@ -64,6 +64,8 @@ export const onReloadSignal = reloadHandle.on
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
   | { type: 'highlight', x: number, y: number, page: number, timestamp: number }
+  | { type: 'scroll-to-element', id: string }
+  | { type: 'set-chat-target', agent: string, panel?: string, chatShapeId?: string }
 
 // Forward-scroll and forward-highlight are two signal keys that map to one callback set.
 type RawScrollSignal = { x: number; y: number; timestamp: number }
@@ -78,7 +80,7 @@ const scrollToElementHandle = bus.register<RawScrollToElementSignal>({ key: 'sig
 type RawSetChatTargetSignal = { agent: string; panel?: string; chatShapeId?: string; timestamp: number }
 const setChatTargetHandle = bus.register<RawSetChatTargetSignal>({ key: 'signal:set-chat-target' })
 
-type ForwardSyncCallback = (signal: ForwardSyncSignal | { type: 'scroll-to-element'; id: string } | { type: 'set-chat-target'; agent: string; panel?: string }) => void
+type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
 const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
 scrollHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...s }) })
 highlightHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'highlight', ...s }) })

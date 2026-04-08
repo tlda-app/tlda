@@ -26,6 +26,7 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  Vec,
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
@@ -569,10 +570,10 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   override getClipPath(shape: any) {
     const { w, h } = shape.props
     return [
-      { x: 0, y: 0 },
-      { x: w, y: 0 },
-      { x: w, y: h },
-      { x: 0, y: h },
+      new Vec(0, 0),
+      new Vec(w, 0),
+      new Vec(w, h),
+      new Vec(0, h),
     ]
   }
 

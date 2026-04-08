@@ -36,7 +36,6 @@ import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
-import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
@@ -382,7 +381,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel || autoLoadedRef.current === filterKey) return
     autoLoadedRef.current = filterKey
-    loadBefore(firstLabel, new Date().toISOString(), 50).then(older => {
+    loadBefore(firstLabel, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) setOlderEvents(older)
     })
   }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey])
@@ -1740,7 +1739,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     const context = gatherViewerContext(editor, doc, shape.id)
                     Promise.all(
                       sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
-                    ).then(responses => {
+                    ).then((responses: Response[]) => {
                       if (!responses.every(r => r.ok)) throw new Error('send failed')
                       ta.value = ''
                       ta.style.height = 'auto'

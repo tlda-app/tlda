@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useCallback, useRef, useMemo, useEffect, useLayoutEffect } from 'react'
+import { useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
 import MarkdownIt from 'markdown-it'

@@ -81,7 +81,6 @@ function useServiceHealth(): ServiceHealth | null {
 }
 
 type SortKey = 'seen' | 'name' | 'status'
-const SORT_CYCLE: SortKey[] = ['seen', 'name', 'status']
 
 const STALE_THRESHOLD = 600_000  // 10 minutes
 
