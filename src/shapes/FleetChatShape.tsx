@@ -36,7 +36,6 @@ import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
-import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { useLayoutMode } from './HudLayoutMode'
@@ -401,7 +400,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel || autoLoadedRef.current === filterKey) return
     autoLoadedRef.current = filterKey
-    loadBefore(firstLabel, new Date().toISOString(), 50).then(older => {
+    loadBefore(firstLabel, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) setOlderEvents(older)
     })
   }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey])
@@ -1784,41 +1783,39 @@ function FleetChatComponent({ shape }: { shape: any }) {
                   const lastNewline = before.lastIndexOf('\n')
                   const lineText = before.substring(lastNewline + 1)
 
-                  if (lineText.trim() === '') {
-                    // Blank line (double-enter) = send
-                    e.preventDefault()
+                  const doSend = () => {
                     const text = val.trim()
-                    if (text && sendTargets.length > 0) {
-                      const context = gatherViewerContext(editor, doc, shape.id)
-                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
-                      sentHistoryRef.current = [...sentHistoryRef.current, text]
-                      historyIndexRef.current = -1
+                    if (!text || sendTargets.length === 0) return
+                    const context = gatherViewerContext(editor, doc, shape.id)
+                    Promise.all(
+                      sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
+                    ).then((responses: Response[]) => {
+                      if (!responses.every(r => r.ok)) throw new Error('send failed')
                       ta.value = ''
                       ta.style.height = 'auto'
                       resetTranscript()
                       restartRecording()
+                      sentHistoryRef.current = [...sentHistoryRef.current, text]
+                      historyIndexRef.current = -1
                       userScrolledUp.current = false; setShowScrollBtn(false)
                       if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                    }
+                    }).catch(() => {
+                      ta.style.borderColor = 'rgba(200, 112, 112, 0.6)'
+                      setTimeout(() => { ta.style.borderColor = '' }, 2000)
+                    })
+                  }
+
+                  if (lineText.trim() === '') {
+                    // Blank line (double-enter) = send
+                    e.preventDefault()
+                    doSend()
                   } else if (lineText.endsWith(' ')) {
                     // Trailing space = newline (let default happen)
                     return
                   } else {
                     // Non-blank, no trailing space = send
                     e.preventDefault()
-                    const text = val.trim()
-                    if (text && sendTargets.length > 0) {
-                      const context = gatherViewerContext(editor, doc, shape.id)
-                      for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
-                      sentHistoryRef.current = [...sentHistoryRef.current, text]
-                      historyIndexRef.current = -1
-                      ta.value = ''
-                      ta.style.height = 'auto'
-                      resetTranscript()
-                      restartRecording()
-                      userScrolledUp.current = false; setShowScrollBtn(false)
-                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                    }
+                    doSend()
                   }
                 }
               }}
@@ -1833,14 +1830,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id)
-                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
+                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id)
-                  for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
+                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{
