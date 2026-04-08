@@ -1482,6 +1482,113 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   margin-left: 2px;
 }
 
+/* --- Expandable markdown chip card --- */
+
+.fleet-chat-shape .ref-chip-doc.md-chip-expanded {
+  cursor: pointer;
+  background: rgba(99, 160, 219, 0.3);
+  border-color: rgba(99, 160, 219, 0.5);
+}
+
+.fleet-chat-shape .md-expand-card {
+  display: block;
+  margin: 4px 0 6px 12px;
+  border: 1px solid rgba(99, 160, 219, 0.25);
+  border-radius: 6px;
+  background: rgba(20, 20, 36, 0.85);
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text, #a8a8c0);
+}
+
+.fleet-chat-shape .md-expand-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(99, 160, 219, 0.15);
+  background: rgba(99, 160, 219, 0.08);
+  border-radius: 6px 6px 0 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.fleet-chat-shape .md-expand-title {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.fleet-chat-shape .md-expand-close {
+  cursor: pointer;
+  opacity: 0.4;
+  font-size: 10px;
+  transition: opacity 0.2s;
+}
+.fleet-chat-shape .md-expand-close:hover {
+  opacity: 0.9;
+}
+
+.fleet-chat-shape .md-expand-body {
+  padding: 6px 10px;
+}
+.fleet-chat-shape .md-expand-body p {
+  margin: 0 0 6px;
+}
+.fleet-chat-shape .md-expand-body h1,
+.fleet-chat-shape .md-expand-body h2,
+.fleet-chat-shape .md-expand-body h3 {
+  font-size: 11px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: var(--accent, #9370db);
+}
+.fleet-chat-shape .md-expand-body h1 { font-size: 12px; }
+.fleet-chat-shape .md-expand-body img {
+  max-width: 100%;
+  border-radius: 4px;
+  margin: 4px 0;
+}
+.fleet-chat-shape .md-expand-body pre {
+  background: rgba(0,0,0,0.3);
+  padding: 4px 6px;
+  border-radius: 3px;
+  overflow-x: auto;
+  font-size: 9px;
+}
+.fleet-chat-shape .md-expand-body code {
+  background: rgba(0,0,0,0.2);
+  padding: 0 3px;
+  border-radius: 2px;
+  font-size: 9px;
+}
+.fleet-chat-shape .md-expand-body pre code {
+  background: none;
+  padding: 0;
+}
+.fleet-chat-shape .md-expand-body ul,
+.fleet-chat-shape .md-expand-body ol {
+  margin: 4px 0;
+  padding-left: 16px;
+}
+.fleet-chat-shape .md-expand-body a {
+  color: var(--accent, #9370db);
+}
+
+.fleet-chat-shape .md-expand-loading,
+.fleet-chat-shape .md-expand-error {
+  padding: 8px 10px;
+  opacity: 0.5;
+  font-size: 9px;
+  font-style: italic;
+}
+.fleet-chat-shape .md-expand-error {
+  color: var(--red, #e55);
+}
+
 /* --- Input highlight underlay (mirrors textarea, highlights <<ref>> tokens) --- */
 
 .fleet-chat-shape .fleet-chat-input-underlay {

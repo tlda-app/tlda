@@ -97,19 +97,8 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
-<<<<<<< Updated upstream
   const [layoutMode, setLayoutMode] = useState(false)
   const [hudOverride, setHudOverride] = useState<HudOverride | null>(loadHudOverride)
-=======
-  // Layout mode disabled — broken overlay, needs tldraw-native rewrite
-  const layoutMode = false
-  const setLayoutMode = (_: boolean) => {}
-  // Screen-space Y offset for the HUD panel — vertical positioning in screen coords.
-  // Fleet shapes stay at fixed screen Y regardless of canvas zoom/pan.
-  const [screenYOffset, setScreenYOffset] = useState(() =>
-    parseFloat(localStorage.getItem('fleet-hud-y-offset') || '0') || 0
-  )
->>>>>>> Stashed changes
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -315,13 +304,8 @@ export function FleetHUD({
   const panelWidth = hudOverride?.width ?? autoWidth
   const panelHeight = hudOverride?.height ?? autoHeight
   const panelLeft = hudRight - panelWidth
-<<<<<<< Updated upstream
   const yOffset = hudOverride?.yOffset ?? 0
   const rawTop = (window.innerHeight - panelHeight) / 2 + yOffset
-=======
-  const rawTop = (window.innerHeight - panelHeight) / 2 + screenYOffset
-  // Clamp so the controls (top of HUD) are never above the viewport
->>>>>>> Stashed changes
   const adjustedTop = Math.max(0, Math.min(rawTop, window.innerHeight - 100))
 
   return (
