@@ -79,6 +79,31 @@ const ASSET_BASE = (() => {
   return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
 })()
 
+// Fetch a single document config from the API — fast path for ?doc=X
+async function fetchDocConfig(docName: string): Promise<DocConfig | null> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const url = `${ASSET_BASE}/api/projects/${docName}`
+    const resp = await fetch(url, { signal: controller.signal })
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
+    }
+    if (resp.status === 404) return null
+    if (!resp.ok) return null
+    const data = await resp.json()
+    data.basePath = `${ASSET_BASE}/docs/${docName}/`
+    return data as DocConfig
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      throw new Error('Server not responding. Try reloading.')
+    }
+    throw e
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 // Fetch document manifest at runtime — derives basePath from key
 async function fetchManifest(bustCache = false): Promise<Record<string, DocConfig>> {
   try {
@@ -181,9 +206,10 @@ function App() {
     const abort = loadAbort = new AbortController()
     const { signal } = abort
 
-    let manifest: Record<string, DocConfig>
+    // Fast path: fetch single doc config instead of full manifest
+    let config: DocConfig | null
     try {
-      manifest = await fetchManifest()
+      config = await fetchDocConfig(docName)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -191,10 +217,17 @@ function App() {
     }
     if (gen !== loadGeneration) return  // superseded
 
-    const config = manifest[docName]
-
-    // Book format: resolve member docs and render BookViewer
+    // Book format: needs full manifest to resolve member docs
     if (config?.format === 'book' && config.members) {
+      let manifest: Record<string, DocConfig>
+      try {
+        manifest = await fetchManifest()
+      } catch (e) {
+        const msg = (e as Error).message
+        setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
+        return
+      }
+      if (gen !== loadGeneration) return
       const members: BookMember[] = config.members
         .map(key => {
           const memberConfig = manifest[key]
@@ -216,37 +249,24 @@ function App() {
 
     // If project is missing, still building, or has no pages yet, poll until ready
     if (!config || config.buildStatus === 'building' || config.pages === 0) {
-      // If not in manifest, probe the API to distinguish "doesn't exist" from "not yet built"
       if (!config) {
-        try {
-          const checkResp = await fetch(`/api/projects/${docName}`)
-          if (checkResp.status === 404) {
-            setState({ phase: 'error', message: `Document "${docName}" not found.`, errorType: 'not-found' })
-            return
-          }
-          if (checkResp.status === 401 || checkResp.status === 403) {
-            setState({ phase: 'error', message: 'Authentication required. Add ?token=TOKEN to the URL.', errorType: 'auth' })
-            return
-          }
-        } catch { /* network error — fall through to polling */ }
+        setState({ phase: 'error', message: `Document "${docName}" not found.`, errorType: 'not-found' })
+        return
       }
-      const label = config?.name || docName
-      setState({ phase: 'loading', message: config ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
+      const label = config.name || docName
+      setState({ phase: 'loading', message: config.buildStatus === 'building' ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
       const waitForBuild = async () => {
         while (gen === loadGeneration) {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
-          // Re-fetch manifest to check for updated page count / build status
           try {
-            const m = await fetchManifest(true)
-            const c = m[docName]
+            const c = await fetchDocConfig(docName)
             if (c && c.pages > 0 && c.buildStatus !== 'building') break
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
               setState({ phase: 'error', message: e.message })
               return
             }
-            /* keep polling for other errors */
           }
         }
         if (gen === loadGeneration) loadDocument(docName, roomId)
@@ -294,18 +314,21 @@ function App() {
 
       if (gen !== loadGeneration) return  // superseded during fetch
 
-      // For non-diff docs, check if a matching diff doc exists
+      // For non-diff docs, check if a matching diff doc exists (lazy manifest fetch — not on critical path)
       let diffConfig: DiffConfig | undefined
       if (config.format !== 'diff') {
-        const diffEntry = Object.values(manifest).find(
-          c => c.format === 'diff' && c.sourceDoc === docName
-        )
-        if (diffEntry) {
-          const diffBasePath = diffEntry.basePath.startsWith('/')
-            ? diffEntry.basePath.slice(1)
-            : diffEntry.basePath
-          diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
-        }
+        try {
+          const manifest = await fetchManifest()
+          const diffEntry = Object.values(manifest).find(
+            c => c.format === 'diff' && c.sourceDoc === docName
+          )
+          if (diffEntry) {
+            const diffBasePath = diffEntry.basePath.startsWith('/')
+              ? diffEntry.basePath.slice(1)
+              : diffEntry.basePath
+            diffConfig = { basePath: `${import.meta.env.BASE_URL || '/'}${diffBasePath}` }
+          }
+        } catch { /* diff lookup is optional — don't block on it */ }
       }
 
       setState({ phase: 'svg', document, roomId, diffConfig })

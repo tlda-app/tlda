@@ -428,7 +428,9 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
   // Auth check: token from ?token= query param, Authorization header, or cookie
-  if (isAuthEnabled()) {
+  // Exempt /ws/fleet — fleet server handles its own access; this proxy
+  // must always work so fleet chat (accessibility-critical) isn't blocked by cookie issues.
+  if (isAuthEnabled() && !url.pathname.startsWith('/ws/fleet')) {
     const token = extractToken(req)
     if (!validateToken(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')

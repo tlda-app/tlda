@@ -32,12 +32,14 @@ import { initTrackpad } from '../fleet/trackpad.mjs'
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
 import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
+import { useLayoutMode } from './HudLayoutMode'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -192,7 +194,7 @@ function tldaRenderMarkdown(escapedHtml: string): string {
 
 // --- Viewer context helper ---
 
-function gatherViewerContext(editor: any, doc: any) {
+function gatherViewerContext(editor: any, doc: any, chatShapeId?: string) {
   if (!editor || !doc) return null
   const camera = editor.getCamera()
   const viewport = editor.getViewportPageBounds()
@@ -212,6 +214,8 @@ function gatherViewerContext(editor: any, doc: any) {
     doc: doc.docName || null,
     page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
     camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
+    chatShapeId: chatShapeId || undefined,
+    browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
   }
 }
 
@@ -305,6 +309,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const layoutMode = useLayoutMode()
   // Expose editor to trackpad input adapter
   _tldaEditor = editor
   const doc = useContext(DocContext)
@@ -380,9 +385,26 @@ function FleetChatComponent({ shape }: { shape: any }) {
     return [...unique, ...liveEvents]
   }, [liveEvents, olderEvents])
 
-  // Reset older events when filter changes
+  // Reset older events and scroll state when filter changes
   const filterKey = JSON.stringify(filter)
-  useEffect(() => { setOlderEvents([]) }, [filterKey])
+  useEffect(() => {
+    setOlderEvents([])
+    userScrolledUp.current = false; setShowScrollBtn(false)
+  }, [filterKey])
+
+  // Auto-load history when filter gives empty results (no live messages for this agent)
+  const autoLoadedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (liveEvents.length > 0 || olderEvents.length > 0) return
+    if (!dnfFilter || dnfFilter.length === 0) return
+    // Derive agent name from filter for loadBefore
+    const firstLabel = dnfFilter[0]?.[0]?.[1]
+    if (!firstLabel || autoLoadedRef.current === filterKey) return
+    autoLoadedRef.current = filterKey
+    loadBefore(firstLabel, new Date().toISOString(), 50).then(older => {
+      if (older.length > 0) setOlderEvents(older)
+    })
+  }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -553,19 +575,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda URLs (with ?doc=) to tlda-card widgets.
-    // Handles both raw URLs and already-linkified <a href="..."> anchors.
+    // Convert tlda URLs (with ?doc=) to ref-chips (not iframes).
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
         if (!isTldaUrl(url)) return _match
         const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const id = 'tlda-' + btoa(url).slice(0, 16)
-        // Add embed=1 then append auth token
-        const embedUrl = url.includes('embed=') ? url : url + (url.includes('?') ? '&' : '?') + 'embed=1'
-        const iframeSrc = appendToken(embedUrl).replace(/"/g, '&quot;')
         const openUrl = url.replace(/"/g, '&quot;')
-        return `<div class="tlda-card" data-tlda-src="${openUrl}" data-tlda-id="${id}"><div class="tlda-card-header"><span class="doc-name">${safeDoc}</span><a href="${openUrl}" target="_blank" class="doc-open-link">open ↗</a></div><iframe src="${iframeSrc}" style="width:75%;height:auto;aspect-ratio:8.5/11;border:none;display:block;margin:0 auto" loading="lazy"></iframe></div>`
+        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
       }
     )
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
@@ -849,13 +866,42 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send
+  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
+  // Track lastScrollHeight so we can distinguish "user scrolled up" from "content grew
+  // beneath us" (image loads, new messages expanding the container). Only mark
+  // userScrolledUp when the user's distance from the bottom INCREASES without a
+  // corresponding scrollHeight change — i.e. the user actually scrolled up.
   const userScrolledUp = useRef(false)
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const lastScrollHeight = useRef(0)
+  const lastDistFromBottom = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
+    lastScrollHeight.current = el.scrollHeight
+    lastDistFromBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight
     const onScroll = () => {
-      userScrolledUp.current = el.scrollTop + el.clientHeight < el.scrollHeight - 30
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      const heightChanged = el.scrollHeight !== lastScrollHeight.current
+      if (heightChanged) {
+        // Content grew (new message, image load) — don't treat as user scroll.
+        // If already scrolled up, stay scrolled up (don't fight the user).
+        lastScrollHeight.current = el.scrollHeight
+        lastDistFromBottom.current = distFromBottom
+        return
+      }
+      // Real user scroll event (no height change).
+      // Once scrolled up, STAY scrolled up — only clear when user reaches the very bottom.
+      // This prevents auto-scroll from fighting manual scroll-up.
+      if (distFromBottom > 30 && !userScrolledUp.current) {
+        // User just scrolled away from bottom
+        userScrolledUp.current = true
+        setShowScrollBtn(true)
+      } else if (distFromBottom <= 5 && userScrolledUp.current) {
+        // User scrolled all the way back to bottom manually
+        userScrolledUp.current = false; setShowScrollBtn(false)
+      }
+      lastDistFromBottom.current = distFromBottom
     }
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
@@ -863,7 +909,11 @@ function FleetChatComponent({ shape }: { shape: any }) {
   useLayoutEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    if (!userScrolledUp.current) el.scrollTop = el.scrollHeight
+    if (!userScrolledUp.current) {
+      el.scrollTop = el.scrollHeight
+      lastScrollHeight.current = el.scrollHeight
+      lastDistFromBottom.current = 0
+    }
   }, [linkedHtml])
 
   // After images inside the log load, they expand the scroll height. Scroll to
@@ -1218,13 +1268,49 @@ function FleetChatComponent({ shape }: { shape: any }) {
         const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
         if (fileChip) {
           const token = fileChip.dataset.token || ''
+          const fileUrl = fileChip.dataset.url || ''
           const clone = fileChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
           const label = clone.textContent?.trim() || 'file'
+          // Fetch file content from URL for the drop (async, updates content before drop)
+          // Resolve absolute image paths in the markdown; warn about relative paths
+          let fileContent = label
+          if (fileUrl) {
+            fetch(fileUrl).then(r => r.ok ? r.text() : label).then(async (text) => {
+              const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g
+              let resolved = text
+              let hasUnresolved = false
+              const uploads: Promise<void>[] = []
+              let match: RegExpExecArray | null
+              while ((match = imgRe.exec(text)) !== null) {
+                const imgPath = match[2]
+                if (imgPath.startsWith('http')) continue
+                if (!imgPath.startsWith('/')) { hasUnresolved = true; continue }
+                uploads.push((async () => {
+                  try {
+                    const readRes = await fetch(`/api/read-file?path=${encodeURIComponent(imgPath)}`)
+                    if (!readRes.ok) { hasUnresolved = true; return }
+                    const blob = await readRes.blob()
+                    const fd = new FormData()
+                    fd.append('file', blob, imgPath.split('/').pop() || 'image.png')
+                    const upRes = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
+                    if (!upRes.ok) { hasUnresolved = true; return }
+                    const { url } = await upRes.json()
+                    resolved = resolved.split(`](${imgPath})`).join(`](${FLEET_API}${url})`)
+                  } catch { hasUnresolved = true }
+                })())
+              }
+              await Promise.all(uploads)
+              if (hasUnresolved) {
+                resolved += '\n\n⚠️ Some embedded images couldn\'t be resolved. Drag the containing folder instead of the file to include all images.'
+              }
+              if (dragRef.current) dragRef.current.content = resolved
+            }).catch(() => {})
+          }
           drag = {
             pillId: null, pillType: 'file' as any, value: token,
             displayName: label, color: '#9370db',
-            content: label,
+            content: fileContent,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -1237,15 +1323,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
       e.preventDefault()
       dragRef.current = drag
 
-      document.addEventListener('pointermove', onPointerMove, { capture: true })
-      document.addEventListener('pointerup', onPointerUp, { capture: true })
+      // Use shared drag coordinator instead of per-drag capture listeners
+      dragCoordinator.claim(onPointerMove, onPointerUp)
     }
 
     function onPointerMove(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
-      e.preventDefault()
+      // stopImmediatePropagation/preventDefault handled by dragCoordinator
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
       if (!drag.started) {
@@ -1367,11 +1452,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
 
     function onPointerUp(e: PointerEvent) {
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Coordinator handles listener cleanup and stopImmediatePropagation
       const drag = dragRef.current
       if (!drag) return
-      e.stopImmediatePropagation()
       // Clear membrane glow
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
@@ -1390,9 +1473,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Also clean up move/up in case they were left attached (e.g. unmount during drag)
-      document.removeEventListener('pointermove', onPointerMove, { capture: true })
-      document.removeEventListener('pointerup', onPointerUp, { capture: true })
+      // Release coordinator if this component unmounts during a drag
+      if (dragRef.current) dragCoordinator.release()
     }
   }, [editor])
 
@@ -1431,7 +1513,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: layoutMode ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
@@ -1562,6 +1644,51 @@ function FleetChatComponent({ shape }: { shape: any }) {
           />
         )}
 
+        {/* Scroll-to-bottom button — appears when user has scrolled up */}
+        {showScrollBtn && (
+          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+            <button
+              className="fleet-scroll-bottom-btn"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                const el = chatLogRef.current
+                if (el) {
+                  el.scrollTop = el.scrollHeight
+                  lastScrollHeight.current = el.scrollHeight
+                  lastDistFromBottom.current = 0
+                }
+                userScrolledUp.current = false; setShowScrollBtn(false)
+                setShowScrollBtn(false)
+              }}
+              style={{
+                position: 'absolute',
+                right: 8,
+                bottom: 4,
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                border: 'none',
+                background: 'transparent',
+                color: 'rgba(200, 200, 200, 1)',
+                opacity: 0.35,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                fontWeight: 'bold',
+                lineHeight: 1,
+                padding: 0,
+                transition: 'opacity 0.2s',
+              }}
+              title="Scroll to bottom"
+            >
+              ▼
+            </button>
+          </div>
+        )}
+
         {/* Input */}
         <div
           className="fleet-chat-input-area"
@@ -1662,7 +1789,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const context = gatherViewerContext(editor, doc)
+                      const context = gatherViewerContext(editor, doc, shape.id)
                       for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
@@ -1670,7 +1797,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.style.height = 'auto'
                       resetTranscript()
                       restartRecording()
-                      userScrolledUp.current = false
+                      userScrolledUp.current = false; setShowScrollBtn(false)
                       if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   } else if (lineText.endsWith(' ')) {
@@ -1681,7 +1808,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                     e.preventDefault()
                     const text = val.trim()
                     if (text && sendTargets.length > 0) {
-                      const context = gatherViewerContext(editor, doc)
+                      const context = gatherViewerContext(editor, doc, shape.id)
                       for (const t of sendTargets) sendMessage(t, text, context ? { context } : {})
                       sentHistoryRef.current = [...sentHistoryRef.current, text]
                       historyIndexRef.current = -1
@@ -1689,7 +1816,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
                       ta.style.height = 'auto'
                       resetTranscript()
                       restartRecording()
-                      userScrolledUp.current = false
+                      userScrolledUp.current = false; setShowScrollBtn(false)
                       if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     }
                   }
@@ -1705,14 +1832,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc)
+                  const context = gatherViewerContext(editor, doc, shape.id)
                   for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc)
+                  const context = gatherViewerContext(editor, doc, shape.id)
                   for (const t of targets) sendMessage(t, text, context ? { context } : undefined)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}

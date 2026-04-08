@@ -1,7 +1,7 @@
 // chat-render.mjs — Standalone chat line renderer.
 //
-// Extracted from chat.mjs so it can be used in both the dashboard
-// and tldraw FleetChatShape without module-global dependencies.
+// Extracted from chat.mjs for use in tldraw FleetChatShape
+// without module-global dependencies.
 //
 // Usage:
 //   import { renderChatLine } from './chat-render.mjs'
@@ -215,23 +215,38 @@ export function renderChatLine(m, ctx) {
     </div>` + text
   }
 
+  // Convert uploaded file links into chips — <a href="/api/files/name.ext">name.ext</a> → ref-chip
+  // This handles files drag-dropped from Finder (uploaded, inserted as markdown links)
+  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/files\/([^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, fileName, label) => {
+    const ext = fileName.split('.').pop()?.toLowerCase() || ''
+    const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/.test(ext)
+    if (isImage) {
+      return `<img class="chat-image" src="${url}" alt="${esc(label)}">`
+    }
+    const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+    return `<span class="ref-chip ref-chip-doc" data-url="${esc(url)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
+  })
+
   // Replace remaining {{att:N}} markers (standalone, not in markdown image syntax)
   text = text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
     const att = m._inlineAttachments?.[+idx]
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
+      if (att.broken) {
+        return `<span class="ref-chip ref-chip-broken" data-path="${filePath}" title="File not found: ${filePath}"><span class="ref-chip-doc-icon">\u26A0</span>${name}</span>`
+      }
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) {
         return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
       }
-      const isMd = /\.md$/.test(att.path || '')
-      const cls = isMd ? 'md-file-card' : 'md-file-card file-card-generic'
-      const linkAttr = fileUrl ? `data-url="${fileUrl}"` : ''
-      return `<div class="${cls}" data-path="${filePath}" ${linkAttr}><span class="md-file-chip">${name}</span>${isMd ? '<div class="md-file-body"></div>' : ''}</div>`
+      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
+      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
     }
-    return `<span class="md-file-card file-card-generic"><span class="md-file-chip">att:${idx}</span></span>`
+    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
   })
   const sender = (getAgents()).find(a => a.id === m.from)
   const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null

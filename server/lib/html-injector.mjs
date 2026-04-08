@@ -96,6 +96,26 @@ const BRIDGE_SCRIPT = `
       if (e.data?.type === 'tlda-dark-mode') {
         document.documentElement.classList.toggle('tlda-dark', !!e.data.dark);
       }
+      if (e.data?.type === 'tlda-scroll-to-id') {
+        var el = document.getElementById(e.data.id);
+        if (el) {
+          // Report element position back to parent for camera scrolling
+          var rect = el.getBoundingClientRect();
+          var scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+          window.parent.postMessage({
+            type: 'tlda-element-position',
+            shapeId: shapeId,
+            id: e.data.id,
+            offsetTop: rect.top + scrollY,
+            offsetLeft: rect.left,
+            height: rect.height,
+          }, '*');
+          // Flash the element briefly
+          el.style.outline = '2px solid rgba(255, 100, 100, 0.6)';
+          el.style.outlineOffset = '4px';
+          setTimeout(function() { el.style.outline = ''; el.style.outlineOffset = ''; }, 2000);
+        }
+      }
       if (e.data?.type === 'tlda-figure-transform') {
         var wrapper = document.querySelector('[data-figure-idx="' + e.data.figureIdx + '"]');
         if (!wrapper) return;

@@ -349,6 +349,17 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         })
         return
       }
+      if (e.data?.type === 'tlda-element-position' && e.data.shapeId === shape.id) {
+        // Convert iframe element position to canvas coordinates and scroll camera
+        const current = editor.store.get(shape.id) as any
+        if (current) {
+          const scale = current.props.w / 800 // iframe renders at 800px width
+          const canvasY = current.y + (e.data.offsetTop * scale)
+          const canvasX = current.x + current.props.w / 2
+          editor.centerOnPoint({ x: canvasX, y: canvasY }, { animation: { duration: 300 } })
+        }
+        return
+      }
       if (e.data?.type === 'tlda-slide-ready' && e.data.shapeId === shape.id) {
         setSlideReady(true)
         return

@@ -118,7 +118,11 @@ export function FootControlDebug({ footController, clickDetector, visible = true
       padding: '10px 14px', borderRadius: 10, fontSize: 12,
       fontFamily: 'monospace', width: 272,
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
-    }}>
+      opacity: 0.15,
+      transition: 'opacity 0.3s ease',
+    }}
+    onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+    onMouseLeave={e => (e.currentTarget.style.opacity = '0.15')}>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>

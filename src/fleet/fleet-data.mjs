@@ -1,6 +1,6 @@
-// fleet-data.mjs — Single data object for the entire dashboard.
+// fleet-data.mjs — Single data object for the fleet UI.
 //
-// One WebSocket. One DB. Panels subscribe to slices.
+// One WebSocket. One DB. Shapes subscribe to slices.
 // No dedup needed — there's only one source.
 //
 // Stores: agents[], tasks[], events[] (chat/lifecycle), activity[agentId][]
@@ -131,11 +131,18 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
-  return fetch('/api/chat', {
+  const _t0 = performance.now()
+  const resp = fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  resp.then(r => r.json()).then(d => {
+    console.log(`[chat-send] to=${to} id=${d.event_id} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+  }).catch(() => {
+    console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
+  })
+  return resp
 }
 
 export async function respawnAgent(id) {
@@ -197,6 +204,14 @@ export async function sendText(session, text) {
 // --- WebSocket connection ---
 let _ws = null
 let _reconnectDelay = 1000
+let _connected = false
+let _disconnectedAt = 0
+
+/** Returns true if the WS is currently connected */
+export function isConnected() { return _connected }
+
+/** Returns ms since disconnect, or 0 if connected */
+export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? Date.now() - _disconnectedAt : 0) }
 
 export function connect() {
   if (_ws) return
@@ -207,7 +222,16 @@ export function connect() {
 
   _ws.onopen = () => {
     _reconnectDelay = 1000
-    // Catch up on events missed during disconnect
+    _connected = true
+    notify('connection', { type: 'connection', connected: true })
+    // Always do a full state refresh on reconnect — not just catch-up.
+    // This ensures agents/tasks are populated even if the initial load failed
+    // or the server restarted and event IDs reset.
+    fetch('/api/state').then(r => r.json()).then(s => {
+      updateAgents(s.agents || [])
+      updateTasks(s.tasks || [])
+    }).catch(() => {})
+    // Catch up on missed chat events
     if (_lastEventId > 0) {
       fetch(`/api/store/events?after=${_lastEventId}&limit=500`)
         .then(r => r.json())
@@ -231,18 +255,16 @@ export function connect() {
           for (const ev of newEvents) notify('messages', ev)
         })
         .catch(() => {})
-      // Also refresh agents + tasks state
-      fetch('/api/state').then(r => r.json()).then(s => {
-        updateAgents(s.agents || [])
-        updateTasks(s.tasks || [])
-      }).catch(() => {})
     }
   }
 
   _ws.onclose = (ev) => {
     _ws = null
+    _connected = false
+    _disconnectedAt = _disconnectedAt || Date.now()
+    notify('connection', { type: 'connection', connected: false })
     setTimeout(connect, _reconnectDelay)
-    _reconnectDelay = Math.min(_reconnectDelay * 2, 30000)
+    _reconnectDelay = Math.min(_reconnectDelay * 2, 15000) // cap at 15s, not 30s
   }
 
   _ws.onerror = () => {}
@@ -291,6 +313,9 @@ export function connect() {
         _events.push(event)
         if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
+        if (data.type === 'chat') {
+          console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
+        }
         notify('messages', event)
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])

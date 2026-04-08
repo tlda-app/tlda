@@ -5,7 +5,7 @@
  * subscribe() and re-renders on updates. One SSE connection shared
  * across all fleet shapes.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   init,
   subscribe,
@@ -19,6 +19,7 @@ import {
   matchesFilter,
   respawnAgent as _respawnAgent,
   spawnAgent as _spawnAgent,
+  isConnected as _isConnected,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -93,6 +94,43 @@ export function useFleetAgents(frameId?: string): any[] {
   return agents
 }
 
+
+const INBOX_API = 'http://localhost:5199'
+
+export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
+  const [items, setItems] = useState<any[]>([])
+
+  const fetchInbox = useCallback(() => {
+    fetch(`${INBOX_API}/api/inbox`)
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setItems(data) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    fetchInbox()
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    ensureInit().then(() => {
+      if (cancelled) return
+      unsub = subscribe('tasks', null, fetchInbox)
+    })
+    return () => { cancelled = true; unsub?.() }
+  }, [fetchInbox])
+
+  const act = useCallback(async (taskId: string, action: string, reason?: string) => {
+    const res = await fetch(`${INBOX_API}/api/inbox/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId, action, reason }),
+    })
+    const data = await res.json()
+    fetchInbox()
+    return data
+  }, [fetchInbox])
+
+  return { items, refresh: fetchInbox, act }
+}
 
 export function useFleetTasks(frameId?: string): any[] {
   const [tasks, setTasks] = useState<any[]>([])
@@ -458,6 +496,32 @@ export function useFleetUnreadCounts(): Record<string, number> {
   }, [])
 
   return counts
+}
+
+// --- Connection state hook ---
+
+export function useFleetConnection(): boolean {
+  const [connected, setConnected] = useState(true)
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setConnected(_isConnected())
+      unsub = subscribe('connection', null, (ev: any) => {
+        setConnected(ev.connected)
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return connected
 }
 
 // --- Write API (re-exported) ---

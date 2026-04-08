@@ -3,7 +3,8 @@
  * region (chat + agents) via CanvasClipPanel.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLShapeId, TLStateNodeConstructor } from 'tldraw'
+import { createShapeId } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
@@ -68,104 +69,25 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
   )
 }
 
-/**
- * Ephemeral layout overlay — bounding-box handle around the entire fleet HUD.
- * Drag to reposition all fleet shapes as a group. Esc or click outside cancels.
- *
- * Coordinate system:
- *   - Horizontal: canvas coordinates — dragging left/right updates shape canvas X.
- *   - Vertical: screen coordinates — dragging up/down updates the panel's screen Y offset.
- */
-interface FleetGroupOverlayProps {
-  panelLeft: number
-  panelTop: number
-  panelWidth: number
-  panelHeight: number
-  mainEditor: Editor
-  onCommit: (screenDx: number, screenDy: number) => void
-  onCancel: () => void
+/** Stored HUD dimensions that override auto-calculation */
+interface HudOverride {
+  width: number
+  height: number
+  yOffset: number
 }
 
-function FleetGroupOverlay({
-  panelLeft,
-  panelTop,
-  panelWidth,
-  panelHeight,
-  onCommit,
-  onCancel,
-}: FleetGroupOverlayProps) {
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
-  const dragRef = useRef<{ startX: number; startY: number } | null>(null)
-  const overlayRef = useRef<HTMLDivElement>(null)
-  const isDraggingRef = useRef(false)
-
-  // Esc cancels
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown, { capture: true })
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [onCancel])
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    overlayRef.current?.setPointerCapture(e.pointerId)
-    dragRef.current = { startX: e.clientX, startY: e.clientY }
-    isDraggingRef.current = false
-  }
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current) return
-    const dx = e.clientX - dragRef.current.startX
-    const dy = e.clientY - dragRef.current.startY
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDraggingRef.current = true
-    setDragOffset({ x: dx, y: dy })
-  }
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (!dragRef.current) return
-    const dx = e.clientX - dragRef.current.startX
-    const dy = e.clientY - dragRef.current.startY
-    dragRef.current = null
-    setDragOffset({ x: 0, y: 0 })
-    if (isDraggingRef.current) {
-      onCommit(dx, dy)
-    } else {
-      // Tap without drag = exit layout mode
-      onCancel()
-    }
-  }
-
-  return (
-    <>
-      {/* Backdrop — clicking outside the overlay cancels layout mode */}
-      <div
-        className="fleet-layout-backdrop"
-        onPointerDown={(e) => { e.stopPropagation(); onCancel() }}
-      />
-      {/* Bounding-box overlay over the HUD */}
-      <div
-        ref={overlayRef}
-        className="fleet-layout-overlay"
-        style={{
-          left: panelLeft + dragOffset.x,
-          top: panelTop + dragOffset.y,
-          width: panelWidth,
-          height: panelHeight,
-        }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-      >
-        <div className="fleet-layout-overlay-hint">
-          Drag to move · Esc to cancel
-        </div>
-      </div>
-    </>
-  )
+function loadHudOverride(): HudOverride | null {
+  try {
+    const raw = localStorage.getItem('fleet-hud-override')
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
 }
+
+function saveHudOverride(o: HudOverride) {
+  localStorage.setItem('fleet-hud-override', JSON.stringify(o))
+}
+
+const PROXY_SHAPE_ID = createShapeId('fleet-hud-proxy')
 
 export function FleetHUD({
   mainEditor,
@@ -175,7 +97,9 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
-  const [layoutMode, setLayoutMode] = useState(false)
+  // Layout mode disabled — broken overlay, needs tldraw-native rewrite
+  const layoutMode = false
+  const setLayoutMode = (_: boolean) => {}
   // Screen-space Y offset for the HUD panel — vertical positioning in screen coords.
   // Fleet shapes stay at fixed screen Y regardless of canvas zoom/pan.
   const [screenYOffset, setScreenYOffset] = useState(() =>
@@ -184,6 +108,8 @@ export function FleetHUD({
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  // Track proxy shape changes during layout mode
+  const layoutActiveRef = useRef(false)
 
   // Reactively update fleet bounds when shapes change.
   // Position updates: freeze during drag, recalculate on pointerup only.
@@ -241,16 +167,6 @@ export function FleetHUD({
     return () => document.body.classList.remove('fleet-hud-open')
   }, [expanded, fleetBounds])
 
-  // Body class for layout mode — CSS disables pointer-events on shape content
-  useEffect(() => {
-    if (layoutMode) {
-      document.body.classList.add('fleet-layout-active')
-    } else {
-      document.body.classList.remove('fleet-layout-active')
-    }
-    return () => document.body.classList.remove('fleet-layout-active')
-  }, [layoutMode])
-
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
@@ -280,31 +196,85 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded, fleetBounds])
 
-  // Commit layout drag — moves fleet shapes in canvas X, adjusts screen Y offset.
-  const handleLayoutCommit = useCallback((screenDx: number, screenDy: number) => {
-    setLayoutMode(false)
-    // Horizontal: convert screen pixels → canvas units, update each shape's canvas X
-    const cam = mainEditor.getCamera()
-    const canvasDx = screenDx / cam.z
-    const fleetShapes = mainEditor.getCurrentPageShapes()
-      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-    if (canvasDx !== 0 && fleetShapes.length > 0) {
-      mainEditor.store.put(
-        fleetShapes.map(s => ({ ...s as any, x: (s as any).x + canvasDx }))
-      )
-    }
-    // Vertical: update screen-space Y offset (clamped so HUD stays on screen)
-    if (screenDy !== 0) {
-      setScreenYOffset(prev => {
-        const next = prev + screenDy
-        localStorage.setItem('fleet-hud-y-offset', String(next))
-        return next
-      })
-    }
-  }, [mainEditor])
+  // Layout mode: create proxy shape on main canvas, track changes, clean up on deselect
+  useEffect(() => {
+    if (!layoutMode || !fleetBounds) return
+    layoutActiveRef.current = true
 
-  const handleLayoutCancel = useCallback(() => {
-    setLayoutMode(false)
+    // Current HUD screen rect
+    const autoHeight = window.innerHeight * 0.8
+    const autoZoom = autoHeight / fleetBounds.h
+    const autoWidth = fleetBounds.w * autoZoom
+    const curWidth = hudOverride?.width ?? autoWidth
+    const curHeight = hudOverride?.height ?? autoHeight
+    const curLeft = hudRight - curWidth
+    const defaultYOffset = hudOverride?.yOffset ?? 0
+    const curTop = Math.max(0, (window.innerHeight - curHeight) / 2 + defaultYOffset)
+
+    // Convert screen rect → page coords for the proxy shape
+    const cam = mainEditor.getCamera()
+    const pageX = curLeft / cam.z - cam.x
+    const pageY = curTop / cam.z - cam.y
+    const pageW = curWidth / cam.z
+    const pageH = curHeight / cam.z
+
+    // Create proxy geo shape on main canvas
+    mainEditor.createShape({
+      id: PROXY_SHAPE_ID,
+      type: 'geo',
+      x: pageX,
+      y: pageY,
+      opacity: 0.3,
+      props: { w: pageW, h: pageH, geo: 'rectangle', fill: 'semi', color: 'light-blue' },
+    })
+    mainEditor.select(PROXY_SHAPE_ID)
+
+    // Listen for proxy shape changes → update HUD override
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      if (!layoutActiveRef.current) return
+      for (const [, to] of Object.values(changes.updated)) {
+        if ((to as any).id === PROXY_SHAPE_ID && (to as any).typeName === 'shape') {
+          const shape = to as any
+          const cam = mainEditor.getCamera()
+          const newScreenX = (shape.x + cam.x) * cam.z
+          const newScreenY = (shape.y + cam.y) * cam.z
+          const newScreenW = shape.props.w * cam.z
+          const newScreenH = shape.props.h * cam.z
+          const newYOffset = newScreenY - (window.innerHeight - newScreenH) / 2
+          const override: HudOverride = { width: newScreenW, height: newScreenH, yOffset: newYOffset }
+          setHudOverride(override)
+          saveHudOverride(override)
+        }
+      }
+      // Check if proxy was deselected
+      for (const [, to] of Object.values(changes.updated)) {
+        if ((to as any).typeName === 'instance_page_state') {
+          const selectedIds = (to as any).selectedShapeIds as string[]
+          if (!selectedIds.includes(PROXY_SHAPE_ID as string)) {
+            // Deselected — exit layout mode
+            setLayoutMode(false)
+          }
+        }
+      }
+    }, { source: 'all', scope: 'all' })
+
+    // Esc key exits layout mode
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLayoutMode(false)
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    return () => {
+      layoutActiveRef.current = false
+      unsub()
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      // Remove proxy shape
+      try { mainEditor.deleteShape(PROXY_SHAPE_ID) } catch { /* already gone */ }
+    }
+  }, [layoutMode, mainEditor, fleetBounds, hudRight])
+
+  const handleLayoutToggle = useCallback(() => {
+    setLayoutMode(m => !m)
   }, [])
 
   // Don't render if no fleet shapes
@@ -332,33 +302,27 @@ export function FleetHUD({
 
   // Expanded: CanvasClipPanel with fleet region
   // Auto-zoom: fit all fleet shapes within 80% screen height, width follows aspect ratio
-  // Docked to right edge of viewport, vertically centered + screenYOffset
-  const panelHeight = window.innerHeight * 0.8
-  const zoom = panelHeight / fleetBounds.h
-  const panelWidth = fleetBounds.w * zoom
+  // If user has overridden dimensions via layout mode, use those instead.
+  const autoHeight = window.innerHeight * 0.8
+  const autoZoom = autoHeight / fleetBounds.h
+  const autoWidth = fleetBounds.w * autoZoom
+
+  const panelWidth = hudOverride?.width ?? autoWidth
+  const panelHeight = hudOverride?.height ?? autoHeight
   const panelLeft = hudRight - panelWidth
-  const adjustedTop = (window.innerHeight - panelHeight) / 2 + screenYOffset
+  const rawTop = (window.innerHeight - panelHeight) / 2 + screenYOffset
+  // Clamp so the controls (top of HUD) are never above the viewport
+  const adjustedTop = Math.max(0, Math.min(rawTop, window.innerHeight - 100))
 
   return (
     <>
       {ghost}
-      {layoutMode && (
-        <FleetGroupOverlay
-          panelLeft={panelLeft}
-          panelTop={adjustedTop}
-          panelWidth={panelWidth}
-          panelHeight={panelHeight}
-          mainEditor={mainEditor}
-          onCommit={handleLayoutCommit}
-          onCancel={handleLayoutCancel}
-        />
-      )}
       <div className="fleet-hud-wrap" ref={hudRef} style={{ left: panelLeft, top: adjustedTop }}>
         <div className="fleet-hud-controls">
           <button
-            className="fleet-hud-layout"
-            onClick={() => setLayoutMode(m => !m)}
-            title="Move / reposition HUD"
+            className={`fleet-hud-layout${layoutMode ? ' active' : ''}`}
+            onClick={handleLayoutToggle}
+            title="Move / resize HUD"
           >
             ⊞
           </button>

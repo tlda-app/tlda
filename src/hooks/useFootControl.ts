@@ -17,18 +17,21 @@ import { createClickDetector } from '../clickDetect'
 
 export interface UseFootControlOptions {
   enabled: boolean
+  clicksEnabled?: boolean
   whistleEnabled?: boolean
   hissEnabled?: boolean
 }
 
 export function useFootControl(editor: Editor | null, options: UseFootControlOptions) {
-  const { enabled, whistleEnabled = true, hissEnabled = true } = options
+  const { enabled, clicksEnabled = true, whistleEnabled = true, hissEnabled = true } = options
   const footRef = useRef<ReturnType<typeof createFootController> | null>(null)
   const clickRef = useRef<ReturnType<typeof createClickDetector> | null>(null)
   const [footInstance, setFootInstance] = useState<ReturnType<typeof createFootController> | null>(null)
   const [clickInstance, setClickInstance] = useState<ReturnType<typeof createClickDetector> | null>(null)
 
   useEffect(() => {
+    // Suppress visual flash indicators when clicks are disabled
+    setSuppressFlash(!clicksEnabled)
     if (!enabled || !editor) return
 
     // Track interactive element under foot cursor for enter/leave events.
@@ -376,7 +379,9 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     foot.start()
-    click.start().catch(err => console.warn('[foot-control] mic access denied:', err))
+    if (clicksEnabled) {
+      click.start().catch(err => console.warn('[foot-control] mic access denied:', err))
+    }
 
     return () => {
       cursorHideStyle.remove()
@@ -396,7 +401,7 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
       setFootInstance(null)
       setClickInstance(null)
     }
-  }, [enabled, editor])
+  }, [enabled, clicksEnabled, editor])
 
   // Update whistle/hiss toggles at runtime without tearing down the detector
   useEffect(() => {
@@ -409,7 +414,12 @@ export function useFootControl(editor: Editor | null, options: UseFootControlOpt
   return { footInstance, clickInstance }
 }
 
+/** Set to true to suppress all visual flash indicators. */
+let _suppressFlash = false
+export function setSuppressFlash(v: boolean) { _suppressFlash = v }
+
 function flashAt(x: number, y: number, color: string) {
+  if (_suppressFlash) return
   const el = document.createElement('div')
   el.style.cssText = `position:fixed;left:${x-12}px;top:${y-12}px;width:24px;height:24px;border-radius:50%;background:${color};opacity:0.7;pointer-events:none;z-index:99999;animation:fc-flash 350ms ease-out forwards;`
   if (!document.getElementById('fc-flash-style')) {

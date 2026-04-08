@@ -27,6 +27,7 @@ import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
+import { HudLayoutOverlay, registerLayoutSideEffects } from './shapes/HudLayoutMode'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
@@ -44,6 +45,8 @@ import { FleetSearchTool } from './tools/FleetSearchTool'
 import { ClusterTool } from './tools/ClusterTool'
 import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
+import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
+import { TaskInboxTool } from './tools/TaskInboxTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -327,6 +330,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
   const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
     enabled: footEnabled || clicksEnabled,
+    clicksEnabled,
     whistleEnabled,
     hissEnabled,
   })
@@ -615,12 +619,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, PlaybackFrameShapeUtil]
+    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, PlaybackTool, TerminalTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, PlaybackTool, TerminalTool, TaskInboxTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -951,6 +955,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             setRefViewerRefsLocal([{ label: anchorId, region }])
           })
 
+          // Register HUD layout mode side effects (container ↔ fleet shape sync)
+          registerLayoutSideEffects(editor)
+
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
           shapeIdsArrayRef.current = editorSetup.shapeIds
@@ -1242,6 +1249,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <NoteDropHandler />
       <MarkdownDropHandler />
       <TocDropTargetManager />
+      <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </AgentPillContext.Provider>
