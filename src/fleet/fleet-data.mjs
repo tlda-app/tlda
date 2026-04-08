@@ -51,6 +51,8 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
+  // Terminal attention events (permission prompts) bypass filters — they're urgent
+  if (event._evType === 'terminal_attention' || event.type === 'terminal_attention') return true
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {
@@ -238,7 +240,7 @@ export function connect() {
         .then(data => {
           const missed = (data.events || []).filter(e => {
             const t = e.type || e.event_type
-            return t === 'chat' || t === 'delegate' || t === 'task_done'
+            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention'
           })
           const newEvents = []
           for (const raw of missed) {
@@ -366,7 +368,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
     })
     .map(convertChatEvent)
   _events = chatEvents
@@ -473,7 +475,7 @@ export async function fetchHistory(agentId, limit = 200) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
     })
     .map(convertChatEvent)
 
@@ -489,7 +491,7 @@ export async function loadBefore(agentId, beforeTs, count = 100) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
     })
     .map(convertChatEvent)
 
