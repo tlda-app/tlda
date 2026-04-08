@@ -237,10 +237,21 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       _inputListener = () => {
         if (_filling) return
         if (!textarea.value && _finalTranscript) return  // guard: don't wipe on empty re-render
+        // User edited — sync transcript and fully restart recognition
+        // so Chrome has no history to replay (prevents deleted text from reappearing)
         _finalTranscript = textarea.value
         _interimTranscript = ''
         if (_recording && _recognition) {
-          try { _recognition.stop() } catch {}
+          const dying = _recognition
+          dying.onresult = null
+          dying.onend = () => {
+            if (_recording) {
+              _setupRecognition()
+              try { _recognition.start() } catch {}
+            }
+          }
+          _recognition = null
+          try { dying.stop() } catch {}
         }
       }
       textarea.addEventListener('input', _inputListener)
@@ -351,23 +362,44 @@ function _setupRecognition() {
         if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
-          _finalTranscript = ''
-          _interimTranscript = ''
-          _filling = true
-          if (_activeTextarea) {
-            _activeTextarea.value = ''
-            _activeTextarea.style.height = 'auto'
-          }
-          _filling = false
-          _activeSendFn(_activeSendTargets, cleanText)
-          showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
-          fadeHud(2500)
-          setTimeout(() => {
-            if (_recording) {
-              const w = targetLabel()
-              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
+          showHud(`sending → ${who}…`, '#c8956a')
+          const result = _activeSendFn(_activeSendTargets, cleanText)
+          const onSuccess = () => {
+            _finalTranscript = ''
+            _interimTranscript = ''
+            _filling = true
+            if (_activeTextarea) {
+              _activeTextarea.value = ''
+              _activeTextarea.style.height = 'auto'
             }
-          }, 2600)
+            _filling = false
+            showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
+            fadeHud(2500)
+            setTimeout(() => {
+              if (_recording) {
+                const w = targetLabel()
+                showHud(w ? `recording → ${w}` : 'recording', '#c87070')
+              }
+            }, 2600)
+          }
+          const onFail = () => {
+            showHud('send failed — text kept', '#c87070')
+            fadeHud(3000)
+            setTimeout(() => {
+              if (_recording) {
+                const w = targetLabel()
+                showHud(w ? `recording → ${w}` : 'recording', '#c87070')
+              }
+            }, 3100)
+          }
+          if (result && typeof result.then === 'function') {
+            result.then(responses => {
+              if (Array.isArray(responses) && !responses.every(r => r.ok)) throw new Error()
+              onSuccess()
+            }).catch(onFail)
+          } else {
+            onSuccess() // sendFn doesn't return a promise — clear optimistically
+          }
           return
         }
       }
@@ -454,6 +486,10 @@ function _setupRecognition() {
 
   _recognition.onend = () => {
     if (_recording) {
+      // Preserve textarea text (including interim) before Chrome resets results
+      const preservedText = _activeTextarea ? _activeTextarea.value : (_finalTranscript + _interimTranscript).trim()
+      _finalTranscript = preservedText
+      _interimTranscript = ''
       try { _recognition.start() } catch {}
     }
   }
@@ -662,19 +698,31 @@ function sendCurrentText() {
     return
   }
 
-  if (_activeSendFn) {
-    _activeSendFn(_activeSendTargets, text)
-  }
-
   const who = targetLabel()
-  showHud(`sent → ${who}`, '#7ab8a0')
-  fadeHud(2500)
+  showHud(`sending → ${who}…`, '#c8956a')
 
-  ta.value = ''
-  ta.style.height = 'auto'
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
-  _interimTranscript = ''
-  _finalTranscript = ''
+  const result = _activeSendFn ? _activeSendFn(_activeSendTargets, text) : null
+  const onSuccess = () => {
+    showHud(`sent → ${who}`, '#7ab8a0')
+    fadeHud(2500)
+    ta.value = ''
+    ta.style.height = 'auto'
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    _interimTranscript = ''
+    _finalTranscript = ''
+  }
+  const onFail = () => {
+    showHud('send failed — text kept', '#c87070')
+    fadeHud(3000)
+  }
+  if (result && typeof result.then === 'function') {
+    result.then(responses => {
+      if (Array.isArray(responses) && !responses.every(r => r.ok)) throw new Error()
+      onSuccess()
+    }).catch(onFail)
+  } else {
+    onSuccess()
+  }
 }
 
 // --- Key Binding ---
@@ -772,16 +820,7 @@ export function isMathMode() { return _mathMode }
 export function resetTranscript() {
   _interimTranscript = ''
   _finalTranscript = ''
-  if (_recording && _recognition) {
-    const dying = _recognition
-    dying.onresult = null
-    dying.onend = () => {
-      if (_recording) {
-        _setupRecognition()
-        try { _recognition.start() } catch {}
-      }
-    }
-    _recognition = null
-    try { dying.stop() } catch {}
-  }
+  // Don't touch recognition here — callers use restartRecording() for that.
+  // Doing both creates duplicate recognition instances (onend callback races
+  // with startRecording, spawning two competing sessions).
 }
