@@ -46,7 +46,7 @@ function getFleetShapes(editor: Editor) {
   return editor.getCurrentPageShapes().filter(s => FLEET_TYPES.includes(s.type))
 }
 
-export function toggleLayoutMode(editor: Editor) {
+export function toggleLayoutMode(_editor: Editor) {
   _layoutMode = !_layoutMode
   notifyListeners()
 }

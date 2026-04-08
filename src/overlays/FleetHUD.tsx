@@ -3,7 +3,7 @@
  * region (chat + agents) via CanvasClipPanel.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import type { Editor, TLAnyShapeUtilConstructor, TLShapeId, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
@@ -230,7 +230,6 @@ export function FleetHUD({
         if ((to as any).id === PROXY_SHAPE_ID && (to as any).typeName === 'shape') {
           const shape = to as any
           const cam = mainEditor.getCamera()
-          const newScreenX = (shape.x + cam.x) * cam.z
           const newScreenY = (shape.y + cam.y) * cam.z
           const newScreenW = shape.props.w * cam.z
           const newScreenH = shape.props.h * cam.z
@@ -306,6 +305,7 @@ export function FleetHUD({
   const panelLeft = hudRight - panelWidth
   const yOffset = hudOverride?.yOffset ?? 0
   const rawTop = (window.innerHeight - panelHeight) / 2 + yOffset
+  // Clamp so the controls (top of HUD) are never above the viewport
   const adjustedTop = Math.max(0, Math.min(rawTop, window.innerHeight - 100))
 
   return (

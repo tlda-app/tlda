@@ -4,6 +4,12 @@
  * Connects to an agent's tmux session via the fleet server WebSocket at
  * ws://localhost:5199/ws/terminal?agent=AGENT_ID
  *
+ * Features:
+ *   - Live terminal output via xterm.js
+ *   - Input bar at the bottom for sending commands to the tmux session
+ *   - Ctrl+C support for interrupt
+ *   - Visual input-active indicator (cyan border glow)
+ *
  * Props:
  *   w, h     — shape dimensions
  *   agentId  — fleet agent ID to connect to (empty = disconnected)
@@ -21,8 +27,11 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalShape.css'
 
-const FLEET_WS = 'ws://localhost:5199'
-const FLEET_API = 'http://localhost:5199'
+// Use relative URLs for API (proxied by Vite in dev, same host in prod).
+// WebSocket needs an absolute URL — derive from current host.
+const FLEET_WS_HOST = typeof window !== 'undefined'
+  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  : 'ws://localhost:5199'
 
 const DEFAULT_W = 560
 const DEFAULT_H = 380
@@ -71,11 +80,12 @@ function useAgents(): Agent[] {
     let cancelled = false
     async function load() {
       try {
-        const res = await fetch(`${FLEET_API}/api/agents`)
+        const res = await fetch(`/api/state`)
         if (!res.ok) return
-        const data: Agent[] = await res.json()
+        const data = await res.json()
+        const list: Agent[] = data.agents || []
         if (!cancelled) {
-          setAgents(data.filter(a => !a.dead && a.tmux_session))
+          setAgents(list.filter(a => !a.dead && a.tmux_session))
         }
       } catch {}
     }
@@ -97,8 +107,11 @@ function TerminalComponent({ shape }: { shape: any }) {
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const [statusMsg, setStatusMsg] = useState('')
+  const [inputFocused, setInputFocused] = useState(false)
+  const [inputValue, setInputValue] = useState('')
   const agents = useAgents()
 
   // Initialize xterm once
@@ -142,7 +155,7 @@ function TerminalComponent({ shape }: { shape: any }) {
     termRef.current = term
     fitRef.current = fit
 
-    // Forward key input to WebSocket
+    // Forward key input from xterm to WebSocket (for direct xterm focus)
     term.onData((data) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }))
@@ -243,6 +256,46 @@ function TerminalComponent({ shape }: { shape: any }) {
     })
   }, [editor, shape.id, shape.type])
 
+  // Send raw data to tmux via WebSocket
+  const sendInput = useCallback((data: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data }))
+    }
+  }, [])
+
+  // Handle input bar submit
+  const handleInputSubmit = useCallback(() => {
+    if (!inputValue.trim() && !inputValue) return
+    // Send the text followed by Enter (\r)
+    sendInput(inputValue + '\r')
+    setInputValue('')
+  }, [inputValue, sendInput])
+
+  // Handle input bar key events
+  const handleInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    stopEventPropagation(e as any)
+
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleInputSubmit()
+    } else if (e.key === 'c' && e.ctrlKey) {
+      // Ctrl+C — send interrupt
+      e.preventDefault()
+      sendInput('\x03')
+      setInputValue('')
+    } else if (e.key === 'Tab') {
+      // Tab completion
+      e.preventDefault()
+      sendInput('\t')
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      sendInput('\x1b[A')
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      sendInput('\x1b[B')
+    }
+  }, [handleInputSubmit, sendInput])
+
   const agentName = agents.find(a => a.id === agentId)?.friendly_name
     ?? (agentId ? agentId.slice(0, 12) : 'none')
 
@@ -252,22 +305,24 @@ function TerminalComponent({ shape }: { shape: any }) {
       ? 'connecting…'
       : 'terminal'
 
+  const isConnected = status === 'connected'
+
   return (
     <HTMLContainer
       style={{ width: w, height: h, pointerEvents: 'all' }}
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
     >
-      <div className="terminal-shape">
+      <div className={`terminal-shape ${inputFocused ? 'terminal-shape-input-active' : ''}`}>
         {/* Title bar */}
         <div className="terminal-shape-header"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
         >
           <div className="terminal-shape-dots">
-            <div className="terminal-shape-dot red" />
-            <div className="terminal-shape-dot yellow" />
-            <div className="terminal-shape-dot green" />
+            <div className={`terminal-shape-dot ${isConnected ? 'red' : ''}`} />
+            <div className={`terminal-shape-dot ${isConnected ? 'yellow' : ''}`} />
+            <div className={`terminal-shape-dot ${isConnected ? 'green' : ''}`} />
           </div>
           <span className="terminal-shape-title">{headerTitle}</span>
           <select
@@ -305,6 +360,40 @@ function TerminalComponent({ shape }: { shape: any }) {
             </div>
           )}
         </div>
+
+        {/* Input bar — only shown when connected */}
+        {isConnected && (
+          <div className="terminal-shape-input-bar"
+            onPointerDown={stopEventPropagation}
+            onPointerMove={stopEventPropagation}
+          >
+            <span className="terminal-shape-input-prompt">$</span>
+            <input
+              ref={inputRef}
+              className="terminal-shape-input"
+              type="text"
+              value={inputValue}
+              onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+              onKeyDown={handleInputKeyDown}
+              onKeyUp={(e) => stopEventPropagation(e as any)}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
+              placeholder="type command…"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button
+              className="terminal-shape-ctrl-c"
+              title="Send Ctrl+C (interrupt)"
+              onPointerDown={(e) => {
+                stopEventPropagation(e as any)
+                sendInput('\x03')
+              }}
+            >
+              ^C
+            </button>
+          </div>
+        )}
       </div>
     </HTMLContainer>
   )
