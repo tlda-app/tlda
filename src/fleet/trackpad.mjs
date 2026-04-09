@@ -199,38 +199,12 @@ function centroidY(fingers) {
   return fingers.reduce((s, f) => s + f.y, 0) / fingers.length
 }
 
-// --- WebSocket ---
-
-function connect() {
-  if (_ws) return
-  _ws = new WebSocket('ws://localhost:9876')
-
-  _ws.onopen = () => {
-    _connected = true
-    console.log('trackpad: connected')
-  }
-
-  _ws.onmessage = (e) => {
-    try { processFrame(JSON.parse(e.data)) } catch {}
-  }
-
-  _ws.onclose = () => {
-    _ws = null
-    _connected = false
-    clearTimeout(_reconnectTimer)
-    _reconnectTimer = setTimeout(connect, 5000)
-  }
-
-  _ws.onerror = () => {}
-}
-
 // --- Public API ---
 
 export function initTrackpad({ getEditor, onDoubleClick, onTripleClick } = {}) {
   _getEditor = getEditor
   _onDoubleClick = onDoubleClick
   _onTripleClick = onTripleClick
-  connect()
   console.log('trackpad: initialized — drag=axis-locked pan, 2x click=voice, 3x click=send')
 }
 

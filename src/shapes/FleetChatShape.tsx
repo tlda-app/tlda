@@ -27,7 +27,6 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { initTrackpad } from '../fleet/trackpad.mjs'
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
@@ -35,7 +34,6 @@ import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } 
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
-import { appendToken } from '../authToken'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import './fleet-chat.css'
 
@@ -127,12 +125,6 @@ async function uploadMarkdownWithImages(
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
-let _tldaEditor: any = null
-initTrackpad({
-  getEditor: () => _tldaEditor,
-  onDoubleClick: () => toggleRecording(),
-  onTripleClick: () => sendCurrentText(),
-})
 
 
 // --- Markdown renderer using markdown-it + KaTeX ---
@@ -304,8 +296,6 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  // Expose editor to trackpad input adapter
-  _tldaEditor = editor
   const doc = useContext(DocContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])

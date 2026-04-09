@@ -15,6 +15,10 @@
 
 import { toolContentDetail } from './activity-render.mjs'
 
+// Fleet server base URL — connect directly, no proxy through tlda
+const FLEET = 'http://localhost:5199'
+const FLEET_WS = 'ws://localhost:5199'
+
 // --- Stores ---
 let _agents = []
 let _tasks = []
@@ -131,7 +135,7 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
-  return fetch('/api/chat', {
+  return fetch(`${FLEET}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -139,7 +143,7 @@ export async function sendMessage(to, text, opts = {}) {
 }
 
 export async function respawnAgent(id) {
-  return fetch('/api/spawn', {
+  return fetch(`${FLEET}/api/spawn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: id, respawn: true }),
@@ -147,7 +151,7 @@ export async function respawnAgent(id) {
 }
 
 export async function spawnAgent(model) {
-  return fetch('/api/spawn', {
+  return fetch(`${FLEET}/api/spawn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),
@@ -155,7 +159,7 @@ export async function spawnAgent(model) {
 }
 
 export async function renameAgent(id, name) {
-  return fetch('/api/rename', {
+  return fetch(`${FLEET}/api/rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: id, name }),
@@ -163,7 +167,7 @@ export async function renameAgent(id, name) {
 }
 
 export async function setAgentLabels(id, labels) {
-  return fetch('/api/label', {
+  return fetch(`${FLEET}/api/label`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: id, labels }),
@@ -171,7 +175,7 @@ export async function setAgentLabels(id, labels) {
 }
 
 export async function kickAgent(id) {
-  return fetch('/api/kick', {
+  return fetch(`${FLEET}/api/kick`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: id }),
@@ -179,7 +183,7 @@ export async function kickAgent(id) {
 }
 
 export async function sendKey(session, key) {
-  return fetch('/api/send-key', {
+  return fetch(`${FLEET}/api/send-key`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session, key }),
@@ -187,7 +191,7 @@ export async function sendKey(session, key) {
 }
 
 export async function sendText(session, text) {
-  return fetch('/api/send-text', {
+  return fetch(`${FLEET}/api/send-text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session, text }),
@@ -202,14 +206,14 @@ export function connect() {
   if (_ws) return
   const params = new URLSearchParams(location.search)
   const token = params.get('token')
-  const wsUrl = location.origin.replace(/^http/, 'ws') + '/ws/fleet' + (token ? `?token=${token}` : '')
+  const wsUrl = FLEET_WS + '/ws/fleet'
   _ws = new WebSocket(wsUrl)
 
   _ws.onopen = () => {
     _reconnectDelay = 1000
     // Catch up on events missed during disconnect
     if (_lastEventId > 0) {
-      fetch(`/api/store/events?after=${_lastEventId}&limit=500`)
+      fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
         .then(r => r.json())
         .then(data => {
           const missed = (data.events || []).filter(e => {
@@ -232,7 +236,7 @@ export function connect() {
         })
         .catch(() => {})
       // Also refresh agents + tasks state
-      fetch('/api/state').then(r => r.json()).then(s => {
+      fetch(`${FLEET}/api/state`).then(r => r.json()).then(s => {
         updateAgents(s.agents || [])
         updateTasks(s.tasks || [])
       }).catch(() => {})
@@ -317,7 +321,7 @@ export function connect() {
 export async function init() {
   // Fetch human identity
   try {
-    const res = await fetch('/api/human')
+    const res = await fetch(`${FLEET}/api/human`)
     if (res.ok) {
       const data = await res.json()
       _humanId = data.id || null
@@ -326,9 +330,9 @@ export async function init() {
 
   // Fetch initial state + history + preambles in parallel
   const [stateRes, historyRes, preambleRes] = await Promise.all([
-    fetch('/api/state').then(r => r.json()).catch(() => ({})),
-    fetch('/api/chat/history?limit=500').then(r => r.json()).catch(() => ({ events: [] })),
-    fetch('/api/preamble').then(r => r.json()).catch(() => ({})),
+    fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
+    fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
+    fetch(`${FLEET}/api/preamble`).then(r => r.json()).catch(() => ({})),
   ])
   // Load preamble macros
   Object.assign(_preambles, preambleRes)
@@ -438,7 +442,7 @@ function convertChatEvent(e) {
 
 export async function fetchHistory(agentId, limit = 200) {
   const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`/api/chat/history?limit=${limit}${agentParam}`).then(r => r.json())
+  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParam}`).then(r => r.json())
 
   const events = (res.events || [])
     .filter(e => {
@@ -454,7 +458,7 @@ export async function fetchHistory(agentId, limit = 200) {
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
   const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  const res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
 
   const events = (res.events || [])
     .filter(e => {

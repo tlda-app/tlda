@@ -451,24 +451,53 @@ server.on('upgrade', (req, socket, head) => {
     return
   }
 
-  // Proxy /ws/fleet to fleet server for live chat events
+  // Proxy /ws/fleet to fleet server for live chat events (auto-reconnect upstream)
   if (url.pathname === '/ws/fleet') {
     const fleetUrl = new URL(FLEET_SERVER)
     const target = `ws://${fleetUrl.hostname}:${fleetUrl.port}${req.url}`
-    const upstream = new WS(target)
-    upstream.on('open', () => {
-      fleetWss.handleUpgrade(req, socket, head, (ws) => {
+
+    fleetWss.handleUpgrade(req, socket, head, (ws) => {
+      let upstream = null
+      let closed = false
+      const pending = []  // buffer messages while upstream is reconnecting
+
+      function connectUpstream() {
+        if (closed) return
+        upstream = new WS(target)
+        upstream.on('open', () => {
+          console.log('[fleet-proxy] upstream connected to', target)
+          // flush any messages buffered while reconnecting
+          while (pending.length) {
+            try { if (upstream.readyState === 1) upstream.send(pending.shift()) } catch {}
+          }
+        })
         upstream.on('message', (data) => {
-          try { if (ws.readyState === 1) ws.send(data.toString()) } catch {}
+          const msg = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString() : String(data)
+          try { if (ws.readyState === 1) ws.send(msg) } catch (e) { console.log('[fleet-proxy] send error:', e.message) }
         })
-        ws.on('message', (data) => {
-          try { if (upstream.readyState === 1) upstream.send(data.toString()) } catch {}
+        upstream.on('close', () => {
+          if (!closed) setTimeout(connectUpstream, 1000)
         })
-        upstream.on('close', () => ws.close())
-        ws.on('close', () => upstream.close())
+        upstream.on('error', () => {
+          try { upstream.close() } catch {}
+          // close handler will trigger reconnect
+        })
+      }
+
+      ws.on('message', (data) => {
+        if (upstream && upstream.readyState === 1) {
+          try { upstream.send(data.toString()) } catch {}
+        } else {
+          pending.push(data.toString())
+        }
       })
+      ws.on('close', () => {
+        closed = true
+        if (upstream) try { upstream.close() } catch {}
+      })
+
+      connectUpstream()
     })
-    upstream.on('error', () => socket.destroy())
     return
   }
 
