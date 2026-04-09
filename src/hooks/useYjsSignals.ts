@@ -73,6 +73,45 @@ export function useYjsSignals({
         editor.centerOnPoint({ x: pageCenterX(signal.y), y: signal.y }, { animation: { duration: 300 } })
       }
 
+      if (signal.type === 'scroll-to-element') {
+        // For HTML/markdown docs: find the iframe and postMessage to scroll to element by ID
+        const { id: elementId } = signal as any
+        if (elementId) {
+          // Find all html-page iframes and send the scroll command
+          const iframes = window.document.querySelectorAll('iframe[src*="_tldaShape"]') as NodeListOf<HTMLIFrameElement>
+          for (const iframe of iframes) {
+            if (iframe.contentWindow) {
+              iframe.contentWindow.postMessage({ type: 'tlda-scroll-to-id', id: elementId }, '*')
+            }
+          }
+        }
+      }
+
+      if (signal.type === 'set-chat-target') {
+        const { agent, panel, chatShapeId } = signal as any
+        // Find fleet-chat shapes and update the filter
+        const chatShapes = Object.values(editor.store.allRecords())
+          .filter((r: any) => r.typeName === 'shape' && r.type === 'fleet-chat') as any[]
+        if (chatShapes.length === 0) return
+        let target: any
+        if (chatShapeId) {
+          // Exact shape ID — use the chat the user is talking in
+          target = chatShapes.find((s: any) => s.id === chatShapeId)
+        } else if (panel === 'left' || panel === 'right') {
+          const sorted = [...chatShapes].sort((a, b) => a.x - b.x)
+          target = panel === 'left' ? sorted[0] : sorted[sorted.length - 1]
+        } else {
+          target = chatShapes.sort((a: any, b: any) => a.x - b.x)[0]
+        }
+        if (target) {
+          const newFilter = agent ? [[['to', agent]]] : []
+          editor.store.update(target.id, (s: any) => ({
+            ...s,
+            props: { ...s.props, filter: newFilter },
+          }))
+        }
+      }
+
       if (signal.type === 'highlight') {
         editor.centerOnPoint({ x: pageCenterX(signal.y), y: signal.y }, { animation: { duration: 300 } })
         const markerId = createShapeId()

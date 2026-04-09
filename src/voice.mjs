@@ -236,6 +236,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     if (textarea) {
       _inputListener = () => {
         if (_filling) return
+        if (!textarea.value && _finalTranscript) return  // guard: don't wipe on empty re-render
         _finalTranscript = textarea.value
         _interimTranscript = ''
         if (_recording && _recognition) {
@@ -315,7 +316,64 @@ function _setupRecognition() {
       }
     }
     _interimTranscript = interim
-    fillTextarea((_finalTranscript + interim).trim())
+
+    const combined = (_finalTranscript + interim).trim()
+    if (e.results[e.results.length - 1]?.isFinal) {
+      const finalTrimmed = _finalTranscript.trim()
+
+      // Voice-switch: "left chat"/"right chat" (and Whisper variants) at end of text
+      const switchMatch = finalTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+      if (switchMatch) {
+        const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
+          .filter(ta => ta.offsetHeight > 0)
+          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+        const target = textareas.find(ta => ta !== _activeTextarea) || textareas[0]
+        if (target) {
+          target.focus()
+          showHud('→ other chat', '#9370db')
+          fadeHud(1500)
+          _finalTranscript = ''
+          _interimTranscript = ''
+          setTimeout(() => {
+            if (_recording) {
+              const w = targetLabel()
+              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
+            }
+          }, 1600)
+          return
+        }
+      }
+
+      // Voice-send: "send" / "send it" / "sent" at end of text
+      const sendMatch = finalTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
+      if (sendMatch) {
+        const cleanText = finalTrimmed.slice(0, sendMatch.index).trim()
+        if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
+          const who = targetLabel()
+          const wordCount = cleanText.split(/\s+/).length
+          _finalTranscript = ''
+          _interimTranscript = ''
+          _filling = true
+          if (_activeTextarea) {
+            _activeTextarea.value = ''
+            _activeTextarea.style.height = 'auto'
+          }
+          _filling = false
+          _activeSendFn(_activeSendTargets, cleanText)
+          showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
+          fadeHud(2500)
+          setTimeout(() => {
+            if (_recording) {
+              const w = targetLabel()
+              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
+            }
+          }, 2600)
+          return
+        }
+      }
+    }
+
+    fillTextarea(combined)
   }
 
   _recognition.onerror = (e) => {
@@ -411,6 +469,7 @@ function watchdogRestart() {
     }
   }
   _gotAudioThisSession = false
+  const preservedText = _activeTextarea ? _activeTextarea.value : (_finalTranscript + _interimTranscript).trim()
   const dying = _recognition
   if (dying) {
     dying.onresult = null
@@ -425,6 +484,8 @@ function watchdogRestart() {
   _sessionTimer = null
   setTimeout(() => {
     if (!_recording) return
+    _finalTranscript = preservedText
+    _interimTranscript = ''
     _setupRecognition()
     try {
       _recognition.start()
@@ -442,6 +503,7 @@ function sessionRestart() {
   if (!_isChrome) return
   if (!_recording) return
   if (!_recognition) return
+  const preservedText = _activeTextarea ? _activeTextarea.value : (_finalTranscript + _interimTranscript).trim()
   const dying = _recognition
   if (dying) {
     dying.onresult = null
@@ -456,6 +518,8 @@ function sessionRestart() {
   _sessionTimer = null
   setTimeout(() => {
     if (!_recording) return
+    _finalTranscript = preservedText
+    _interimTranscript = ''
     _setupRecognition()
     try {
       _recognition.start()

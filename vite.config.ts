@@ -43,8 +43,12 @@ export default defineConfig({
       ignored: ['**/fleet/dashboard/**'],
     },
     proxy: {
-      // Fleet WebSocket endpoint
+      // Fleet WebSocket endpoints
       '/ws/fleet': {
+        target: 'ws://localhost:5199',
+        ws: true,
+      },
+      '/ws/terminal': {
         target: 'ws://localhost:5199',
         ws: true,
       },
@@ -64,6 +68,7 @@ export default defineConfig({
     port: 5179,
     proxy: {
       '/ws/fleet': { target: 'ws://localhost:5199', ws: true },
+      '/ws/terminal': { target: 'ws://localhost:5199', ws: true },
       '/api/projects': 'http://localhost:5176',
       '/api/auth': 'http://localhost:5176',
       '/api/recognize': 'http://localhost:5176',

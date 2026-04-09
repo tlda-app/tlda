@@ -1048,8 +1048,20 @@ function toFloat16(value) {
 // ---- Shared action functions (used by both HTTP and MCP) ----
 
 async function scrollToLine(doc, line, file) {
+  // For markdown/HTML docs: use element ID scrolling (no synctex lookup)
   const linePos = lookupLine(doc, line, file);
-  if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
+  if (!linePos) {
+    // Try element-based scroll for markdown docs
+    const elementId = `line-${line}`;
+    try {
+      await broadcastSignalRest(doc, 'signal:scroll-to-element', {
+        id: elementId, timestamp: Date.now(),
+      });
+      return { ok: true, elementId, method: 'scroll-to-element' };
+    } catch (e) {
+      return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}". Element scroll also failed: ${e.message}` };
+    }
+  }
 
   const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
 
@@ -2044,6 +2056,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
         required: ['doc', 'line'],
+      },
+    },
+    {
+      name: 'set_chat_target',
+      description: 'Change which agent a fleet chat panel targets. Used for hands-free layout — Skip says "give me historian" and the agent calls this to reconfigure the panel. Pass chatShapeId from the message context to target the specific panel the user is chatting in.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (room for the signal)' },
+          agent: { type: 'string', description: 'Agent friendly name or fleet ID to target (e.g. "historian", "fleet:e7175365")' },
+          chatShapeId: { type: 'string', description: 'Shape ID of the chat panel to update (from message context.chatShapeId). Targets the exact panel the user spoke in.' },
+          panel: { type: 'string', description: 'Fallback: "left" or "right" (by canvas x-position). Use chatShapeId instead when available.' },
+        },
+        required: ['doc', 'agent'],
       },
     },
     {
@@ -3102,6 +3128,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'set_chat_target') {
+    const { doc, agent, panel, chatShapeId } = args;
+    if (!doc || !agent) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, agent' }], isError: true };
+    }
+    try {
+      await broadcastSignalRest(doc, 'signal:set-chat-target', {
+        agent, panel: panel || undefined, chatShapeId: chatShapeId || undefined, timestamp: Date.now(),
+      });
+      return { content: [{ type: 'text', text: `Chat panel now targets "${agent}"${chatShapeId ? ` (shape ${chatShapeId})` : ''}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Failed to set chat target: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'scroll_to_line') {
     const { doc, line, file } = args;
     if (!doc || !line) {
@@ -3110,6 +3151,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await scrollToLine(doc, line, file);
     if (!result.ok) {
       return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+    if (result.method === 'scroll-to-element') {
+      return { content: [{ type: 'text', text: `Scrolled to element #${result.elementId} in "${doc}"` }] };
     }
     const tok = resolveToken();
     const tokParam = tok ? `&token=${tok}` : '';

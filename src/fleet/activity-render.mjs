@@ -1,7 +1,7 @@
 // activity-render.mjs — Standalone activity card renderer.
 //
-// Extracted from activity.mjs so it can be used in both the dashboard
-// and tldraw FleetChatShape without module-global dependencies.
+// Extracted from activity.mjs for use in tldraw FleetChatShape
+// without module-global dependencies.
 //
 // Usage:
 //   import { renderActivityGroup } from './activity-render.mjs'

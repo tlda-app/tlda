@@ -26,6 +26,7 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  Vec,
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
@@ -564,6 +565,17 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+
+  // Clip children to the frame bounds — returns polygon corners in local coords
+  override getClipPath(shape: any) {
+    const { w, h } = shape.props
+    return [
+      new Vec(0, 0),
+      new Vec(w, 0),
+      new Vec(w, h),
+      new Vec(0, h),
+    ]
+  }
 
   // Scale-to-fit: when the frame is resized, scale all child shapes proportionally.
   // Children y-positions are measured from CHROME_H (the content start), so the

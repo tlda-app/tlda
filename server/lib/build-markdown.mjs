@@ -243,6 +243,25 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     .use(mathPlugin)
     .use(markdownItAnchor, { slugify })
 
+  // Add line-number anchors to block elements for scroll_to_line support
+  function lineAnchorPlugin(md) {
+    const defaultOpen = (type) => {
+      const original = md.renderer.rules[type]
+      md.renderer.rules[type] = (tokens, idx, options, env, self) => {
+        const token = tokens[idx]
+        if (token.map && token.map[0] != null) {
+          // +1 because source lines are 1-indexed for users
+          token.attrSet('id', `line-${token.map[0] + 1}`)
+        }
+        return original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
+      }
+    }
+    for (const tag of ['paragraph_open', 'heading_open', 'blockquote_open', 'bullet_list_open', 'ordered_list_open', 'table_open', 'hr']) {
+      defaultOpen(tag)
+    }
+  }
+  md.use(lineAnchorPlugin)
+
   // Render and collect tokens
   const env = {}
   const tokens = md.parse(processedSource, env)
