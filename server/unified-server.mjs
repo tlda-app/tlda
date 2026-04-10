@@ -100,6 +100,30 @@ if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
 }
 
+// ---------- RPC routing (Phase 0 stub) ----------
+//
+// `resolveRpc(op, agent)` decides whether a given fleet operation should run
+// inline in this server process, or be forwarded to the fleet-daemon that
+// owns the agent's machine. In Phase 0 it ALWAYS returns `inline` — no
+// behavior change yet. Phase 2 will flip the routing once daemons can
+// answer RPCs.
+//
+// The point of installing the helper now is to give every existing inline
+// op a single place to grow a daemon path later, without an invasive
+// search-and-replace mid-Phase.
+//
+// `op`    — the operation name (e.g. 'send-key', 'capture-pane', 'spawn').
+// `agent` — agent record from the fleet store, or null/undefined for
+//           ops that aren't agent-scoped (e.g. machine-targeted spawn).
+//
+// Returns either:
+//   { via: 'inline' }
+//   { via: 'daemon', machine_id, daemon: <ws> }   // not yet — Phase 2
+function resolveRpc(op, agent) {
+  // Phase 0: nothing routes through a daemon. Behavior unchanged.
+  return { via: 'inline' }
+}
+
 // Auth
 initAuth()
 
@@ -512,7 +536,7 @@ function handleFleetWsMessage(ws, msg) {
   if (!fleetStore) { error('fleet store unavailable'); return }
 
   if (type === 'register') {
-    const { id: agentId, name, tmux_session, cwd, labels, manager, session_id, metadata } = msg
+    const { id: agentId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id } = msg
     if (!agentId) { error('missing id'); return }
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
@@ -530,6 +554,10 @@ function handleFleetWsMessage(ws, msg) {
       human: false,
       is_manager: !!manager,
       metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
+      // machine_id: optional. The fleet MCP doesn't send it yet — once it
+      // does, the server will know which fleet-daemon owns this agent and
+      // can route RPCs (Phase 2). Until then, agents stay with NULL.
+      machine_id: machine_id || existing?.machine_id || null,
     }
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
