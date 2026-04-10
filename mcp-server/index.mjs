@@ -2365,7 +2365,6 @@ const TOOLS_NEEDING_BUILD = new Set([
   'get_highlight_feedback',
   'set_understanding', 'get_understanding',
   'lookup_theorem',
-  'build', 'push', 'scratch', 'create_shape', 'set_preamble', 'suggest', 'update_shared_doc',
 ]);
 
 // Handle tool calls
