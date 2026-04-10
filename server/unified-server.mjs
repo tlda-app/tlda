@@ -68,9 +68,11 @@ initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR)
 resetStaleBuildStates()
 
-// Fleet store (SQLite-backed agent registry + chat)
+// Fleet store (SQLite-backed agent registry + chat).
+// TLDA_FLEET_DB overrides the default path — used by integration tests
+// to isolate from the live /tmp/fleet.db.
 const fleetStore = (() => {
-  try { return new FleetStore() }
+  try { return new FleetStore(process.env.TLDA_FLEET_DB) }
   catch (e) { console.error('[fleet-store] init failed (non-fatal):', e.message); return null }
 })()
 

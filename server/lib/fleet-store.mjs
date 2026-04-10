@@ -24,7 +24,8 @@ const DB_PATH = '/tmp/fleet.db'; // moved from ~/.fleet to avoid Spotlight index
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
 export class FleetStore {
-  constructor(dbPath = DB_PATH) {
+  constructor(dbPath) {
+    dbPath = dbPath || DB_PATH;
     // Ensure directory exists
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
