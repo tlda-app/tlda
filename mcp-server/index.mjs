@@ -15,6 +15,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import http from 'http';
 import fs from 'fs';
+import os from 'os';
+import crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1732,53 +1734,8 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: 'wait_for_feedback',
-      description: 'Wait for feedback from the iPad. Blocks until user hits the ping button, draws a shape, selects text, or edits a note. Returns a screenshot and summary of math-note sticky notes. To read pen/highlighter strokes, call read_pen_annotations separately.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman")',
-          },
-          timeout: {
-            type: 'number',
-            description: 'Max seconds to wait (default: 300)',
-          },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'wait_for_any_feedback',
-      description: 'Wait for feedback from ANY active document. Connects to all project Yjs rooms simultaneously and returns the first feedback from any of them. Yields to terminal agents: skips docs where another agent has a recent heartbeat. Returns the same format as wait_for_feedback, plus a "doc" field identifying which document.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          timeout: {
-            type: 'number',
-            description: 'Max seconds to wait (default: 300)',
-          },
-        },
-      },
-    },
-    {
-      name: 'check_feedback',
-      description: 'Check if there is new feedback since last check. Non-blocking.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman")',
-          },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'get_latest_feedback',
-      description: 'Get the latest feedback screenshot, regardless of whether it is new.',
+      name: 'get_feedback',
+      description: 'Get the latest feedback for a document on demand (whether or not it is new). Non-blocking peek.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1831,8 +1788,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'highlight_location',
-      description: 'Highlight a location in the TLDraw canvas on the iPad. Use this for forward sync from TeX source to iPad.',
+      name: 'flash_location',
+      description: 'Flash a temporary red circle at a source location in the TLDraw viewer. Use this for forward sync from TeX source to the canvas. Not persistent — use draw_highlight for persistent marks.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1867,7 +1824,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           height: { type: 'number', description: 'Note height in pixels (default: 150)' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or get_feedback.' },
         },
         required: ['doc', 'text'],
       },
@@ -1897,7 +1854,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'mark_done',
+      name: 'mark_annotation_done',
       description: 'Mark an annotation as done. Collapses and dims the note. By default, also moves it to the page margin (like the viewer\'s done button). Set margin=false to keep it in place.',
       inputSchema: {
         type: 'object',
@@ -2014,6 +1971,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name' },
           unaddressed_only: { type: 'boolean', description: 'Only return unaddressed highlights (default: false)' },
+          since_minutes: { type: 'number', description: 'Only return feedback created in the last N minutes (default: all)' },
         },
         required: ['doc'],
       },
@@ -2073,23 +2031,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'send_note',
-      description: 'Drop a quick note at a source line. Creates a persistent math-note in Yjs and broadcasts via WebSocket for immediate visibility on all viewers.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          line: { type: 'number', description: 'Source line number to place the note at. Required unless page is given.' },
-          page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
-          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
-          color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: orange). Convention: orange=claude, green=todd, violet=user.' },
-          file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or wait_for_feedback.' },
-        },
-        required: ['doc', 'text'],
-      },
-    },
-    {
       name: 'doc_version',
       description: 'List the history of a document. Each successful build becomes a version. Returns recent versions with their hash and timestamp, or the version active at a given time.',
       inputSchema: {
@@ -2139,11 +2080,133 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'ref1'],
       },
     },
+    {
+      name: 'build',
+      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. Returns immediately — use build_status to poll.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'build_status',
+      description: 'Check the current build status for a tlda document. Returns phase, status, and any errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'push',
+      description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          files: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'File path relative to project root' },
+                content: { type: 'string', description: 'File content. If omitted, reads from local filesystem.' },
+                localPath: { type: 'string', description: 'Local filesystem path to read from (alternative to content)' },
+              },
+              required: ['path'],
+            },
+            description: 'Files to push',
+          },
+          build: { type: 'boolean', description: 'Trigger build after push. Default: true' },
+        },
+        required: ['doc', 'files'],
+      },
+    },
+    {
+      name: 'scratch',
+      description: 'Publish a scratch markdown file as a page in the fleet-workspace book. Creates a markdown project, pushes the file, and auto-joins the book. Subsequent edits are auto-pushed by watch-all.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: 'Absolute path to the .md file' },
+          title: { type: 'string', description: 'Display title (default: first heading or filename)' },
+          book: { type: 'string', description: 'Book to join (default: fleet-workspace)' },
+        },
+        required: ['file'],
+      },
+    },
+    {
+      name: 'create_shape',
+      description: 'Create a shape (annotation, highlight, arrow, etc.) on a tlda document canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          shape: { type: 'object', description: 'Shape object with at minimum { type, x, y, props }. See tlda shape schema.' },
+        },
+        required: ['doc', 'shape'],
+      },
+    },
+    {
+      name: 'lookup_theorem',
+      description: 'Look up a theorem, lemma, proposition, corollary, definition, or assumption in a tlda document by number or label. Returns label, type, number, page, source line, and title.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          query: { type: 'string', description: 'Number ("4.3", "A.1") or full label ("thm:rate-main")' },
+        },
+        required: ['doc', 'query'],
+      },
+    },
+    {
+      name: 'set_preamble',
+      description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tex_file: { type: 'string', description: 'Path to a .tex file to extract macros from' },
+          target: { type: 'string', description: 'Chat room or context name (default: "default"). Use to set different macros per project.' },
+        },
+        required: ['tex_file'],
+      },
+    },
+    {
+      name: 'suggest',
+      description: 'Post a suggestion card on a shared doc in response to feedback. The card appears as a sticky note anchored at specific lines, with optional Accept/Reject/Modify buttons for one-tap review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name' },
+          line: { type: 'number', description: 'Source line to anchor the suggestion at' },
+          text: { type: 'string', description: 'Suggestion text (supports $math$ and $$display math$$)' },
+          reply_to: { type: 'string', description: 'Shape ID of the feedback to reply to. Creates a threaded reply instead of a new note.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Action buttons (default: ["Accept", "Reject", "Modify"])' },
+          color: { type: 'string', description: 'Note color (default: orange for agent notes)' },
+        },
+        required: ['doc', 'text'],
+      },
+    },
+    {
+      name: 'update_shared_doc',
+      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name (as returned by share())' },
+        },
+        required: ['doc'],
+      },
+    },
   ],
 }));
 
-// Track last checked time for check_feedback
-let lastCheckedTime = 0;
+// Track last ping timestamp (consumed by get_feedback)
 let lastPingTimestamp = 0;
 
 async function summarizeAnnotations(docName) {
@@ -2294,13 +2357,14 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
-  'wait_for_feedback', 'screenshot', 'crop_screenshot', 'get_latest_feedback',
-  'highlight_location', 'add_annotation', 'send_note',
+  'screenshot', 'crop_screenshot', 'get_feedback',
+  'flash_location', 'add_annotation',
   'scroll_to_line', 'read_pen_annotations',
   'draw_highlight', 'draw_arrow',
   'mark_highlight_addressed', 'place_response_bar',
   'get_highlight_feedback',
   'set_understanding', 'get_understanding',
+  'lookup_theorem',
 ]);
 
 // Handle tool calls
@@ -2318,545 +2382,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'wait_for_feedback') {
-    const timeout = (args?.timeout || 300) * 1000;
-    const docName = args?.doc;
-    if (!docName) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    }
-
-    // Warn if agent has a delegated task — they should probably be working, not blocking
-    try {
-      const stateFile = `${os.homedir()}/.claude/agent-tasks.json`;
-      const agentWin = process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID;
-      if (agentWin && fs.existsSync(stateFile)) {
-        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-        const winId = parseInt(agentWin);
-        const task = (state.tasks || []).find(t => t.agent === winId && t.status !== 'done');
-        if (task) {
-          return {
-            content: [{
-              type: 'text',
-              text: `WARNING: You have an active task [${task.id}]: "${task.description}". ` +
-                `wait_for_feedback blocks for up to ${Math.round(timeout/1000)}s and is only for dedicated iPad review sessions. ` +
-                `If your task is to write/edit/analyze, use \`tlda monitor add ${docName}\` for background notifications instead, and do your actual work.`,
-            }],
-          };
-        }
-      }
-    } catch { /* best effort — don't block on check failure */ }
-
-    let heartbeatInterval;
-    let shapeStream;
-    let signalStream;
-    try {
-      // Signal that an agent is listening
-      writeAgentHeartbeat(docName, 'listening', 'claude');
-      heartbeatInterval = setInterval(() => writeAgentHeartbeat(docName, 'listening', 'claude'), 15000);
-
-      // Shared snapshot state with the PostToolUse hook (tlda monitor).
-      // If the hook has been running, its snapshot is the ground truth for
-      // what the agent has already seen. Read it as our baseline so we don't
-      // re-fire on shapes the hook already reported.
-      // State dir is scoped per agent via AGENT_WIN.
-      const agentId = process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID;
-      const SHARED_STATE_DIR = agentId ? `/tmp/tlda-listen-${agentId}/state` : null;
-      const sharedSnapshotFile = SHARED_STATE_DIR ? `${SHARED_STATE_DIR}/shapes-${docName}.json` : null;
-      const sharedPingFile = SHARED_STATE_DIR ? `${SHARED_STATE_DIR}/signal-ts-${docName}` : null;
-
-      // Initialize ping timestamp — prefer shared state, fall back to server
-      try {
-        const savedTs = sharedPingFile && fs.existsSync(sharedPingFile) ? parseInt(fs.readFileSync(sharedPingFile, 'utf8').trim()) : 0;
-        if (savedTs > lastPingTimestamp) lastPingTimestamp = savedTs;
-      } catch {}
-      const existingPing = await readSignalRest(docName, 'signal:ping');
-      if (existingPing?.timestamp > lastPingTimestamp) {
-        if (lastPingTimestamp > 0) {
-          lastPingTimestamp = existingPing.timestamp;
-          // Write back shared state before early return so hook doesn't re-fire
-          if (SHARED_STATE_DIR) try {
-            fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
-            fs.writeFileSync(sharedPingFile, String(lastPingTimestamp));
-          } catch {}
-          clearInterval(heartbeatInterval);
-          writeAgentHeartbeat(docName, 'thinking', 'claude');
-          return { content: [{ type: 'text', text: await formatPing(existingPing, docName) }] };
-        }
-        lastPingTimestamp = existingPing.timestamp;
-      }
-
-      // Snapshot shapes — prefer shared state from hook, fall back to fresh fetch
-      const knownShapes = new Map(); // id → shape
-      try {
-        let baseline;
-        if (sharedSnapshotFile && fs.existsSync(sharedSnapshotFile)) {
-          baseline = JSON.parse(fs.readFileSync(sharedSnapshotFile, 'utf8'));
-          console.error(`[wait] Loaded shared snapshot for ${docName} (${baseline.length} records)`);
-        } else {
-          baseline = await fetchShapes(docName);
-        }
-        for (const s of baseline) {
-          if (s.typeName === 'shape') knownShapes.set(s.id, s);
-        }
-      } catch (e) {
-        console.error(`[wait] Failed to load snapshot for ${docName}: ${e.message}`);
-        // Fall back to fresh fetch
-        try {
-          const allShapes = await fetchShapes(docName);
-          for (const s of allShapes) {
-            if (s.typeName === 'shape') knownShapes.set(s.id, s);
-          }
-        } catch {}
-      }
-
-      const DEBOUNCE_MS = 5000;
-      const waitPromise = new Promise(resolve => {
-        let debounceTimer = null;
-        let pendingResult = null;
-        let resolved = false;
-
-        function cleanup() {
-          if (debounceTimer) clearTimeout(debounceTimer);
-          if (signalStream) { signalStream.close(); signalStream = null; }
-          if (shapeStream) { shapeStream.close(); shapeStream = null; }
-        }
-
-        function doResolve(result) {
-          if (resolved) return;
-          resolved = true;
-          cleanup();
-          resolve(result);
-        }
-
-        // --- Signal SSE stream: ping, text-selection ---
-        signalStream = connectSignalStream(docName, (signal) => {
-          if (resolved) return;
-          if (signal.key === 'signal:ping') {
-            if (signal.timestamp > lastPingTimestamp) {
-              lastPingTimestamp = signal.timestamp;
-              doResolve({ type: 'ping', ping: signal });
-            }
-            return;
-          }
-          if (signal.key === 'signal:text-selection') {
-            if (signal.text) {
-              pendingResult = { type: 'text-selection', sel: signal };
-              if (debounceTimer) clearTimeout(debounceTimer);
-              debounceTimer = setTimeout(() => {
-                doResolve(pendingResult);
-              }, 2000);
-            }
-            return;
-          }
-        });
-
-        // --- SSE stream: shape changes (from @tldraw/sync rooms) ---
-        shapeStream = connectShapeStream(docName, async () => {
-          if (resolved) return;
-          // Debounce shape changes
-          if (debounceTimer) clearTimeout(debounceTimer);
-          debounceTimer = setTimeout(async () => {
-            if (resolved) return;
-            try {
-              // Fetch current shapes and diff against snapshot
-              const currentShapes = await fetchShapes(docName);
-              for (const record of currentShapes) {
-                if (record.typeName !== 'shape') continue;
-                const known = knownShapes.get(record.id);
-
-                if (!known) {
-                  // New shape
-                  knownShapes.set(record.id, record);
-                  if (record.type === 'math-note') {
-                    const choices = record.props?.choices;
-                    const sel = record.props?.selectedChoice;
-                    if (choices?.length && sel != null && sel >= 0) {
-                      doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel] });
-                      return;
-                    }
-                    const text = record.props?.text || '';
-                    if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
-                    doResolve({ type: 'annotation', key: record.id, action: 'add', record });
-                    return;
-                  }
-                  if (['draw', 'highlight', 'arrow', 'geo', 'text', 'line'].includes(record.type)) {
-                    doResolve({ type: 'stroke', key: record.id, action: 'add', record });
-                    return;
-                  }
-                } else {
-                  // Updated shape — check for meaningful changes
-                  const oldJson = JSON.stringify(known.props);
-                  const newJson = JSON.stringify(record.props);
-                  if (oldJson !== newJson) {
-                    knownShapes.set(record.id, record);
-                    if (record.type === 'math-note') {
-                      const choices = record.props?.choices;
-                      const sel = record.props?.selectedChoice;
-                      if (choices?.length && sel != null && sel >= 0 && sel !== known.props?.selectedChoice) {
-                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel] });
-                        return;
-                      }
-                      const text = record.props?.text || '';
-                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
-                      doResolve({ type: 'annotation', key: record.id, action: 'update', record });
-                      return;
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              console.error(`[wait] Shape diff error: ${e.message}`);
-            }
-          }, DEBOUNCE_MS);
-        });
-
-        // Also resolve on HTTP snapshot (backward compat)
-        waitingResolvers.push(() => {
-          doResolve({ type: 'http-snapshot' });
-        });
-      });
-
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout waiting for feedback')), timeout);
-      });
-
-      const result = await Promise.race([waitPromise, timeoutPromise]);
-      clearInterval(heartbeatInterval);
-      if (shapeStream) { shapeStream.close(); shapeStream = null; }
-      if (signalStream) { signalStream.close(); signalStream = null; }
-      writeAgentHeartbeat(docName, 'thinking', 'claude');
-
-      // Write back shared snapshot so the hook picks up where we left off
-      if (SHARED_STATE_DIR) try {
-        const currentShapes = await fetchShapes(docName);
-        fs.mkdirSync(SHARED_STATE_DIR, { recursive: true });
-        fs.writeFileSync(sharedSnapshotFile, JSON.stringify(currentShapes));
-        fs.writeFileSync(sharedPingFile, String(lastPingTimestamp));
-      } catch (e) {
-        console.error(`[wait] Failed to write shared snapshot: ${e.message}`);
-      }
-
-      if (result?.type === 'http-snapshot') {
-        return { content: [{ type: 'text', text: `New feedback received!\n\n${lastRenderOutput}` }] };
-      }
-
-      if (result?.type === 'text-selection') {
-        const sel = result.sel;
-        return { content: [{ type: 'text', text: `Text selected (page ${sel.page}):\n  "${sel.text}"` }] };
-      }
-
-      if (result?.type === 'ping') {
-        return { content: [{ type: 'text', text: await formatPing(result.ping, docName) }] };
-      }
-
-      if (result?.type === 'choice') {
-        const r = result.record;
-        const anchor = r.meta?.sourceAnchor;
-        let text = `Choice selected on ${result.key}:\n`;
-        text += `  question: "${r.props?.text || ''}"\n`;
-        text += `  selected: ${result.choiceIndex} — "${result.choiceText}"\n`;
-        text += `  all choices: ${r.props.choices.map((c, i) => i === result.choiceIndex ? `[${c}]` : c).join(' | ')}\n`;
-        if (anchor) text += `  anchor: ${anchor.file}:${anchor.line}`;
-        return { content: [{ type: 'text', text }] };
-      }
-
-      // Shape drawn (draw/highlight/arrow/geo/text/line)
-      if (result?.type === 'stroke') {
-        const formatted = formatStrokeResult(result.record, docName, '', null, 'claude');
-        // Append nearby-shapes context
-        let text = formatted.content[0].text;
-        if (formatted.page != null) {
-          try {
-            const allShapes = await collectDrawnShapes(docName);
-            const ctx = buildNearbyContext(allShapes, result.key, formatted.page);
-            if (ctx) text += '\n' + ctx;
-          } catch {}
-        }
-        return { content: [{ type: 'text', text }] };
-      }
-
-      // Annotation change (math-note)
-      const r = result.record;
-      const anchor = r.meta?.sourceAnchor;
-      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'claude');
-      // Include nearby context for annotation changes too
-      let noteText = `Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"`;
-      try {
-        const allShapes = await collectDrawnShapes(docName);
-        const noteBBox = { minX: r.x, minY: r.y, maxX: r.x + 10, maxY: r.y + 10 };
-        const notePos = describePagePosition(docName, noteBBox);
-        const ctx = buildNearbyContext(allShapes, result.key, notePos.page);
-        if (ctx) noteText += '\n' + ctx;
-      } catch {}
-      const summary = await summarizeAnnotations(docName);
-      return { content: [{ type: 'text', text: noteText + '\n\n' + summary }] };
-    } catch (e) {
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
-      if (shapeStream) { shapeStream.close(); shapeStream = null; }
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'wait_for_any_feedback') {
-    const timeout = (args?.timeout || 300) * 1000;
-
-    // Discover active docs from manifest
-    const manifest = await readManifest();
-    const docNames = manifest?.documents ? Object.keys(manifest.documents) : [];
-    if (docNames.length === 0) {
-      return { content: [{ type: 'text', text: 'No documents found. Is the server running with projects?' }], isError: true };
-    }
-
-    // Filter docs by agent heartbeat — skip docs where a terminal agent is active
-    const HEARTBEAT_STALE_MS = 60000;
-    const activeDocs = [];
-    for (const docName of docNames) {
-      const hb = await readSignalRest(docName, 'signal:agent-heartbeat');
-      if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) {
-        console.error(`[wait_for_any] Skipping ${docName} — terminal agent active`);
-        continue;
-      }
-      activeDocs.push(docName);
-    }
-
-    if (activeDocs.length === 0) {
-      return { content: [{ type: 'text', text: 'All documents have active terminal agents. No docs to monitor.' }], isError: true };
-    }
-
-    const heartbeatIntervals = [];
-    for (const docName of activeDocs) {
-      writeAgentHeartbeat(docName, 'listening', 'todd');
-      heartbeatIntervals.push(setInterval(async () => {
-        const hb = await readSignalRest(docName, 'signal:agent-heartbeat');
-        if (hb?.state === 'thinking' && hb.timestamp && (Date.now() - hb.timestamp) < HEARTBEAT_STALE_MS) return;
-        writeAgentHeartbeat(docName, 'listening', 'todd');
-      }, 15000));
-    }
-
-    if (!global._anyFeedbackPingBaselines) global._anyFeedbackPingBaselines = new Map();
-    const pingBaselines = global._anyFeedbackPingBaselines;
-    for (const docName of activeDocs) {
-      if (!pingBaselines.has(docName)) {
-        const existingPing = await readSignalRest(docName, 'signal:ping');
-        pingBaselines.set(docName, existingPing?.timestamp || 0);
-      }
-    }
-
-    // Snapshot shapes per doc via REST
-    const knownShapes = new Map(); // docName → Map(id → shape)
-    for (const docName of activeDocs) {
-      try {
-        const shapes = await fetchShapes(docName);
-        const m = new Map();
-        for (const s of shapes) { if (s.typeName === 'shape') m.set(s.id, s); }
-        knownShapes.set(docName, m);
-      } catch {
-        knownShapes.set(docName, new Map());
-      }
-    }
-
-    const DEBOUNCE_MS = 5000;
-    const shapeStreams = [];
-    const signalStreams = [];
-
-    try {
-      const waitPromise = new Promise(resolve => {
-        let debounceTimer = null;
-        let resolved = false;
-
-        function doResolve(result) {
-          if (resolved) return;
-          resolved = true;
-          if (debounceTimer) clearTimeout(debounceTimer);
-          for (const s of signalStreams) s.close();
-          for (const s of shapeStreams) s.close();
-          signalStreams.length = 0;
-          shapeStreams.length = 0;
-          resolve(result);
-        }
-
-        // --- Signal SSE streams: ping, text-selection ---
-        for (const docName of activeDocs) {
-          const stream = connectSignalStream(docName, (signal) => {
-            if (resolved) return;
-
-            if (signal.key === 'signal:ping') {
-              const baseline = pingBaselines.get(docName) || 0;
-              if (signal.timestamp > baseline) {
-                pingBaselines.set(docName, signal.timestamp);
-                doResolve({ type: 'ping', ping: signal, docName });
-              }
-              return;
-            }
-            if (signal.key === 'signal:text-selection') {
-              if (signal.text) {
-                if (debounceTimer) clearTimeout(debounceTimer);
-                const pending = { type: 'text-selection', sel: signal, docName };
-                debounceTimer = setTimeout(() => doResolve(pending), 2000);
-              }
-              return;
-            }
-          });
-          signalStreams.push(stream);
-        }
-
-        // --- SSE streams: shape changes ---
-        for (const docName of activeDocs) {
-          const stream = connectShapeStream(docName, async () => {
-            if (resolved) return;
-            if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(async () => {
-              if (resolved) return;
-              try {
-                const currentShapes = await fetchShapes(docName);
-                const known = knownShapes.get(docName) || new Map();
-                for (const record of currentShapes) {
-                  if (record.typeName !== 'shape') continue;
-                  const prev = known.get(record.id);
-                  if (!prev) {
-                    known.set(record.id, record);
-                    if (record.type === 'math-note') {
-                      const choices = record.props?.choices;
-                      const sel = record.props?.selectedChoice;
-                      if (choices?.length && sel != null && sel >= 0) {
-                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel], docName });
-                        return;
-                      }
-                      const text = record.props?.text || '';
-                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
-                      doResolve({ type: 'annotation', key: record.id, action: 'add', record, docName });
-                      return;
-                    }
-                    if (['draw', 'highlight', 'arrow', 'geo', 'text', 'line'].includes(record.type)) {
-                      doResolve({ type: 'stroke', key: record.id, action: 'add', record, docName });
-                      return;
-                    }
-                  } else if (JSON.stringify(prev.props) !== JSON.stringify(record.props)) {
-                    known.set(record.id, record);
-                    if (record.type === 'math-note') {
-                      const choices = record.props?.choices;
-                      const sel = record.props?.selectedChoice;
-                      if (choices?.length && sel != null && sel >= 0 && sel !== prev.props?.selectedChoice) {
-                        doResolve({ type: 'choice', key: record.id, record, choiceIndex: sel, choiceText: choices[sel], docName });
-                        return;
-                      }
-                      const text = record.props?.text || '';
-                      if (text.trimEnd().endsWith('—Claude:') || text.trimEnd().endsWith('—Todd')) continue;
-                      doResolve({ type: 'annotation', key: record.id, action: 'update', record, docName });
-                      return;
-                    }
-                  }
-                }
-              } catch (e) {
-                console.error(`[wait_for_any] Shape diff error for ${docName}: ${e.message}`);
-              }
-            }, DEBOUNCE_MS);
-          });
-          shapeStreams.push(stream);
-        }
-      });
-
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout waiting for feedback')), timeout);
-      });
-
-      const result = await Promise.race([waitPromise, timeoutPromise]);
-      heartbeatIntervals.forEach(i => clearInterval(i));
-      for (const s of shapeStreams) s.close();
-      for (const s of signalStreams) s.close();
-
-      const docName = result.docName;
-      writeAgentHeartbeat(docName, 'thinking', 'todd');
-
-      const prefix = `[${docName}] `;
-
-      if (result.type === 'text-selection') {
-        return { content: [{ type: 'text', text: `${prefix}Text selected (page ${result.sel.page}):\n  "${result.sel.text}"` }] };
-      }
-
-      if (result.type === 'ping') {
-        return { content: [{ type: 'text', text: `${prefix}${await formatPing(result.ping, docName)}` }] };
-      }
-
-      if (result.type === 'choice') {
-        const r = result.record;
-        const anchor = r.meta?.sourceAnchor;
-        let text = `${prefix}Choice selected on ${result.key}:\n`;
-        text += `  question: "${r.props?.text || ''}"\n`;
-        text += `  selected: ${result.choiceIndex} — "${result.choiceText}"\n`;
-        text += `  all choices: ${r.props.choices.map((c, i) => i === result.choiceIndex ? `[${c}]` : c).join(' | ')}\n`;
-        if (anchor) text += `  anchor: ${anchor.file}:${anchor.line}`;
-        return { content: [{ type: 'text', text }] };
-      }
-
-      if (result.type === 'stroke') {
-        const formatted = formatStrokeResult(result.record, docName, prefix, null, 'todd');
-        let text = formatted.content[0].text;
-        if (formatted.page != null) {
-          try {
-            const allShapes = await collectDrawnShapes(docName);
-            const ctx = buildNearbyContext(allShapes, result.key, formatted.page);
-            if (ctx) text += '\n' + ctx;
-          } catch {}
-        }
-        return { content: [{ type: 'text', text }] };
-      }
-
-      // Annotation
-      const r = result.record;
-      const anchor = r.meta?.sourceAnchor;
-      const loc = anchor ? `${anchor.file}:${anchor.line}` : `(${r.x?.toFixed(0)}, ${r.y?.toFixed(0)})`;
-      if (r.x != null && r.y != null) writeAgentAttention(docName, r.x, r.y, 'todd');
-      let noteText = `${prefix}Annotation ${result.action}: ${result.key}\n  [${r.props?.color}] ${loc}\n  "${r.props?.text}"`;
-      try {
-        const allShapes = await collectDrawnShapes(docName);
-        const noteBBox = { minX: r.x, minY: r.y, maxX: r.x + 10, maxY: r.y + 10 };
-        const notePos = describePagePosition(docName, noteBBox);
-        const ctx = buildNearbyContext(allShapes, result.key, notePos.page);
-        if (ctx) noteText += '\n' + ctx;
-      } catch {}
-      const summary = await summarizeAnnotations(docName);
-      return { content: [{ type: 'text', text: noteText + '\n\n' + summary }] };
-
-    } catch (e) {
-      heartbeatIntervals.forEach(i => clearInterval(i));
-      for (const s of shapeStreams) s.close();
-      for (const s of signalStreams) s.close();
-      if (e.message === 'Timeout waiting for feedback') {
-        return { content: [{ type: 'text', text: `No feedback on any document for ${timeout / 1000}s.` }] };
-      }
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'check_feedback') {
-    const docName = args?.doc;
-    if (!docName) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    }
-
-    try {
-      const ping = await readSignalRest(docName, 'signal:ping');
-
-      if (ping?.timestamp > lastPingTimestamp) {
-        lastPingTimestamp = ping.timestamp;
-        return { content: [{ type: 'text', text: await formatPing(ping, docName) }] };
-      }
-
-      // Fall back to HTTP snapshot check
-      if (lastSnapshotTime > lastCheckedTime) {
-        lastCheckedTime = Date.now();
-        return { content: [{ type: 'text', text: `New feedback available!\n\n${lastRenderOutput}` }] };
-      }
-
-      return { content: [{ type: 'text', text: 'No new feedback since last check.' }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'get_latest_feedback') {
+  if (name === 'get_feedback') {
     const docName = args?.doc;
     // Try cached screenshot signal first
     if (docName) {
@@ -2971,7 +2497,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'highlight_location') {
+  if (name === 'flash_location') {
     const { doc, file, line } = args;
     if (!file || !line) {
       return { content: [{ type: 'text', text: 'Missing file or line parameter' }], isError: true };
@@ -3036,7 +2562,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'mark_done') {
+  if (name === 'mark_annotation_done') {
     const { doc, id, margin } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
     const moveToMargin = margin !== false; // default true
@@ -3171,22 +2697,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const tokParam = tok ? `&token=${tok}` : '';
     const viewUrl = `http://localhost:5176/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
-  }
-
-  if (name === 'send_note') {
-    const { doc, line, page: pageNum, text, color, file, choices } = args;
-    if (!doc || (!line && !pageNum) || !text) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page), text' }], isError: true };
-    }
-    const result = line
-      ? await sendNote(doc, line, text, color, file, choices)
-      : await addAnnotation(doc, null, text, { color, file, choices, page: pageNum });
-    if (!result.ok) {
-      return { content: [{ type: 'text', text: result.error }], isError: true };
-    }
-    let msg = `Note sent at line ${line} → page ${result.page} (${result.shapeId || 'broadcast only'})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"`;
-    if (result.warning) msg += `\n  Warning: ${result.warning}`;
-    return { content: [{ type: 'text', text: msg }] };
   }
 
   if (name === 'signal_reload') {
@@ -3510,13 +3020,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'get_highlight_feedback') {
-    const { doc, unaddressed_only } = args;
+    const { doc, unaddressed_only, since_minutes } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
       const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
       let feedback = data.feedback || [];
       if (unaddressed_only) {
         feedback = feedback.filter(f => !f.addressed);
+      }
+      if (since_minutes) {
+        const sinceTs = Date.now() - since_minutes * 60 * 1000;
+        feedback = feedback.filter(f => !f.createdAt || f.createdAt >= sinceTs);
       }
       if (feedback.length === 0) {
         return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
@@ -3736,6 +3250,318 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: truncated }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'build') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
+    try {
+      await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      // Background poll for build completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await serverFetch(`/api/projects/${doc}/build/status`);
+          if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
+            clearInterval(pollInterval);
+            process.stderr.write(`[tlda] build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+          }
+        } catch (e) {
+          process.stderr.write(`[tlda] build poll failed: ${e.message}\n`);
+        }
+      }, 3000);
+      setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
+      return { content: [{ type: 'text', text: `Build triggered for "${doc}". Use build_status to check progress.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'build_status') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
+    try {
+      const status = await serverFetch(`/api/projects/${doc}/build/status`);
+      const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
+      const errors = Array.isArray(errData) ? errData : [];
+      const summary = [
+        `**Phase**: ${status.phase || 'unknown'}`,
+        `**Status**: ${status.status || 'unknown'}`,
+        errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
+      ].join('\n');
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'push') {
+    const { doc, files: fileSpecs, build = true } = args;
+    if (!doc || !fileSpecs) return { content: [{ type: 'text', text: 'doc and files are required.' }], isError: true };
+    try {
+      const files = [];
+      for (const spec of fileSpecs) {
+        let content = spec.content;
+        if (!content && spec.localPath) {
+          try { content = fs.readFileSync(spec.localPath, 'utf8'); } catch (e) {
+            return { content: [{ type: 'text', text: `Cannot read ${spec.localPath}: ${e.message}` }], isError: true };
+          }
+        }
+        if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
+        files.push({ path: spec.path, content });
+      }
+
+      await serverFetch(`/api/projects/${doc}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files, session: process.env.CLAUDE_SESSION }),
+      });
+
+      // Shadow-branch commit (best-effort)
+      try {
+        const projectConfigPath = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc, 'project.json');
+        const cfg = JSON.parse(fs.readFileSync(projectConfigPath, 'utf8'));
+        const sourceDir = cfg.sourceDir;
+        if (sourceDir && fs.existsSync(path.join(sourceDir, '.git'))) {
+          const branch = `shadow/${doc}`;
+          const timestamp = new Date().toISOString();
+          const msg = `auto: ${timestamp} via push`;
+          execSync('git add -A', { cwd: sourceDir, stdio: 'pipe' });
+          const tree = execSync('git write-tree', { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+          let parentArgs = [];
+          try {
+            const showRef = execSync(`git show-ref refs/heads/${branch}`, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+            if (showRef) parentArgs = ['-p', showRef.split(' ')[0]];
+          } catch {}
+          const commitArgs = ['git', 'commit-tree', tree, ...parentArgs, '-m', `"${msg}"`].join(' ');
+          const commit = execSync(commitArgs, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+          execSync(`git update-ref refs/heads/${branch} ${commit}`, { cwd: sourceDir, stdio: 'pipe' });
+          execSync('git reset', { cwd: sourceDir, stdio: 'pipe' });
+          process.stderr.write(`[tlda] shadow commit ${commit.slice(0, 8)} on ${branch}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`[tlda] shadow commit failed for "${doc}": ${e.message}\n`);
+      }
+
+      let buildMsg = '';
+      if (build) {
+        try {
+          await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          buildMsg = ' Build triggered.';
+          const pollInterval = setInterval(async () => {
+            try {
+              const status = await serverFetch(`/api/projects/${doc}/build/status`);
+              if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
+                clearInterval(pollInterval);
+                process.stderr.write(`[tlda] push build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+              }
+            } catch (e) {
+              process.stderr.write(`[tlda] push poll failed: ${e.message}\n`);
+            }
+          }, 3000);
+          setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
+        } catch (e) {
+          buildMsg = ` Build trigger failed: ${e.message}`;
+        }
+      }
+      return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${doc}".${buildMsg}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'scratch') {
+    const filePath = args.file;
+    const bookName = args.book || 'fleet-workspace';
+    if (!filePath) return { content: [{ type: 'text', text: 'file is required.' }], isError: true };
+    if (!fs.existsSync(filePath)) return { content: [{ type: 'text', text: `File not found: ${filePath}` }], isError: true };
+    const fileName = path.basename(filePath);
+    if (!fileName.endsWith('.md')) return { content: [{ type: 'text', text: 'File must be a .md markdown file.' }], isError: true };
+    const dir = path.dirname(filePath);
+    const stem = fileName.replace(/\.md$/, '');
+    const projectName = `scratch-${stem}`;
+    let title = args.title;
+    if (!title) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const headingMatch = content.match(/^#\s+(.+)$/m);
+      title = headingMatch ? headingMatch[1].trim() : stem;
+    }
+    try {
+      await serverFetch(`/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: projectName, title, mainFile: fileName, format: 'markdown', sourceDir: dir }),
+      }).catch(e => { if (!e.message.includes('409')) throw e; });
+
+      const content = fs.readFileSync(filePath);
+      await serverFetch(`/api/projects/${projectName}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }], sourceDir: dir }),
+      });
+
+      await serverFetch(`/api/projects/${bookName}/members`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ add: projectName }),
+      }).catch(() => {});
+
+      return { content: [{ type: 'text', text: `Published "${title}" as ${projectName} in ${bookName}. watch-all will auto-push edits.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `scratch failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'create_shape') {
+    const { doc, shape } = args;
+    if (!doc || !shape) return { content: [{ type: 'text', text: 'doc and shape are required.' }], isError: true };
+    try {
+      const result = await serverFetch(`/api/projects/${doc}/shapes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(shape),
+      });
+      return { content: [{ type: 'text', text: `Created ${shape.type} shape on "${doc}". ID: ${result?.id || 'unknown'}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'lookup_theorem') {
+    const { doc, query } = args;
+    if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
+    try {
+      const tldaProjectsDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects');
+      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
+      if (!fs.existsSync(mapPath)) {
+        return { content: [{ type: 'text', text: `No theorem-map.json for "${doc}". Trigger a build first.` }], isError: true };
+      }
+      const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+      const q = query.trim();
+      let entry = mapData[q];
+      if (!entry) entry = Object.values(mapData).find(e => e.number === q);
+      if (!entry) {
+        const available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
+        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.\nAvailable: ${available}` }] };
+      }
+      const lines = [
+        `**${entry.type.toUpperCase()} ${entry.number}** — ${entry.title || '(no title)'}`,
+        `Label: \`${entry.label}\``,
+        `Page: ${entry.page}`,
+        entry.file ? `Source: ${entry.file}:${entry.line}` : 'Source: unknown',
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `lookup_theorem error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'set_preamble') {
+    const texFile = args.tex_file;
+    const target = args.target || 'default';
+    const resolved = path.resolve(texFile);
+    let tex;
+    try { tex = fs.readFileSync(resolved, 'utf8'); } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+    }
+    const macros = {};
+    const newcommandRegex = /\\(?:re)?newcommand\{\\(\w+)\}(?:\[\d+\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
+    let match;
+    while ((match = newcommandRegex.exec(tex)) !== null) macros[`\\${match[1]}`] = match[2];
+    const operatorRegex = /\\DeclareMathOperator\*?\{\\(\w+)\}\{([^}]+)\}/g;
+    while ((match = operatorRegex.exec(tex)) !== null) {
+      const isStar = match[0].includes('*');
+      macros[`\\${match[1]}`] = isStar ? `\\operatorname*{${match[2]}}` : `\\operatorname{${match[2]}}`;
+    }
+    const count = Object.keys(macros).length;
+    if (count === 0) {
+      return { content: [{ type: 'text', text: `No macros found in ${resolved}. Looked for \\newcommand, \\renewcommand, \\DeclareMathOperator.` }] };
+    }
+    await fetch(`${TLDA_SERVER}/api/fleet-event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TLDA_AUTH_HEADERS },
+      body: JSON.stringify({ type: 'preamble', target, macros, source: resolved, timestamp: new Date().toISOString() }),
+    }).catch(() => {});
+    const examples = Object.entries(macros).slice(0, 5).map(([k, v]) => `  ${k} → ${v}`).join('\n');
+    return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
+  }
+
+  if (name === 'suggest') {
+    const { doc, text } = args;
+    if (!doc || !text) return { content: [{ type: 'text', text: 'Doc and text are required.' }], isError: true };
+    const choices = args.choices || ['Accept', 'Reject', 'Modify'];
+    const color = args.color || 'orange';
+    const line = args.line || null;
+    const replyTo = args.reply_to || null;
+    const MARGIN_X = 810;
+    try {
+      if (replyTo) {
+        let noteY = 100;
+        let inheritedColor = color;
+        try {
+          const parent = await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(replyTo.startsWith('shape:') ? replyTo : `shape:${replyTo}`)}`);
+          noteY = parent.y ?? parent.meta?.anchorCanvasY ?? 100;
+          if (parent.props?.color) inheritedColor = parent.props.color;
+        } catch {}
+        const replyId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
+        await serverFetch(`/api/projects/${doc}/shapes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: replyId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
+            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
+            props: { w: 10, h: 10, text, color: inheritedColor, collapsed: true },
+            meta: { createdBy: 'claude', replyTo, choices: choices || [], sourceAnchor: line ? { line } : undefined },
+          }),
+        });
+        return { content: [{ type: 'text', text: `Posted reply on "${doc}" ${line ? 'at L' + line : ''} (replying to ${replyTo}). Choices: ${choices.join(', ')}` }] };
+      } else {
+        const noteY = line ? Math.max(60, 60 + (line - 1) * 18) : 100;
+        const noteId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
+        await serverFetch(`/api/projects/${doc}/shapes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: noteId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
+            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
+            props: { w: 10, h: 10, text, color, collapsed: true },
+            meta: { createdBy: 'claude', choices: choices || [], sourceAnchor: line ? { line } : undefined },
+          }),
+        });
+        return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
+      }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'update_shared_doc') {
+    const doc = args.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
+    try {
+      const sharedDocsRes = await fetch(`${TLDA_SERVER}/api/shared-docs`, { headers: TLDA_AUTH_HEADERS });
+      const sharedDocs = sharedDocsRes.ok ? await sharedDocsRes.json() : [];
+      const sharedDoc = sharedDocs.find(d => d.doc === doc);
+      if (!sharedDoc) {
+        return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
+      }
+      let content;
+      try { content = fs.readFileSync(sharedDoc.path, 'utf8'); } catch (e) {
+        return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+      }
+      const mainFile = path.basename(sharedDoc.path);
+      await serverFetch(`/api/projects/${doc}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: [{ path: mainFile, content }],
+          sourceDir: path.dirname(sharedDoc.path),
+          session: process.env.CLAUDE_SESSION,
+        }),
+      });
+      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
   }
 
