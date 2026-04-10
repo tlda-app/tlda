@@ -73,7 +73,11 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
 interface HudOverride {
   width: number
   height: number
+  /** Vertical shift from window-vertical-center, in screen px */
   yOffset: number
+  /** Horizontal shift from the default right-anchored position, in screen px.
+   *  Positive = HUD moved right of its default; negative = moved left. */
+  xOffset: number
 }
 
 function loadHudOverride(): HudOverride | null {
@@ -201,7 +205,8 @@ export function FleetHUD({
     const autoWidth = fleetBounds.w * autoZoom
     const curWidth = hudOverride?.width ?? autoWidth
     const curHeight = hudOverride?.height ?? autoHeight
-    const curLeft = hudRight - curWidth
+    const curXOffset = hudOverride?.xOffset ?? 0
+    const curLeft = hudRight - curWidth + curXOffset
     const defaultYOffset = hudOverride?.yOffset ?? 0
     const curTop = Math.max(0, (window.innerHeight - curHeight) / 2 + defaultYOffset)
 
@@ -230,11 +235,21 @@ export function FleetHUD({
         if ((to as any).id === PROXY_SHAPE_ID && (to as any).typeName === 'shape') {
           const shape = to as any
           const cam = mainEditor.getCamera()
+          const newScreenX = (shape.x + cam.x) * cam.z
           const newScreenY = (shape.y + cam.y) * cam.z
           const newScreenW = shape.props.w * cam.z
           const newScreenH = shape.props.h * cam.z
           const newYOffset = newScreenY - (window.innerHeight - newScreenH) / 2
-          const override: HudOverride = { width: newScreenW, height: newScreenH, yOffset: newYOffset }
+          // The HUD's default left edge is `hudRight - panelWidth` (right-anchored
+          // to the fleet shapes' right edge in screen space). xOffset captures
+          // any horizontal drift from that default.
+          const newXOffset = newScreenX - (hudRight - newScreenW)
+          const override: HudOverride = {
+            width: newScreenW,
+            height: newScreenH,
+            yOffset: newYOffset,
+            xOffset: newXOffset,
+          }
           setHudOverride(override)
           saveHudOverride(override)
         }
@@ -302,7 +317,8 @@ export function FleetHUD({
 
   const panelWidth = hudOverride?.width ?? autoWidth
   const panelHeight = hudOverride?.height ?? autoHeight
-  const panelLeft = hudRight - panelWidth
+  const xOffset = hudOverride?.xOffset ?? 0
+  const panelLeft = hudRight - panelWidth + xOffset
   const yOffset = hudOverride?.yOffset ?? 0
   const rawTop = (window.innerHeight - panelHeight) / 2 + yOffset
   // Clamp so the controls (top of HUD) are never above the viewport
@@ -311,7 +327,11 @@ export function FleetHUD({
   return (
     <>
       {ghost}
-      <div className="fleet-hud-wrap" ref={hudRef} style={{ left: panelLeft, top: adjustedTop }}>
+      <div
+        className={`fleet-hud-wrap${layoutMode ? ' fleet-hud-layout-mode' : ''}`}
+        ref={hudRef}
+        style={{ left: panelLeft, top: adjustedTop }}
+      >
         <div className="fleet-hud-controls">
           <button
             className={`fleet-hud-layout${layoutMode ? ' active' : ''}`}

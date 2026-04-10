@@ -46,6 +46,21 @@
   background: transparent !important;
   pointer-events: auto;
 }
+
+/* Layout mode: clicks must reach the proxy shape on the main canvas behind
+   the HUD, so EVERY element inside the HUD must be transparent to pointer
+   events — including iframes from mirrored html-page-shapes, which would
+   otherwise intercept clicks despite pointer-events:none on their parents.
+   The .fleet-hud-controls override re-enables clicks for the close/exit
+   buttons (rule below). */
+.fleet-hud-wrap.fleet-hud-layout-mode,
+.fleet-hud-wrap.fleet-hud-layout-mode * {
+  pointer-events: none !important;
+}
+.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls,
+.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls * {
+  pointer-events: auto !important;
+}
 /* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
 .fleet-hud-wrap [class*="watermark"] {
   display: none !important;
