@@ -578,6 +578,40 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true })
   })
 
+  // --- POST /api/fleet/resync-machine-ids ---
+  // One-shot migration helper for the fleet-daemon cutover. After the
+  // server upgrade, every existing alive agent has machine_id = NULL
+  // because their fleet MCP register payload pre-dates the new field.
+  // Until each agent re-registers (which happens automatically on next
+  // session start, but Skip's long-running ones won't), their RPCs
+  // return 503 from the daemon-routing path.
+  //
+  // This endpoint walks all live agents with machine_id IS NULL and
+  // sets it to a single value — defaulting to this server's hostname.
+  // Single-machine assumption is fine for now; multi-user is future work.
+  // Pass `?machine_id=foo` to override.
+  //
+  // Not a backwards-compat shim — this is a migration aid the manager
+  // explicitly asked for. Run once after deploying the new server,
+  // then forget about it.
+  router.post('/api/fleet/resync-machine-ids', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
+    const machineId = (req.query.machine_id || os.hostname().split('.')[0]).toString()
+    const agents = fleetStore.getAllAgents().filter(a => !a.dead && !a.machine_id)
+    const updated = []
+    for (const a of agents) {
+      try {
+        fleetStore.upsertAgent({ ...a, machine_id: machineId })
+        updated.push({ id: a.id, name: a.friendly_name || null })
+      } catch (e) {
+        // Don't fail the whole batch on one bad row.
+        console.error(`[resync] ${a.id}: ${e.message}`)
+      }
+    }
+    broadcastState()
+    res.json({ ok: true, machine_id: machineId, updated_count: updated.length, updated })
+  })
+
   // --- POST /api/agent-status ---
   router.post('/api/agent-status', (req, res) => {
     const { agent: rawAgent, state, tool } = req.body || {}
