@@ -1777,8 +1777,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'get_latest_feedback',
-      description: 'Get the latest feedback screenshot, regardless of whether it is new.',
+      name: 'get_feedback',
+      description: 'Get the latest feedback for a document on demand (whether or not it is new). Non-blocking peek.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1831,8 +1831,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'highlight_location',
-      description: 'Highlight a location in the TLDraw canvas on the iPad. Use this for forward sync from TeX source to iPad.',
+      name: 'flash_location',
+      description: 'Flash a temporary red circle at a source location in the TLDraw viewer. Use this for forward sync from TeX source to the canvas. Not persistent — use draw_highlight for persistent marks.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1897,7 +1897,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'mark_done',
+      name: 'mark_annotation_done',
       description: 'Mark an annotation as done. Collapses and dims the note. By default, also moves it to the page margin (like the viewer\'s done button). Set margin=false to keep it in place.',
       inputSchema: {
         type: 'object',
@@ -2856,7 +2856,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'get_latest_feedback') {
+  if (name === 'get_feedback') {
     const docName = args?.doc;
     // Try cached screenshot signal first
     if (docName) {
@@ -2971,7 +2971,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'highlight_location') {
+  if (name === 'flash_location') {
     const { doc, file, line } = args;
     if (!file || !line) {
       return { content: [{ type: 'text', text: 'Missing file or line parameter' }], isError: true };
@@ -3036,7 +3036,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'mark_done') {
+  if (name === 'mark_annotation_done') {
     const { doc, id, margin } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
     const moveToMargin = margin !== false; // default true
