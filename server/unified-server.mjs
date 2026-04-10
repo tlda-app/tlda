@@ -572,6 +572,47 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'delegate') {
+    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from } = msg
+    if (!agentQuery || !description) { error('missing agent or description'); return }
+    const resolved = fleetStore.findAgent(agentQuery)
+    if (!resolved) { error(`agent not found: ${agentQuery}`); return }
+    const taskId = `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
+    const now = new Date().toISOString()
+    const task = {
+      id: taskId, agent: resolved.id, description,
+      message: taskMsg || description,
+      delegated_by: from || null, delegated_at: now,
+      status: blocked_by?.length ? 'blocked' : 'pending',
+      acknowledged: false,
+      blockedBy: blocked_by || undefined,
+      success_criteria: success_criteria || undefined,
+    }
+    fleetStore.upsertTask(task)
+    fleetStore.delegate?.(from, resolved.id, taskId, description, {
+      toLabel: resolved.friendly_name || resolved.id,
+      criteria: success_criteria || [],
+    })
+    broadcastState()
+    reply({ ok: true, task_id: taskId })
+    return
+  }
+
+  if (type === 'my-task') {
+    const agentId = msg.agent
+    if (!agentId) { error('missing agent'); return }
+    fleetStore.updateHeartbeat(agentId)
+    const task = fleetStore.getTaskByAgent?.(agentId) || null
+    const unread = fleetStore.getUnread?.(agentId) || []
+    if (unread.length) {
+      const readIds = fleetStore.markRead?.(agentId) || []
+      if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
+    }
+    broadcastState()
+    reply({ task, messages: unread })
+    return
+  }
+
   if (type === 'update-agent') {
     const { agent: agentData } = msg
     if (agentData?.id) {
