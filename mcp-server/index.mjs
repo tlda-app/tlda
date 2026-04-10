@@ -1724,7 +1724,7 @@ function broadcastReply(shapeId, text) {
 
 // MCP Server
 const server = new Server(
-  { name: 'tldraw-feedback', version: '1.0.0' },
+  { name: 'tlda', version: '1.0.0' },
   { capabilities: { tools: {} } }
 );
 
