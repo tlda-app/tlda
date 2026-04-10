@@ -22,6 +22,15 @@ import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
+import blocked from 'blocked-at'
+
+// Runtime guard: log event loop blocks with stack traces
+blocked((ms, stack) => {
+  process.stderr.write(`[blocked] ${ms}ms\n${stack.join('\n')}\n`)
+}, { threshold: 200 })
+
+// Runtime guard: warn on execSync in server process (tmux commands still use it)
+// TODO: migrate tmux commands to async exec, then ban execSync entirely
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
