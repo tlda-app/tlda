@@ -598,6 +598,49 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'task-done') {
+    const { agent: rawAgent, task_id, skip_qa } = msg
+    if (!rawAgent) { error('missing agent'); return }
+    const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
+    const task = task_id
+      ? fleetStore.getTask?.(task_id)
+      : fleetStore.getTaskByAgent?.(agent)
+    if (!task) { error('no active task'); return }
+    if (!skip_qa && fleetStore.getQaAgentIds) {
+      const qaIds = fleetStore.getQaAgentIds()
+      if (qaIds.length > 0) {
+        const qaStatus = fleetStore.getQaStatus(task.id)
+        if (qaStatus.status === 'no_report') { error('Submit a report() first'); return }
+        if (qaStatus.status === 'rejected') { error(`QA rejected: ${qaStatus.notes || 'no details'}. Fix and re-report.`); return }
+        if (qaStatus.status === 'pending') {
+          const approved = qaStatus.approved_by || []
+          error(`Waiting for QA sign-off (${approved.length}/${qaIds.length} approved)`)
+          return
+        }
+      }
+    }
+    task.status = 'done'
+    task.completed_at = new Date().toISOString()
+    let eventId = null
+    fleetStore.upsertTask(task)
+    const inserted = fleetStore.taskDone?.(agent, task.id, task.description)
+    eventId = inserted?.id || null
+    broadcastState()
+    reply({ ok: true, task_id: task.id, event_id: eventId })
+    return
+  }
+
+  if (type === 'delete-task') {
+    const { task_id } = msg
+    if (!task_id) { error('missing task_id'); return }
+    const task = fleetStore.getTask?.(task_id)
+    if (!task) { error('task not found'); return }
+    fleetStore.removeTask?.(task_id)
+    broadcastState()
+    reply({ ok: true, task_id })
+    return
+  }
+
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
