@@ -116,6 +116,8 @@ router.post('/', requireRw, (req, res) => {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
     const project = createProject({ name, title, mainFile, sourceDir, format, members })
+    // Notify fleet-daemons so they can start watching the new sourceDir.
+    if (project.sourceDir) emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
   } catch (e) {
     res.status(409).json({ error: e.message })
@@ -206,94 +208,94 @@ router.get('/:name/hashes', requireRead, (req, res) => {
   res.json({ hashes: hashSourceFiles(req.params.name) })
 })
 
-// Push files + trigger build
-router.post('/:name/push', requireRw, async (req, res) => {
-  const project = readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
+/**
+ * Apply a project source push and trigger the build pipeline.
+ *
+ * Shared between the HTTP /api/projects/:name/push route and the
+ * fleet-daemon WS `source-change` handler in unified-server.mjs. The
+ * daemon owns local source watching but the build runs on the server.
+ *
+ * Returns { ok, filesWritten, building, unchanged?, error?, status }
+ * where `status` is the HTTP status the caller should send (200 / 404).
+ *
+ * Building runs async — the function awaits any sync work and returns
+ * once it has decided whether a build should run; build completion
+ * happens in the background.
+ */
+export async function processProjectPush(name, body) {
+  const project = readProject(name)
+  if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt } = req.body
+  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt } = body || {}
 
-  // Update sourceDir if provided (so existing projects learn the path)
-  if (sourceDir && !project.sourceDir) {
-    updateProject(req.params.name, { sourceDir })
-  }
+  if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
+  if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
 
-  // Store session tag if provided
-  if (session) {
-    updateProject(req.params.name, { session, sessionAt: sessionAt || Date.now() })
-  }
-
-  // Update members for book projects
   if (members && Array.isArray(members)) {
-    updateProject(req.params.name, { members })
-    if (project.format === 'book') {
-      return res.json({ ok: true, members })
-    }
+    updateProject(name, { members })
+    if (project.format === 'book') return { status: 200, ok: true, members }
   }
 
-  // Write files, track if anything actually changed
   let anyChanged = false
   if (files?.length > 0) {
     for (const file of files) {
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
-      if (writeSourceFile(req.params.name, file.path, content)) {
-        anyChanged = true
-      }
+      if (writeSourceFile(name, file.path, content)) anyChanged = true
     }
   }
-
-  // Remove deleted files
   if (deletedFiles?.length > 0) {
     for (const filePath of deletedFiles) {
-      if (deleteSourceFile(req.params.name, filePath)) {
-        anyChanged = true
-      }
+      if (deleteSourceFile(name, filePath)) anyChanged = true
     }
   }
 
-  if (!anyChanged) {
-    // Still rebuild if last build wasn't successful (e.g. patcher was broken, figures missing)
-    if (project.buildStatus === 'success') {
-      return res.json({ ok: true, filesWritten: 0, building: false, unchanged: true })
-    }
+  if (!anyChanged && project.buildStatus === 'success') {
+    return { status: 200, ok: true, filesWritten: 0, building: false, unchanged: true }
   }
 
-  // Non-SVG formats: respond immediately, build async
+  // Non-SVG formats: kick off build async, return immediately.
   if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
-    res.json({ ok: true, filesWritten: files?.length || 0, building: true })
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
-    builder(req.params.name).then(() => {
-      const updated = readProject(req.params.name)
+    builder(name).then(() => {
+      const updated = readProject(name)
       if (updated?.buildStatus === 'success') {
         emitGlobalEvent('doc-arrived', {
-          name: req.params.name, title: updated.title || req.params.name,
+          name, title: updated.title || name,
           format: updated.format, pages: updated.pages || 0,
         })
       }
     }).catch(e => {
-      console.error(`[${project.format}] Build failed for ${req.params.name}: ${e.message}`)
-      updateProject(req.params.name, { buildStatus: 'error' })
+      console.error(`[${project.format}] Build failed for ${name}: ${e.message}`)
+      updateProject(name, { buildStatus: 'error' })
     })
-    return
+    return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // Respond immediately, build runs async
-  res.json({ ok: true, filesWritten: files?.length || 0, building: true })
-
-  try {
-    await runBuild(req.params.name, { priorityPages })
-    const updated = readProject(req.params.name)
-    if (updated?.buildStatus === 'success') {
-      emitGlobalEvent('doc-arrived', {
-        name: req.params.name, title: updated.title || req.params.name,
-        format: updated.format, pages: updated.pages || 0,
-      })
+  // SVG/LaTeX format: kick off runBuild async, return immediately.
+  ;(async () => {
+    try {
+      await runBuild(name, { priorityPages })
+      const updated = readProject(name)
+      if (updated?.buildStatus === 'success') {
+        emitGlobalEvent('doc-arrived', {
+          name, title: updated.title || name,
+          format: updated.format, pages: updated.pages || 0,
+        })
+      }
+    } catch (e) {
+      console.error(`[api] Build failed for ${name}: ${e.message}`)
     }
-  } catch (e) {
-    console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
-  }
+  })()
+  return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
+}
+
+// Push files + trigger build
+router.post('/:name/push', requireRw, async (req, res) => {
+  const result = await processProjectPush(req.params.name, req.body)
+  const { status, ...payload } = result
+  res.status(status).json(payload)
 })
 
 // Trigger rebuild (no file changes)

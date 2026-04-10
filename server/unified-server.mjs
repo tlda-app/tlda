@@ -38,9 +38,9 @@ import { homedir } from 'os'
 import { lookup as mimeLookup } from 'mime-types'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
-import projectRoutes from './routes/projects.mjs'
+import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
@@ -78,6 +78,11 @@ const fleetStore = (() => {
 const preambleStore = {}                    // target → { macro: definition }
 const wsFleetClients = new Set()            // active /ws/fleet connections
 
+// Daemon connections — keyed by machine_id. Each value is the live WS for
+// that machine's fleet-daemon. Used for RPC routing in Phase 2 and for
+// pushing agents-updated / projects-updated messages.
+const daemonConnections = new Map()         // machine_id -> ws
+
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
   for (const ws of wsFleetClients) {
@@ -99,6 +104,13 @@ function broadcastState() {
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
 }
+
+// When a project is created or its sourceDir changes, push the new
+// project list to all connected fleet-daemons so they can start
+// watching its source files.
+onGlobalEvent((event) => {
+  if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
+})
 
 // ---------- RPC routing (Phase 0 stub) ----------
 //
@@ -460,14 +472,20 @@ const server = createServer(app)
 
 const syncWss = new WebSocketServer({ noServer: true })
 const fleetWss = new WebSocketServer({ noServer: true })
+const daemonWss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
   // Auth check: token from ?token= query param, Authorization header, or cookie
   // Exempt /ws/fleet — fleet server handles its own access; this proxy
-  // must always work so fleet chat (accessibility-critical) isn't blocked by cookie issues.
-  if (isAuthEnabled() && !url.pathname.startsWith('/ws/fleet')) {
+  // must always work so fleet chat (accessibility-critical) isn't blocked
+  // by cookie issues.
+  // /ws/fleet-daemon is also exempt for the same accessibility reason: a
+  // misconfigured token should not be allowed to silently kill the local
+  // daemon and take down activity cards / terminal cards. Token rotation
+  // affects new connections only — established daemons stay up.
+  if (isAuthEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon') {
     const token = extractToken(req)
     if (!validateToken(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
@@ -486,6 +504,33 @@ server.on('upgrade', (req, socket, head) => {
       room.handleSocketConnect({ sessionId, socket: ws })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
+    })
+    return
+  }
+
+  // /ws/fleet-daemon — fleet daemon connection. Owned by bin/fleet-daemon.mjs.
+  // The daemon pushes activity-event / terminal-chat / source-change
+  // messages and (Phase 2) handles RPC requests routed by machine_id.
+  if (url.pathname === '/ws/fleet-daemon') {
+    daemonWss.handleUpgrade(req, socket, head, (ws) => {
+      ws._bootId = null
+      ws._machineId = null
+      ws.on('message', (raw) => {
+        let msg
+        try { msg = JSON.parse(raw.toString()) } catch { return }
+        handleDaemonWsMessage(ws, msg)
+      })
+      ws.on('close', () => {
+        if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
+          daemonConnections.delete(ws._machineId)
+          console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
+        }
+      })
+      ws.on('error', () => {
+        if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
+          daemonConnections.delete(ws._machineId)
+        }
+      })
     })
     return
   }
@@ -565,6 +610,9 @@ function handleFleetWsMessage(ws, msg) {
     fleetStore.upsertAgent(agent)
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
     broadcastState()
+    // If the agent has a machine_id, push the updated agent list to that
+    // machine's daemon so it can start watching the new JSONL.
+    if (agent.machine_id) broadcastDaemonAgentsUpdated()
     reply({ ok: true, agent: fleetStore.getAgent?.(agentId) || agent })
     return
   }
@@ -675,6 +723,191 @@ function handleFleetWsMessage(ws, msg) {
 
   // Unknown message type — don't error, just ignore (forward compatibility)
   if (id) reply({ ok: false, error: `unknown type: ${type}` })
+}
+
+// ---------- Fleet daemon WS message handler ----------
+//
+// Messages from fleet-daemon.mjs over `/ws/fleet-daemon`. The daemon owns
+// JSONL watching, terminal chat extraction, and document source watching
+// on its local machine; the server is the hub that stores events and
+// broadcasts to browsers.
+//
+// Phase 1 message types (daemon → server):
+//   - daemon-hello       initial identification
+//   - activity-event     tool_use / text block extracted from JSONL
+//   - terminal-chat      user-typed line in an agent's terminal
+//   - source-change      project source file change
+//
+// Phase 1 message types (server → daemon):
+//   - daemon-welcome     agents + projects to watch
+//   - daemon-evict       another daemon claimed your machine_id
+//   - agents-updated     agent list changed
+//   - projects-updated   project list changed
+//
+// Phase 2 will add `rpc` (server → daemon) and `rpc-reply` (daemon →
+// server) for tmux operations.
+
+// Server-side terminal-chat dedup. Claude Code can write duplicate user
+// messages to the JSONL (e.g. across compaction). Multiple daemons would
+// compound this. The daemon also dedups within its own offset, but the
+// authoritative dedup is here in the DB.
+const _terminalDedupStmt = fleetStore?.db.prepare(
+  `SELECT 1 FROM events WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat' LIMIT 1`
+)
+
+function projectsForDaemon() {
+  // Returns the project list a daemon needs to watch source dirs for.
+  // Today every daemon watches every project — multi-machine source
+  // ownership is future work (see spec § Multi-user considerations).
+  return listProjects()
+    .filter(p => p.sourceDir && !p.archived)
+    .map(p => ({ name: p.name, sourceDir: p.sourceDir, format: p.format || 'svg' }))
+}
+
+function broadcastDaemonAgentsUpdated() {
+  if (!fleetStore || daemonConnections.size === 0) return
+  for (const [mid, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try {
+      dws.send(JSON.stringify({
+        type: 'agents-updated',
+        agents: fleetStore.getAgentsByMachine(mid),
+      }))
+    } catch {}
+  }
+}
+
+function broadcastDaemonProjectsUpdated() {
+  if (daemonConnections.size === 0) return
+  const projects = projectsForDaemon()
+  for (const [, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try { dws.send(JSON.stringify({ type: 'projects-updated', projects })) } catch {}
+  }
+}
+
+function handleDaemonWsMessage(ws, msg) {
+  const { type } = msg
+
+  if (type === 'daemon-hello') {
+    const { machine_id, user, hostname, version, boot_id } = msg
+    if (!machine_id) return
+    // Eviction protocol: if another daemon already holds this machine_id,
+    // compare boot_ids. Newer (larger) boot_id wins; older gets evicted
+    // with a `daemon-evict` message and disconnected.
+    const existing = daemonConnections.get(machine_id)
+    if (existing && existing !== ws) {
+      const existingBoot = existing._bootId || 0
+      const incomingBoot = boot_id || 0
+      if (incomingBoot >= existingBoot) {
+        try {
+          existing.send(JSON.stringify({
+            type: 'daemon-evict',
+            reason: 'another daemon claimed this machine_id',
+            replaced_by_boot_id: incomingBoot,
+          }))
+        } catch {}
+        try { existing.close() } catch {}
+        daemonConnections.delete(machine_id)
+      } else {
+        // Incoming is older — reject it instead.
+        try {
+          ws.send(JSON.stringify({
+            type: 'daemon-evict',
+            reason: 'a newer daemon already holds this machine_id',
+            replaced_by_boot_id: existingBoot,
+          }))
+        } catch {}
+        try { ws.close() } catch {}
+        return
+      }
+    }
+    ws._machineId = machine_id
+    ws._bootId = boot_id
+    ws._user = user
+    ws._hostname = hostname
+    ws._version = version
+    daemonConnections.set(machine_id, ws)
+    console.log(`[fleet-daemon] connected: machine_id=${machine_id} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
+
+    // Send daemon-welcome with agents + projects this machine should
+    // watch. Agents are filtered by machine_id; legacy NULL agents will
+    // be invisible to daemons until the MCP starts sending machine_id.
+    const agentsForMachine = fleetStore?.getAgentsByMachine(machine_id) || []
+    try {
+      ws.send(JSON.stringify({
+        type: 'daemon-welcome',
+        agents: agentsForMachine,
+        projects: projectsForDaemon(),
+      }))
+    } catch (e) {
+      console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
+    }
+    return
+  }
+
+  // From here on, the daemon must be identified.
+  if (!ws._machineId) return
+
+  if (type === 'activity-event') {
+    if (!fleetStore) return
+    const { agent_id, tool, arg, input, ts, usage } = msg
+    if (!agent_id) return
+    if (tool === '_usage') return // usage stats don't need DB storage
+    try {
+      fleetStore.share({
+        type: 'activity',
+        from: agent_id,
+        to: agent_id,
+        text: tool === '_text' ? (arg || '') : (tool || ''),
+        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}) },
+        unread: false,
+        timestamp: ts || new Date().toISOString(),
+      })
+    } catch (e) {
+      console.error(`[fleet-daemon] activity write: ${e.message}`)
+    }
+    return
+  }
+
+  if (type === 'terminal-chat') {
+    if (!fleetStore || !_terminalDedupStmt) return
+    const { agent_id, from, text: rawText, ts, session_id } = msg
+    if (!agent_id || !rawText || !ts) return
+    const text = rawText.length > 2000 ? rawText.slice(0, 2000) : rawText
+    try {
+      const existing = _terminalDedupStmt.get(ts, from || 'fleet:skip', agent_id, text.slice(0, 500))
+      if (existing) return // duplicate, swallow silently
+      fleetStore.share({
+        type: 'chat',
+        from: from || 'fleet:skip',
+        to: agent_id,
+        text,
+        metadata: { source: 'terminal', session_id: session_id || null },
+        unread: false,
+        timestamp: ts,
+      })
+    } catch (e) {
+      console.error(`[fleet-daemon] terminal-chat write: ${e.message}`)
+    }
+    return
+  }
+
+  if (type === 'source-change') {
+    const { project, files, deletedFiles } = msg
+    if (!project) return
+    // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
+    processProjectPush(project, { files, deletedFiles }).then(result => {
+      if (!result.ok) {
+        console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
+      }
+    }).catch(e => {
+      console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
+    })
+    return
+  }
+
+  // Unknown — ignore.
 }
 
 // ---------- Manifest generation ----------

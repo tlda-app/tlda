@@ -49,7 +49,7 @@ const COMMAND_HELP = {
   book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
-  watch:   'tlda watch [/path/to/main.tex] [name] [--debounce ms]\n\n  Watch source files for changes and auto-push to the server.\n  The server handles building — the watcher only uploads.',
+  watch:   'tlda watch [start|stop|status|log|run] | [/path/to/main.tex] [name] [--debounce ms]\n\n  With start/stop/status/log: control the per-machine fleet-daemon\n  (bin/fleet-daemon.mjs). The daemon watches Claude Code session JSONLs\n  and project source dirs locally, pushing events to the tlda server\n  over WebSocket. See scratch/fleet-daemon-spec.md.\n\n  With a path: legacy single-project watcher (auto-push on file change).',
   'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
   listen:  'tlda listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
   monitor: 'tlda monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
@@ -540,8 +540,121 @@ async function cmdPush() {
   }
 }
 
+// Fleet-daemon control: `tlda watch start | stop | status | log | run`
+//
+// The fleet-daemon is the per-machine local agent that owns JSONL
+// watching, terminal-chat extraction, and document source watching for
+// the tlda hub server. See bin/fleet-daemon.mjs and the spec at
+// scratch/fleet-daemon-spec.md for the full picture.
+//
+// This command coexists with the older `tlda watch <path>` per-project
+// shorthand and `tlda watch-all start` — Phase 1 doesn't deprecate
+// either. If the first positional is start/stop/status/log/run we
+// route here, otherwise we fall through to the existing watcher.
+const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
+const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+
+async function cmdFleetWatch(sub) {
+  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+
+  if (sub === 'stop') {
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try { process.kill(pid, 'SIGTERM') } catch {}
+      try { unlinkSync(FLEET_DAEMON_PIDFILE) } catch {}
+    }
+    console.log(green('Fleet daemon stopped.'))
+    return
+  }
+
+  if (sub === 'status') {
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0)
+        console.log(green('Fleet daemon running') + dim(` (pid ${pid})`))
+        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+        return
+      } catch {}
+    }
+    console.log(red('Fleet daemon not running.'))
+    return
+  }
+
+  if (sub === 'log' || sub === 'logs') {
+    if (existsSync(FLEET_DAEMON_LOGFILE)) {
+      const { execSync } = await import('child_process')
+      execSync(`tail -50 "${FLEET_DAEMON_LOGFILE}"`, { stdio: 'inherit' })
+    } else {
+      console.log('No fleet daemon log.')
+    }
+    return
+  }
+
+  if (sub === 'run') {
+    // Foreground — exec the daemon directly so SIGINT etc. work normally.
+    const { spawn: cpSpawn } = await import('child_process')
+    const child = cpSpawn(process.execPath, [daemonScript], { stdio: 'inherit', env: { ...process.env } })
+    child.on('exit', (code) => process.exit(code ?? 0))
+    return
+  }
+
+  if (sub === 'start') {
+    // Already running?
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0)
+        console.log('Fleet daemon already running' + dim(` (pid ${pid})`))
+        return
+      } catch {} // stale pid
+    }
+
+    if (!existsSync(daemonScript)) {
+      console.error(red(`Daemon script not found: ${daemonScript}`))
+      process.exit(1)
+    }
+
+    const { spawn: cpSpawn } = await import('child_process')
+    const { openSync: fsOpenSync } = await import('fs')
+
+    if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
+    const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
+
+    const child = cpSpawn(process.execPath, [daemonScript], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env },
+    })
+    child.unref()
+
+    // Daemon writes its own PID file. Wait briefly to confirm.
+    await new Promise(r => setTimeout(r, 800))
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim()
+      console.log(green(`Fleet daemon started`) + dim(` (pid ${pid})`))
+      console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+    } else {
+      console.error(red('Fleet daemon failed to start within 800ms'))
+      console.error(dim(`Check log: ${FLEET_DAEMON_LOGFILE}`))
+      process.exit(1)
+    }
+    return
+  }
+
+  console.error(`Unknown subcommand: tlda watch ${sub}`)
+  console.error('Usage: tlda watch [start|stop|status|log|run]')
+  process.exit(1)
+}
+
 async function cmdWatch() {
   const arg1 = getPositional(0)
+
+  // Fleet-daemon dispatch — `tlda watch start/stop/status/log/run`
+  if (arg1 === 'start' || arg1 === 'stop' || arg1 === 'status' || arg1 === 'log' || arg1 === 'logs' || arg1 === 'run') {
+    return cmdFleetWatch(arg1)
+  }
+
   let texPath, name, dir
 
   if (arg1 && existsSync(arg1) && arg1.endsWith('.tex')) {
