@@ -15,6 +15,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import http from 'http';
 import fs from 'fs';
+import os from 'os';
+import crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1969,6 +1971,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name' },
           unaddressed_only: { type: 'boolean', description: 'Only return unaddressed highlights (default: false)' },
+          since_minutes: { type: 'number', description: 'Only return feedback created in the last N minutes (default: all)' },
         },
         required: ['doc'],
       },
@@ -2075,6 +2078,129 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ref2: { type: 'string', description: 'Target version hash (default: latest)' },
         },
         required: ['doc', 'ref1'],
+      },
+    },
+    {
+      name: 'build',
+      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. Returns immediately — use build_status to poll.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'build_status',
+      description: 'Check the current build status for a tlda document. Returns phase, status, and any errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'push',
+      description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          files: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'File path relative to project root' },
+                content: { type: 'string', description: 'File content. If omitted, reads from local filesystem.' },
+                localPath: { type: 'string', description: 'Local filesystem path to read from (alternative to content)' },
+              },
+              required: ['path'],
+            },
+            description: 'Files to push',
+          },
+          build: { type: 'boolean', description: 'Trigger build after push. Default: true' },
+        },
+        required: ['doc', 'files'],
+      },
+    },
+    {
+      name: 'scratch',
+      description: 'Publish a scratch markdown file as a page in the fleet-workspace book. Creates a markdown project, pushes the file, and auto-joins the book. Subsequent edits are auto-pushed by watch-all.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: 'Absolute path to the .md file' },
+          title: { type: 'string', description: 'Display title (default: first heading or filename)' },
+          book: { type: 'string', description: 'Book to join (default: fleet-workspace)' },
+        },
+        required: ['file'],
+      },
+    },
+    {
+      name: 'create_shape',
+      description: 'Create a shape (annotation, highlight, arrow, etc.) on a tlda document canvas.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          shape: { type: 'object', description: 'Shape object with at minimum { type, x, y, props }. See tlda shape schema.' },
+        },
+        required: ['doc', 'shape'],
+      },
+    },
+    {
+      name: 'lookup_theorem',
+      description: 'Look up a theorem, lemma, proposition, corollary, definition, or assumption in a tlda document by number or label. Returns label, type, number, page, source line, and title.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Project/document name in tlda' },
+          query: { type: 'string', description: 'Number ("4.3", "A.1") or full label ("thm:rate-main")' },
+        },
+        required: ['doc', 'query'],
+      },
+    },
+    {
+      name: 'set_preamble',
+      description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tex_file: { type: 'string', description: 'Path to a .tex file to extract macros from' },
+          target: { type: 'string', description: 'Chat room or context name (default: "default"). Use to set different macros per project.' },
+        },
+        required: ['tex_file'],
+      },
+    },
+    {
+      name: 'suggest',
+      description: 'Post a suggestion card on a shared doc in response to feedback. The card appears as a sticky note anchored at specific lines, with optional Accept/Reject/Modify buttons for one-tap review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name' },
+          line: { type: 'number', description: 'Source line to anchor the suggestion at' },
+          text: { type: 'string', description: 'Suggestion text (supports $math$ and $$display math$$)' },
+          reply_to: { type: 'string', description: 'Shape ID of the feedback to reply to. Creates a threaded reply instead of a new note.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Action buttons (default: ["Accept", "Reject", "Modify"])' },
+          color: { type: 'string', description: 'Note color (default: orange for agent notes)' },
+        },
+        required: ['doc', 'text'],
+      },
+    },
+    {
+      name: 'update_shared_doc',
+      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name (as returned by share())' },
+        },
+        required: ['doc'],
       },
     },
   ],
@@ -2238,6 +2364,8 @@ const TOOLS_NEEDING_BUILD = new Set([
   'mark_highlight_addressed', 'place_response_bar',
   'get_highlight_feedback',
   'set_understanding', 'get_understanding',
+  'lookup_theorem',
+  'build', 'push', 'scratch', 'create_shape', 'set_preamble', 'suggest', 'update_shared_doc',
 ]);
 
 // Handle tool calls
@@ -2893,13 +3021,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'get_highlight_feedback') {
-    const { doc, unaddressed_only } = args;
+    const { doc, unaddressed_only, since_minutes } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
       const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
       let feedback = data.feedback || [];
       if (unaddressed_only) {
         feedback = feedback.filter(f => !f.addressed);
+      }
+      if (since_minutes) {
+        const sinceTs = Date.now() - since_minutes * 60 * 1000;
+        feedback = feedback.filter(f => !f.createdAt || f.createdAt >= sinceTs);
       }
       if (feedback.length === 0) {
         return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
@@ -3119,6 +3251,318 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: truncated }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'build') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
+    try {
+      await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      // Background poll for build completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await serverFetch(`/api/projects/${doc}/build/status`);
+          if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
+            clearInterval(pollInterval);
+            process.stderr.write(`[tlda] build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+          }
+        } catch (e) {
+          process.stderr.write(`[tlda] build poll failed: ${e.message}\n`);
+        }
+      }, 3000);
+      setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
+      return { content: [{ type: 'text', text: `Build triggered for "${doc}". Use build_status to check progress.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'build_status') {
+    const { doc } = args;
+    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
+    try {
+      const status = await serverFetch(`/api/projects/${doc}/build/status`);
+      const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
+      const errors = Array.isArray(errData) ? errData : [];
+      const summary = [
+        `**Phase**: ${status.phase || 'unknown'}`,
+        `**Status**: ${status.status || 'unknown'}`,
+        errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
+      ].join('\n');
+      return { content: [{ type: 'text', text: summary }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'push') {
+    const { doc, files: fileSpecs, build = true } = args;
+    if (!doc || !fileSpecs) return { content: [{ type: 'text', text: 'doc and files are required.' }], isError: true };
+    try {
+      const files = [];
+      for (const spec of fileSpecs) {
+        let content = spec.content;
+        if (!content && spec.localPath) {
+          try { content = fs.readFileSync(spec.localPath, 'utf8'); } catch (e) {
+            return { content: [{ type: 'text', text: `Cannot read ${spec.localPath}: ${e.message}` }], isError: true };
+          }
+        }
+        if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
+        files.push({ path: spec.path, content });
+      }
+
+      await serverFetch(`/api/projects/${doc}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files, session: process.env.CLAUDE_SESSION }),
+      });
+
+      // Shadow-branch commit (best-effort)
+      try {
+        const projectConfigPath = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc, 'project.json');
+        const cfg = JSON.parse(fs.readFileSync(projectConfigPath, 'utf8'));
+        const sourceDir = cfg.sourceDir;
+        if (sourceDir && fs.existsSync(path.join(sourceDir, '.git'))) {
+          const branch = `shadow/${doc}`;
+          const timestamp = new Date().toISOString();
+          const msg = `auto: ${timestamp} via push`;
+          execSync('git add -A', { cwd: sourceDir, stdio: 'pipe' });
+          const tree = execSync('git write-tree', { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+          let parentArgs = [];
+          try {
+            const showRef = execSync(`git show-ref refs/heads/${branch}`, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+            if (showRef) parentArgs = ['-p', showRef.split(' ')[0]];
+          } catch {}
+          const commitArgs = ['git', 'commit-tree', tree, ...parentArgs, '-m', `"${msg}"`].join(' ');
+          const commit = execSync(commitArgs, { cwd: sourceDir, stdio: 'pipe' }).toString().trim();
+          execSync(`git update-ref refs/heads/${branch} ${commit}`, { cwd: sourceDir, stdio: 'pipe' });
+          execSync('git reset', { cwd: sourceDir, stdio: 'pipe' });
+          process.stderr.write(`[tlda] shadow commit ${commit.slice(0, 8)} on ${branch}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`[tlda] shadow commit failed for "${doc}": ${e.message}\n`);
+      }
+
+      let buildMsg = '';
+      if (build) {
+        try {
+          await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          buildMsg = ' Build triggered.';
+          const pollInterval = setInterval(async () => {
+            try {
+              const status = await serverFetch(`/api/projects/${doc}/build/status`);
+              if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
+                clearInterval(pollInterval);
+                process.stderr.write(`[tlda] push build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+              }
+            } catch (e) {
+              process.stderr.write(`[tlda] push poll failed: ${e.message}\n`);
+            }
+          }, 3000);
+          setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
+        } catch (e) {
+          buildMsg = ` Build trigger failed: ${e.message}`;
+        }
+      }
+      return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${doc}".${buildMsg}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'scratch') {
+    const filePath = args.file;
+    const bookName = args.book || 'fleet-workspace';
+    if (!filePath) return { content: [{ type: 'text', text: 'file is required.' }], isError: true };
+    if (!fs.existsSync(filePath)) return { content: [{ type: 'text', text: `File not found: ${filePath}` }], isError: true };
+    const fileName = path.basename(filePath);
+    if (!fileName.endsWith('.md')) return { content: [{ type: 'text', text: 'File must be a .md markdown file.' }], isError: true };
+    const dir = path.dirname(filePath);
+    const stem = fileName.replace(/\.md$/, '');
+    const projectName = `scratch-${stem}`;
+    let title = args.title;
+    if (!title) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const headingMatch = content.match(/^#\s+(.+)$/m);
+      title = headingMatch ? headingMatch[1].trim() : stem;
+    }
+    try {
+      await serverFetch(`/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: projectName, title, mainFile: fileName, format: 'markdown', sourceDir: dir }),
+      }).catch(e => { if (!e.message.includes('409')) throw e; });
+
+      const content = fs.readFileSync(filePath);
+      await serverFetch(`/api/projects/${projectName}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }], sourceDir: dir }),
+      });
+
+      await serverFetch(`/api/projects/${bookName}/members`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ add: projectName }),
+      }).catch(() => {});
+
+      return { content: [{ type: 'text', text: `Published "${title}" as ${projectName} in ${bookName}. watch-all will auto-push edits.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `scratch failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'create_shape') {
+    const { doc, shape } = args;
+    if (!doc || !shape) return { content: [{ type: 'text', text: 'doc and shape are required.' }], isError: true };
+    try {
+      const result = await serverFetch(`/api/projects/${doc}/shapes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(shape),
+      });
+      return { content: [{ type: 'text', text: `Created ${shape.type} shape on "${doc}". ID: ${result?.id || 'unknown'}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'lookup_theorem') {
+    const { doc, query } = args;
+    if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
+    try {
+      const tldaProjectsDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects');
+      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
+      if (!fs.existsSync(mapPath)) {
+        return { content: [{ type: 'text', text: `No theorem-map.json for "${doc}". Trigger a build first.` }], isError: true };
+      }
+      const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+      const q = query.trim();
+      let entry = mapData[q];
+      if (!entry) entry = Object.values(mapData).find(e => e.number === q);
+      if (!entry) {
+        const available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
+        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.\nAvailable: ${available}` }] };
+      }
+      const lines = [
+        `**${entry.type.toUpperCase()} ${entry.number}** — ${entry.title || '(no title)'}`,
+        `Label: \`${entry.label}\``,
+        `Page: ${entry.page}`,
+        entry.file ? `Source: ${entry.file}:${entry.line}` : 'Source: unknown',
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `lookup_theorem error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'set_preamble') {
+    const texFile = args.tex_file;
+    const target = args.target || 'default';
+    const resolved = path.resolve(texFile);
+    let tex;
+    try { tex = fs.readFileSync(resolved, 'utf8'); } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+    }
+    const macros = {};
+    const newcommandRegex = /\\(?:re)?newcommand\{\\(\w+)\}(?:\[\d+\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
+    let match;
+    while ((match = newcommandRegex.exec(tex)) !== null) macros[`\\${match[1]}`] = match[2];
+    const operatorRegex = /\\DeclareMathOperator\*?\{\\(\w+)\}\{([^}]+)\}/g;
+    while ((match = operatorRegex.exec(tex)) !== null) {
+      const isStar = match[0].includes('*');
+      macros[`\\${match[1]}`] = isStar ? `\\operatorname*{${match[2]}}` : `\\operatorname{${match[2]}}`;
+    }
+    const count = Object.keys(macros).length;
+    if (count === 0) {
+      return { content: [{ type: 'text', text: `No macros found in ${resolved}. Looked for \\newcommand, \\renewcommand, \\DeclareMathOperator.` }] };
+    }
+    await fetch(`${TLDA_SERVER}/api/fleet-event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...TLDA_AUTH_HEADERS },
+      body: JSON.stringify({ type: 'preamble', target, macros, source: resolved, timestamp: new Date().toISOString() }),
+    }).catch(() => {});
+    const examples = Object.entries(macros).slice(0, 5).map(([k, v]) => `  ${k} → ${v}`).join('\n');
+    return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
+  }
+
+  if (name === 'suggest') {
+    const { doc, text } = args;
+    if (!doc || !text) return { content: [{ type: 'text', text: 'Doc and text are required.' }], isError: true };
+    const choices = args.choices || ['Accept', 'Reject', 'Modify'];
+    const color = args.color || 'orange';
+    const line = args.line || null;
+    const replyTo = args.reply_to || null;
+    const MARGIN_X = 810;
+    try {
+      if (replyTo) {
+        let noteY = 100;
+        let inheritedColor = color;
+        try {
+          const parent = await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(replyTo.startsWith('shape:') ? replyTo : `shape:${replyTo}`)}`);
+          noteY = parent.y ?? parent.meta?.anchorCanvasY ?? 100;
+          if (parent.props?.color) inheritedColor = parent.props.color;
+        } catch {}
+        const replyId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
+        await serverFetch(`/api/projects/${doc}/shapes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: replyId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
+            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
+            props: { w: 10, h: 10, text, color: inheritedColor, collapsed: true },
+            meta: { createdBy: 'claude', replyTo, choices: choices || [], sourceAnchor: line ? { line } : undefined },
+          }),
+        });
+        return { content: [{ type: 'text', text: `Posted reply on "${doc}" ${line ? 'at L' + line : ''} (replying to ${replyTo}). Choices: ${choices.join(', ')}` }] };
+      } else {
+        const noteY = line ? Math.max(60, 60 + (line - 1) * 18) : 100;
+        const noteId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
+        await serverFetch(`/api/projects/${doc}/shapes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: noteId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
+            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
+            props: { w: 10, h: 10, text, color, collapsed: true },
+            meta: { createdBy: 'claude', choices: choices || [], sourceAnchor: line ? { line } : undefined },
+          }),
+        });
+        return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
+      }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'update_shared_doc') {
+    const doc = args.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
+    try {
+      const sharedDocsRes = await fetch(`${TLDA_SERVER}/api/shared-docs`, { headers: TLDA_AUTH_HEADERS });
+      const sharedDocs = sharedDocsRes.ok ? await sharedDocsRes.json() : [];
+      const sharedDoc = sharedDocs.find(d => d.doc === doc);
+      if (!sharedDoc) {
+        return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
+      }
+      let content;
+      try { content = fs.readFileSync(sharedDoc.path, 'utf8'); } catch (e) {
+        return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+      }
+      const mainFile = path.basename(sharedDoc.path);
+      await serverFetch(`/api/projects/${doc}/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: [{ path: mainFile, content }],
+          sourceDir: path.dirname(sharedDoc.path),
+          session: process.env.CLAUDE_SESSION,
+        }),
+      });
+      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
   }
 
