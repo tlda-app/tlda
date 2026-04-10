@@ -12,12 +12,15 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import crypto from 'crypto'
-import { execSync } from 'child_process'
 
 const HUMAN_FLEET_ID = 'fleet:skip'
 const HUMAN_NAME = 'skip'
 const HUMAN_HOST = os.hostname()
+
+// All inline tmux operations were removed — they now route through the
+// fleet-daemon WS RPC layer (`sendRpc(machineId, op, params)` injected
+// from unified-server.mjs). If no daemon is connected for an agent's
+// machine, the handler returns 503.
 
 const UPLOAD_DIR = '/tmp/fleet-uploads'
 
@@ -31,19 +34,26 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-function touchSignalFile(agentId) {
-  const signalDir = path.join(os.homedir(), '.fleet', 'signals')
-  try {
-    fs.mkdirSync(signalDir, { recursive: true })
-    const file = path.join(signalDir, agentId.replace(/[^a-zA-Z0-9_-]/g, '_'))
-    fs.writeFileSync(file, Date.now().toString())
-    return { ok: true, signal: file }
-  } catch (e) {
-    return { ok: false, error: e.message }
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore, sendRpc, resolveRpc, daemonConnections }) {
+  // Helper: route an agent op through the daemon, or 503 cleanly. The
+  // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
+  // matches the spec: 'send-key', 'capture-pane', etc.).
+  async function rpcAgent(res, agent, op, params) {
+    const route = resolveRpc(op, agent)
+    if (route.via === 'none') {
+      res.status(route.code).json({ ok: false, error: route.error })
+      return null
+    }
+    try {
+      const result = await sendRpc(route.machine_id, op, params)
+      return result
+    } catch (e) {
+      const code = e.code === 'NO_DAEMON' ? 503 : 502
+      res.status(code).json({ ok: false, error: e.message })
+      return null
+    }
   }
-}
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore }) {
   const router = Router()
 
   // --- CORS ---
@@ -188,7 +198,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/roll-call ---
-  router.get('/api/roll-call', (req, res) => {
+  // Aggregates tmux session lists from every connected fleet-daemon and
+  // joins against the agent registry. If a daemon is down, its agents
+  // are reported as `tmux_alive: null` (unknown), not dead — we don't
+  // mark something dead because we can't reach it.
+  router.get('/api/roll-call', async (req, res) => {
     try {
       const agents = fleetStore ? fleetStore.getAllAgents() : []
       const ALIVE_MS = 10 * 60 * 1000
@@ -203,18 +217,33 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
             .filter(Boolean)
         }
       } catch {}
-      let tmuxSessions = new Set()
-      try {
-        const out = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8', timeout: 3000 })
-        for (const s of out.trim().split('\n').filter(Boolean)) {
-          if (s.startsWith('fleet-')) tmuxSessions.add(s)
-        }
-      } catch {}
+
+      // Per-machine list-sessions via daemon RPC. Concurrency-safe: each
+      // daemon answers its own machine; aggregate the union.
+      const tmuxByMachine = new Map() // machine_id -> Set<sessionName>
+      const probes = []
+      for (const [mid] of daemonConnections) {
+        probes.push(
+          sendRpc(mid, 'list-sessions', {}).then(r => {
+            const sessions = (r?.sessions || []).filter(s => s.startsWith('fleet-'))
+            tmuxByMachine.set(mid, new Set(sessions))
+          }).catch(() => { tmuxByMachine.set(mid, null) }) // null = unreachable
+        )
+      }
+      await Promise.all(probes)
+
       const registryIds = new Set(agents.map(a => a.id))
+      const allTmuxSessions = new Set()
+      for (const set of tmuxByMachine.values()) if (set) for (const s of set) allTmuxSessions.add(s)
+
       const agentStatus = agents.map(a => {
         const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
         const heartbeat = lastSeenMs < ALIVE_MS
-        const tmuxUp = a.tmux_session ? tmuxSessions.has(a.tmux_session) : null
+        let tmuxUp = null
+        if (a.tmux_session && a.machine_id) {
+          const set = tmuxByMachine.get(a.machine_id)
+          tmuxUp = set ? set.has(a.tmux_session) : null
+        }
         let status = 'dead'
         if (heartbeat && tmuxUp !== false) status = 'alive'
         else if (heartbeat || tmuxUp) status = 'stale'
@@ -222,7 +251,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       })
       const missing = roster.filter(r => !registryIds.has(r.fleet_id))
       const registeredTmux = new Set(agents.filter(a => a.tmux_session).map(a => a.tmux_session))
-      const unmatchedTmux = [...tmuxSessions].filter(s => !registeredTmux.has(s))
+      const unmatchedTmux = [...allTmuxSessions].filter(s => !registeredTmux.has(s))
       res.json({ agents: agentStatus, missing_from_roster: missing, unregistered_tmux: unmatchedTmux })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
@@ -391,54 +420,41 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, task_id })
   })
 
-  // --- POST /api/spawn ---
-  router.post('/api/spawn', (req, res) => {
-    const { cwd, name, model, respawn, agent: agentQuery } = req.body || {}
-    try {
-      const fleetMcp = new URL('../../../fleet/index.mjs', import.meta.url).pathname
-      const dir = cwd || os.homedir()
-      const fleetId = `fleet:${crypto.randomUUID().slice(0, 8)}`
-      const sessionName = `fleet-${(name || fleetId).replace(/[^a-zA-Z0-9_-]/g, '-')}`
-      const effectiveModel = model || 'claude-sonnet-4-6[1m]'
-      const channelFlag = ' --dangerously-load-development-channels server:fleet'
-      execSync(`tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "FLEET_ID=${fleetId} claude --model '${effectiveModel}' --permission-mode auto${channelFlag}"`, { encoding: 'utf8', timeout: 10000 })
-      execSync(`sleep 3 && tmux send-keys -t ${sessionName} Enter`, { timeout: 10000 })
-      res.json({ ok: true, tmux_session: sessionName, fleet_id: fleetId })
-    } catch (e) {
-      res.status(500).json({ error: e.message })
-    }
-  })
+  // --- POST /api/spawn — REMOVED ---
+  // The previous inline implementation referenced a non-existent path
+  // (`'../../../fleet/index.mjs'`) and was unreachable from any caller.
+  // The real spawn path is the Python script `bin/fleet-spawn`, which the
+  // fleet MCP shells out to directly. When per-machine spawn lands in
+  // Phase 5+, it will be a daemon RPC keyed by machine_id, not an
+  // agent-scoped HTTP route.
 
   // --- POST /api/kick ---
-  router.post('/api/kick', (req, res) => {
+  // Kick = touch a signal file inside the agent's machine's ~/.fleet/signals.
+  // Routed through the daemon so the file lands on the right host. The
+  // server still emits the broadcast itself.
+  router.post('/api/kick', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const touch = touchSignalFile(agent.id)
+    const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
+    if (result === null) return // rpcAgent already wrote the response
     broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: HUMAN_FLEET_ID, text: 'manual kick' })
-    res.status(touch.ok ? 200 : 500).json(touch)
+    res.json(result)
   })
 
   // --- POST /api/interrupt ---
+  // Two-phase: kick the agent immediately so the caller can move on, then
+  // let the daemon do the polled re-interrupt loop in the background.
   router.post('/api/interrupt', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
-    try { execSync(`tmux send-keys -t ${agent.tmux_session} Escape Escape`, { timeout: 3000, stdio: 'pipe' }) } catch {}
-    res.json({ ok: true, agent: agent.friendly_name || agent.id })
-    ;(async () => {
-      for (let i = 0; i < 5; i++) {
-        await new Promise(r => setTimeout(r, 2500))
-        try {
-          const pane = execSync(`tmux capture-pane -t ${agent.tmux_session} -p -S -50`, { encoding: 'utf8', timeout: 3000 })
-          const lines = pane.split('\n').filter(l => l.trim())
-          const last = lines.length ? lines[lines.length - 1] : ''
-          if (!pane.includes('esc to interrupt') && (/^[\s]*[❯>][\s📬]*$/.test(last) || pane.includes('Enter to continue'))) break
-        } catch {}
-        try { execSync(`tmux send-keys -t ${agent.tmux_session} Escape Escape`, { timeout: 3000, stdio: 'pipe' }) } catch {}
-      }
-    })()
+    const result = await rpcAgent(res, agent, 'interrupt', {
+      agent_id: agent.id, tmux_session: agent.tmux_session,
+    })
+    if (result === null) return
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   })
 
   // --- POST /api/rename ---
@@ -475,29 +491,49 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/send-key ---
-  router.post('/api/send-key', (req, res) => {
+  router.post('/api/send-key', async (req, res) => {
     const { agent: agentQuery, key } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    try {
-      const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
-      execSync(`tmux send-keys -t ${agent.tmux_session} ${tmuxKey}`, { timeout: 5000, stdio: 'pipe' })
-      res.json({ ok: true })
-    } catch (e) { res.json({ ok: false, error: e.message }) }
+    const result = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key })
+    if (result !== null) res.json(result)
   })
 
   // --- POST /api/send-text ---
-  router.post('/api/send-text', (req, res) => {
+  router.post('/api/send-text', async (req, res) => {
     const { agent: agentQuery, text, enter } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    try {
-      if (text) execSync(`tmux send-keys -t ${agent.tmux_session} -- ${JSON.stringify(text)}`, { timeout: 5000, stdio: 'pipe' })
-      if (enter !== false) execSync(`tmux send-keys -t ${agent.tmux_session} Enter`, { timeout: 5000, stdio: 'pipe' })
-      res.json({ ok: true })
-    } catch (e) { res.json({ ok: false, error: e.message }) }
+    const result = await rpcAgent(res, agent, 'send-text', {
+      tmux_session: agent.tmux_session, text, enter: enter !== false,
+    })
+    if (result !== null) res.json(result)
+  })
+
+  // --- POST /api/capture-pane ---
+  // One-shot capture for terminal cards. Live-watching is the separate
+  // start/stop-terminal-watch RPC pair.
+  router.post('/api/capture-pane', async (req, res) => {
+    const { agent: agentQuery, lines } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    const result = await rpcAgent(res, agent, 'capture-pane', {
+      tmux_session: agent.tmux_session, lines: lines || 50,
+    })
+    if (result !== null) res.json(result)
+  })
+
+  // --- POST /api/restart-mcp ---
+  router.post('/api/restart-mcp', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    const result = await rpcAgent(res, agent, 'restart-mcp', { tmux_session: agent.tmux_session })
+    if (result !== null) res.json(result)
   })
 
   // --- POST /api/upload ---
@@ -542,6 +578,40 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true })
   })
 
+  // --- POST /api/fleet/resync-machine-ids ---
+  // One-shot migration helper for the fleet-daemon cutover. After the
+  // server upgrade, every existing alive agent has machine_id = NULL
+  // because their fleet MCP register payload pre-dates the new field.
+  // Until each agent re-registers (which happens automatically on next
+  // session start, but Skip's long-running ones won't), their RPCs
+  // return 503 from the daemon-routing path.
+  //
+  // This endpoint walks all live agents with machine_id IS NULL and
+  // sets it to a single value — defaulting to this server's hostname.
+  // Single-machine assumption is fine for now; multi-user is future work.
+  // Pass `?machine_id=foo` to override.
+  //
+  // Not a backwards-compat shim — this is a migration aid the manager
+  // explicitly asked for. Run once after deploying the new server,
+  // then forget about it.
+  router.post('/api/fleet/resync-machine-ids', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
+    const machineId = (req.query.machine_id || os.hostname().split('.')[0]).toString()
+    const agents = fleetStore.getAllAgents().filter(a => !a.dead && !a.machine_id)
+    const updated = []
+    for (const a of agents) {
+      try {
+        fleetStore.upsertAgent({ ...a, machine_id: machineId })
+        updated.push({ id: a.id, name: a.friendly_name || null })
+      } catch (e) {
+        // Don't fail the whole batch on one bad row.
+        console.error(`[resync] ${a.id}: ${e.message}`)
+      }
+    }
+    broadcastState()
+    res.json({ ok: true, machine_id: machineId, updated_count: updated.length, updated })
+  })
+
   // --- POST /api/agent-status ---
   router.post('/api/agent-status', (req, res) => {
     const { agent: rawAgent, state, tool } = req.body || {}
@@ -554,24 +624,39 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/cleanup ---
-  router.post('/api/cleanup', (req, res) => {
+  // Same logic as roll-call: aggregate tmux session lists from every
+  // connected daemon, then mark agents dead if they're stale on both
+  // heartbeat AND tmux. An agent whose machine has no daemon connected
+  // is treated as having unknown tmux state — we don't kill it just
+  // because we can't see it.
+  router.post('/api/cleanup', async (req, res) => {
     try {
       const agents = fleetStore ? fleetStore.getAllAgents() : []
       const tasks = fleetStore ? fleetStore.getActiveTasks() : []
       const ALIVE_MS = 10 * 60 * 1000
       const now = Date.now()
-      let tmuxSessions = new Set()
-      try {
-        const out = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { encoding: 'utf8', timeout: 3000 })
-        for (const s of out.trim().split('\n').filter(Boolean)) {
-          if (s.startsWith('fleet-')) tmuxSessions.add(s)
-        }
-      } catch {}
+
+      const tmuxByMachine = new Map()
+      const probes = []
+      for (const [mid] of daemonConnections) {
+        probes.push(
+          sendRpc(mid, 'list-sessions', {}).then(r => {
+            tmuxByMachine.set(mid, new Set((r?.sessions || []).filter(s => s.startsWith('fleet-'))))
+          }).catch(() => { tmuxByMachine.set(mid, null) })
+        )
+      }
+      await Promise.all(probes)
+
       const removed = [], orphaned = [], deadAgentIds = new Set()
       for (const a of agents) {
         const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
         const heartbeatAlive = lastSeenMs < ALIVE_MS
-        const tmuxAlive = a.tmux_session ? tmuxSessions.has(a.tmux_session) : false
+        let tmuxAlive = false
+        if (a.tmux_session && a.machine_id) {
+          const set = tmuxByMachine.get(a.machine_id)
+          // Unknown (set === null or undefined) → treat as alive to be safe.
+          tmuxAlive = set ? set.has(a.tmux_session) : true
+        }
         if (!heartbeatAlive && !tmuxAlive && !a.human) {
           deadAgentIds.add(a.id)
           removed.push({ id: a.id, name: a.friendly_name || a.name })

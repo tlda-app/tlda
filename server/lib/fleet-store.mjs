@@ -24,7 +24,8 @@ const DB_PATH = '/tmp/fleet.db'; // moved from ~/.fleet to avoid Spotlight index
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
 export class FleetStore {
-  constructor(dbPath = DB_PATH) {
+  constructor(dbPath) {
+    dbPath = dbPath || DB_PATH;
     // Ensure directory exists
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -73,7 +74,8 @@ export class FleetStore {
         dead INTEGER DEFAULT 0,
         human INTEGER DEFAULT 0,
         is_manager INTEGER DEFAULT 0,
-        metadata TEXT                 -- JSON blob for extra fields
+        metadata TEXT,                -- JSON blob for extra fields
+        machine_id TEXT               -- which fleet-daemon machine owns this agent (NULL = unknown)
       );
 
       -- Materialized task state (cache, rebuilt from events)
@@ -162,6 +164,14 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_qa_signatures_task ON qa_signatures(task_id);
       CREATE INDEX IF NOT EXISTS idx_qa_signatures_report ON qa_signatures(report_id);
     `);
+
+    // ---- Migrations (idempotent) ----
+    // Add machine_id column to agents if missing (existing DBs predate it).
+    const agentCols = this.db.prepare("PRAGMA table_info(agents)").all();
+    if (!agentCols.some(c => c.name === 'machine_id')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -207,8 +217,8 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         tmux_session = COALESCE(excluded.tmux_session, agents.tmux_session),
@@ -221,10 +231,12 @@ export class FleetStore {
         dead = excluded.dead,
         human = excluded.human,
         is_manager = excluded.is_manager,
-        metadata = COALESCE(excluded.metadata, agents.metadata)
+        metadata = COALESCE(excluded.metadata, agents.metadata),
+        machine_id = COALESCE(excluded.machine_id, agents.machine_id)
     `);
 
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
+    this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
     this._getAllAgents = this.db.prepare('SELECT * FROM agents ORDER BY last_seen DESC');
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
@@ -462,8 +474,16 @@ export class FleetStore {
       agent.dead ? 1 : 0,
       agent.human ? 1 : 0,
       agent.is_manager ? 1 : 0,
-      agent.metadata ? JSON.stringify(agent.metadata) : null
+      agent.metadata ? JSON.stringify(agent.metadata) : null,
+      agent.machine_id || null
     );
+  }
+
+  // Agents associated with a particular fleet-daemon machine. Used by the
+  // server when sending a `daemon-welcome` message and when routing RPCs.
+  getAgentsByMachine(machineId) {
+    if (!machineId) return [];
+    return this._getAgentsByMachine.all(machineId).map(r => this._hydrateAgent(r));
   }
 
   getAgent(id) {
