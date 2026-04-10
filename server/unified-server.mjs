@@ -19,8 +19,8 @@
  */
 
 import express from 'express'
-import { createServer, request as httpRequest } from 'http'
-import { WebSocketServer, WebSocket as WS } from 'ws'
+import { createServer } from 'http'
+import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -33,6 +33,8 @@ import projectRoutes from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals } from './lib/sync-rooms.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
+import { FleetStore } from './lib/fleet-store.mjs'
+import { createFleetRouter } from './routes/fleet.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -56,6 +58,38 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR)
 resetStaleBuildStates()
+
+// Fleet store (SQLite-backed agent registry + chat)
+const fleetStore = (() => {
+  try { return new FleetStore() }
+  catch (e) { console.error('[fleet-store] init failed (non-fatal):', e.message); return null }
+})()
+
+// Fleet state: in-memory
+const preambleStore = {}                    // target → { macro: definition }
+const wsFleetClients = new Set()            // active /ws/fleet connections
+
+function broadcastFleet(msg) {
+  const data = JSON.stringify(msg)
+  for (const ws of wsFleetClients) {
+    try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
+  }
+}
+function broadcastEvent(type, data) {
+  broadcastFleet({ event: type, data })
+}
+function broadcastState() {
+  if (!fleetStore) return
+  broadcastFleet({
+    agents: fleetStore.getAllAgents().filter(a => !a.dead),
+    tasks: fleetStore.getActiveTasks(),
+  })
+}
+
+// Wire fleet store events → WS broadcast
+if (fleetStore) {
+  fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
+}
 
 // Auth
 initAuth()
@@ -354,39 +388,9 @@ app.use('/api/projects', projectRoutes)
 import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
 
-// ---------- Fleet API proxy ----------
-// Proxy unhandled /api/* and /events to fleet server (for fleet shapes in the SPA)
-const FLEET_SERVER = process.env.FLEET_SERVER || 'http://localhost:5199'
-function fleetProxy(req, res) {
-  const url = new URL(FLEET_SERVER)
-  const opts = {
-    hostname: url.hostname,
-    port: url.port,
-    path: req.originalUrl,
-    method: req.method,
-    headers: { ...req.headers, host: url.host },
-  }
-  // Remove content-length since we may re-serialize the body
-  delete opts.headers['content-length']
-  const proxyReq = httpRequest(opts, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers)
-    proxyRes.pipe(res)
-  })
-  proxyReq.on('error', () => {
-    if (!res.headersSent) res.status(502).json({ error: 'Fleet server unavailable' })
-  })
-  // Express may have consumed the body — re-send it
-  if (req.body && Object.keys(req.body).length > 0) {
-    const bodyStr = JSON.stringify(req.body)
-    proxyReq.setHeader('Content-Type', 'application/json')
-    proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyStr))
-    proxyReq.end(bodyStr)
-  } else {
-    req.pipe(proxyReq)
-  }
-}
-app.use('/events', fleetProxy)
-app.use('/api', fleetProxy)
+// ---------- Fleet API (embedded) ----------
+const fleetRouter = createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore })
+app.use(fleetRouter)
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math
@@ -453,58 +457,147 @@ server.on('upgrade', (req, socket, head) => {
     return
   }
 
-  // Proxy /ws/fleet to fleet server for live chat events (auto-reconnect upstream)
+  // /ws/fleet — direct fleet WebSocket (no proxy)
   if (url.pathname === '/ws/fleet') {
-    const fleetUrl = new URL(FLEET_SERVER)
-    const target = `ws://${fleetUrl.hostname}:${fleetUrl.port}${req.url}`
-
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
-      let upstream = null
-      let closed = false
-      const pending = []  // buffer messages while upstream is reconnecting
+      const agentFilter = url.searchParams.get('agent') || null
+      ws._agentFilter = agentFilter
+      wsFleetClients.add(ws)
 
-      function connectUpstream() {
-        if (closed) return
-        upstream = new WS(target)
-        upstream.on('open', () => {
-          console.log('[fleet-proxy] upstream connected to', target)
-          // flush any messages buffered while reconnecting
-          while (pending.length) {
-            try { if (upstream.readyState === 1) upstream.send(pending.shift()) } catch {}
-          }
-        })
-        upstream.on('message', (data) => {
-          const msg = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString() : String(data)
-          try { if (ws.readyState === 1) ws.send(msg) } catch (e) { console.log('[fleet-proxy] send error:', e.message) }
-        })
-        upstream.on('close', () => {
-          if (!closed) setTimeout(connectUpstream, 1000)
-        })
-        upstream.on('error', () => {
-          try { upstream.close() } catch {}
-          // close handler will trigger reconnect
-        })
+      // Send initial state
+      if (fleetStore) {
+        const initState = {
+          agents: fleetStore.getAllAgents().filter(a => !a.dead),
+          tasks: fleetStore.getActiveTasks(),
+        }
+        ws.send(JSON.stringify(initState))
       }
 
-      ws.on('message', (data) => {
-        if (upstream && upstream.readyState === 1) {
-          try { upstream.send(data.toString()) } catch {}
-        } else {
-          pending.push(data.toString())
-        }
+      ws.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString())
+          handleFleetWsMessage(ws, msg)
+        } catch {}
       })
-      ws.on('close', () => {
-        closed = true
-        if (upstream) try { upstream.close() } catch {}
-      })
-
-      connectUpstream()
+      ws.on('close', () => wsFleetClients.delete(ws))
+      ws.on('error', () => wsFleetClients.delete(ws))
     })
     return
   }
 
   socket.destroy()
 })
+
+// ---------- Fleet WS message handler ----------
+// Handles request/response messages from the fleet MCP (sendWS pattern)
+
+function handleFleetWsMessage(ws, msg) {
+  const { id, type } = msg
+  const reply = (result) => {
+    if (id) ws.send(JSON.stringify({ id, result }))
+  }
+  const error = (err) => {
+    if (id) ws.send(JSON.stringify({ id, error: err }))
+  }
+
+  if (!fleetStore) { error('fleet store unavailable'); return }
+
+  if (type === 'register') {
+    const { id: agentId, name, tmux_session, cwd, labels, manager, session_id, metadata } = msg
+    if (!agentId) { error('missing id'); return }
+    const now = new Date().toISOString()
+    const existing = fleetStore.getAgent?.(agentId)
+    const agent = {
+      id: agentId,
+      friendly_name: name || existing?.friendly_name || null,
+      tmux_session: tmux_session || existing?.tmux_session || null,
+      session_id: session_id || existing?.session_id || null,
+      session_ids: existing?.session_ids || [],
+      cwd: cwd || existing?.cwd || null,
+      labels: labels || existing?.labels || [],
+      registered_at: existing?.registered_at || now,
+      last_seen: now,
+      dead: false,
+      human: false,
+      is_manager: !!manager,
+      metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
+    }
+    if (session_id && !agent.session_ids.includes(session_id)) {
+      agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
+    }
+    fleetStore.upsertAgent(agent)
+    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    broadcastState()
+    reply({ ok: true, agent: fleetStore.getAgent?.(agentId) || agent })
+    return
+  }
+
+  if (type === 'store-agents') {
+    reply(fleetStore.getAllAgents())
+    return
+  }
+
+  if (type === 'store-tasks') {
+    const active = msg.active !== false
+    reply(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks?.() || [])
+    return
+  }
+
+  if (type === 'chat') {
+    const { message: text, to, from, metadata } = msg
+    if (!to || !text) { error('missing to or message'); return }
+    const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: JSON.stringify(metadata || null) })
+    if (!event) { error('store error'); return }
+    // Add to unread
+    fleetStore.addUnread?.(event.id, to)
+    // Broadcast
+    broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+    reply({ ok: true, event_id: event.id })
+    return
+  }
+
+  if (type === 'heartbeat') {
+    const { agent } = msg
+    if (agent) fleetStore.updateHeartbeat?.(agent)
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'update-agent') {
+    const { agent: agentData } = msg
+    if (agentData?.id) {
+      fleetStore.upsertAgent(agentData)
+      broadcastState()
+    }
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'agent-thinking') {
+    broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'agent-compacting') {
+    broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'agent-status') {
+    const { agentId, state, tool, ts } = msg
+    if (agentId && state && fleetStore) {
+      fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+      broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
+    }
+    reply({ ok: true })
+    return
+  }
+
+  // Unknown message type — don't error, just ignore (forward compatibility)
+  if (id) reply({ ok: false, error: `unknown type: ${type}` })
+}
 
 // ---------- Manifest generation ----------
 

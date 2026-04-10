@@ -138,10 +138,22 @@ function postProcessTranscript(text) {
 let _hud = null
 let _recognition = null
 let _recording = false
-let _interimTranscript = ''
-let _finalTranscript = ''
+
+// --- State machine: 'edit' | 'speech' ---
+// edit:   Chrome buffer clean, user may be typing. onresult events ignored.
+// speech: Chrome active, voice fills textarea at cursor.
+let _state = 'edit'
+// Text split around cursor at moment of Speech entry:
+let _left = ''    // frozen text before cursor
+let _interim = '' // Chrome's current interim result
+let _right = ''   // frozen text after cursor
+// Legacy aliases — used by send/watchdog code below, kept for compatibility
+// _left replaces _finalTranscript, _interim replaces _interimTranscript
+Object.defineProperty(globalThis, '__voiceCompat', { value: true })
+
 let _filling = false
-let _inputListener = null
+let _editStopped = false  // true after enterEdit() calls stop(), false after onend
+let _inputListeners = null // { input, click, keydown } handlers for cleanup
 let _fadeTimer = null
 let _lastTapTime = 0
 let _singleTapTimer = null
@@ -225,25 +237,42 @@ function fadeHud(delayMs = 2000) {
 
 // --- Target Management ---
 
+// Enter Edit state — accept current textarea as ground truth, stop Chrome.
+// Safe to call multiple times (idempotent after first call per editing session).
+function enterEdit() {
+  if (_state === 'edit') return
+  _state = 'edit'
+  _left = _interim = _right = ''
+  if (_recording && _recognition) {
+    _editStopped = true
+    try { _recognition.stop() } catch {}
+  }
+}
+
 export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentColor) {
   if (textarea !== _activeTextarea) {
-    _interimTranscript = ''
-    _finalTranscript = ''
-    if (_inputListener && _activeTextarea) {
-      _activeTextarea.removeEventListener('input', _inputListener)
-      _inputListener = null
+    // Remove old listeners
+    if (_inputListeners && _activeTextarea) {
+      _activeTextarea.removeEventListener('input', _inputListeners.input)
+      _activeTextarea.removeEventListener('click', _inputListeners.click)
+      _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
+      _inputListeners = null
     }
+    // Switching textareas always enters Edit on the new one
+    _state = 'edit'
+    _left = _interim = _right = ''
     if (textarea) {
-      _inputListener = () => {
+      const onEdit = () => { if (!_filling) enterEdit() }
+      const onKeydown = (e) => {
         if (_filling) return
-        if (!textarea.value && _finalTranscript) return  // guard: don't wipe on empty re-render
-        _finalTranscript = textarea.value
-        _interimTranscript = ''
-        if (_recording && _recognition) {
-          try { _recognition.stop() } catch {}
+        if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
+          enterEdit()
         }
       }
-      textarea.addEventListener('input', _inputListener)
+      textarea.addEventListener('input', onEdit)
+      textarea.addEventListener('click', onEdit)
+      textarea.addEventListener('keydown', onKeydown)
+      _inputListeners = { input: onEdit, click: onEdit, keydown: onKeydown }
     }
   }
   _activeTextarea = textarea
@@ -282,6 +311,13 @@ function fillTextarea(text) {
   ta.value = postProcessTranscript(text)
   ta.style.height = 'auto'
   ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+  // Restore cursor to end of voice portion (between interim and right)
+  // Use length of processed text minus right portion
+  if (_state === 'speech' && _right.length > 0) {
+    const processed = postProcessTranscript(text)
+    const cursorPos = processed.length - _right.length
+    ta.setSelectionRange(cursorPos, cursorPos)
+  }
   ta.dispatchEvent(new Event('input', { bubbles: true }))
   _filling = false
 }
@@ -307,22 +343,38 @@ function _setupRecognition() {
     clearTimeout(_watchdogTimer)
     _watchdogTimer = setTimeout(watchdogRestart, 8000)
 
+    // Edit state: transition to Speech on first result (entering speech)
+    // Exception: if stop() was called by enterEdit(), discard until onend fires
+    if (_state === 'edit') {
+      if (_editStopped) return  // stale results after user edit — discard
+      // First result since recording started — transition to Speech
+    }
+
+    // Speech entry: freeze cursor position on first result of this speech session
+    if (_state !== 'speech') {
+      _state = 'speech'
+      const cursor = _activeTextarea?.selectionStart ?? (_activeTextarea?.value?.length ?? 0)
+      _left = _activeTextarea?.value?.slice(0, cursor) ?? ''
+      _right = _activeTextarea?.value?.slice(cursor) ?? ''
+      _interim = ''
+    }
+
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
-        _finalTranscript += e.results[i][0].transcript
+        _left += e.results[i][0].transcript
       } else {
         interim += e.results[i][0].transcript
       }
     }
-    _interimTranscript = interim
+    _interim = interim
 
-    const combined = (_finalTranscript + interim).trim()
+    const voiceText = (_left + interim).trim()
     if (e.results[e.results.length - 1]?.isFinal) {
-      const finalTrimmed = _finalTranscript.trim()
+      const leftTrimmed = _left.trim()
 
-      // Voice-switch: "left chat"/"right chat" (and Whisper variants) at end of text
-      const switchMatch = finalTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+      // Voice-switch: "left chat"/"right chat" at end of text
+      const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
       if (switchMatch) {
         const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
           .filter(ta => ta.offsetHeight > 0)
@@ -332,8 +384,8 @@ function _setupRecognition() {
           target.focus()
           showHud('→ other chat', '#9370db')
           fadeHud(1500)
-          _finalTranscript = ''
-          _interimTranscript = ''
+          _state = 'edit'
+          _left = _interim = _right = ''
           setTimeout(() => {
             if (_recording) {
               const w = targetLabel()
@@ -345,14 +397,14 @@ function _setupRecognition() {
       }
 
       // Voice-send: "send" / "send it" / "sent" at end of text
-      const sendMatch = finalTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
+      const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
       if (sendMatch) {
-        const cleanText = finalTrimmed.slice(0, sendMatch.index).trim()
+        const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
         if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
-          _finalTranscript = ''
-          _interimTranscript = ''
+          _state = 'edit'
+          _left = _interim = _right = ''
           _filling = true
           if (_activeTextarea) {
             _activeTextarea.value = ''
@@ -373,7 +425,7 @@ function _setupRecognition() {
       }
     }
 
-    fillTextarea(combined)
+    fillTextarea(_left + _interim + _right)
   }
 
   _recognition.onerror = (e) => {
@@ -454,7 +506,18 @@ function _setupRecognition() {
 
   _recognition.onend = () => {
     if (_recording) {
-      try { _recognition.start() } catch {}
+      // Commit any pending interim to left so it survives the restart
+      if (_state === 'speech' && _interim) {
+        _left += _interim
+        _interim = ''
+      }
+      _editStopped = false  // new session starting — ready for speech again
+      try {
+        _recognition.start()
+      } catch (err) {
+        if (err.name !== 'InvalidStateError') throw err
+        setTimeout(() => { if (_recording) _recognition.start() }, 100)
+      }
     }
   }
 }
@@ -469,7 +532,11 @@ function watchdogRestart() {
     }
   }
   _gotAudioThisSession = false
-  const preservedText = _activeTextarea ? _activeTextarea.value : (_finalTranscript + _interimTranscript).trim()
+  // Preserve text: commit interim to left, freeze current state
+  if (_state === 'speech') {
+    _left += _interim
+    _interim = ''
+  }
   const dying = _recognition
   if (dying) {
     dying.onresult = null
@@ -482,28 +549,28 @@ function watchdogRestart() {
   _watchdogTimer = null
   clearTimeout(_sessionTimer)
   _sessionTimer = null
-  setTimeout(() => {
-    if (!_recording) return
-    _finalTranscript = preservedText
-    _interimTranscript = ''
-    _setupRecognition()
-    try {
-      _recognition.start()
-      _watchdogTimer = setTimeout(watchdogRestart, 8000)
-      _sessionTimer = setTimeout(sessionRestart, 45000)
-    } catch (err) {
-      console.warn('voice: watchdog restart failed', err)
-      _watchdogTimer = setTimeout(watchdogRestart, 8000)
-      _sessionTimer = setTimeout(sessionRestart, 45000)
-    }
-  }, 250)
+  if (!_recording) return
+  // Keep _state, _left, _right as-is — resume from where we were
+  _interim = ''
+  _setupRecognition()
+  try {
+    _recognition.start()
+  } catch (err) {
+    if (err.name !== 'InvalidStateError') throw err
+    setTimeout(() => { if (_recording) _recognition.start() }, 100)
+  }
+  _watchdogTimer = setTimeout(watchdogRestart, 8000)
+  _sessionTimer = setTimeout(sessionRestart, 45000)
 }
 
 function sessionRestart() {
   if (!_isChrome) return
   if (!_recording) return
   if (!_recognition) return
-  const preservedText = _activeTextarea ? _activeTextarea.value : (_finalTranscript + _interimTranscript).trim()
+  if (_state === 'speech') {
+    _left += _interim
+    _interim = ''
+  }
   const dying = _recognition
   if (dying) {
     dying.onresult = null
@@ -516,20 +583,17 @@ function sessionRestart() {
   _watchdogTimer = null
   clearTimeout(_sessionTimer)
   _sessionTimer = null
-  setTimeout(() => {
-    if (!_recording) return
-    _finalTranscript = preservedText
-    _interimTranscript = ''
-    _setupRecognition()
-    try {
-      _recognition.start()
-      _watchdogTimer = setTimeout(watchdogRestart, 8000)
-      _sessionTimer = setTimeout(sessionRestart, 45000)
-    } catch (err) {
-      console.warn('voice: session restart failed', err)
-      _sessionTimer = setTimeout(sessionRestart, 45000)
-    }
-  }, 250)
+  if (!_recording) return
+  _interim = ''
+  _setupRecognition()
+  try {
+    _recognition.start()
+  } catch (err) {
+    if (err.name !== 'InvalidStateError') throw err
+    setTimeout(() => { if (_recording) _recognition.start() }, 100)
+  }
+  _watchdogTimer = setTimeout(watchdogRestart, 8000)
+  _sessionTimer = setTimeout(sessionRestart, 45000)
 }
 
 function checkSleep() {
@@ -551,19 +615,17 @@ function checkSleep() {
     _recognition = null
     clearTimeout(_watchdogTimer)
     _watchdogTimer = null
-    setTimeout(() => {
-      if (!_recording) return
-      _sleepDetectLast = Date.now()
-      _setupRecognition()
-      try {
-        _recognition.start()
-        _watchdogTimer = setTimeout(watchdogRestart, 8000)
-        _sessionTimer = setTimeout(sessionRestart, 45000)
-      } catch (err) {
-        console.warn('voice: sleep-wake restart failed', err)
-        _sessionTimer = setTimeout(sessionRestart, 45000)
-      }
-    }, 250)
+    if (!_recording) return
+    _sleepDetectLast = Date.now()
+    _setupRecognition()
+    try {
+      _recognition.start()
+    } catch (err) {
+      if (err.name !== 'InvalidStateError') throw err
+      setTimeout(() => { if (_recording) _recognition.start() }, 100)
+    }
+    _watchdogTimer = setTimeout(watchdogRestart, 8000)
+    _sessionTimer = setTimeout(sessionRestart, 45000)
   }
 }
 
@@ -582,8 +644,8 @@ function startRecording() {
   _micChannel?.postMessage('mic-start')
 
   _recording = true
-  _interimTranscript = ''
-  _finalTranscript = _activeTextarea?.value || ''
+  _state = 'edit'
+  _left = _interim = _right = ''
 
   const who = targetLabel()
   showHud(who ? `recording → ${who}` : 'recording', '#c87070')
@@ -670,11 +732,13 @@ function sendCurrentText() {
   showHud(`sent → ${who}`, '#7ab8a0')
   fadeHud(2500)
 
+  _state = 'edit'
+  _left = _interim = _right = ''
+  _filling = true
   ta.value = ''
   ta.style.height = 'auto'
   ta.dispatchEvent(new Event('input', { bubbles: true }))
-  _interimTranscript = ''
-  _finalTranscript = ''
+  _filling = false
 }
 
 // --- Key Binding ---
@@ -721,17 +785,15 @@ export async function initVoice() {
       _recognition = null
       clearTimeout(_watchdogTimer)
       _watchdogTimer = null
-      setTimeout(() => {
-        if (!_recording) return
-        _setupRecognition()
-        try {
-          _recognition.start()
-          _watchdogTimer = setTimeout(watchdogRestart, 8000)
-        } catch (err) {
-          console.warn('voice: visibilitychange restart failed', err)
-          _watchdogTimer = setTimeout(watchdogRestart, 8000)
-        }
-      }, 250)
+      if (!_recording) return
+      _setupRecognition()
+      try {
+        _recognition.start()
+      } catch (err) {
+        if (err.name !== 'InvalidStateError') throw err
+        setTimeout(() => { if (_recording) _recognition.start() }, 100)
+      }
+      _watchdogTimer = setTimeout(watchdogRestart, 8000)
     }
   })
 
@@ -770,18 +832,9 @@ export function setMathMode(on) {
 }
 export function isMathMode() { return _mathMode }
 export function resetTranscript() {
-  _interimTranscript = ''
-  _finalTranscript = ''
+  _state = 'edit'
+  _left = _interim = _right = ''
   if (_recording && _recognition) {
-    const dying = _recognition
-    dying.onresult = null
-    dying.onend = () => {
-      if (_recording) {
-        _setupRecognition()
-        try { _recognition.start() } catch {}
-      }
-    }
-    _recognition = null
-    try { dying.stop() } catch {}
+    try { _recognition.stop() } catch {}
   }
 }

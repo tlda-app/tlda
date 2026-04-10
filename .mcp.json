@@ -5,7 +5,7 @@
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
     },
-    "tldraw-feedback": {
+    "tlda": {
       "type": "stdio",
       "command": "/opt/homebrew/bin/node",
       "args": [

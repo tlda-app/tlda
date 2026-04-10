@@ -42,7 +42,7 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
-const FLEET_API = 'http://localhost:5199'
+const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
 // where path is relative to the dropped folder root (e.g. "figures/foo.png")

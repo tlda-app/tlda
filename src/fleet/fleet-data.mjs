@@ -15,9 +15,9 @@
 
 import { toolContentDetail } from './activity-render.mjs'
 
-// Fleet server base URL — connect directly, no proxy through tlda
-const FLEET = 'http://localhost:5199'
-const FLEET_WS = 'ws://localhost:5199'
+// Fleet is embedded in tlda — use same-origin (no separate server)
+const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176'
 
 // --- Stores ---
 let _agents = []

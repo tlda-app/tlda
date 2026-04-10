@@ -29,7 +29,7 @@ import './TerminalShape.css'
 
 // Use relative URLs for API (proxied by Vite in dev, same host in prod).
 // WebSocket needs an absolute URL — derive from current host.
-const FLEET_WS_HOST = 'ws://localhost:5199'
+const FLEET_WS_HOST = typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176'
 
 const DEFAULT_W = 560
 const DEFAULT_H = 380
