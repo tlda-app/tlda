@@ -451,6 +451,56 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
 })
 
 /**
+ * POST /shadow/:ref/revert — Permanent revert.
+ * Like /checkout but ALSO writes to the author's working copy (project.sourceDir)
+ * so the watcher picks up the restored files and doesn't overwrite them on next edit.
+ * Destructive: overwrites any uncommitted changes in project.sourceDir.
+ */
+router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
+  const { name, ref } = req.params
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const tmpDir = await checkoutSource(name, ref)
+    const srcDir = getSourceDir(name)
+    const authorDir = project.sourceDir
+
+    const { readdirSync, rmSync, cpSync, existsSync, statSync } = await import('fs')
+
+    // Write to server source (same as /checkout)
+    for (const entry of readdirSync(srcDir)) {
+      rmSync(join(srcDir, entry), { recursive: true, force: true })
+    }
+    for (const entry of readdirSync(tmpDir)) {
+      if (entry === '.gitignore') continue
+      cpSync(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
+    }
+
+    // Also write to author's working copy — this is what makes revert permanent
+    if (authorDir && existsSync(authorDir)) {
+      for (const entry of readdirSync(tmpDir)) {
+        if (entry === '.gitignore') continue
+        const dest = join(authorDir, entry)
+        cpSync(join(tmpDir, entry), dest, { recursive: true })
+      }
+    }
+
+    rmSync(tmpDir, { recursive: true, force: true })
+    runBuild(name).catch(() => {})
+
+    res.json({
+      ok: true,
+      ref,
+      author_dir_updated: !!(authorDir && existsSync(authorDir)),
+      message: `Reverted to ${ref.slice(0, 7)} — server source + author working copy updated, build triggered`,
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
  * GET /shadow/diff?ref1=<hash>&ref2=<hash> — Diff between two shadow repo refs.
  * ref2 defaults to HEAD if omitted.
  */

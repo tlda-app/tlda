@@ -2091,38 +2091,50 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'doc_version',
-      description: 'List recent shadow-repo versions for a document, or find the active version at a given timestamp. Each build commits source files to a per-project shadow git repo.',
+      description: 'List the history of a document. Each successful build becomes a version. Returns recent versions with their hash and timestamp, or the version active at a given time.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version active at that time (latest commit before). Omit to list all recent versions.' },
+          timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version active at that time (latest version before). Omit to list all recent versions.' },
           limit: { type: 'number', description: 'Max entries to return (default: 20)' },
         },
         required: ['doc'],
       },
     },
     {
-      name: 'doc_checkout',
-      description: 'Revert a document to a specific historical version from the shadow repo. Accepts a git hash or a time string (ISO, unix ms, or relative like "20 minutes ago"). Extracts source at that ref, pushes to the server, and triggers a rebuild.',
+      name: 'doc_view',
+      description: 'View an old version of a document in the tlda viewer without touching the author\'s working copy. Temporary: the viewer shows the old version until the next edit from the author\'s working copy overwrites it. Use this to scrub through history, compare, or investigate. For a permanent restore, use doc_revert. Accepts a version hash or a time string (ISO, unix ms, or relative like "20 minutes ago").',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref: { type: 'string', description: 'Shadow repo git hash, or a time string (ISO, "20 minutes ago", etc.)' },
+          ref: { type: 'string', description: 'Version hash, or a time string (ISO, "20 minutes ago", etc.)' },
+        },
+        required: ['doc', 'ref'],
+      },
+    },
+    {
+      name: 'doc_revert',
+      description: 'Permanently restore a document to an old version. Writes the old version to the author\'s working copy (project.sourceDir) AND the server, so the watcher picks up the restored files and the viewer updates. This is DESTRUCTIVE: it overwrites any uncommitted changes in the author\'s working copy. Use doc_view first to verify the target version is correct. Accepts a version hash or a time string.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref: { type: 'string', description: 'Version hash, or a time string (ISO, "20 minutes ago", etc.)' },
         },
         required: ['doc', 'ref'],
       },
     },
     {
       name: 'doc_diff',
-      description: 'Show the source diff between two versions of a document using the shadow repo. ref2 defaults to HEAD (latest shadow commit).',
+      description: 'Show the source diff between two versions of a document. ref2 defaults to the latest version.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref1: { type: 'string', description: 'Base shadow-repo commit hash to diff from' },
-          ref2: { type: 'string', description: 'Target shadow-repo commit hash (default: HEAD / latest)' },
+          ref1: { type: 'string', description: 'Base version hash to diff from' },
+          ref2: { type: 'string', description: 'Target version hash (default: latest)' },
         },
         required: ['doc', 'ref1'],
       },
@@ -3634,49 +3646,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'doc_checkout') {
+  // Shared helper: resolve a ref (hash or time string) to a concrete hash
+  async function resolveDocRef(doc, ref) {
+    const isTimeRef = /\d{4}-\d{2}|ago|minutes?|hours?|days?|:/.test(ref);
+    if (!isTimeRef) return { hash: ref, isTimeRef: false };
+    const timeArg = /^\d+$/.test(ref) ? ref : encodeURIComponent(ref);
+    const endpoint = /^\d+$/.test(ref)
+      ? `/api/projects/${doc}/history/shadow?timestamp=${ref}`
+      : `/api/projects/${doc}/history/shadow/at?time=${timeArg}`;
+    const { version } = await serverFetch(endpoint);
+    if (!version) return null;
+    return { hash: version.hash, isTimeRef: true };
+  }
+
+  // Shared helper: wait for build completion
+  async function waitForBuild(doc) {
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      const status = await serverFetch(`/api/projects/${doc}`);
+      if (status.buildStatus === 'success' || status.buildStatus === 'failed') return true;
+    }
+    return false;
+  }
+
+  if (name === 'doc_view') {
     const doc = args?.doc;
     let ref = args?.ref;
     if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
     try {
-      // If ref looks like a time (contains ':' or words like 'ago'), resolve to a hash first
-      const isTimeRef = /\d{4}-\d{2}|ago|minutes?|hours?|days?|:/.test(ref);
-      let resolvedHash = ref;
+      const resolved = await resolveDocRef(doc, ref);
+      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
 
-      if (isTimeRef) {
-        // Try to parse as unix ms if it's all digits
-        const timeArg = /^\d+$/.test(ref) ? ref : encodeURIComponent(ref);
-        const endpoint = /^\d+$/.test(ref)
-          ? `/api/projects/${doc}/history/shadow?timestamp=${ref}`
-          : `/api/projects/${doc}/history/shadow/at?time=${timeArg}`;
-        const { version } = await serverFetch(endpoint);
-        if (!version) return { content: [{ type: 'text', text: `No version found for time: ${ref}` }], isError: true };
-        resolvedHash = version.hash;
-      }
-
-      // Checkout: restores source to this ref and triggers build
-      await serverFetch(`/api/projects/${doc}/history/shadow/${resolvedHash}/checkout`, {
+      // View: restores source to this version on the server (but not the author's working copy)
+      await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       });
 
-      // Wait for build to complete (poll build status)
-      const deadline = Date.now() + 180_000;
-      let buildDone = false;
-      while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 2000));
-        const status = await serverFetch(`/api/projects/${doc}`);
-        if (status.buildStatus === 'success' || status.buildStatus === 'failed') {
-          buildDone = true;
-          break;
-        }
-      }
+      const buildDone = await waitForBuild(doc);
+      const result = resolved.isTimeRef
+        ? `Viewing ${doc} at ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy is untouched — next edit overwrites this view.`
+        : `Viewing ${doc} at version ${resolved.hash.slice(0, 7)}. Author's working copy is untouched — next edit overwrites this view.`;
+      return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
 
-      const result = isTimeRef
-        ? `Checked out ${doc} at ${ref} (shadow ref ${resolvedHash.slice(0, 7)}).`
-        : `Checked out ${doc} at shadow ref ${resolvedHash.slice(0, 7)}.`;
+  if (name === 'doc_revert') {
+    const doc = args?.doc;
+    let ref = args?.ref;
+    if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
+    try {
+      const resolved = await resolveDocRef(doc, ref);
+      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
 
+      // Revert: restores source AND writes to the author's working copy (project.sourceDir)
+      await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+
+      const buildDone = await waitForBuild(doc);
+      const result = resolved.isTimeRef
+        ? `Reverted ${doc} to ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy updated.`
+        : `Reverted ${doc} to version ${resolved.hash.slice(0, 7)}. Author's working copy updated.`;
       return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
