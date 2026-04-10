@@ -44,7 +44,9 @@ import { WebSocket } from 'ws'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import crypto from 'crypto'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
@@ -67,25 +69,15 @@ function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2))
 }
 
-// Stable per-machine identifier. Hashes the first non-loopback MAC; falls
-// back to the hostname so headless containers still get a deterministic id.
-// Same derivation must run inside the fleet MCP so agent ↔ daemon mapping
-// is consistent — once the MCP starts sending machine_id at register time,
-// the two will agree without coordination.
+// Stable per-machine identifier. Uses the short hostname (hostname -s) —
+// human-readable in the DB, stable across reboots, and the fleet MCP runs
+// the same derivation so agent ↔ daemon mapping is consistent without
+// coordination. Skip has one Mac; collision avoidance is future work.
 function deriveMachineId() {
-  const ifs = os.networkInterfaces()
-  let mac = null
-  for (const list of Object.values(ifs)) {
-    if (!list) continue
-    for (const iface of list) {
-      if (iface.internal) continue
-      if (iface.mac && iface.mac !== '00:00:00:00:00:00') { mac = iface.mac; break }
-    }
-    if (mac) break
-  }
-  const seed = mac || os.hostname()
-  const hash = crypto.createHash('sha1').update(seed).digest('hex').slice(0, 8)
-  return `${os.userInfo().username}-${hash}`
+  // os.hostname() may return an FQDN like "skip-air.local" or
+  // "skip-air.tail-scale.ts.net" — strip everything after the first dot
+  // so the id is the same on a Tailscale-renamed box.
+  return os.hostname().split('.')[0]
 }
 
 const config = loadConfig()
@@ -495,6 +487,183 @@ function flushSourceChanges(projectName) {
   })
 }
 
+// ---------- RPC handlers (server → daemon) ----------
+//
+// Each handler receives the params object from the inbound `rpc`
+// message and returns a value (resolved into `result`) or throws (turned
+// into `error`). The dispatcher in handleServerMessage takes care of
+// sending `rpc-reply`.
+//
+// All tmux interaction goes through `execFile('tmux', [args])` so we
+// don't have to worry about shell metacharacter escaping. The session
+// names we accept are validated against [a-zA-Z0-9_.\-] just in case.
+const SAFE_SESSION_RE = /^[a-zA-Z0-9_.\-]+$/
+
+function checkSession(session) {
+  if (!session || !SAFE_SESSION_RE.test(session)) {
+    throw new Error(`unsafe tmux session name: ${session}`)
+  }
+}
+
+async function tmux(...args) {
+  return execFileP('tmux', args, { timeout: 5000, encoding: 'utf8' })
+}
+
+async function rpcSendKey({ tmux_session, key }) {
+  checkSession(tmux_session)
+  if (!key) throw new Error('missing key')
+  // Translate `ctrl+x` → `C-x` for tmux's send-keys grammar; everything
+  // else passes through as-is (Enter, Escape, etc.).
+  const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
+  await tmux('send-keys', '-t', tmux_session, tmuxKey)
+  return { ok: true }
+}
+
+async function rpcSendText({ tmux_session, text, enter }) {
+  checkSession(tmux_session)
+  if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+  if (enter !== false) await tmux('send-keys', '-t', tmux_session, 'Enter')
+  return { ok: true }
+}
+
+async function rpcCapturePane({ tmux_session, lines }) {
+  checkSession(tmux_session)
+  const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
+  const { stdout } = await execFileP('tmux',
+    ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
+    { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+  return { ok: true, pane: stdout }
+}
+
+async function rpcInterrupt({ tmux_session, agent_id }) {
+  checkSession(tmux_session)
+  // Synchronous first-shot Escape Escape so the caller can return fast.
+  try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
+  // Background poll loop — the daemon owns this so the server can move on.
+  ;(async () => {
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 2500))
+      try {
+        const cap = await execFileP('tmux',
+          ['capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
+          { timeout: 3000, encoding: 'utf8' })
+        const pane = cap.stdout
+        const linesArr = pane.split('\n').filter(l => l.trim())
+        const last = linesArr.length ? linesArr[linesArr.length - 1] : ''
+        if (!pane.includes('esc to interrupt') &&
+            (/^[\s]*[❯>][\s📬]*$/.test(last) || pane.includes('Enter to continue'))) break
+      } catch {}
+      try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
+    }
+  })()
+  return { ok: true }
+}
+
+async function rpcListSessions() {
+  try {
+    const { stdout } = await execFileP('tmux',
+      ['list-sessions', '-F', '#{session_name}'],
+      { timeout: 3000, encoding: 'utf8' })
+    return { ok: true, sessions: stdout.trim().split('\n').filter(Boolean) }
+  } catch (e) {
+    // tmux exits non-zero with no sessions; treat as empty list, not error.
+    if (/no server running|no sessions/i.test(e.stderr || '')) return { ok: true, sessions: [] }
+    throw e
+  }
+}
+
+async function rpcKick({ agent_id }) {
+  if (!agent_id) throw new Error('missing agent_id')
+  const dir = path.join(os.homedir(), '.fleet', 'signals')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, agent_id.replace(/[^a-zA-Z0-9_-]/g, '_'))
+  fs.writeFileSync(file, Date.now().toString())
+  return { ok: true, signal: file }
+}
+
+async function rpcRestartMcp({ tmux_session }) {
+  checkSession(tmux_session)
+  // Verify session exists first so we return a clean error.
+  try { await execFileP('tmux', ['has-session', '-t', tmux_session], { timeout: 3000 }) }
+  catch { throw new Error(`tmux session not found: ${tmux_session}`) }
+  await tmux('send-keys', '-t', tmux_session, '/mcp', 'Enter')
+  return { ok: true, tmux_session }
+}
+
+// Live terminal-card watching. The server tracks per-browser interest
+// and tells the daemon to start polling when the first watcher attaches
+// and stop when the last one drops. State is server-held so we just
+// keep a local Map of poll timers keyed by tmux_session.
+const terminalWatchTimers = new Map() // tmux_session -> { timer, lastHash }
+const TERMINAL_POLL_MS = 500
+const ANSI_RE = /\u001b\[[0-9;?]*[a-zA-Z]/g
+
+async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
+  checkSession(tmux_session)
+  if (terminalWatchTimers.has(tmux_session)) return { ok: true, already: true }
+  const interval = Math.max(200, Math.min(parseInt(poll_ms, 10) || TERMINAL_POLL_MS, 5000))
+  const state = { lastHash: null, lastFrame: '' }
+  const tick = async () => {
+    try {
+      const { stdout } = await execFileP('tmux',
+        ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
+        { timeout: 2000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+      // Strip ANSI for hashing so cursor-position deltas don't churn.
+      const stripped = stdout.replace(ANSI_RE, '')
+      const hash = stripped.length + ':' + stripped.slice(-200) // cheap fingerprint
+      if (hash === state.lastHash) return
+      state.lastHash = hash
+      sendMsg({ type: 'terminal-frame', agent_id, tmux_session, pane: stdout, ts: new Date().toISOString() })
+    } catch (e) {
+      // Session vanished — push a one-shot dead-pane signal and stop polling.
+      if (/session not found|can't find session/i.test(e.message)) {
+        sendMsg({ type: 'terminal-frame', agent_id, tmux_session, pane: null, dead: true })
+        rpcStopTerminalWatch({ tmux_session })
+      }
+    }
+  }
+  state.timer = setInterval(tick, interval)
+  terminalWatchTimers.set(tmux_session, state)
+  // Kick off first frame immediately.
+  tick()
+  return { ok: true, poll_ms: interval }
+}
+
+function rpcStopTerminalWatch({ tmux_session }) {
+  const state = terminalWatchTimers.get(tmux_session)
+  if (!state) return { ok: true, already: true }
+  try { clearInterval(state.timer) } catch {}
+  terminalWatchTimers.delete(tmux_session)
+  return { ok: true }
+}
+
+const RPC_HANDLERS = {
+  'send-key': rpcSendKey,
+  'send-text': rpcSendText,
+  'capture-pane': rpcCapturePane,
+  'interrupt': rpcInterrupt,
+  'list-sessions': rpcListSessions,
+  'kick': rpcKick,
+  'restart-mcp': rpcRestartMcp,
+  'start-terminal-watch': rpcStartTerminalWatch,
+  'stop-terminal-watch': rpcStopTerminalWatch,
+}
+
+async function handleRpc(msg) {
+  const { id, op } = msg
+  const handler = RPC_HANDLERS[op]
+  if (!handler) {
+    sendMsg({ type: 'rpc-reply', id, error: `unknown op: ${op}` })
+    return
+  }
+  try {
+    const result = await handler(msg)
+    sendMsg({ type: 'rpc-reply', id, result })
+  } catch (e) {
+    sendMsg({ type: 'rpc-reply', id, error: e.message || String(e) })
+  }
+}
+
 // ---------- WS connection ----------
 
 function sendMsg(obj) {
@@ -509,6 +678,8 @@ function teardownWatchers() {
   agentPaths.clear()
   for (const [, s] of sourceWatchers) { try { s.watcher.close() } catch {} }
   sourceWatchers.clear()
+  for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
+  terminalWatchTimers.clear()
 }
 
 let evicted = false
@@ -586,8 +757,11 @@ function handleServerMessage(msg) {
     try { ws.close() } catch {}
     return
   }
-  // Unknown message — ignore for forward compatibility (Phase 2 will add
-  // RPC types: rpc, start-terminal-watch, etc.).
+  if (msg.type === 'rpc') {
+    handleRpc(msg)
+    return
+  }
+  // Unknown message — ignore for forward compatibility.
 }
 
 // ---------- lifecycle ----------

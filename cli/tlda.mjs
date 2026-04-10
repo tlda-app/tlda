@@ -50,7 +50,7 @@ const COMMAND_HELP = {
   create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda watch [start|stop|status|log|run] | [/path/to/main.tex] [name] [--debounce ms]\n\n  With start/stop/status/log: control the per-machine fleet-daemon\n  (bin/fleet-daemon.mjs). The daemon watches Claude Code session JSONLs\n  and project source dirs locally, pushing events to the tlda server\n  over WebSocket. See scratch/fleet-daemon-spec.md.\n\n  With a path: legacy single-project watcher (auto-push on file change).',
-  'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Watch all projects that have a sourceDir. Polls for new projects\n  every 30s, so `tlda create` picks them up automatically.\n\n  start   Daemonize and watch in background (default)\n  stop    Stop the background watchers\n  status  Check if watchers are running\n  log     Show recent watcher log\n  run     Run in foreground (for debugging)',
+  'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Alias for `tlda watch start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   listen:  'tlda listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
   monitor: 'tlda monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
   agent:   'tlda agent [start|stop|status|log] --target <name>\n\n  Manage the triage agent (Todd). One agent per target.\n\n  start    Start Todd for the given target\n  stop     Stop Todd (no --target = stop all)\n  status   Show running agents (no --target = show all)\n  log      Show recent agent log for a target\n\n  --target <name>  Required for start/log. Optional for stop/status.',
@@ -693,165 +693,13 @@ async function cmdWatch() {
   await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
-const WATCH_ALL_LOGFILE = join(homedir(), '.config', 'tlda', 'watch-all.log')
-const WATCH_ALL_PIDFILE = join(homedir(), '.config', 'tlda', 'watch-all.pid')
-
+// `tlda watch-all` is now an alias for `tlda watch start/stop/status` —
+// the per-machine fleet-daemon watches every project's source dir AND
+// every Claude Code session JSONL. The legacy multi-watcher process
+// (one Node per project, HTTP push, no JSONL handling) is gone.
 async function cmdWatchAll() {
   const sub = getPositional(0) || 'start'
-
-  if (sub === 'stop') {
-    if (existsSync(WATCH_ALL_PIDFILE)) {
-      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
-      try { process.kill(pid, 'SIGTERM') } catch {}
-      try { const fs = await import('fs'); fs.unlinkSync(WATCH_ALL_PIDFILE) } catch {}
-    }
-    console.log(green('Watchers stopped.'))
-    return
-  }
-
-  if (sub === 'status') {
-    if (existsSync(WATCH_ALL_PIDFILE)) {
-      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
-      try {
-        process.kill(pid, 0) // test if alive
-        console.log(green('Watchers running') + dim(` (pid ${pid})`))
-        return
-      } catch {}
-    }
-    console.log(red('Watchers not running.'))
-    return
-  }
-
-  if (sub === 'log' || sub === 'logs') {
-    if (existsSync(WATCH_ALL_LOGFILE)) {
-      const { execSync } = await import('child_process')
-      execSync(`tail -50 "${WATCH_ALL_LOGFILE}"`, { stdio: 'inherit' })
-    } else {
-      console.log('No watcher log.')
-    }
-    return
-  }
-
-  if (sub === 'run') {
-    // Foreground mode — actually run the watchers (used by daemon spawn)
-    await watchAllRun()
-    return
-  }
-
-  if (sub === 'start') {
-    // Check if already running
-    if (existsSync(WATCH_ALL_PIDFILE)) {
-      const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
-      try {
-        process.kill(pid, 0)
-        console.log('Watchers already running' + dim(` (pid ${pid})`))
-        return
-      } catch {
-        // Stale PID file
-      }
-    }
-
-    // Daemonize: spawn ourselves with 'run' subcommand
-    const { spawn: cpSpawn } = await import('child_process')
-    const { openSync: fsOpenSync } = await import('fs')
-
-    if (!existsSync(dirname(WATCH_ALL_LOGFILE))) mkdirSync(dirname(WATCH_ALL_LOGFILE), { recursive: true })
-    const logFd = fsOpenSync(WATCH_ALL_LOGFILE, 'a')
-
-    const child = cpSpawn('node', [fileURLToPath(import.meta.url), 'watch-all', 'run'], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
-    })
-    child.unref()
-
-    // Wait briefly to confirm it started
-    await new Promise(r => setTimeout(r, 1000))
-    if (existsSync(WATCH_ALL_PIDFILE)) {
-      const pid = readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim()
-      console.log(green(`Watchers started`) + dim(` (pid ${pid})`))
-      console.log(dim(`  Log: ${WATCH_ALL_LOGFILE}`))
-    } else {
-      console.error(red('Watchers failed to start'))
-      console.error(dim(`Check log: ${WATCH_ALL_LOGFILE}`))
-      process.exit(1)
-    }
-    return
-  }
-
-  console.error(`Unknown subcommand: tlda watch-all ${sub}`)
-  console.error('Usage: tlda watch-all [start|stop|status|log|run]')
-  process.exit(1)
-}
-
-async function watchAllRun() {
-  // Write PID file
-  writeFileSync(WATCH_ALL_PIDFILE, String(process.pid))
-
-  const debounceMs = parseInt(getFlag('debounce') || '200', 10)
-  const pollInterval = 30_000 // check for new projects every 30s
-  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
-  installProcessHandlers()
-
-  const watchers = new Map()
-
-  async function syncWatchers() {
-    let projects
-    try {
-      const data = await api('GET', '/api/projects')
-      projects = data.projects
-    } catch (e) {
-      console.error(`[watch-all] Failed to fetch projects: ${e.message}`)
-      return
-    }
-
-    for (const p of projects) {
-      if (watchers.has(p.name)) continue
-      if (p.archived) continue
-      if (!p.sourceDir || !p.mainFile) continue
-      if (!existsSync(p.sourceDir)) {
-        console.log(`[watch-all] Skipping ${p.name}: ${p.sourceDir} not found`)
-        continue
-      }
-
-      console.log(`[watch-all] Watching ${p.sourceDir} → ${p.name}`)
-      const watcher = await startWatcher({
-        dir: p.sourceDir, name: p.name, debounceMs, getServer, getToken,
-        onFatalError: (err) => {
-          console.error(`[watch-all] Dropping ${p.name}: ${err.message}`)
-          watchers.delete(p.name)
-        }
-      })
-      watchers.set(p.name, watcher)
-    }
-  }
-
-  console.log(`[watch-all] Started (pid ${process.pid})`)
-  console.log(`[watch-all] Server: ${getServer()}`)
-  console.log(`[watch-all] Polling for new projects every ${pollInterval / 1000}s`)
-
-  await syncWatchers()
-
-  if (watchers.size === 0) {
-    console.log('[watch-all] No watchable projects yet — will poll for new ones.')
-  }
-
-  const timer = setInterval(syncWatchers, pollInterval)
-
-  // Clean shutdown — override watcher SIGTERM handlers that ignore the signal
-  const shutdown = () => {
-    clearInterval(timer)
-    try { unlinkSync(WATCH_ALL_PIDFILE) } catch {}
-    console.log('[watch-all] Stopped.')
-    process.exit(0)
-  }
-  process.removeAllListeners('SIGINT')
-  process.removeAllListeners('SIGTERM')
-  process.on('SIGINT', shutdown)
-  process.on('SIGTERM', shutdown)
-
-  // Keep alive
-  await new Promise(() => {})
+  return cmdFleetWatch(sub)
 }
 
 async function cmdWatchAgent() {
@@ -1855,35 +1703,29 @@ async function cmdDoctor() {
     }
   }
 
-  // 5. Watch-all
+  // 5. Fleet daemon (formerly "watch-all" — same control surface, different
+  //    implementation: one process per machine watches every project source
+  //    dir AND every Claude Code session JSONL, pushing events to the tlda
+  //    server over WebSocket).
   let watchRunning = false
-  if (existsSync(WATCH_ALL_PIDFILE)) {
-    const pid = parseInt(readFileSync(WATCH_ALL_PIDFILE, 'utf8').trim(), 10)
+  if (existsSync(FLEET_DAEMON_PIDFILE)) {
+    const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
     try { process.kill(pid, 0); watchRunning = true } catch {}
   }
   if (watchRunning) {
-    ok('watch-all running')
+    ok('fleet daemon running')
   } else {
-    console.log(red('✗') + ' watch-all not running — starting it...')
+    console.log(red('✗') + ' fleet daemon not running — starting it...')
     try {
-      const ctdScript = fileURLToPath(import.meta.url)
-      const { spawn: cpSpawn } = await import('child_process')
-      const { openSync: fsOpenSync } = await import('fs')
-      if (!existsSync(dirname(WATCH_ALL_LOGFILE))) mkdirSync(dirname(WATCH_ALL_LOGFILE), { recursive: true })
-      const logFd = fsOpenSync(WATCH_ALL_LOGFILE, 'a')
-      const child = cpSpawn(process.execPath, [ctdScript, 'watch-all', 'run'], {
-        detached: true, stdio: ['ignore', logFd, logFd]
-      })
-      child.unref()
-      await new Promise(r => setTimeout(r, 1000))
-      if (existsSync(WATCH_ALL_PIDFILE)) {
-        ok('watch-all started')
+      await cmdFleetWatch('start')
+      if (existsSync(FLEET_DAEMON_PIDFILE)) {
+        ok('fleet daemon started')
       } else {
-        fail('watch-all failed to start', `Check log: tlda watch-all log`)
+        fail('fleet daemon failed to start', `Check log: tlda watch log`)
         issues++
       }
     } catch (e) {
-      fail(`watch-all failed to start: ${e.message}`, 'tlda watch-all log')
+      fail(`fleet daemon failed to start: ${e.message}`, 'tlda watch log')
       issues++
     }
   }
@@ -2656,7 +2498,7 @@ Commands:
   book <name>    Create a book grouping existing docs (--members doc1,doc2,...)
   push [name]    Push source files, trigger rebuild
   watch [path]   Watch for changes, auto-push to server
-  watch-all      Watch all projects (auto-detects new ones)
+  watch-all      Alias for "tlda watch start" — runs the fleet daemon
   listen <doc>   Block until feedback arrives, print JSON, exit
   monitor        Manage hook-based doc monitoring [add|remove|list|clear]
   agent          Manage the triage agent (Todd) [start|stop|status|log]

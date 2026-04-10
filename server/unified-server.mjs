@@ -79,9 +79,65 @@ const preambleStore = {}                    // target → { macro: definition }
 const wsFleetClients = new Set()            // active /ws/fleet connections
 
 // Daemon connections — keyed by machine_id. Each value is the live WS for
-// that machine's fleet-daemon. Used for RPC routing in Phase 2 and for
-// pushing agents-updated / projects-updated messages.
+// that machine's fleet-daemon. Used for RPC routing and for pushing
+// agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
+
+// Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
+// Each entry: { resolve, reject, timer, machine_id }.
+const pendingRpcs = new Map()
+let _rpcSeq = 0
+const RPC_TIMEOUT_MS = 10_000
+
+/**
+ * Send an RPC to the daemon owning a specific machine and wait for its
+ * reply. Returns a promise that resolves with `result` or rejects with an
+ * Error. If no daemon is connected for `machineId`, rejects synchronously
+ * with a `NoDaemonError` so callers can return 503 immediately.
+ *
+ * Per spec: 10s timeout, no retry. If the WS drops mid-RPC the pending
+ * entry is rejected with a `daemon disconnected` error.
+ */
+class NoDaemonError extends Error {
+  constructor(machineId) {
+    super(`No fleet-daemon connected for machine "${machineId}"`)
+    this.code = 'NO_DAEMON'
+    this.machineId = machineId
+  }
+}
+
+function sendRpc(machineId, op, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!machineId) return reject(new NoDaemonError('(unknown)'))
+    const dws = daemonConnections.get(machineId)
+    if (!dws || dws.readyState !== 1) return reject(new NoDaemonError(machineId))
+    const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
+    const timer = setTimeout(() => {
+      pendingRpcs.delete(id)
+      reject(new Error(`RPC timeout after ${RPC_TIMEOUT_MS}ms (op=${op}, machine=${machineId})`))
+    }, RPC_TIMEOUT_MS)
+    pendingRpcs.set(id, { resolve, reject, timer, machine_id: machineId })
+    try {
+      dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))
+    } catch (e) {
+      clearTimeout(timer)
+      pendingRpcs.delete(id)
+      reject(e)
+    }
+  })
+}
+
+// When a daemon WS drops, fail any in-flight RPCs that targeted it. The
+// HTTP caller decides whether to retry.
+function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
+  for (const [id, entry] of [...pendingRpcs]) {
+    if (entry.machine_id === machineId) {
+      clearTimeout(entry.timer)
+      pendingRpcs.delete(id)
+      entry.reject(new Error(reason))
+    }
+  }
+}
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
@@ -112,28 +168,30 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
 })
 
-// ---------- RPC routing (Phase 0 stub) ----------
+// ---------- RPC routing ----------
 //
-// `resolveRpc(op, agent)` decides whether a given fleet operation should run
-// inline in this server process, or be forwarded to the fleet-daemon that
-// owns the agent's machine. In Phase 0 it ALWAYS returns `inline` — no
-// behavior change yet. Phase 2 will flip the routing once daemons can
-// answer RPCs.
+// `resolveRpc(op, agent)` decides where a fleet operation runs. The
+// design is "all local ops go through the daemon for the owning
+// machine". If no daemon is connected for that machine, the caller
+// must return 503 — there is no inline fallback (per Phase 3 of the
+// spec; surfacing the gap is the whole point).
 //
-// The point of installing the helper now is to give every existing inline
-// op a single place to grow a daemon path later, without an invasive
-// search-and-replace mid-Phase.
+// `op`    — operation name (e.g. 'send-key', 'capture-pane', 'spawn').
+// `agent` — agent record from the fleet store, or null for machine-
+//           targeted ops like spawn (not yet supported).
 //
-// `op`    — the operation name (e.g. 'send-key', 'capture-pane', 'spawn').
-// `agent` — agent record from the fleet store, or null/undefined for
-//           ops that aren't agent-scoped (e.g. machine-targeted spawn).
-//
-// Returns either:
-//   { via: 'inline' }
-//   { via: 'daemon', machine_id, daemon: <ws> }   // not yet — Phase 2
+// Returns:
+//   { via: 'daemon', machine_id, daemon: <ws> }   on success
+//   { via: 'none', error: '...', code: 503 }      if no daemon
 function resolveRpc(op, agent) {
-  // Phase 0: nothing routes through a daemon. Behavior unchanged.
-  return { via: 'inline' }
+  if (!agent || !agent.machine_id) {
+    return { via: 'none', code: 503, error: `agent has no machine_id (op=${op})` }
+  }
+  const dws = daemonConnections.get(agent.machine_id)
+  if (!dws || dws.readyState !== 1) {
+    return { via: 'none', code: 503, error: `no fleet-daemon connected for machine "${agent.machine_id}" (op=${op})` }
+  }
+  return { via: 'daemon', machine_id: agent.machine_id, daemon: dws }
 }
 
 // Auth
@@ -434,7 +492,10 @@ import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
-const fleetRouter = createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore })
+const fleetRouter = createFleetRouter({
+  fleetStore, broadcastEvent, broadcastState, preambleStore,
+  sendRpc, resolveRpc, daemonConnections,
+})
 app.use(fleetRouter)
 
 // ---------- KaTeX static assets ----------
@@ -473,6 +534,22 @@ const server = createServer(app)
 const syncWss = new WebSocketServer({ noServer: true })
 const fleetWss = new WebSocketServer({ noServer: true })
 const daemonWss = new WebSocketServer({ noServer: true })
+const terminalWss = new WebSocketServer({ noServer: true })
+
+// Per-agent set of browser WebSockets watching that agent's terminal.
+// When the first watcher attaches we send `start-terminal-watch` to the
+// daemon; when the last one drops we send `stop-terminal-watch`. State
+// is server-held so the daemon can resume cleanly after a reconnect.
+const terminalWatchers = new Map() // agentId -> Set<ws>
+
+function fanOutTerminalFrame(agentId, frame) {
+  const set = terminalWatchers.get(agentId)
+  if (!set) return
+  const payload = JSON.stringify({ type: 'output', data: frame.pane || '' })
+  for (const w of set) {
+    if (w.readyState === 1) { try { w.send(payload) } catch {} }
+  }
+}
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
@@ -508,6 +585,88 @@ server.on('upgrade', (req, socket, head) => {
     return
   }
 
+  // /ws/terminal — browser-side terminal card connection. Routes through
+  // the appropriate fleet-daemon via start/stop-terminal-watch RPCs.
+  if (url.pathname === '/ws/terminal') {
+    const agentId = url.searchParams.get('agent')
+    if (!agentId || !fleetStore) { socket.destroy(); return }
+    const agent = fleetStore.findAgent(agentId)
+    if (!agent || !agent.machine_id) {
+      // Decline cleanly with a JSON message before close so the UI shows
+      // a useful error instead of "WebSocket error".
+      terminalWss.handleUpgrade(req, socket, head, (ws) => {
+        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no machine_id; daemon not registered' })) } catch {}
+        try { ws.close() } catch {}
+      })
+      return
+    }
+    if (!agent.tmux_session) {
+      terminalWss.handleUpgrade(req, socket, head, (ws) => {
+        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no tmux session' })) } catch {}
+        try { ws.close() } catch {}
+      })
+      return
+    }
+    terminalWss.handleUpgrade(req, socket, head, async (ws) => {
+      ws._agentId = agent.id
+      ws._tmuxSession = agent.tmux_session
+      ws._machineId = agent.machine_id
+
+      // Add to watcher set; start the daemon poll if first.
+      let set = terminalWatchers.get(agent.id)
+      if (!set) { set = new Set(); terminalWatchers.set(agent.id, set) }
+      set.add(ws)
+      const isFirst = set.size === 1
+
+      if (isFirst) {
+        try {
+          await sendRpc(agent.machine_id, 'start-terminal-watch', {
+            agent_id: agent.id, tmux_session: agent.tmux_session, poll_ms: 500,
+          })
+        } catch (e) {
+          try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
+        }
+      } else {
+        // Existing watcher already triggered the daemon — tell the new
+        // browser to wait for the next polled frame. (No replay.)
+      }
+
+      ws.on('message', async (raw) => {
+        let msg
+        try { msg = JSON.parse(raw.toString()) } catch { return }
+        if (msg.type === 'input' && typeof msg.data === 'string') {
+          // Forward raw input as send-text RPC. send-text supports
+          // arbitrary bytes via tmux send-keys -- "<text>".
+          try {
+            await sendRpc(agent.machine_id, 'send-text', {
+              tmux_session: agent.tmux_session, text: msg.data, enter: false,
+            })
+          } catch (e) {
+            try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
+          }
+        }
+        // resize messages: ignored — tmux send-keys doesn't change pane size.
+      })
+
+      const cleanup = async () => {
+        const set = terminalWatchers.get(agent.id)
+        if (!set) return
+        set.delete(ws)
+        if (set.size === 0) {
+          terminalWatchers.delete(agent.id)
+          try {
+            await sendRpc(agent.machine_id, 'stop-terminal-watch', {
+              tmux_session: agent.tmux_session,
+            })
+          } catch {}
+        }
+      }
+      ws.on('close', cleanup)
+      ws.on('error', cleanup)
+    })
+    return
+  }
+
   // /ws/fleet-daemon — fleet daemon connection. Owned by bin/fleet-daemon.mjs.
   // The daemon pushes activity-event / terminal-chat / source-change
   // messages and (Phase 2) handles RPC requests routed by machine_id.
@@ -523,12 +682,14 @@ server.on('upgrade', (req, socket, head) => {
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
           console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
         }
       })
       ws.on('error', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
         }
       })
     })
@@ -830,6 +991,20 @@ function handleDaemonWsMessage(ws, msg) {
     daemonConnections.set(machine_id, ws)
     console.log(`[fleet-daemon] connected: machine_id=${machine_id} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
+    // Resume any active terminal watches for agents on this machine.
+    // The browser-side watcher set is server-held; the daemon comes back
+    // empty after a restart so we re-fire start-terminal-watch.
+    if (fleetStore) {
+      const onMachine = fleetStore.getAgentsByMachine(machine_id)
+      for (const a of onMachine) {
+        if (a.tmux_session && terminalWatchers.has(a.id)) {
+          sendRpc(machine_id, 'start-terminal-watch', {
+            agent_id: a.id, tmux_session: a.tmux_session, poll_ms: 500,
+          }).catch(() => {})
+        }
+      }
+    }
+
     // Send daemon-welcome with agents + projects this machine should
     // watch. Agents are filtered by machine_id; legacy NULL agents will
     // be invisible to daemons until the MCP starts sending machine_id.
@@ -890,6 +1065,21 @@ function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] terminal-chat write: ${e.message}`)
     }
+    return
+  }
+
+  if (type === 'terminal-frame') {
+    if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
+    return
+  }
+
+  if (type === 'rpc-reply') {
+    const entry = pendingRpcs.get(msg.id)
+    if (!entry) return // unknown / already-timed-out RPC
+    clearTimeout(entry.timer)
+    pendingRpcs.delete(msg.id)
+    if (msg.error) entry.reject(new Error(msg.error))
+    else entry.resolve(msg.result)
     return
   }
 
