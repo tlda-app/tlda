@@ -386,6 +386,13 @@ function _setupRecognition() {
           fadeHud(1500)
           _state = 'edit'
           _left = _interim = _right = ''
+          // POISONING FIX: same as voice-send — force a fresh session so
+          // the previous utterance's cumulative results can't leak into
+          // the next chat's textarea.
+          if (_recording && _recognition) {
+            _editStopped = true
+            try { _recognition.stop() } catch {}
+          }
           setTimeout(() => {
             if (_recording) {
               const w = targetLabel()
@@ -414,6 +421,16 @@ function _setupRecognition() {
           _activeSendFn(_activeSendTargets, cleanText)
           showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
           fadeHud(2500)
+          // POISONING FIX: force a fresh SpeechRecognition session after send.
+          // Chrome's SpeechRecognition.continuous keeps a single session with
+          // cumulative e.results; without resetting, stale finals from the
+          // previous utterance can leak into the next message's _left via
+          // late onresult events or resultIndex quirks. enterEdit() + stop()
+          // tears down the session; onend will respawn it cleanly.
+          if (_recording && _recognition) {
+            _editStopped = true
+            try { _recognition.stop() } catch {}
+          }
           setTimeout(() => {
             if (_recording) {
               const w = targetLabel()
