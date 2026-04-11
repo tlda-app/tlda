@@ -337,6 +337,12 @@ export function FleetHUD({
         }
         hudOverrideRef.current = next
         setHudOverride(next)
+        // Recompute fleetBounds immediately so the HUD's internal clip panel
+        // auto-fit zoom tracks the fleet content while dragging. The normal
+        // fleet-bounds effect defers to pointerup via draggingRef, but during
+        // layout mode we want bounds to update every frame.
+        draggingRef.current = false
+        setFleetBounds(getFleetBounds(mainEditor))
       }
 
       if (deselected) {
