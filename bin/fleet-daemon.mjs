@@ -592,7 +592,11 @@ async function rpcRestartMcp({ tmux_session }) {
   // the fleet repo and is the canonical implementation.
   const script = '/Users/skip/work/fleet/bin/fleet-mcp-restart'
   try {
-    const { stdout, stderr } = await execFileP('bash', [script, tmux_session], { timeout: 15000 })
+    // 30s: the script itself may spend up to 10s interrupting a mid-
+    // operation agent (BUSY_TIMEOUT in fleet-mcp-restart) + up to 20s
+    // across the four state-driven navigation steps. 15s was too tight
+    // once the mid-Grooving handling landed.
+    const { stdout, stderr } = await execFileP('bash', [script, tmux_session], { timeout: 30000 })
     return { ok: true, tmux_session, stdout: stdout.trim(), stderr: stderr.trim() }
   } catch (e) {
     throw new Error(`fleet-mcp-restart failed: ${e.stderr || e.message}`)
