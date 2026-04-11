@@ -144,6 +144,15 @@ const buildProgressHandle = bus.register<BuildProgressSignal>({
 })
 export const onBuildProgressSignal = buildProgressHandle.on
 
+// Viewer pin: set when doc_view loads an old version; cleared when daemon pushes fresh files.
+export type ViewPinSignal = { ref: string | null; timestamp: number }
+const viewPinHandle = bus.register<ViewPinSignal>({
+  key: 'signal:view-pin',
+  initBehavior: 'fire-if-recent',
+  recentMs: 3_600_000,  // persist pin indicator across reconnects for up to 1hr
+})
+export const onViewPinSignal = viewPinHandle.on
+
 export type AgentAttentionSignal = { x: number; y: number; timestamp: number; agent?: string }
 const agentAttentionHandle = bus.register<AgentAttentionSignal>({ key: 'signal:agent-attention' })
 export const onAgentAttention = agentAttentionHandle.on

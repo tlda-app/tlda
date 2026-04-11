@@ -40,6 +40,26 @@ body {
   pointer-events: none;
 }
 
+.view-pin-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, monospace;
+  color: rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  pointer-events: all;
+  user-select: none;
+  transition: color 0.3s;
+  white-space: nowrap;
+}
+.view-pin-badge:hover {
+  color: rgba(180, 80, 0, 0.8);
+}
+html[data-theme="dark"] .view-pin-badge {
+  color: rgba(255, 255, 255, 0.15);
+}
+html[data-theme="dark"] .view-pin-badge:hover {
+  color: rgba(255, 160, 80, 0.9);
+}
+
 /* High-res display compensation: macOS "More Space" gives huge CSS viewports.
    Scale up UI chrome so it's not physically tiny. Uses --hires-scale set by main.tsx.
    Only affects overlays — tldraw canvas/shapes are unaffected. */

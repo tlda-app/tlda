@@ -255,6 +255,9 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: 0, building: false, unchanged: true }
   }
 
+  // New files written — if the viewer was pinned to an old version, unpin it now.
+  broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: null, timestamp: Date.now() })
+
   // Non-SVG formats: kick off build async, return immediately.
   if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]

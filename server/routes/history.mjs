@@ -18,6 +18,7 @@ import { runBuild } from '../lib/build-runner.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir } from '../lib/shadow-repo.mjs'
+import { broadcastSignal } from '../lib/sync-rooms.mjs'
 
 // Lazy-load svg-text from mcp-server (it's in a sibling directory)
 let _loadPageText = null
@@ -443,6 +444,9 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
 
     // Trigger build
     runBuild(name).catch(() => {})
+
+    // Tell the viewer it's showing a pinned old version (cleared when daemon pushes fresh files)
+    broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: ref.slice(0, 7), timestamp: Date.now() })
 
     res.json({ ok: true, ref, message: `Source restored to ${ref.slice(0, 7)}, build triggered` })
   } catch (e) {

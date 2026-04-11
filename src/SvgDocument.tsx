@@ -48,7 +48,7 @@ import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
@@ -160,6 +160,43 @@ interface SvgDocumentEditorProps {
   initialCamera?: { x: number; y: number; z: number; page?: string }
 }
 
+
+/**
+ * ViewPinBadge — shown when the viewer is displaying a pinned old version via doc_view.
+ * Disappears automatically when the daemon pushes fresh source files.
+ * Click to unpin (trigger a rebuild from current source).
+ */
+function ViewPinBadge({ docName }: { docName: string }) {
+  const [pinnedRef, setPinnedRef] = useState<string | null>(null)
+
+  useEffect(() => {
+    return onViewPinSignal((sig) => {
+      setPinnedRef(sig.ref ?? null)
+    })
+  }, [])
+
+  if (!pinnedRef) return null
+
+  return (
+    <span
+      className="view-pin-badge"
+      title="Viewing pinned version — click to return to HEAD"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={async () => {
+        try {
+          await fetch(`/api/projects/${docName}/build`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          })
+        } catch {}
+        setPinnedRef(null)
+      }}
+    >
+      📌 {pinnedRef} ✕
+    </span>
+  )
+}
 
 /** Slide navigation wrapper — uses SlidesNavigator for spatial canvas navigation */
 function SlideNavWrapper({ document }: { document: SvgDocument }) {
@@ -863,6 +900,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       )}
       <div className="build-pills-row">
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
+        <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && (

@@ -449,6 +449,11 @@ function syncSourceWatchers(projectList) {
       })
       sourceWatchers.set(p.name, state)
       console.log(`[daemon] watching source ${p.name}: ${p.sourceDir}`)
+
+      // Push all current source files immediately so any changes that occurred
+      // while the daemon was disconnected are synced to the server. This is a
+      // no-op if files haven't changed (server deduplicates via writeSourceFile).
+      pushAllSourceFiles(p.name, p.sourceDir)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
     }
@@ -460,6 +465,35 @@ function syncSourceWatchers(projectList) {
       sourceWatchers.delete(name)
     }
   }
+}
+
+/**
+ * Push all source files in a directory to the server (recursive walk).
+ * Called when a new watcher is set up so the server gets the current state,
+ * catching any edits that occurred while the daemon was disconnected.
+ */
+function pushAllSourceFiles(projectName, sourceDir) {
+  const files = []
+  function walk(dir, prefix) {
+    let entries
+    try { entries = fs.readdirSync(dir) } catch { return }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry}` : entry
+      const full = path.join(dir, entry)
+      let st
+      try { st = fs.statSync(full) } catch { continue }
+      if (st.isDirectory()) {
+        walk(full, rel)
+      } else if (st.isFile() && isSourceFile(entry)) {
+        try { files.push({ path: rel, ...readFileForUpload(full) }) }
+        catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+      }
+    }
+  }
+  walk(sourceDir, '')
+  if (files.length === 0) return
+  console.log(`[daemon] reconnect push: ${files.length} source files for ${projectName}`)
+  sendMsg({ type: 'source-change', project: projectName, files })
 }
 
 function flushSourceChanges(projectName) {
