@@ -44,6 +44,11 @@ interface CanvasClipPanelProps {
   emphasizeShapeIds?: string[]
   /** Make the editor read-only (no selection, no interaction with shapes) */
   readOnly?: boolean
+  /** When true, skip the bounds-change camera animation and snap instantly.
+   *  Used during live editing (HUD layout mode) where bounds update per-frame
+   *  and a running 250ms animation lags the target, making content visibly
+   *  grow as the user resizes the HUD smaller. */
+  liveEdit?: boolean
   children?: React.ReactNode
 }
 
@@ -61,6 +66,7 @@ export function CanvasClipPanel({
   onEditorMount,
   emphasizeShapeIds,
   readOnly = false,
+  liveEdit = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -390,7 +396,7 @@ export function CanvasClipPanel({
       : 0
     const targetCam = { x: -bounds.x, y: -(bounds.y - yOffset), z: zoom }
 
-    if (lockCamera && !initialBoundsRef.current) {
+    if (lockCamera && !initialBoundsRef.current && !liveEdit) {
       // Animate camera to new bounds (post-drop rearrangement)
       cancelAnimationFrame(animFrameRef.current)
       const startCam = editor.getCamera()
@@ -423,7 +429,10 @@ export function CanvasClipPanel({
       }
       animFrameRef.current = requestAnimationFrame(animate)
     } else {
-      // First mount or non-locked: set immediately
+      // First mount, non-locked, or liveEdit: set immediately.
+      // Cancel any in-flight animation from a prior bounds change so the
+      // snap doesn't fight a running rAF loop.
+      cancelAnimationFrame(animFrameRef.current)
       // Find the vertical extent for scroll range (non-locked panels)
       if (!lockCamera) {
         let minY = bounds.y
@@ -469,7 +478,7 @@ export function CanvasClipPanel({
     initialBoundsRef.current = false
 
     return () => cancelAnimationFrame(animFrameRef.current)
-  }, [editor, bounds, panelWidth, lockCamera, readOnly])
+  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit])
 
   // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
   useEffect(() => {

@@ -505,6 +505,7 @@ export function FleetHUD({
           panelWidth={panelWidth}
           maxHeightFraction={1}
           lockCamera={true}
+          liveEdit={layoutMode}
           className="fleet-hud"
         />
       </div>
