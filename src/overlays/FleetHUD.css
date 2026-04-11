@@ -72,6 +72,26 @@
   pointer-events: auto;
 }
 
+/* Layout mode: make the HUD interior hit-test invisible so pointerdowns
+   pass through to the proxy shape on the main canvas behind. We have to
+   nuke every descendant because mirrored fleet shapes (.fleet-chat-shape
+   etc.) set pointer-events: auto on themselves, which cascades through
+   any less-specific parent rule. Controls (.fleet-hud-controls) carve
+   themselves back out so the ⊞ button stays clickable. */
+.fleet-hud-wrap.fleet-hud-layout-mode,
+.fleet-hud-wrap.fleet-hud-layout-mode * {
+  pointer-events: none !important;
+}
+.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls,
+.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls * {
+  pointer-events: auto !important;
+}
+
+/* Visual cue for active layout mode */
+.fleet-hud-layout.active {
+  color: rgba(80, 120, 200, 0.85);
+}
+
 .fleet-hud-lock {
   border: none;
   background: none;

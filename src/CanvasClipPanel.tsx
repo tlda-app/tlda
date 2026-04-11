@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
+import { HUD_PROXY_SHAPE_ID } from './overlays/FleetHUD'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -82,6 +83,8 @@ export function CanvasClipPanel({
   // because iframes capture pointer events and intercept clicks.
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
+    // Never mirror the transient HUD layout-mode proxy shape into the HUD editor.
+    if (r.typeName === 'shape' && (r as any).id === HUD_PROXY_SHAPE_ID) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
     return true
   }
