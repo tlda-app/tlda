@@ -792,9 +792,23 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to, from, metadata } = msg
+    const { message: text, to, from, metadata, inline_attachments, attachments, cc } = msg
     if (!to || !text) { error('missing to or message'); return }
-    const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: JSON.stringify(metadata || null) })
+    // Fleet MCP sends inline_attachments / attachments / cc at the top level
+    // of the msg. Fold them into the metadata JSON so the receiver pipeline
+    // (fleet-data.mjs → chat-render.mjs) can find them. The HTTP POST
+    // /api/chat route in server/routes/fleet.mjs does this correctly;
+    // this WS path was missing it after the fleet→tlda server merge.
+    const combinedMetadata = {
+      ...(metadata || {}),
+      ...(cc ? { cc } : {}),
+      ...(attachments ? { attachments } : {}),
+      ...(inline_attachments ? { inline_attachments } : {}),
+    }
+    const metadataJson = Object.keys(combinedMetadata).length
+      ? JSON.stringify(combinedMetadata)
+      : JSON.stringify(null)
+    const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: metadataJson })
     if (!event) { error('store error'); return }
     // Add to unread
     fleetStore.addUnread?.(event.id, to)
