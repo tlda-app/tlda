@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShapeId } from 'tldraw'
-import { createShapeId } from 'tldraw'
+import { createShapeId, useValue } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
@@ -271,11 +271,26 @@ export function FleetHUD({
   const handleLayoutExit = useCallback(() => {
     if (!layoutStateRef.current) return
     const { prevTool } = layoutStateRef.current
-    // Commit in-memory override (already up-to-date from drag) to localStorage
-    const current = hudOverrideRef.current
-    if (current) saveHudOverride(current)
+    // Compute final HudOverride from the proxy's current canvas rect and
+    // commit to both React state (so the wrap keeps rendering at the new
+    // geometry after exit) and localStorage (so it persists across reloads).
+    const proxy = mainEditor.getShape(HUD_PROXY_SHAPE_ID) as any
+    if (proxy) {
+      const cam = mainEditor.getCamera()
+      const next: HudOverride = {
+        canvasX: proxy.x,
+        screenY: (proxy.y + cam.y) * cam.z,
+        screenW: proxy.props.w * cam.z,
+        screenH: proxy.props.h * cam.z,
+      }
+      saveHudOverride(next)
+      setHudOverride(next)
+    }
     try { mainEditor.deleteShape(HUD_PROXY_SHAPE_ID) } catch { /* already gone */ }
     try { mainEditor.setCurrentTool(prevTool) } catch { /* tool may not exist */ }
+    // Trigger a fleetBounds recompute since the fleet shapes got resized
+    draggingRef.current = false
+    setFleetBounds(getFleetBounds(mainEditor))
     hudRef.current?.classList.remove('fleet-hud-layout-mode')
     layoutStateRef.current = null
     setLayoutMode(false)
@@ -285,6 +300,35 @@ export function FleetHUD({
   // value without depending on React state timing.
   const hudOverrideRef = useRef<HudOverride | null>(hudOverride)
   useEffect(() => { hudOverrideRef.current = hudOverride }, [hudOverride])
+
+  // During layout mode, derive the wrap rect and the clip-panel bounds
+  // directly from the proxy shape via a tldraw `useValue` subscription.
+  // This runs in the same tick as tldraw's own render, so the wrap style
+  // and the HUD's internal tldraw canvas stay in phase (no flicker).
+  // Returns null when not in layout mode.
+  const layoutProxyRect = useValue(
+    'hud-layout-proxy-rect',
+    () => {
+      if (!layoutMode) return null
+      const p = mainEditor.getShape(HUD_PROXY_SHAPE_ID)
+      if (!p) return null
+      const cam = mainEditor.getCamera()
+      const pAny = p as any
+      return {
+        // Screen-space wrap rect:
+        wrapLeft: (p.x + cam.x) * cam.z,
+        wrapTop: (p.y + cam.y) * cam.z,
+        wrapWidth: pAny.props.w * cam.z,
+        wrapHeight: pAny.props.h * cam.z,
+        // Canvas-space bounds for CanvasClipPanel (matches proxy rect):
+        boundsX: p.x,
+        boundsY: p.y,
+        boundsW: pAny.props.w,
+        boundsH: pAny.props.h,
+      }
+    },
+    [layoutMode, mainEditor]
+  )
 
   // Live fan-out during layout mode: watch proxy changes and the selection
   // state so we can rescale fleet shapes + detect exit (proxy deselected).
@@ -327,22 +371,11 @@ export function FleetHUD({
         if (updates.length > 0) {
           mainEditor.updateShapes(updates)
         }
-        // Update in-memory HudOverride so the HUD wrap follows in real time
-        const cam = mainEditor.getCamera()
-        const next: HudOverride = {
-          canvasX: p.x,
-          screenY: (p.y + cam.y) * cam.z,
-          screenW: p.props.w * cam.z,
-          screenH: p.props.h * cam.z,
-        }
-        hudOverrideRef.current = next
-        setHudOverride(next)
-        // Recompute fleetBounds immediately so the HUD's internal clip panel
-        // auto-fit zoom tracks the fleet content while dragging. The normal
-        // fleet-bounds effect defers to pointerup via draggingRef, but during
-        // layout mode we want bounds to update every frame.
-        draggingRef.current = false
-        setFleetBounds(getFleetBounds(mainEditor))
+        // Note: the wrap's style and the CanvasClipPanel bounds are derived
+        // via `layoutProxyRect` (useValue) in the render path, not via React
+        // state updates here. That keeps the wrap and its content in phase
+        // with tldraw's own render tick — no one-frame flicker from React
+        // state vs tldraw store timing.
       }
 
       if (deselected) {
@@ -392,14 +425,15 @@ export function FleetHUD({
   // Expanded: CanvasClipPanel with fleet region.
   //
   // Geometry rules:
-  //   - If HudOverride is set, render at (canvasX projected to screen x,
-  //     screenY, screenW, screenH). Pan horizontally → HUD slides; pan
-  //     vertically / zoom → HUD y/size unchanged.
-  //   - Otherwise, fall back to the auto layout: right-anchored to fleet
-  //     bounding box, 80% of window height, vertically centered.
+  //   - During layout mode: drive everything from the proxy shape via the
+  //     `layoutProxyRect` useValue subscription. The wrap and its content
+  //     update in the same tldraw render tick (no React state race).
+  //   - Otherwise, if HudOverride is set, render at (canvasX projected to
+  //     screen x, screenY, screenW, screenH).
+  //   - Otherwise, fall back to the auto layout.
   //
   // cameraTick participates in the dependency-less inline calculation so
-  // the component re-renders on pan/zoom.
+  // the component re-renders on pan/zoom at rest.
   void cameraTick
   const cam = mainEditor.getCamera()
   const autoScreenH = window.innerHeight * 0.8
@@ -407,12 +441,36 @@ export function FleetHUD({
   const autoScreenW = fleetBounds.w * autoZoom
   const fbRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
 
-  const panelLeft = hudOverride
-    ? (hudOverride.canvasX + cam.x) * cam.z
-    : fbRight - autoScreenW
-  const panelTop = hudOverride?.screenY ?? (window.innerHeight - autoScreenH) / 2
-  const panelWidth = hudOverride?.screenW ?? autoScreenW
-  const panelHeight = hudOverride?.screenH ?? autoScreenH
+  let panelLeft: number
+  let panelTop: number
+  let panelWidth: number
+  let panelHeight: number
+  let clipBounds: ClipBounds
+
+  if (layoutProxyRect) {
+    panelLeft = layoutProxyRect.wrapLeft
+    panelTop = layoutProxyRect.wrapTop
+    panelWidth = layoutProxyRect.wrapWidth
+    panelHeight = layoutProxyRect.wrapHeight
+    clipBounds = {
+      x: layoutProxyRect.boundsX,
+      y: layoutProxyRect.boundsY,
+      w: layoutProxyRect.boundsW,
+      h: layoutProxyRect.boundsH,
+    }
+  } else if (hudOverride) {
+    panelLeft = (hudOverride.canvasX + cam.x) * cam.z
+    panelTop = hudOverride.screenY
+    panelWidth = hudOverride.screenW
+    panelHeight = hudOverride.screenH
+    clipBounds = fleetBounds
+  } else {
+    panelLeft = fbRight - autoScreenW
+    panelTop = (window.innerHeight - autoScreenH) / 2
+    panelWidth = autoScreenW
+    panelHeight = autoScreenH
+    clipBounds = fleetBounds
+  }
 
   return (
     <>
@@ -440,7 +498,7 @@ export function FleetHUD({
         </div>
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={fleetBounds}
+          bounds={clipBounds}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={licenseKey}
