@@ -16,6 +16,7 @@ import {
 import { useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
+import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from '../fleet/chat-render.mjs'
@@ -45,12 +46,13 @@ function searchRenderMarkdown(escapedHtml: string): string {
   let text = escapedHtml
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   text = text.replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '')
+  const macros = getActiveMacros()
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex: string) => {
-    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false }) }
+    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false, macros }) }
     catch { return `<div class="math-display">${esc(tex)}</div>` }
   })
   text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex: string) => {
-    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false }) }
+    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false, macros }) }
     catch { return `<span class="math-inline">${esc(tex)}</span>` }
   })
   let result = md.render(text)

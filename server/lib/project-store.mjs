@@ -41,10 +41,23 @@ export function readProject(name) {
   }
 }
 
+// Reject sourceDirs that would cause runaway file watching: the tlda repo
+// itself, the fleet repo, or any other repo containing CLAUDE.md + a busy
+// .git directory. The watcher would fire on every git index update, build
+// artifact, or scratch file edit and rebuild every project pointed at it
+// in a tight loop. (Lost a day to this on 2026-04-10.)
+const FORBIDDEN_SOURCE_DIRS = new Set([
+  '/Users/skip/work/tlda',
+  '/Users/skip/work/fleet',
+])
+
 export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir, members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
+  }
+  if (srcDir && FORBIDDEN_SOURCE_DIRS.has(srcDir.replace(/\/$/, ''))) {
+    throw new Error(`sourceDir ${srcDir} is too broad — pick a specific subdirectory, not the whole repo`)
   }
 
   mkdirSync(join(dir, 'source'), { recursive: true })

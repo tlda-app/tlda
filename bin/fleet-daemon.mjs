@@ -586,8 +586,17 @@ async function rpcRestartMcp({ tmux_session }) {
   // Verify session exists first so we return a clean error.
   try { await execFileP('tmux', ['has-session', '-t', tmux_session], { timeout: 3000 }) }
   catch { throw new Error(`tmux session not found: ${tmux_session}`) }
-  await tmux('send-keys', '-t', tmux_session, '/mcp', 'Enter')
-  return { ok: true, tmux_session }
+  // Delegate to fleet-mcp-restart, which navigates the /mcp interactive
+  // menu (server list → fleet → Reconnect). Sending /mcp + Enter alone is
+  // not enough — the menu requires cursor navigation. The script lives in
+  // the fleet repo and is the canonical implementation.
+  const script = '/Users/skip/work/fleet/bin/fleet-mcp-restart'
+  try {
+    const { stdout, stderr } = await execFileP('bash', [script, tmux_session], { timeout: 15000 })
+    return { ok: true, tmux_session, stdout: stdout.trim(), stderr: stderr.trim() }
+  } catch (e) {
+    throw new Error(`fleet-mcp-restart failed: ${e.stderr || e.message}`)
+  }
 }
 
 // Live terminal-card watching. The server tracks per-browser interest

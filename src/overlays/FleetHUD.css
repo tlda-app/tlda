@@ -46,20 +46,14 @@
   background: transparent !important;
   pointer-events: auto;
 }
-
-/* Layout mode: clicks must reach the proxy shape on the main canvas behind
-   the HUD, so EVERY element inside the HUD must be transparent to pointer
-   events — including iframes from mirrored html-page-shapes, which would
-   otherwise intercept clicks despite pointer-events:none on their parents.
-   The .fleet-hud-controls override re-enables clicks for the close/exit
-   buttons (rule below). */
-.fleet-hud-wrap.fleet-hud-layout-mode,
-.fleet-hud-wrap.fleet-hud-layout-mode * {
+/* The HUD mirrors document records (including html-page shapes that contain
+   iframes for markdown/HTML projects) so the user can see the doc behind the
+   fleet shapes. iframes capture pointer events regardless of any pe:none on
+   their parent, so clicks intended for fleet shapes get eaten by the iframe.
+   Disable pointer events on iframes inside the HUD — they're decorative,
+   not interactive. */
+.fleet-hud-wrap iframe {
   pointer-events: none !important;
-}
-.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls,
-.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls * {
-  pointer-events: auto !important;
 }
 /* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
 .fleet-hud-wrap [class*="watermark"] {
@@ -119,9 +113,6 @@
 }
 .fleet-hud-layout:hover {
   color: rgba(100, 100, 100, 0.6);
-}
-.fleet-hud-layout.active {
-  color: rgba(80, 120, 200, 0.7);
 }
 
 /* When HUD is open, hide fleet shapes in the main canvas so the HUD is

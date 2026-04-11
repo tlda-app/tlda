@@ -5,6 +5,7 @@ import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, 
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
+import { toolNameHud } from './overlays/ToolNameHud'
 import type { Editor } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
@@ -270,7 +271,7 @@ function PhoneHighlighterButton() {
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const [zoneEnabled, setZoneEnabled] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
+    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
   )
 
   const activateSlot = useCallback((idx: number) => {
@@ -420,6 +421,7 @@ function PhoneHighlighterButton() {
     const reset = () => {
       dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
       setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+      toolNameHud.hide()
     }
     window.addEventListener('blur', reset)
     document.addEventListener('visibilitychange', reset)
@@ -428,6 +430,17 @@ function PhoneHighlighterButton() {
       document.removeEventListener('visibilitychange', reset)
     }
   }, [])
+
+  // Drive the shared ToolNameHud while dragging colors. The slider in
+  // HighlighterSliderShape uses the same bus, so only one pill ever exists.
+  useEffect(() => {
+    if (dragging && dragMode === 'color' && dragSlot != null) {
+      const slot = HL_SLOTS[dragSlot]
+      if (slot) toolNameHud.show(slot.label, slot.color)
+    } else {
+      toolNameHud.hide()
+    }
+  }, [dragging, dragMode, dragSlot])
 
   // Button color always reflects current selection (not the dragged preview slot)
   const btnSlotDef = HL_SLOTS[colorIdx]
@@ -477,12 +490,8 @@ function PhoneHighlighterButton() {
           })}
         </div>
       )}
-      {/* Color label */}
-      {dragging && dragMode === 'color' && dragSlot != null && (
-        <span className="phone-hl-slot-label" style={{ '--slot-color': HL_SLOTS[dragSlot]?.color || '#666' } as React.CSSProperties}>
-          {HL_SLOTS[dragSlot]?.label}
-        </span>
-      )}
+      {/* Color label is rendered by the shared ToolNameHud component;
+          driven via the toolNameHud bus in the effect below. */}
       {/* Options popup — vertical up drag */}
       {dragging && dragMode === 'options' && dragBtnRect && (
         <div
@@ -793,11 +802,11 @@ export function AgentPill({ editor }: { editor: Editor }) {
 }
 
 
-// Desktop highlighter button — same as phone version, positioned by InFrontOfTheCanvas
+// Highlighter button — rendered on desktop AND iPad. Only suppressed on
+// actual phones, where the PhoneOverlay renders its own copy. iPad is a
+// touch device but not a phone, so it gets the same layout as desktop.
 export function HighlighterButton() {
-  const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
-  // On touch devices, the PhoneOverlay renders its own copy — don't duplicate
-  if (isTouch) return null
+  if (IS_PHONE) return null
   return <PhoneHighlighterButton />
 }
 export function SemanticHighlightPill() { return null }

@@ -75,10 +75,21 @@ export function CanvasClipPanel({
   // and tldraw's snap manager excludes locked shapes from snap targets. So enabling
   // isSnapMode: true gives us fleet-shapes-only snapping for free.
 
+  // In lockCamera (HUD) mode, the HUD only renders fleet shapes — the
+  // document content stays on the main canvas behind the HUD's transparent
+  // background. Mirroring non-fleet shapes (especially html-page shapes
+  // containing iframes) into the HUD breaks hit testing for fleet shapes
+  // because iframes capture pointer events and intercept clicks.
+  const shouldSyncToCopy = (r: TLRecord): boolean => {
+    if (!isDocRecord(r)) return false
+    if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
+    return true
+  }
+
   // Create copy store from main editor's document records
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
-    const docRecords = allRecords.filter(isDocRecord)
+    const docRecords = allRecords.filter(shouldSyncToCopy)
       .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
@@ -96,7 +107,7 @@ export function CanvasClipPanel({
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isPill(record)) continue
-          if (isDocRecord(record)) {
+          if (shouldSyncToCopy(record)) {
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
               lockedIdsRef.current.add(record.id)
@@ -107,7 +118,7 @@ export function CanvasClipPanel({
         }
         for (const [, to] of Object.values(changes.updated)) {
           if (isPill(to)) continue
-          if (isDocRecord(to)) {
+          if (shouldSyncToCopy(to)) {
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
             } else {

@@ -139,14 +139,11 @@ export function DesktopHighlighterZone() {
   return null
 }
 
-export function PenHelperButtons({ format }: { format?: string }) {
-  return (
-    <>
-      <ExitPenModeButton />
-      <ToolToggleZones format={format} />
-      <DesktopHighlighterZone />
-    </>
-  )
+export function PenHelperButtons(_: { format?: string }) {
+  // The old ToolToggleZones (pen-mode zones) and DesktopHighlighterZone
+  // are gone — the HighlighterSlider is the only tool-picker UI now,
+  // mounted in InFrontOfTheCanvas. Pen-mode no longer needs special UI.
+  return <ExitPenModeButton />
 }
 
 /** Sync TLDraw dark mode to <html data-theme> for portaled elements */

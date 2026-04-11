@@ -16,6 +16,7 @@ import {
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext } from 'react'
 
 import katex from 'katex'
+import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from '../fleet/chat-render.mjs'
@@ -156,16 +157,17 @@ function tldaRenderMarkdown(escapedHtml: string): string {
   text = text.replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '')
 
   // KaTeX: display math $$...$$
+  const macros = getActiveMacros()
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
     try {
-      return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false })
+      return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false, macros })
     } catch { return `<div class="math-display">${esc(tex)}</div>` }
   })
 
   // KaTeX: inline math $...$
   text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex) => {
     try {
-      return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false })
+      return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false, macros })
     } catch { return `<span class="math-inline">${esc(tex)}</span>` }
   })
 

@@ -15,6 +15,7 @@ import {
   useValue,
   DefaultColorStyle,
 } from 'tldraw'
+import { toolNameHud } from '../overlays/ToolNameHud'
 
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 
@@ -61,9 +62,11 @@ const DOT_GAP = 6
 export function HighlighterSlider() {
   // Hide in embed mode (fleet shared doc iframe)
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
-  // Only show when zone mode is enabled via the highlighter button toggle
+  // Default ON. The slider is the only tool picker now (no more pen-mode
+  // zones competing with it). The toggle in DocumentPanel can still hide it
+  // by setting hl-zone-mode='0' explicitly.
   const [zoneEnabled, setZoneEnabled] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') === '1'
+    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
   )
   const [zoneWidth, setZoneWidth] = useState(() => {
     const stored = parseInt(typeof localStorage !== 'undefined' ? (localStorage.getItem('zone-width') || '') : '')
@@ -137,10 +140,27 @@ export function HighlighterSlider() {
       setDragStartY(0)
       setCursorY(null)
       setCursorX(null)
+      toolNameHud.hide()
     }
     window.addEventListener('blur', onBlur)
     return () => window.removeEventListener('blur', onBlur)
   }, [])
+
+  // Drive shared ToolNameHud while dragging — replaces the inline pill that
+  // used to render here. PhoneHighlighterButton uses the same bus. Must
+  // come BEFORE the early returns (hooks rule).
+  const _displayIdxForHud = dragIdx ?? activeIdx
+  useEffect(() => {
+    if (!showHud) { toolNameHud.hide(); return }
+    const slot = HL_SLOTS[_displayIdxForHud]
+    if (!slot) { toolNameHud.hide(); return }
+    const hudColor = slot.id === 'draw' ? penColor : (slot.color || '#888')
+    if (dragging) {
+      toolNameHud.show(slot.label, hudColor)
+    } else {
+      toolNameHud.fade()
+    }
+  }, [showHud, _displayIdxForHud, dragging, penColor])
 
   // Only show when zone mode is enabled and not in embed mode
   if (isEmbed) return null
@@ -317,21 +337,8 @@ export function HighlighterSlider() {
           })}
         </div>
       )}
-      {/* HUD at top-center — visible while dragging, fades out after */}
-      {showHud && (() => {
-        const slot = HL_SLOTS[displayIdx]
-        const hudColor = slot?.id === 'draw' ? penColor : (slot?.color || '#888')
-        return <div style={{
-          position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
-          background: hudColor, color: '#fff',
-          padding: '4px 14px', borderRadius: 12, fontSize: 12, fontWeight: 500,
-          opacity: dragging ? 0.85 : 0,
-          transition: 'opacity 0.4s ease',
-          pointerEvents: 'none', zIndex: 9999,
-        }}>
-          {slot?.label}
-        </div>
-      })()}
+      {/* HUD is rendered by the shared ToolNameHud component (mounted in
+          SvgDocument). The toolNameHud bus is driven from the effect below. */}
     </div>
   )
 }
