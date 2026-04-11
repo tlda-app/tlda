@@ -718,6 +718,54 @@ function stopRecording() {
   fadeHud(4000)
 }
 
+// Hard reset — the escape hatch for when Chrome's SpeechRecognition
+// pipeline is poisoned and normal stop/start won't un-stick it. Triggered
+// by double-tap on Right Shift. Aborts any live recognition, clears all
+// timers and state, and releases the browser's microphone lock by opening
+// and immediately closing a getUserMedia audio stream. After this fires,
+// the next single-tap of Right Shift should start a fresh clean session.
+async function hardResetVoice() {
+  // Tear down recognition — abort (not stop) to force an immediate release
+  // without waiting for a clean onend from any in-flight audio.
+  if (_recognition) {
+    try {
+      _recognition.onresult = null
+      _recognition.onend = null
+      _recognition.onerror = null
+      _recognition.onsoundstart = null
+      _recognition.abort()
+    } catch {}
+    _recognition = null
+  }
+  // Clear every timer.
+  clearTimeout(_watchdogTimer); _watchdogTimer = null
+  clearTimeout(_sessionTimer); _sessionTimer = null
+  clearInterval(_sleepDetectInterval); _sleepDetectInterval = null
+  // Reset every bit of state the speech state machine cares about.
+  _recording = false
+  _state = 'edit'
+  _left = _interim = _right = ''
+  _editStopped = false
+  _filling = false
+  _audioCaptureRetries = 0
+  _deadRestarts = 0
+  _gotAudioThisSession = false
+  _sleepDetectLast = 0
+  // Force the browser to drop and reacquire the microphone at the OS level.
+  // SpeechRecognition uses the same underlying audio plumbing as
+  // getUserMedia, so cycling a mic stream here jogs the internal state.
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    for (const track of stream.getTracks()) {
+      try { track.stop() } catch {}
+    }
+  } catch (err) {
+    console.warn('voice: hard reset getUserMedia cycle failed', err)
+  }
+  showHud('voice reset — tap shift to start', '#9370db')
+  fadeHud(3000)
+}
+
 function sendCurrentText() {
   if (_recording) stopRecording()
 
@@ -771,11 +819,23 @@ export async function initVoice() {
     return false
   }
 
-  // Right Shift: tap = toggle recording. Enter sends (handled by FleetChatShape).
+  // Right Shift: single tap = toggle recording. Double tap (within 300ms)
+  // = hard voice reset — recovery pathway for when Chrome's SpeechRecognition
+  // pipeline gets poisoned and normal stop/start doesn't un-stick it.
+  let _lastShiftTapAt = 0
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
+
+    const now = Date.now()
+    if (now - _lastShiftTapAt < 300) {
+      // Double tap: hard reset
+      _lastShiftTapAt = 0
+      hardResetVoice()
+      return
+    }
+    _lastShiftTapAt = now
 
     if (_recording) {
       stopRecording()
