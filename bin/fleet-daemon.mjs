@@ -732,12 +732,26 @@ function connect() {
 
   ws.on('error', (e) => {
     console.error(`[daemon] WS error: ${e.message}`)
+    // Belt-and-suspenders: some ws error paths (e.g. ECONNREFUSED before
+    // the connection opens) may not reliably fire 'close' afterwards, or
+    // may fire close before the next connect() has even started. Schedule
+    // a reconnect here too — guarded by a flag so duplicate close+error
+    // events don't stack setTimeouts.
+    scheduleReconnect()
   })
 }
 
+let reconnectScheduled = false
 function scheduleReconnect() {
-  setTimeout(connect, backoff)
+  if (reconnectScheduled) return
+  reconnectScheduled = true
+  const delay = backoff
   backoff = Math.min(backoff * 2, 30000)
+  console.log(`[daemon] scheduling reconnect in ${delay}ms (next backoff=${backoff}ms)`)
+  setTimeout(() => {
+    reconnectScheduled = false
+    connect()
+  }, delay)
 }
 
 function handleServerMessage(msg) {
@@ -761,7 +775,8 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'daemon-evict') {
     evicted = true
-    console.error(`[daemon] EVICTED: ${msg.reason || 'unknown'}`)
+    const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
+    console.error(`[daemon] EVICTED: ${msg.reason || 'unknown'}${replacedBy}`)
     teardownWatchers()
     try { ws.close() } catch {}
     return
@@ -778,19 +793,26 @@ function handleServerMessage(msg) {
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
-function shutdown() {
+function shutdown(signal) {
+  // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
+  console.log(`[daemon] shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
   try { fs.unlinkSync(PID_FILE) } catch {}
   try { ws?.close() } catch {}
   process.exit(0)
 }
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGHUP', () => shutdown('SIGHUP'))
 process.on('uncaughtException', (e) => {
   console.error(`[daemon] uncaught: ${e.stack || e.message}`)
 })
 process.on('unhandledRejection', (e) => {
   console.error(`[daemon] unhandled rejection: ${e?.stack || e?.message || e}`)
+})
+// Also log the regular `exit` event so silent process exits get a trace.
+process.on('exit', (code) => {
+  console.log(`[daemon] process exit (code=${code})`)
 })
 
 console.log(`[daemon] fleet-daemon ${VERSION} starting`)
