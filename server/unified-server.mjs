@@ -41,6 +41,7 @@ import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent } from './lib/sync-rooms.mjs'
+import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
@@ -720,7 +721,12 @@ server.on('upgrade', (req, socket, head) => {
           handleFleetWsMessage(ws, msg)
         } catch {}
       })
-      ws.on('close', () => wsFleetClients.delete(ws))
+      ws.on('close', () => {
+        wsFleetClients.delete(ws)
+        // Unsubscribe the agent from all tlda-feedback watches so stale
+        // subscriptions don't accumulate across MCP respawns.
+        if (ws._tldaAgentId) tldaFeedback.unsubscribeAll(ws._tldaAgentId)
+      })
       ws.on('error', () => wsFleetClients.delete(ws))
     })
     return
@@ -746,6 +752,9 @@ function handleFleetWsMessage(ws, msg) {
   if (type === 'register') {
     const { id: agentId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id } = msg
     if (!agentId) { error('missing id'); return }
+    // Remember which agent owns this WS so we can clean up their tlda-feedback
+    // subscriptions on close.
+    ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
     const agent = {
@@ -938,6 +947,34 @@ function handleFleetWsMessage(ws, msg) {
       broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
     }
     reply({ ok: true })
+    return
+  }
+
+  // ---- tlda-monitor: subscribe to per-doc feedback notifications ----
+  // The agent calls `monitor_add(doc)` as an MCP tool → fleet MCP forwards
+  // here → we attach shape-change + signal listeners for that doc → when
+  // feedback fires, we push a fleet chat message from fleet:tlda to the
+  // subscribed agent(s). Replaces the old PostToolUse polling hook.
+  if (type === 'tlda-monitor-add') {
+    const { agentId, doc } = msg
+    if (!agentId || !doc) { error('missing agentId or doc'); return }
+    try {
+      tldaFeedback.subscribe(agentId, doc, fleetStore)
+      reply({ ok: true, doc, subscriptions: tldaFeedback.list(agentId) })
+    } catch (e) { error(e.message) }
+    return
+  }
+  if (type === 'tlda-monitor-remove') {
+    const { agentId, doc } = msg
+    if (!agentId || !doc) { error('missing agentId or doc'); return }
+    tldaFeedback.unsubscribe(agentId, doc)
+    reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
+    return
+  }
+  if (type === 'tlda-monitor-list') {
+    const { agentId } = msg
+    if (!agentId) { error('missing agentId'); return }
+    reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
     return
   }
 
