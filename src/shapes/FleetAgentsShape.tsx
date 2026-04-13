@@ -19,6 +19,7 @@ import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respa
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { toggleLayoutMode, useLayoutMode } from './HudLayoutMode'
+import { useIsInViewport } from './useIsInViewport'
 
 
 const DEFAULT_W = 340
@@ -542,15 +543,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 }
 
 function FleetAgentsComponent({ shape }: { shape: any }) {
-  const editor = useEditor()
   const { w, h } = shape.props as { w: number; h: number }
-  const isInViewport = useValue('inViewport', () => {
-    const vp = editor.getViewportPageBounds()
-    const bounds = editor.getShapePageBounds(shape.id)
-    if (!bounds) return true
-    return !(bounds.x > vp.x + vp.w || bounds.x + bounds.w < vp.x ||
-             bounds.y > vp.y + vp.h || bounds.y + bounds.h < vp.y)
-  }, [editor, shape.id])
+  const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
   }

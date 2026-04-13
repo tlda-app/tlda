@@ -26,6 +26,7 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { appendToken } from '../authToken'
 import { useLayoutMode } from './HudLayoutMode'
+import { useIsInViewport } from './useIsInViewport'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -664,15 +665,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
 }
 
 function FleetSearchComponent({ shape }: { shape: any }) {
-  const editor = useEditor()
   const { w, h } = shape.props as { w: number; h: number }
-  const isInViewport = useValue('inViewport', () => {
-    const vp = editor.getViewportPageBounds()
-    const bounds = editor.getShapePageBounds(shape.id)
-    if (!bounds) return true
-    return !(bounds.x > vp.x + vp.w || bounds.x + bounds.w < vp.x ||
-             bounds.y > vp.y + vp.h || bounds.y + bounds.h < vp.y)
-  }, [editor, shape.id])
+  const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
   }
