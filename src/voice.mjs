@@ -580,6 +580,14 @@ function _setupRecognition() {
         _interim = ''
       }
       _editStopped = false  // new session starting — ready for speech again
+      // If generation was bumped since this session was set up (e.g. chat-switch
+      // or send keyword called _generation++ before our stop() triggered onend),
+      // create a new SpeechRecognition object so its onresult closure captures
+      // the current _generation. Without this, the restarted session would still
+      // have the old myGeneration snapshot and discard every result it receives.
+      if (_generation !== myGeneration) {
+        _setupRecognition()
+      }
       try {
         _recognition.start()
       } catch (err) {
