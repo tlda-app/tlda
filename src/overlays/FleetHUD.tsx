@@ -54,6 +54,65 @@ interface FleetHUDProps {
   licenseKey: string
 }
 
+/**
+ * Repack remaining fleet shapes into a clean grid after a deletion.
+ * Sorts shapes in reading order, computes a grid from the existing bounding
+ * box, and resizes + repositions each shape to fill a cell.
+ */
+function repackFleetShapes(editor: Editor) {
+  const shapes = editor.getCurrentPageShapes()
+    .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+  if (shapes.length === 0) return
+
+  // Sort in reading order: top rows first, left-to-right within a row.
+  // "Same row" = y positions within 50 canvas units of each other.
+  const ROW_SNAP = 50
+  const sorted = [...shapes].sort((a, b) => {
+    const aRow = Math.round(a.y / ROW_SNAP)
+    const bRow = Math.round(b.y / ROW_SNAP)
+    if (aRow !== bRow) return aRow - bRow
+    return a.x - b.x
+  })
+
+  // Compute overall bounding box via page bounds
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const s of sorted) {
+    const bounds = editor.getShapePageBounds(s.id)
+    if (!bounds) continue
+    minX = Math.min(minX, bounds.x)
+    minY = Math.min(minY, bounds.y)
+    maxX = Math.max(maxX, bounds.x + bounds.w)
+    maxY = Math.max(maxY, bounds.y + bounds.h)
+  }
+  if (!isFinite(minX)) return
+
+  const totalW = maxX - minX
+  const totalH = maxY - minY
+  const n = sorted.length
+
+  // Choose cols to approximate the existing aspect ratio of the fleet region
+  const aspectRatio = totalH > 0 ? totalW / totalH : 1
+  const cols = Math.max(1, Math.round(Math.sqrt(n * aspectRatio)))
+  const rows = Math.ceil(n / cols)
+  const cellW = Math.round(totalW / cols)
+  const cellH = Math.round(totalH / rows)
+
+  const updates: any[] = []
+  sorted.forEach((s, i) => {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    updates.push({
+      id: s.id,
+      type: s.type,
+      x: minX + col * cellW,
+      y: minY + row * cellH,
+      props: { w: cellW, h: cellH },
+    })
+  })
+
+  editor.updateShapes(updates)
+}
+
 function getFleetBounds(editor: Editor): ClipBounds | null {
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
@@ -140,13 +199,22 @@ export function FleetHUD({
         record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
 
       // Immediate: add/remove always recalculates
-      const hasAddOrRemove =
-        Object.values(changes.added).some(isFleetChange) ||
-        Object.values(changes.removed).some(isFleetChange)
+      const hasAddition = Object.values(changes.added).some(isFleetChange)
+      const hasRemoval = Object.values(changes.removed).some(isFleetChange)
+      const hasAddOrRemove = hasAddition || hasRemoval
 
       if (hasAddOrRemove) {
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
+        // Reflow remaining shapes into a clean grid when a fleet shape is
+        // deleted (but not when one is added — that would scramble fresh drops).
+        if (hasRemoval && !hasAddition) {
+          const remaining = mainEditor.getCurrentPageShapes()
+            .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+          if (remaining.length > 0) {
+            queueMicrotask(() => repackFleetShapes(mainEditor))
+          }
+        }
         return
       }
 
