@@ -2,6 +2,7 @@
 // Falls back to server-based lookup for local development
 
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
+import { onReloadSignal } from './useYjsSync'
 
 // Derive HTTP base from VITE_SYNC_SERVER for cross-origin deployments
 // (SPA on GitHub Pages, assets on Fly.io). Same-origin: returns BASE_URL.
@@ -29,34 +30,28 @@ export interface LookupData {
   lines: Record<string, LookupEntry>
 }
 
-// Cache loaded lookup tables
-const lookupCache = new Map<string, LookupData | null>()
+// Promise cache: concurrent first-callers share one in-flight request
+const lookupCache = new Map<string, Promise<LookupData | null>>()
 
 /**
- * Load lookup table for a document
+ * Load lookup table for a document. Results are cached for the session;
+ * concurrent callers share one fetch rather than each issuing their own.
  */
-export async function loadLookup(docName: string): Promise<LookupData | null> {
-  if (lookupCache.has(docName)) {
-    const cached = lookupCache.get(docName)!
-    console.log(`[SyncTeX] loadLookup cache hit for ${docName}:`, !!cached)
-    return cached
-  }
-
-  try {
+export function loadLookup(docName: string): Promise<LookupData | null> {
+  if (!lookupCache.has(docName)) {
     const base = assetBase()
-    const resp = await fetch(`${base}docs/${docName}/lookup.json?t=${Date.now()}`)
-    if (!resp.ok) {
-      lookupCache.set(docName, null)
-      return null
-    }
-    const data = await resp.json()
-    lookupCache.set(docName, data)
-    return data
-  } catch (e) {
-    console.warn(`[SyncTeX] Could not load lookup.json for ${docName}`)
-    lookupCache.set(docName, null)
-    return null
+    lookupCache.set(docName, fetch(`${base}docs/${docName}/lookup.json`)
+      .then(resp => {
+        if (!resp.ok) return null
+        return resp.json() as Promise<LookupData>
+      })
+      .catch(() => {
+        console.warn(`[SyncTeX] Could not load lookup.json for ${docName}`)
+        return null
+      })
+    )
   }
+  return lookupCache.get(docName)!
 }
 
 /**
@@ -299,6 +294,13 @@ export interface HtmlSearchEntry {
 
 const htmlTocCache = new Map<string, HtmlTocEntry[] | null>()
 const htmlSearchCache = new Map<string, HtmlSearchEntry[] | null>()
+
+// Clear all doc-asset caches on LaTeX rebuild so fresh output is loaded
+onReloadSignal(() => {
+  lookupCache.clear()
+  htmlTocCache.clear()
+  htmlSearchCache.clear()
+})
 
 export async function loadHtmlToc(docName: string): Promise<HtmlTocEntry[] | null> {
   if (htmlTocCache.has(docName)) return htmlTocCache.get(docName)!

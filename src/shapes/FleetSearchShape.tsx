@@ -292,7 +292,7 @@ function resolveTimeFilter(val: string): string | null {
   return null
 }
 
-function FleetSearchComponent({ shape }: { shape: any }) {
+function FleetSearchInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
   const { w, h } = shape.props
@@ -661,4 +661,20 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       </div>
     </HTMLContainer>
   )
+}
+
+function FleetSearchComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const { w, h } = shape.props as { w: number; h: number }
+  const isInViewport = useValue('inViewport', () => {
+    const vp = editor.getViewportPageBounds()
+    const bounds = editor.getShapePageBounds(shape.id)
+    if (!bounds) return true
+    return !(bounds.x > vp.x + vp.w || bounds.x + bounds.w < vp.x ||
+             bounds.y > vp.y + vp.h || bounds.y + bounds.h < vp.y)
+  }, [editor, shape.id])
+  if (!isInViewport) {
+    return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
+  }
+  return <FleetSearchInner shape={shape} />
 }
