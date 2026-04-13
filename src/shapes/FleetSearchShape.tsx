@@ -482,6 +482,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
+              editor.setCurrentTool('select')
               editor.select(shape.id)
             }}
             title="Resize / move"

@@ -219,7 +219,17 @@ function usePillDrag() {
           }, { history: 'ignore' })
           const mainEditor = (window as any).__tldraw_editor__
           const targetEditor = mainEditor || editor
-          dropGhostState.slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
+          const slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
+          dropGhostState.slot = slot
+          // Pre-compute screen coords using the HUD editor's camera so
+          // FleetDropGhost doesn't use the main editor's camera (wrong viewport).
+          if (slot) {
+            const tl = editor.pageToScreen({ x: slot.x, y: slot.y })
+            const br = editor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
+            dropGhostState.screenRect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
+          } else {
+            dropGhostState.screenRect = null
+          }
           dropGhostBus.dispatchEvent(new CustomEvent('change'))
         }
       },
@@ -230,6 +240,7 @@ function usePillDrag() {
         if (!drag || !drag.started || !drag.pillId) return
 
         dropGhostState.slot = null
+        dropGhostState.screenRect = null
         dropGhostBus.dispatchEvent(new CustomEvent('change'))
 
         const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })

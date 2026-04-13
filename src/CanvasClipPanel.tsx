@@ -459,8 +459,12 @@ export function CanvasClipPanel({
         })
       }
 
-      editor.setCamera(targetCam)
-
+      // In lockCamera mode, set the new constraints BEFORE the camera. If
+      // we set the camera first while the prior frame's constraints are
+      // still active, tldraw clamps the new target to the old bounds and
+      // we end up with a camera that doesn't match either frame's bounds.
+      // Per-frame during a HUD drag, this compounds into blank/garbled
+      // content (the prod-build symptom of #22).
       if (lockCamera) {
         editor.setCameraOptions({
           constraints: {
@@ -474,6 +478,8 @@ export function CanvasClipPanel({
           zoomSteps: [1, 1],
         })
       }
+
+      editor.setCamera(targetCam)
     }
     initialBoundsRef.current = false
 

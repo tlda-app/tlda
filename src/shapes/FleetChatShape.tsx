@@ -1586,6 +1586,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
+              // Must be in select tool for resize handles to appear.
+              // The HUD mirrors the main editor's tool (hand/browse/etc),
+              // so switch explicitly before selecting.
+              editor.setCurrentTool('select')
               editor.select(shape.id)
             }}
             title="Resize / move"
