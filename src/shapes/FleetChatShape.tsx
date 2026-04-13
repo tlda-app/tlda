@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
 
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -1988,14 +1988,14 @@ function FleetChatInner({ shape }: { shape: any }) {
  * one-time cost that is far cheaper than re-rendering on every fleet event
  * while off-screen.
  */
-function FleetChatComponent({ shape }: { shape: any }) {
+const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
   const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
   }
   return <FleetChatInner shape={shape} />
-}
+}, (prev, next) => prev.shape.props === next.shape.props)
 
 /** Floating preview panel — shows a clipped SVG region on doc-link hover */
 function DocLinkPreview({

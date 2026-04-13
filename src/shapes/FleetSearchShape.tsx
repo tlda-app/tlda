@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react'
+import { useState, useCallback, useRef, useMemo, useLayoutEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -664,11 +664,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
   )
 }
 
-function FleetSearchComponent({ shape }: { shape: any }) {
+const FleetSearchComponent = memo(function FleetSearchComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
   const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
   }
   return <FleetSearchInner shape={shape} />
-}
+}, (prev, next) => prev.shape.props === next.shape.props)

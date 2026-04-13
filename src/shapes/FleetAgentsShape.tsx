@@ -14,7 +14,7 @@ import {
   useEditor,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -542,14 +542,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   )
 }
 
-function FleetAgentsComponent({ shape }: { shape: any }) {
+const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
   const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
   }
   return <FleetAgentsInner shape={shape} />
-}
+}, (prev, next) => prev.shape.props === next.shape.props)
 
 function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
   return (
