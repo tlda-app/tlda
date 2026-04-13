@@ -13,7 +13,8 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -301,6 +302,22 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 }
 
 
+// --- Virtual chat message row ---
+// Defined outside FleetChatInner so React.memo comparisons are stable.
+// Receives raw rendered HTML from renderChatLine/renderActivityGroup and a
+// postProcess function (useCallback-stable) for chip/link resolution.
+const ChatMessageRow = memo(function ChatMessageRow({
+  html,
+  postProcess,
+}: {
+  html: string
+  postProcess: (html: string) => string
+}) {
+  const processed = useMemo(() => postProcess(html), [html, postProcess])
+  return <div dangerouslySetInnerHTML={{ __html: processed }} />
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess)
+
+
 function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
@@ -459,55 +476,53 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [events])
 
 
-  const renderedHtml = useMemo(() => {
-    // Group consecutive activity events from the same agent into cards
-    const parts: string[] = []
+  // Build per-item raw HTML array — each item is an independent renderable unit.
+  // This replaces the old joined renderedHtml string and enables virtualization.
+  type RawItem = { key: string; html: string }
+  const rawItems = useMemo(() => {
+    const items: RawItem[] = []
     let activityGroup: any[] = []
 
     function flushActivity() {
       if (activityGroup.length === 0) return
-      parts.push(
-        `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`
-      )
+      const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
+      items.push({
+        key,
+        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`,
+      })
       activityGroup = []
     }
 
     for (const m of chatMessages) {
       if (m._activity) {
-        // Continue grouping if same agent, otherwise flush and start new group
-        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) {
-          flushActivity()
-        }
+        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
       } else {
         flushActivity()
-        const line = renderChatLine(m, ctx)
-        if (line) parts.push(line)
+        const html = renderChatLine(m, ctx)
+        if (html) {
+          items.push({ key: m._dbId || `${m.timestamp}:${m.from}`, html })
+        }
       }
     }
     flushActivity()
-
-    return parts.join('')
+    return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages, ctx])
 
-  // Post-process HTML to add clickable doc links
-  const linkedHtml = useMemo(() => {
-    let html = renderedHtml
+  // Per-item post-processing: applies chip replacement, URL linkification, and
+  // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
+  // for visible items, so the cost scales with the viewport not the message count.
+  const postProcess = useCallback((html: string): string => {
     // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
-    // (otherwise "Theorem 3.2" inside a token gets wrapped in a doc-link span
-    // and the regex can't match the original token)
     html = html.replace(/«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
-      // Display: strip the "type:" prefix and any #uid suffix, show just the label
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
-      // Extract embedded shape ID (format: «type:label#shape:xxx»)
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
       let ref: any = undefined
-      // For shape-backed chips, resolve metadata live from the tldraw store
       if (embeddedShapeId) {
         const srcShape = editor.getShape(embeddedShapeId as any) as any
         if (srcShape) {
@@ -531,13 +546,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      // Resolve content: shape-backed chips use the tldraw store; others use the chipContentStore
       const content = ref?.content || chipContentStore.get(token) || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const isAnnotation = ref?.type === 'annotation'
       const isImage = typePrefix === 'img'
-
-      // Images render as block-level, not as chips
       if (isImage) {
         const uid = inner.split('#')[1] || ''
         const src = imageSrcs.get('asset:' + uid) || content
@@ -545,29 +557,22 @@ function FleetChatComponent({ shape }: { shape: any }) {
           const nameEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           return `<img src="${src}" alt="${nameEsc}" style="display:block;width:75%;max-width:100%;border-radius:4px;margin:4px 0;" />`
         }
-        // Asset not yet loaded — render placeholder chip
         return `<span class="ref-chip ref-chip-image">${displayEsc}</span>`
       }
-
       const preview = !isAnnotation && content ? `<span class="ref-chip-preview">${contentEsc}</span>` : ''
-      const colorDot = isAnnotation && ref?.color
-        ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>`
-        : ''
+      const colorDot = isAnnotation && ref?.color ? `<span class="ref-chip-dot" style="background:${ref.color}"></span>` : ''
       const locBadge = isAnnotation && ref?.file
-        ? `<span class="ref-chip-loc">${ref.file.split('/').pop()}${ref.lineno ? ':' + ref.lineno : ''}</span>`
-        : ''
+        ? `<span class="ref-chip-loc">${ref.file.split('/').pop()}${ref.lineno ? ':' + ref.lineno : ''}</span>` : ''
       const boundsAttr = ref?.canvasBounds
-        ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"`
-        : ''
+        ? ` data-bounds="${ref.canvasBounds.x},${ref.canvasBounds.y},${ref.canvasBounds.w},${ref.canvasBounds.h}"` : ''
       const shapeAttr = ref?.shapeId ? ` data-shape-ref="${ref.shapeId}"` : ''
       const highlightAttr = isAnnotation && ref?.highlightShapeId ? ` data-highlight-ref="${ref.highlightShapeId}"` : ''
       const screenshotAttr = ref?.screenshotRef ? ` data-screenshot-ref="${ref.screenshotRef}"` : ''
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
       const tokenAttr = ` data-token="${token.replace(/"/g, '&quot;')}"`
-
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
     })
-    // Convert tlda URLs (with ?doc=) to ref-chips (not iframes).
+    // Convert tlda URLs to ref-chips
     html = html.replace(
       /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
       (_match, url, docName) => {
@@ -577,14 +582,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
         return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
       }
     )
-    // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
-    // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
-    if (doc && Object.keys(labelRegions).length > 0) {
-      html = linkifyArrowRefs(html, labelRegions)
-    }
+    if (doc && Object.keys(labelRegions).length > 0) html = linkifyArrowRefs(html, labelRegions)
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions, imageSrcs, editor])
+  }, [doc, labelRegions, imageSrcs, editor])
+
+  // Virtual scroll — only mount DOM nodes for visible messages.
+  // Placed after rawItems so count is always defined.
+  const virtualizer = useVirtualizer({
+    count: rawItems.length,
+    getScrollElement: () => chatLogRef.current,
+    estimateSize: () => 28,
+    overscan: 8,
+  })
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -951,7 +961,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
       lastScrollHeight.current = el.scrollHeight
       lastDistFromBottom.current = 0
     }
-  }, [linkedHtml])
+  }, [rawItems.length])
 
   // After images inside the log load, they expand the scroll height. Scroll to
   // bottom if we were close enough that we should follow new content.
@@ -1645,7 +1655,18 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
-            <div dangerouslySetInnerHTML={{ __html: linkedHtml }} />
+            <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+              {virtualizer.getVirtualItems().map(vItem => (
+                <div
+                  key={vItem.key}
+                  data-index={vItem.index}
+                  ref={virtualizer.measureElement}
+                  style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
+                >
+                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
+                </div>
+              ))}
+            </div>
           )}
           {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
               <div key={agentId} className="chat-line chat-thinking">
