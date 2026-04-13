@@ -41,8 +41,14 @@ export const filterDropPreview = {
 
 const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
 
-/** Ghost slot state — updated by drag handlers (page coords), read by FleetDropGhost */
-export const dropGhostState: { slot: { x: number; y: number; w: number; h: number } | null } = { slot: null }
+/** Ghost slot state — updated by drag handlers, read by FleetDropGhost.
+ *  screenRect is set by the HUD editor (has its own camera transform) so
+ *  FleetDropGhost can position the ghost in the HUD's screen space rather
+ *  than converting through the main editor's camera, which would be wrong. */
+export const dropGhostState: {
+  slot: { x: number; y: number; w: number; h: number } | null
+  screenRect: { x: number; y: number; w: number; h: number } | null
+} = { slot: null, screenRect: null }
 export const dropGhostBus = new EventTarget()
 
 /**

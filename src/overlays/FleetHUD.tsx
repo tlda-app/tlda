@@ -87,6 +87,15 @@ function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
     const handler = () => {
       const slot = dropGhostState.slot
       if (!slot) { setGhost(null); return }
+      // Prefer screenRect set by the HUD editor — it used the HUD camera to
+      // convert page→screen, so the ghost lands in the HUD's viewport rather
+      // than wherever the main canvas would render the same page coordinates.
+      if (dropGhostState.screenRect) {
+        setGhost(dropGhostState.screenRect)
+        return
+      }
+      // Fallback: convert via main editor (correct when drag originates on
+      // the main canvas, not inside the HUD panel).
       const tl = mainEditor.pageToScreen({ x: slot.x, y: slot.y })
       const br = mainEditor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
       setGhost({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
