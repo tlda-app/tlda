@@ -36,6 +36,7 @@ import { dragCoordinator } from './dragCoordinator'
 import { DocContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
+import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { useLayoutMode } from './HudLayoutMode'
@@ -320,15 +321,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
   useEffect(() => {
     if (!doc?.docName) return
     loadLookup(doc.docName).then(setLookup)
-    // Load proof-info.json for label regions (arrow refs)
-    const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
-    const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
-    fetch(`${base}docs/${doc.docName}/proof-info.json?t=${Date.now()}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.labelRegions) setLabelRegions(data.labelRegions)
-      })
-      .catch(() => {})
+    fetchProofInfo(doc.docName).then(data => {
+      if (data?.labelRegions) setLabelRegions(data.labelRegions)
+    })
   }, [doc?.docName])
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
