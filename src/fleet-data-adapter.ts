@@ -40,6 +40,40 @@ function ensureInit(): Promise<void> {
   return initPromise!
 }
 
+// --- Page Visibility gating ---
+//
+// When a browser tab is hidden, fleet SSE events still arrive and React state
+// setters fire, causing re-renders in all mounted shapes even though nothing
+// is visible. This wastes CPU, especially when playwright has a second tab
+// open to the same doc.
+//
+// Strategy: skip state updates while hidden. On tab restore, all registered
+// refresh functions run once to bring hooks back to current state.
+
+let _tabVisible = typeof document !== 'undefined' ? !document.hidden : true
+const _refreshRegistry = new Set<() => void>()
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    _tabVisible = !document.hidden
+    if (_tabVisible) {
+      for (const fn of _refreshRegistry) fn()
+    }
+  })
+}
+
+/**
+ * Wraps a state-setter so it only fires when the tab is visible.
+ * Pass `refresh` — a function that re-reads current state — to be called
+ * on tab restore. The returned cleanup removes the refresh registration.
+ */
+function visibilityGate(update: () => void, refresh: () => void): [() => void, () => void] {
+  _refreshRegistry.add(refresh)
+  const gated = () => { if (_tabVisible) update() }
+  const cleanup = () => _refreshRegistry.delete(refresh)
+  return [gated, cleanup]
+}
+
 // --- Hooks ---
 
 export function useFleetAgents(frameId?: string): any[] {
@@ -56,9 +90,10 @@ export function useFleetAgents(frameId?: string): any[] {
       ensureInit().then(() => {
         if (cancelled || isPlaybackMode) return
         setAgents([...getAgents()])
-        liveUnsub = subscribe('agents', null, () => {
-          setAgents([...getAgents()])
-        })
+        const refresh = () => { if (!cancelled) setAgents([...getAgents()]) }
+        const [gated, cleanupGate] = visibilityGate(refresh, refresh)
+        const rawUnsub = subscribe('agents', null, gated)
+        liveUnsub = () => { rawUnsub(); cleanupGate() }
       })
     }
 
@@ -145,9 +180,10 @@ export function useFleetTasks(frameId?: string): any[] {
     ensureInit().then(() => {
       if (cancelled) return
       setTasks([...getTasks()])
-      unsub = subscribe('tasks', null, () => {
-        setTasks([...getTasks()])
-      })
+      const refresh = () => { if (!cancelled) setTasks([...getTasks()]) }
+      const [gated, cleanupGate] = visibilityGate(refresh, refresh)
+      const rawUnsub = subscribe('tasks', null, gated)
+      unsub = () => { rawUnsub(); cleanupGate() }
     })
 
     return () => {
@@ -192,13 +228,18 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           : [...all]
         setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
-        liveUnsub = subscribe('messages', filter, (event: any) => {
-          if (!event) {
+        const refreshEvents = () => {
+          if (!cancelled) {
             const all = getEvents()
-            const filtered = filter
-              ? all.filter((e: any) => matchesFilter(filter, e))
-              : [...all]
+            const filtered = filter ? all.filter((e: any) => matchesFilter(filter, e)) : [...all]
             setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
+          }
+        }
+        const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+        const rawUnsub = subscribe('messages', filter, (event: any) => {
+          if (!_tabVisible) return  // skip render; refreshEvents will run on tab restore
+          if (!event) {
+            refreshEvents()
           } else {
             setEvents(prev => {
               const next = [...prev, event]
@@ -206,6 +247,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
             })
           }
         })
+        liveUnsub = () => { rawUnsub(); cleanupGate() }
       })
     }
 

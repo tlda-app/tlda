@@ -302,7 +302,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 }
 
 
-function FleetChatComponent({ shape }: { shape: any }) {
+function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
   const doc = useContext(DocContext)
@@ -1975,6 +1975,33 @@ function FleetChatComponent({ shape }: { shape: any }) {
       </div>
     </HTMLContainer>
   )
+}
+
+/**
+ * Viewport-culling shell for FleetChatInner.
+ *
+ * All the expensive hooks (useFleetEvents, useFleetAgents, etc.) live inside
+ * FleetChatInner. When the shape is off-screen we render a cheap transparent
+ * placeholder instead, which unmounts FleetChatInner and tears down every
+ * subscription. Shapes scrolled back into view remount and resubscribe — a
+ * one-time cost that is far cheaper than re-rendering on every fleet event
+ * while off-screen.
+ */
+function FleetChatComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const { w, h } = shape.props as { w: number; h: number }
+  const isInViewport = useValue('inViewport', () => {
+    const vp = editor.getViewportPageBounds()
+    const bounds = editor.getShapePageBounds(shape.id)
+    if (!bounds) return true
+    return !(bounds.x > vp.x + vp.w || bounds.x + bounds.w < vp.x ||
+             bounds.y > vp.y + vp.h || bounds.y + bounds.h < vp.y)
+  }, [editor, shape.id])
+
+  if (!isInViewport) {
+    return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
+  }
+  return <FleetChatInner shape={shape} />
 }
 
 /** Floating preview panel — shows a clipped SVG region on doc-link hover */
