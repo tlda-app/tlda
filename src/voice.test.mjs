@@ -241,9 +241,15 @@ function reset() {
   tick(300)
   assert.equal(startCount, 1, 'initial start')
 
-  // Speak a phrase then say "send"
+  // Capture the OLD recognition object BEFORE triggering send —
+  // the send path bumps generation and onend swaps in a new mockRec, so
+  // we must grab the reference first to simulate a late callback from
+  // the old session.
+  const oldRec = mockRec
   const genBefore = getGeneration()
-  mockRec.onresult({
+
+  // Speak a phrase then say "send"
+  oldRec.onresult({
     resultIndex: 0,
     results: [{ isFinal: true, 0: { transcript: 'hello world send' } }]
   })
@@ -251,11 +257,11 @@ function reset() {
   const genAfter = getGeneration()
   assert.ok(genAfter > genBefore, 'generation should have been bumped on send')
 
-  // Simulate a stale in-flight result arriving from the OLD recognition session
-  // (same mockRec, but generation was bumped — should be discarded)
+  // Now simulate a stale in-flight result arriving from the OLD session.
+  // oldRec still has the old myGeneration snapshot in its closure, so its
+  // onresult should be discarded even though recording is still active.
   ta.value = ''
-  const staleRec = mockRec
-  staleRec.onresult({
+  oldRec.onresult({
     resultIndex: 0,
     results: [{ isFinal: true, 0: { transcript: 'stale garbage' } }]
   })
@@ -292,4 +298,54 @@ function reset() {
   console.log('✓ Test 8: Poisoning detection — 3 identical finals trigger restart')
 }
 
-console.log('\nAll 8 tests passed.')
+// ---- Test 9: Generation bump in onend respawns fresh session (chat-switch regression) ----
+// Regression: after "left chat" command, _generation is bumped before onend fires.
+// onend must call _setupRecognition() so the new session has an updated myGeneration
+// snapshot — otherwise every onresult is discarded and voice appears dead.
+{
+  const ta = makeTextarea()
+  let sentText = null
+  const sendFn = (targets, text) => { sentText = text }
+  setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
+  reset()
+
+  toggleRecording()
+  tick(300)
+  const startCountBefore = startCount
+
+  // Simulate generation being bumped (as happens during chat-switch or send)
+  // by directly triggering a recognition stop while _recording is true.
+  // We do this by firing a result that bumps generation (poison path), then
+  // verify recognition restarts and accepts new results.
+  //
+  // Simpler: manually bump generation to mimic send/chat-switch, then call
+  // mockRec.onend() to simulate the stop() completing.
+  const genBefore = getGeneration()
+
+  // Fire onend as if stop() completed after a generation bump.
+  // The onend handler should detect the stale generation and call _setupRecognition().
+  // We simulate the generation bump that happens in setVoiceTarget (target switch).
+  const ta2 = makeTextarea()
+  setVoiceTarget(ta2, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
+  // setVoiceTarget bumped _generation; now simulate the old session's onend firing
+  const genAfterSwitch = getGeneration()
+  assert.ok(genAfterSwitch > genBefore, 'generation bumped on target switch')
+
+  // Trigger old session's onend (as if stop() completed)
+  mockRec.onend()
+  // onend should have called _setupRecognition() (new mockRec) and started it
+  assert.equal(startCount, startCountBefore + 1, 'onend should have set up fresh session and started it')
+
+  // New session should accept results (not discard due to stale generation)
+  ta2.value = ''
+  mockRec.onresult({
+    resultIndex: 0,
+    results: [{ isFinal: false, 0: { transcript: 'hello after switch' } }]
+  })
+  assert.ok(ta2.value.includes('hello after switch'), 'new session should accept results after target switch')
+
+  reset()
+  console.log('✓ Test 9: onend with stale generation creates fresh session (chat-switch regression)')
+}
+
+console.log('\nAll 9 tests passed.')
