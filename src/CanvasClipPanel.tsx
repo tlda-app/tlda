@@ -72,6 +72,8 @@ export function CanvasClipPanel({
   const [editor, setEditor] = useState<Editor | null>(null)
   const emphasizedIdsRef = useRef<Set<string>>(new Set())
   const lockedIdsRef = useRef<Set<string>>(new Set())
+  const boundsRef = useRef<ClipBounds | null>(bounds)
+  boundsRef.current = bounds
 
   // Expose editor to parent
   useEffect(() => {
@@ -87,24 +89,68 @@ export function CanvasClipPanel({
   // background. Mirroring non-fleet shapes (especially html-page shapes
   // containing iframes) into the HUD breaks hit testing for fleet shapes
   // because iframes capture pointer events and intercept clicks.
+
+  // Location-based filtering: only sync shapes whose page bounds overlap the
+  // clip region (with padding for annotations near edges). Skipped for HUD
+  // mode which already filters to fleet shapes only.
+  const BOUNDS_PADDING = 100
+  const shapeOverlapsBounds = (shapeId: string): boolean => {
+    const b = boundsRef.current
+    if (!b || lockCamera) return true
+    const pb = mainEditor.getShapePageBounds(shapeId as any)
+    if (!pb) return true
+    return pb.x + pb.w > b.x - BOUNDS_PADDING &&
+      pb.x < b.x + b.w + BOUNDS_PADDING &&
+      pb.y + pb.h > b.y - BOUNDS_PADDING &&
+      pb.y < b.y + b.h + BOUNDS_PADDING
+  }
+
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
     // Never mirror the transient HUD layout-mode proxy shape into the HUD editor.
     if (r.typeName === 'shape' && (r as any).id === HUD_PROXY_SHAPE_ID) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
+    if (r.typeName === 'shape' && !shapeOverlapsBounds(r.id)) return false
     return true
   }
 
   // Create copy store from main editor's document records
+  // Known shape types for this panel — shapes with unknown types are skipped during sync
+  const knownTypes = useMemo(() => new Set(shapeUtils.map((u: any) => u.type).filter(Boolean)), [shapeUtils])
+
+  const isKnownShape = (r: TLRecord) =>
+    r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0
+
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
-    const docRecords = allRecords.filter(shouldSyncToCopy)
+    const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
       .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // When bounds change, populate any newly-visible shapes into the copy store.
+  // Shapes from the previous region that are no longer visible stay in the store
+  // (harmless — the camera won't show them) to avoid flicker on small pans.
+  useEffect(() => {
+    if (!bounds || lockCamera) return
+    const toAdd: TLRecord[] = []
+    for (const r of mainEditor.store.allRecords()) {
+      if (!shouldSyncToCopy(r) || !isKnownShape(r)) continue
+      if (store.has(r.id)) continue
+      if (readOnly && r.typeName === 'shape') {
+        toAdd.push({ ...r, isLocked: true } as TLRecord)
+        lockedIdsRef.current.add(r.id)
+      } else {
+        toAdd.push(r)
+      }
+    }
+    if (toAdd.length > 0) {
+      store.mergeRemoteChanges(() => { store.put(toAdd) })
+    }
+  }, [bounds, mainEditor.store, store, lockCamera, readOnly])
 
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
@@ -115,7 +161,7 @@ export function CanvasClipPanel({
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
-          if (isPill(record)) continue
+          if (isPill(record) || !isKnownShape(record)) continue
           if (shouldSyncToCopy(record)) {
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
@@ -126,7 +172,7 @@ export function CanvasClipPanel({
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to)) continue
+          if (isPill(to) || !isKnownShape(to)) continue
           if (shouldSyncToCopy(to)) {
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
