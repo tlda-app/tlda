@@ -438,6 +438,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Build context and render messages
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
 
+  // Incremental render cache: non-activity messages are independent and can be
+  // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
+  // bump ctxVersion to invalidate stale lines. This turns O(N) re-render on
+  // every new message into O(1) for the common case of appending one message.
+  const msgLineCache = useRef<Map<string, string>>(new Map())
+  const ctxVersionRef = useRef(0)
+  const prevCtxRef = useRef(ctx)
+  if (prevCtxRef.current !== ctx) {
+    prevCtxRef.current = ctx
+    ctxVersionRef.current++
+    msgLineCache.current.clear()
+  }
+
   const chatMessages = useMemo(() => {
     const sorted = events
       .filter((m: any) => {
@@ -459,9 +472,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Group consecutive activity events from the same agent into cards
     const parts: string[] = []
     let activityGroup: any[] = []
+    const cache = msgLineCache.current
+    const ctxVer = ctxVersionRef.current
 
     function flushActivity() {
       if (activityGroup.length === 0) return
+      // Activity groups depend on adjacent messages — not cached
       parts.push(
         `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`
       )
@@ -477,7 +493,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else {
         flushActivity()
-        const line = renderChatLine(m, ctx)
+        // Cache non-activity lines by (msgKey, ctxVersion) — ctx changes clear cache
+        const msgKey = `${ctxVer}:${m._dbId || `${m.timestamp}:${m.from}`}`
+        let line = cache.get(msgKey)
+        if (line === undefined) {
+          line = renderChatLine(m, ctx) || ''
+          cache.set(msgKey, line)
+        }
         if (line) parts.push(line)
       }
     }
