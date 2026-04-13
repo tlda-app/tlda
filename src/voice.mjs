@@ -165,6 +165,18 @@ let _sleepDetectLast = 0
 let _deadRestarts = 0
 let _gotAudioThisSession = false
 
+// Generation counter — bumped whenever _left is cleared (send, chat-switch,
+// startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
+// current value; onresult discards callbacks from an older generation.
+// Prevents stale in-flight results from writing to the textarea after a send.
+let _generation = 0
+
+// Poisoning detection — ring buffer of the last few isFinal transcript
+// fragments. If the same fragment repeats POISON_THRESHOLD times in a row,
+// Chrome's recognition pipeline is stuck; we clear _left and restart.
+const POISON_THRESHOLD = 3
+let _lastFinals = []
+
 // Active chat target
 let _activeTextarea = null
 let _activeSendTargets = []
@@ -242,6 +254,8 @@ function fadeHud(delayMs = 2000) {
 function enterEdit() {
   if (_state === 'edit') return
   _state = 'edit'
+  _generation++
+  _lastFinals = []
   _left = _interim = _right = ''
   if (_recording && _recognition) {
     _editStopped = true
@@ -260,6 +274,8 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     }
     // Switching textareas always enters Edit on the new one
     _state = 'edit'
+    _generation++
+    _lastFinals = []
     _left = _interim = _right = ''
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
@@ -325,6 +341,11 @@ function fillTextarea(text) {
 // --- Speech Recognition ---
 
 function _setupRecognition() {
+  // Snapshot the generation at setup time. Any onresult that arrives after
+  // _generation has been bumped (send, chat-switch, target-change, start) is
+  // from a stale session and will be discarded before touching the textarea.
+  const myGeneration = _generation
+
   _recognition = new SpeechRecognition()
   _recognition.continuous = true
   _recognition.interimResults = true
@@ -338,6 +359,9 @@ function _setupRecognition() {
   }
 
   _recognition.onresult = (e) => {
+    // Discard results from a stale session (generation bumped since setup).
+    if (_generation !== myGeneration) return
+
     _gotAudioThisSession = true
     _deadRestarts = 0
     clearTimeout(_watchdogTimer)
@@ -362,7 +386,34 @@ function _setupRecognition() {
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
-        _left += e.results[i][0].transcript
+        const fragment = e.results[i][0].transcript
+        _left += fragment
+
+        // Poisoning detection: if Chrome keeps returning the same final
+        // fragment POISON_THRESHOLD times in a row, the recognition pipeline
+        // is stuck. Clear accumulated text and restart with a fresh session.
+        _lastFinals.push(fragment)
+        if (_lastFinals.length > POISON_THRESHOLD) _lastFinals.shift()
+        if (
+          _lastFinals.length === POISON_THRESHOLD &&
+          _lastFinals.every(f => f === fragment)
+        ) {
+          console.warn('voice: poisoning detected — restarting recognition')
+          _generation++
+          _lastFinals = []
+          _left = _interim = _right = ''
+          if (_activeTextarea) {
+            _filling = true
+            _activeTextarea.value = ''
+            _activeTextarea.style.height = 'auto'
+            _activeTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+            _filling = false
+          }
+          showHud('voice reset — recognition was stuck', '#c8956a')
+          fadeHud(3000)
+          watchdogRestart()
+          return
+        }
       } else {
         interim += e.results[i][0].transcript
       }
@@ -385,10 +436,11 @@ function _setupRecognition() {
           showHud('→ other chat', '#9370db')
           fadeHud(1500)
           _state = 'edit'
+          _generation++
+          _lastFinals = []
           _left = _interim = _right = ''
-          // POISONING FIX: same as voice-send — force a fresh session so
-          // the previous utterance's cumulative results can't leak into
-          // the next chat's textarea.
+          // Force a fresh session so cumulative results from the previous
+          // chat can't leak into the new chat's textarea.
           if (_recording && _recognition) {
             _editStopped = true
             try { _recognition.stop() } catch {}
@@ -411,6 +463,8 @@ function _setupRecognition() {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
           _state = 'edit'
+          _generation++
+          _lastFinals = []
           _left = _interim = _right = ''
           _filling = true
           if (_activeTextarea) {
@@ -421,12 +475,9 @@ function _setupRecognition() {
           _activeSendFn(_activeSendTargets, cleanText)
           showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
           fadeHud(2500)
-          // POISONING FIX: force a fresh SpeechRecognition session after send.
-          // Chrome's SpeechRecognition.continuous keeps a single session with
-          // cumulative e.results; without resetting, stale finals from the
-          // previous utterance can leak into the next message's _left via
-          // late onresult events or resultIndex quirks. enterEdit() + stop()
-          // tears down the session; onend will respawn it cleanly.
+          // Force a fresh SpeechRecognition session after send.
+          // Chrome's continuous mode keeps cumulative e.results; without
+          // resetting, stale finals can leak into the next message's _left.
           if (_recording && _recognition) {
             _editStopped = true
             try { _recognition.stop() } catch {}
@@ -569,6 +620,7 @@ function watchdogRestart() {
   if (!_recording) return
   // Keep _state, _left, _right as-is — resume from where we were
   _interim = ''
+  _lastFinals = []
   _setupRecognition()
   try {
     _recognition.start()
@@ -602,6 +654,7 @@ function sessionRestart() {
   _sessionTimer = null
   if (!_recording) return
   _interim = ''
+  _lastFinals = []
   _setupRecognition()
   try {
     _recognition.start()
@@ -662,6 +715,8 @@ function startRecording() {
 
   _recording = true
   _state = 'edit'
+  _generation++
+  _lastFinals = []
   _left = _interim = _right = ''
 
   const who = targetLabel()
@@ -908,6 +963,7 @@ export function setMathMode(on) {
   }
 }
 export function isMathMode() { return _mathMode }
+export function getGeneration() { return _generation }
 export function resetTranscript() {
   _state = 'edit'
   _left = _interim = _right = ''

@@ -83,7 +83,7 @@ global.AbortSignal = { timeout: () => ({}) }
 global.window = { SpeechRecognition: MockSpeechRecognition }
 
 // ---- Import module ----
-const { initVoice, setVoiceTarget, toggleRecording, isRecording } = await import('./voice.mjs')
+const { initVoice, setVoiceTarget, toggleRecording, isRecording, getGeneration } = await import('./voice.mjs')
 
 function makeTextarea() {
   return { value: '', style: {}, dispatchEvent() {}, addEventListener() {}, removeEventListener() {} }
@@ -179,10 +179,9 @@ function reset() {
   assert.equal(startCount, 1, 'initial start')
   assert.ok(isRecording())
 
-  // 8s silence → watchdog fires (aborts old, schedules 250ms restart)
+  // 8s silence → watchdog fires: aborts old recognition and immediately
+  // starts a new one (no additional delay in current code)
   tick(8000)
-  assert.equal(startCount, 1, 'recognition not yet restarted — waiting 250ms')
-  tick(250)   // 250ms abort-delay fires → new recognition started
   assert.equal(startCount, 2, 'watchdog should have restarted recognition')
   assert.ok(isRecording(), 'should still be recording after watchdog restart')
 
@@ -200,9 +199,9 @@ function reset() {
   tick(300)   // fire doStart
   assert.equal(startCount, 1, 'initial start')
 
-  tick(45000) // session timer fires → aborts old, schedules 250ms restart
-  assert.equal(startCount, 1, 'recognition not yet restarted — waiting 250ms')
-  tick(250)   // restart fires
+  // Session timer fires after 45s: aborts old recognition and immediately
+  // starts a new one (no additional delay in current code)
+  tick(45000)
   assert.equal(startCount, 2, 'session timer should have restarted recognition')
   assert.ok(isRecording(), 'should still be recording after session restart')
 
@@ -230,4 +229,67 @@ function reset() {
   console.log('✓ Test 6: stopRecording clears session timer and sleep interval')
 }
 
-console.log('\nAll 6 tests passed.')
+// ---- Test 7: Generation counter — stale onresult after send is discarded ----
+{
+  const ta = makeTextarea()
+  let sentText = null
+  const sendFn = (targets, text) => { sentText = text }
+  setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
+  reset()
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'initial start')
+
+  // Speak a phrase then say "send"
+  const genBefore = getGeneration()
+  mockRec.onresult({
+    resultIndex: 0,
+    results: [{ isFinal: true, 0: { transcript: 'hello world send' } }]
+  })
+  assert.equal(sentText, 'hello world', 'send keyword should trigger send')
+  const genAfter = getGeneration()
+  assert.ok(genAfter > genBefore, 'generation should have been bumped on send')
+
+  // Simulate a stale in-flight result arriving from the OLD recognition session
+  // (same mockRec, but generation was bumped — should be discarded)
+  ta.value = ''
+  const staleRec = mockRec
+  staleRec.onresult({
+    resultIndex: 0,
+    results: [{ isFinal: true, 0: { transcript: 'stale garbage' } }]
+  })
+  assert.equal(ta.value, '', 'stale onresult should be discarded — textarea stays empty')
+
+  reset()
+  console.log('✓ Test 7: Generation counter discards stale onresult after send')
+}
+
+// ---- Test 8: Poisoning detection — 3 identical finals trigger restart ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'initial start')
+
+  // Simulate Chrome getting stuck: same fragment arrives 3 times in a row
+  const poisonFragment = { isFinal: true, 0: { transcript: ' garbage garbage' } }
+  for (let i = 0; i < 2; i++) {
+    mockRec.onresult({ resultIndex: 0, results: [poisonFragment] })
+    assert.ok(isRecording(), `still recording after repeat ${i + 1}`)
+    assert.ok(ta.value.length > 0 || i === 0, `textarea has text before threshold`)
+  }
+  // Third identical final — should trigger poisoning restart
+  mockRec.onresult({ resultIndex: 0, results: [poisonFragment] })
+  assert.equal(ta.value, '', 'poisoning detected — textarea should be cleared')
+  assert.equal(startCount, 2, 'poisoning restart should have started a new recognition session')
+  assert.ok(isRecording(), 'should still be recording after poison restart')
+
+  reset()
+  console.log('✓ Test 8: Poisoning detection — 3 identical finals trigger restart')
+}
+
+console.log('\nAll 8 tests passed.')
