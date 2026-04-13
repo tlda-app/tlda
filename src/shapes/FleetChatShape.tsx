@@ -589,10 +589,13 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Placed after rawItems so count is always defined.
+  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
+  // A close estimate prevents the "scrolled to middle" bug where setting
+  // scrollTop = estimated-total puts you far from the actual bottom.
   const virtualizer = useVirtualizer({
     count: rawItems.length,
     getScrollElement: () => chatLogRef.current,
-    estimateSize: () => 28,
+    estimateSize: () => 65,
     overscan: 8,
   })
 
@@ -914,52 +917,39 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [])
 
   // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
-  // Track lastScrollHeight so we can distinguish "user scrolled up" from "content grew
-  // beneath us" (image loads, new messages expanding the container). Only mark
-  // userScrolledUp when the user's distance from the bottom INCREASES without a
-  // corresponding scrollHeight change — i.e. the user actually scrolled up.
+  // With the virtualizer, scrollHeight changes constantly during item measurement so
+  // we can't use height-change detection to distinguish user scrolls from content growth.
+  // Instead: track whether a programmatic scroll is in flight to suppress false positives.
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const lastScrollHeight = useRef(0)
-  const lastDistFromBottom = useRef(0)
+  const autoScrollingRef = useRef(false)  // true while we're auto-scrolling to bottom
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-    lastScrollHeight.current = el.scrollHeight
-    lastDistFromBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight
     const onScroll = () => {
+      if (autoScrollingRef.current) return  // ignore scroll events we caused
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const heightChanged = el.scrollHeight !== lastScrollHeight.current
-      if (heightChanged) {
-        // Content grew (new message, image load) — don't treat as user scroll.
-        // If already scrolled up, stay scrolled up (don't fight the user).
-        lastScrollHeight.current = el.scrollHeight
-        lastDistFromBottom.current = distFromBottom
-        return
-      }
-      // Real user scroll event (no height change).
-      // Once scrolled up, STAY scrolled up — only clear when user reaches the very bottom.
-      // This prevents auto-scroll from fighting manual scroll-up.
-      if (distFromBottom > 30 && !userScrolledUp.current) {
-        // User just scrolled away from bottom
+      if (distFromBottom > 60 && !userScrolledUp.current) {
         userScrolledUp.current = true
         setShowScrollBtn(true)
-      } else if (distFromBottom <= 5 && userScrolledUp.current) {
-        // User scrolled all the way back to bottom manually
-        userScrolledUp.current = false; setShowScrollBtn(false)
+      } else if (distFromBottom <= 10 && userScrolledUp.current) {
+        userScrolledUp.current = false
+        setShowScrollBtn(false)
       }
-      lastDistFromBottom.current = distFromBottom
     }
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
-  useLayoutEffect(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    if (!userScrolledUp.current) {
-      el.scrollTop = el.scrollHeight
-      lastScrollHeight.current = el.scrollHeight
-      lastDistFromBottom.current = 0
+
+  // Scroll to last item when new messages arrive (virtualizer-aware).
+  // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
+  // would land at the estimated position, not the actual bottom after measurement.
+  useEffect(() => {
+    if (!userScrolledUp.current && rawItems.length > 0) {
+      autoScrollingRef.current = true
+      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+      // Clear the flag after the scroll event fires
+      requestAnimationFrame(() => { autoScrollingRef.current = false })
     }
   }, [rawItems.length])
 
