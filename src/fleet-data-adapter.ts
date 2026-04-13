@@ -74,6 +74,20 @@ function visibilityGate(update: () => void, refresh: () => void): [() => void, (
   return [gated, cleanup]
 }
 
+/**
+ * Returns a debounced version of `fn` that waits 16ms (one frame) before
+ * calling. Multiple calls within the window coalesce into one.
+ * Returns a cleanup that cancels any pending timer.
+ */
+function debounce16(fn: () => void): [() => void, () => void] {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const debounced = () => {
+    if (!timer) timer = setTimeout(() => { timer = null; fn() }, 16)
+  }
+  const cancel = () => { if (timer !== null) { clearTimeout(timer); timer = null } }
+  return [debounced, cancel]
+}
+
 // --- Hooks ---
 
 export function useFleetAgents(frameId?: string): any[] {
@@ -91,9 +105,10 @@ export function useFleetAgents(frameId?: string): any[] {
         if (cancelled || isPlaybackMode) return
         setAgents([...getAgents()])
         const refresh = () => { if (!cancelled) setAgents([...getAgents()]) }
-        const [gated, cleanupGate] = visibilityGate(refresh, refresh)
+        const [debounced, cancelDebounce] = debounce16(refresh)
+        const [gated, cleanupGate] = visibilityGate(debounced, refresh)
         const rawUnsub = subscribe('agents', null, gated)
-        liveUnsub = () => { rawUnsub(); cleanupGate() }
+        liveUnsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
       })
     }
 
@@ -181,9 +196,10 @@ export function useFleetTasks(frameId?: string): any[] {
       if (cancelled) return
       setTasks([...getTasks()])
       const refresh = () => { if (!cancelled) setTasks([...getTasks()]) }
-      const [gated, cleanupGate] = visibilityGate(refresh, refresh)
+      const [debounced, cancelDebounce] = debounce16(refresh)
+      const [gated, cleanupGate] = visibilityGate(debounced, refresh)
       const rawUnsub = subscribe('tasks', null, gated)
-      unsub = () => { rawUnsub(); cleanupGate() }
+      unsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
     })
 
     return () => {
