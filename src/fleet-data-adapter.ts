@@ -236,18 +236,37 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           }
         }
         const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+
+        // Batch incoming events within a 16ms window (one animation frame).
+        // WS messages arrive as separate macrotasks, so without batching each
+        // message triggers its own React render. This coalesces bursts into one.
+        let pendingBatch: any[] = []
+        let batchTimer: ReturnType<typeof setTimeout> | null = null
+        const flushBatch = () => {
+          batchTimer = null
+          if (pendingBatch.length === 0) return
+          const batch = pendingBatch.splice(0)
+          setEvents(prev => {
+            const next = [...prev, ...batch]
+            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
+          })
+        }
+
         const rawUnsub = subscribe('messages', filter, (event: any) => {
           if (!_tabVisible) return  // skip render; refreshEvents will run on tab restore
           if (!event) {
             refreshEvents()
           } else {
-            setEvents(prev => {
-              const next = [...prev, event]
-              return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
-            })
+            pendingBatch.push(event)
+            if (!batchTimer) batchTimer = setTimeout(flushBatch, 16)
           }
         })
-        liveUnsub = () => { rawUnsub(); cleanupGate() }
+        liveUnsub = () => {
+          rawUnsub()
+          cleanupGate()
+          if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
+          if (pendingBatch.length > 0) flushBatch()
+        }
       })
     }
 
