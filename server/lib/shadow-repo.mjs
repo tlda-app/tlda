@@ -13,6 +13,14 @@ const execAsync = promisify(execCb)
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, rmSync, symlinkSync, lstatSync } from 'fs'
 import { join, relative } from 'path'
+
+// Protected compare refs — exempt from pruning while a compare is active.
+// Set by the MCP doc_compare handler, cleared when compare is dismissed.
+const _compareRefs = new Map()
+export function setCompareRef(projectName, hash7) {
+  if (hash7) _compareRefs.set(projectName, hash7)
+  else _compareRefs.delete(projectName)
+}
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import { projectDir, sourceDir, outputDir } from './project-store.mjs'
@@ -300,11 +308,14 @@ function pruneShadowCache(name) {
   const histDir = historyDir(name)
   if (!existsSync(histDir)) return
 
+  // Exempt the actively-compared version from pruning.
+  // The compare ref is set by setCompareRef() (called from the MCP tool handler).
+  const protectedHash = _compareRefs.get(name) || null
+
   let dirs = readdirSync(histDir)
     .filter(d => d.startsWith('shadow-'))
-    .sort()  // oldest first (by hash prefix — not perfect, but combined with creation order it works)
 
-  // Use directory mtime for ordering instead
+  // Use directory mtime for ordering instead of hash prefix
   dirs = dirs.map(d => ({
     name: d,
     path: join(histDir, d),
@@ -312,7 +323,13 @@ function pruneShadowCache(name) {
   })).sort((a, b) => a.mtime - b.mtime)
 
   while (shadowCacheSize(name) > MAX_CACHE_BYTES && dirs.length > 1) {
-    const oldest = dirs.shift()
+    const oldest = dirs[0]
+    // Don't prune the actively-compared version
+    if (protectedHash && oldest.name === `shadow-${protectedHash}`) {
+      dirs.shift()
+      continue
+    }
+    dirs.shift()
     rmSync(oldest.path, { recursive: true, force: true })
   }
 }

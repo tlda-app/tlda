@@ -263,6 +263,8 @@ const lastMessageCache = new Map<string, { text: string; ts: number; fetched: nu
 async function fetchLastMessage(agentName: string): Promise<{ text: string; ts: number } | null> {
   const cached = lastMessageCache.get(agentName)
   if (cached && Date.now() - cached.fetched < 30_000) return cached
+  // /api/logs/search doesn't exist on the unified server yet — skip to avoid 404 spam
+  return null
   try {
     // Search for the agent name — the API does FTS, then we filter client-side
     const results = await searchFleet(agentName, 20)
@@ -354,7 +356,10 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         const cb = order[agentCategory(b) as keyof typeof order] ?? 1
         return dir * (ca - cb) || b._ts - a._ts
       }
-      return dir * (b._ts - a._ts) // 'seen' — most recent first (default desc)
+      // 'seen' — default (sortAsc=false) is most-recent-first. The math
+      // here is inverted relative to name/status so that the "desc" arrow
+      // on the header means "most recent at top" (what anyone would want).
+      return dir * (a._ts - b._ts)
     }
     active.sort(sortFn)
     dead.sort((a: any, b: any) => b._ts - a._ts)

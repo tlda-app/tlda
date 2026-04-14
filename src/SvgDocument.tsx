@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useState, useCallback, useContext, useSyncExternalStore } from 'react'
+import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore } from 'react'
 import {
   Tldraw,
   react,
@@ -24,6 +24,7 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 // DotAnnotationShape removed — math-note dots replace it
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
+import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -48,7 +49,7 @@ import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
@@ -96,6 +97,7 @@ import { useFootControl } from './hooks/useFootControl'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { useCompareColumn } from './hooks/useCompareColumn'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
@@ -125,6 +127,12 @@ function BottomPanelsSlot() {
 
 function AgentPillSlot() {
   const content = useContext(AgentPillContext)
+  return <>{content}</>
+}
+
+const VersionStampContext = createContext<React.ReactNode>(null)
+function VersionStampSlot() {
+  const content = useContext(VersionStampContext)
   return <>{content}</>
 }
 
@@ -195,6 +203,108 @@ function ViewPinBadge({ docName }: { docName: string }) {
     >
       📌 {pinnedRef} ✕
     </span>
+  )
+}
+
+/**
+ * VersionStamp — shows a small stack of recent build timestamps with
+ * perspective-style opacity. The current (latest) version is most visible;
+ * older versions fade out. Click an older version → doc_view to that hash.
+ * Updates after each build.
+ */
+const MAX_VISIBLE_VERSIONS = 5
+
+function VersionStamp({ docName }: { docName: string }) {
+  const [versions, setVersions] = useState<Array<{ hash: string; timestamp: string | number }>>([])
+  const [activeIdx, setActiveIdx] = useState(0)
+
+  const fetchVersions = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${docName}/history/shadow`)
+      if (!res.ok) return
+      const raw = await res.json()
+      // API returns { versions: [...] } or bare array
+      const data: Array<{ hash: string; timestamp: string | number }> = raw.versions || raw
+      if (!data || data.length === 0) return
+      setVersions(data.slice(0, MAX_VISIBLE_VERSIONS))
+      setActiveIdx(0)
+      // Broadcast current version to the server so agents can query
+      // what version the viewer is showing via build_status
+      const latest = data[0]
+      if (latest?.hash) {
+        fetch(`/api/projects/${docName}/signal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            key: 'signal:viewer-version',
+            data: { hash: latest.hash, timestamp: Date.now() },
+          }),
+        }).catch(() => {})
+      }
+    } catch {}
+  }, [docName])
+
+  useEffect(() => { fetchVersions() }, [fetchVersions])
+  useEffect(() => {
+    return onBuildStatusSignal(() => {
+      setTimeout(fetchVersions, 1000)
+    })
+  }, [fetchVersions])
+
+  const handleClick = useCallback(async (idx: number) => {
+    if (idx === 0) {
+      // Click current → rebuild from HEAD (unpin)
+      if (activeIdx !== 0) {
+        try {
+          await fetch(`/api/projects/${docName}/build`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          })
+        } catch {}
+        setActiveIdx(0)
+      }
+      return
+    }
+    // Click older version → doc_view
+    const v = versions[idx]
+    if (!v) return
+    try {
+      await fetch(`/api/projects/${docName}/history/shadow/${v.hash}/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+      setActiveIdx(idx)
+    } catch {}
+  }, [docName, versions, activeIdx])
+
+  if (versions.length === 0) return null
+
+  return (
+    <div
+      className="version-stamp"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {/* Current version at top, older versions fading downward. */}
+      {versions.map((v, i) => {
+        const hash7 = v.hash.slice(0, 7)
+        const time = new Date(v.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        const isActive = i === activeIdx
+        const baseOpacity = isActive ? 0.7 : Math.max(0.08, 0.35 - i * 0.07)
+        return (
+          <div
+            key={v.hash}
+            className={`version-stamp-entry${isActive ? ' active' : ''}`}
+            style={{ opacity: baseOpacity }}
+            onClick={() => handleClick(i)}
+            title={`${hash7} — ${new Date(v.timestamp).toLocaleString()}`}
+          >
+            {time}{i === 0 && <span className="version-stamp-hash"> · {hash7}</span>}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -352,6 +462,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
+  // Side-by-side version comparison — relay Yjs signal to window event
+  useEffect(() => {
+    const unsub = onCompareSignal((data) => {
+      window.dispatchEvent(new CustomEvent('tlda-compare', { detail: data }))
+    })
+    return unsub
+  }, [])
+  useCompareColumn(editorRef.current, docName, document?.pages?.length ?? 0)
 
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
@@ -578,7 +697,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
     }),
     [document, roomId]
   )
@@ -647,7 +766,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
     shadowHistoryVersionCount: shadowVersions.length,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions.length])
+    shadowVersions,
+    shadowActiveIdx,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions, shadowActiveIdx])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -657,7 +778,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const all = [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil];
+    (window as any).__tldraw_shape_utils__ = all
+    return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
@@ -837,7 +960,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
     <div className="bottom-panels">
-      {panelsLocal && refViewerRefs && editorRef.current && (
+      {panelsLocal && refViewerRefs && editorRef.current &&
+        !editorRef.current.getCurrentPageShapes().some((s: any) => s.type === 'fleet-docview') && (
         <RefViewer
           mainEditor={editorRef.current}
           pages={docContextValue.pages}
@@ -899,6 +1023,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         />
       )}
       <div className="build-pills-row">
+        {storeWithStatus.status === 'synced-remote' && storeWithStatus.connectionStatus === 'offline' && (
+          <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
+        )}
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
@@ -928,6 +1055,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
+  const versionStampContent = <VersionStamp docName={document.name} />
 
   return (
     <>
@@ -935,6 +1063,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
+    <VersionStampContext.Provider value={versionStampContent}>
     <Tldraw
         store={storeWithStatus}
         licenseKey={LICENSE_KEY}
@@ -992,6 +1121,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
             const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
             setRefViewerRefsLocal([{ label: anchorId, region }])
+            // Update fleet-docview shape directly if one exists
+            const dvShape = editor.getCurrentPageShapes().find((s: any) => s.type === 'fleet-docview')
+            if (dvShape) {
+              const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
+              if ((dvShape as any).isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
+              editor.updateShape({
+                id: dvShape.id, type: dvShape.type,
+                props: { ...(dvShape as any).props, mode: 'manual', label: anchorId, page: pageIdx + 1, yTop, yBottom, title: dvTitle },
+              })
+            }
           })
 
           // Register HUD layout mode side effects (container ↔ fleet shape sync)
@@ -1291,6 +1430,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
+    </VersionStampContext.Provider>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>

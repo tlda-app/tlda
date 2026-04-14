@@ -34,7 +34,8 @@ blocked((ms, stack) => {
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, hostname } from 'os'
+import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
@@ -85,6 +86,103 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 // that machine's fleet-daemon. Used for RPC routing and for pushing
 // agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
+
+// Local-machine daemon supervisor.
+//
+// The fleet daemon is a per-machine subprocess that watches Claude Code
+// session JSONLs and pushes activity-card / terminal events to the server.
+// When the daemon dies for any reason, no one resurrects it and the user
+// silently loses activity cards, terminal cards, and source watching.
+//
+// The server is the natural supervisor: it knows when a daemon connects
+// and disconnects via daemonConnections, and it knows its own machine_id
+// (the hostname). On a periodic check, if no daemon is connected for the
+// local machine, spawn one. Skip flagged this as brittleness — the cost
+// of a misfire (an extra short-lived daemon) is much smaller than the
+// cost of silent feature loss.
+const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
+const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
+const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
+const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const DAEMON_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+// Crash-loop guard: if the daemon dies fast >= MAX_RAPID_RESPAWNS times in a
+// row, give up until manual intervention. The supervisor would otherwise
+// hot-loop and burn CPU + log spam if the daemon has a startup crash.
+const DAEMON_FAST_DEATH_MS = 30_000   // < 30s alive == "fast death"
+const DAEMON_MAX_RAPID_RESPAWNS = 3
+const DAEMON_BACKOFF_MS = 5 * 60_000  // back off 5 minutes after giving up
+let _daemonSpawnInFlight = false
+let _daemonRespawnCount = 0
+let _daemonRapidFails = 0
+let _daemonLastSpawnAt = 0
+let _daemonBackoffUntil = 0
+let _daemonGivingUpLogged = false
+
+function noteDaemonHealthyConnect() {
+  // Called when a daemon connects successfully — reset the rapid-fail
+  // counter so a single crash much later doesn't count toward the loop
+  // budget. The "fast death" check below is the real arbiter.
+  _daemonRapidFails = 0
+  _daemonGivingUpLogged = false
+}
+
+function ensureLocalDaemon() {
+  if (_daemonSpawnInFlight) return
+  const now = Date.now()
+  if (now < _daemonBackoffUntil) return
+  // Already connected? Done.
+  const ws = daemonConnections.get(LOCAL_MACHINE_ID)
+  if (ws && ws.readyState === 1) return
+  // PID file exists and process alive? It's just not connected yet — give it
+  // a moment, don't double-spawn.
+  if (existsSync(DAEMON_PID_FILE)) {
+    try {
+      const pid = parseInt(readFileSync(DAEMON_PID_FILE, 'utf8').trim(), 10)
+      if (pid > 0) {
+        try { process.kill(pid, 0); return } catch {} // not alive → fall through to respawn
+      }
+    } catch {}
+  }
+  if (!existsSync(DAEMON_SCRIPT)) return
+
+  // Crash-loop check: if the previous spawn died within DAEMON_FAST_DEATH_MS,
+  // bump the rapid-fail counter; if too many in a row, back off.
+  if (_daemonLastSpawnAt > 0 && now - _daemonLastSpawnAt < DAEMON_FAST_DEATH_MS) {
+    _daemonRapidFails++
+    if (_daemonRapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
+      _daemonBackoffUntil = now + DAEMON_BACKOFF_MS
+      if (!_daemonGivingUpLogged) {
+        console.error(`[daemon-supervisor] daemon crashed ${_daemonRapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${DAEMON_LOG_FILE} for the cause.`)
+        _daemonGivingUpLogged = true
+      }
+      _daemonRapidFails = 0
+      return
+    }
+  } else if (_daemonLastSpawnAt > 0) {
+    // Long-lived daemon died — single failure, don't count toward the loop.
+    _daemonRapidFails = 0
+  }
+
+  _daemonSpawnInFlight = true
+  try {
+    if (!existsSync(dirname(DAEMON_LOG_FILE))) mkdirSync(dirname(DAEMON_LOG_FILE), { recursive: true })
+    const logFd = openSync(DAEMON_LOG_FILE, 'a')
+    const child = cpSpawn(process.execPath, [DAEMON_SCRIPT], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env },
+    })
+    child.unref()
+    _daemonRespawnCount++
+    _daemonLastSpawnAt = now
+    console.log(`[daemon-supervisor] respawned local fleet daemon (count=${_daemonRespawnCount}, rapid_fails=${_daemonRapidFails})`)
+  } catch (e) {
+    console.error(`[daemon-supervisor] spawn failed: ${e.message}`)
+  } finally {
+    // Brief lockout so we don't burst-spawn while the new daemon is coming up.
+    setTimeout(() => { _daemonSpawnInFlight = false }, 3000)
+  }
+}
 
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
 // Each entry: { resolve, reject, timer, machine_id }.
@@ -162,6 +260,20 @@ function broadcastState() {
 // Wire fleet store events → WS broadcast
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
+}
+
+// Full chat delivery pipeline used by tlda-feedback (push-channel
+// notifications for doc annotations). Mirrors the WS 'chat' handler:
+// share → addUnread → broadcast. Calling only fleetStore.share leaves
+// the message invisible to getUnread, so the recipient's MCP never
+// surfaces it as a <channel> system-reminder.
+function deliverTldaFeedbackChat({ from, to, text, metadata }) {
+  if (!fleetStore) return
+  const metadataJson = metadata ? JSON.stringify(metadata) : JSON.stringify(null)
+  const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: metadataJson })
+  if (!event) return
+  fleetStore.addUnread?.(event.id, to)
+  broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
 }
 
 // When a project is created or its sourceDir changes, push the new
@@ -801,28 +913,31 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to, from, metadata, inline_attachments, attachments, cc } = msg
+    const { message: text, to, from, metadata, inline_attachments, attachments, cc, context } = msg
     if (!to || !text) { error('missing to or message'); return }
-    // Fleet MCP sends inline_attachments / attachments / cc at the top level
-    // of the msg. Fold them into the metadata JSON so the receiver pipeline
-    // (fleet-data.mjs → chat-render.mjs) can find them. The HTTP POST
-    // /api/chat route in server/routes/fleet.mjs does this correctly;
-    // this WS path was missing it after the fleet→tlda server merge.
+    // Fleet MCP sends inline_attachments / attachments / cc / context at the
+    // top level of the msg. Fold them into the metadata JSON so the receiver
+    // pipeline (fleet-data.mjs → chat-render.mjs / my_task) can find them.
     const combinedMetadata = {
       ...(metadata || {}),
       ...(cc ? { cc } : {}),
       ...(attachments ? { attachments } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
+      ...(context ? { context } : {}),
     }
-    const metadataJson = Object.keys(combinedMetadata).length
-      ? JSON.stringify(combinedMetadata)
-      : JSON.stringify(null)
-    const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: metadataJson })
+    const event = fleetStore.share?.({
+      type: 'chat',
+      from,
+      to,
+      text,
+      metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
+    })
     if (!event) { error('store error'); return }
-    // Add to unread
-    fleetStore.addUnread?.(event.id, to)
-    // Broadcast
-    broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+    // No manual broadcast — share() already fires the listener that
+    // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
+    // A second manual broadcast here used to produce duplicate messages
+    // in receivers (one with the trimmed metadata shape, one with the full
+    // store record).
     reply({ ok: true, event_id: event.id })
     return
   }
@@ -851,9 +966,12 @@ function handleFleetWsMessage(ws, msg) {
       success_criteria: success_criteria || undefined,
     }
     fleetStore.upsertTask(task)
+    const fromAgent = from ? fleetStore.findAgent(from) : null
     fleetStore.delegate?.(from, resolved.id, taskId, description, {
+      fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
+      message: taskMsg || '',
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
@@ -909,7 +1027,12 @@ function handleFleetWsMessage(ws, msg) {
     fleetStore.updateHeartbeat(agentId)
     const task = fleetStore.getTaskByAgent?.(agentId) || null
     const unread = fleetStore.getUnread?.(agentId) || []
-    if (unread.length) {
+    // peek=true: caller just wants to see unread (e.g., the channel-WS
+    // flush-on-reconnect path that displays a count). Don't mark read in
+    // that case — the actual my_task() call from the agent will do the
+    // marking. Without this, peek silently consumes the unread queue and
+    // the subsequent my_task() returns nothing.
+    if (unread.length && !msg.peek) {
       const readIds = fleetStore.markRead?.(agentId) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
@@ -959,7 +1082,7 @@ function handleFleetWsMessage(ws, msg) {
     const { agentId, doc } = msg
     if (!agentId || !doc) { error('missing agentId or doc'); return }
     try {
-      tldaFeedback.subscribe(agentId, doc, fleetStore)
+      tldaFeedback.subscribe(agentId, doc, deliverTldaFeedbackChat)
       reply({ ok: true, doc, subscriptions: tldaFeedback.list(agentId) })
     } catch (e) { error(e.message) }
     return
@@ -1013,12 +1136,32 @@ const _terminalDedupStmt = fleetStore?.db.prepare(
 )
 
 function projectsForDaemon() {
-  // Returns the project list a daemon needs to watch source dirs for.
-  // Today every daemon watches every project — multi-machine source
-  // ownership is future work (see spec § Multi-user considerations).
+  // Returns the project list a daemon needs to watch source dirs for,
+  // including each project's relevant-files set (from the last build's
+  // .fls). The daemon uses this to watch ONLY the files the build
+  // actually reads — not the entire sourceDir.
   return listProjects()
     .filter(p => p.sourceDir && !p.archived)
-    .map(p => ({ name: p.name, sourceDir: p.sourceDir, format: p.format || 'svg' }))
+    .map(p => {
+      let watchFiles = null
+      try {
+        const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
+        if (existsSync(rfPath)) {
+          const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
+          // Filter to only author-dir paths (not the server mirror paths)
+          watchFiles = (rf.files || [])
+            .filter(f => f.startsWith(p.sourceDir))
+            .map(f => f.slice(p.sourceDir.length + 1))  // relative paths
+        }
+      } catch {}
+      return {
+        name: p.name,
+        sourceDir: p.sourceDir,
+        format: p.format || 'svg',
+        watchFiles,  // null = no .fls yet, watch main file only
+        mainFile: p.mainFile || null,
+      }
+    })
 }
 
 function broadcastDaemonAgentsUpdated() {
@@ -1085,6 +1228,7 @@ function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(machine_id, ws)
+    if (machine_id === LOCAL_MACHINE_ID) noteDaemonHealthyConnect()
     console.log(`[fleet-daemon] connected: machine_id=${machine_id} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
     // Resume any active terminal watches for agents on this machine.
@@ -1122,7 +1266,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'activity-event') {
     if (!fleetStore) return
-    const { agent_id, tool, arg, input, ts, usage } = msg
+    const { agent_id, tool, arg, input, ts, usage, prettyResult } = msg
     if (!agent_id) return
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
@@ -1131,7 +1275,7 @@ function handleDaemonWsMessage(ws, msg) {
         from: agent_id,
         to: agent_id,
         text: tool === '_text' ? (arg || '') : (tool || ''),
-        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}) },
+        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}) },
         unread: false,
         timestamp: ts || new Date().toISOString(),
       })
@@ -1286,4 +1430,11 @@ server.listen(PORT, HOST, () => {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
 
+  // Start the local-daemon supervisor. Run an immediate check (so the daemon
+  // is up shortly after server start) and then poll on an interval. The
+  // daemon's own pidfile + connection-state checks gate actual respawn so
+  // we don't burst-spawn while a daemon is starting.
+  console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
+  ensureLocalDaemon()
+  setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 })

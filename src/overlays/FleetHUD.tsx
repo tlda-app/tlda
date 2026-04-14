@@ -10,7 +10,7 @@ import { useFleetAgents } from '../fleet-data-adapter'
 import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
 /** Transient proxy shape created on the main editor during layout mode.
  *  Exported so CanvasClipPanel can filter it out of the HUD mirror. */
@@ -59,56 +59,46 @@ interface FleetHUDProps {
  * Sorts shapes in reading order, computes a grid from the existing bounding
  * box, and resizes + repositions each shape to fill a cell.
  */
-function repackFleetShapes(editor: Editor) {
+/** Anisotropic scale: normalize each shape's position and size relative to the
+ *  current bounding box, then apply to the target bounding box. Preserves
+ *  each shape's proportional position and size — no packing, no uniform cells. */
+function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y: number; w: number; h: number }) {
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   if (shapes.length === 0) return
 
-  // Sort in reading order: top rows first, left-to-right within a row.
-  // "Same row" = y positions within 50 canvas units of each other.
-  const ROW_SNAP = 50
-  const sorted = [...shapes].sort((a, b) => {
-    const aRow = Math.round(a.y / ROW_SNAP)
-    const bRow = Math.round(b.y / ROW_SNAP)
-    if (aRow !== bRow) return aRow - bRow
-    return a.x - b.x
-  })
-
-  // Compute overall bounding box via page bounds
+  // Current bounding box
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const s of sorted) {
-    const bounds = editor.getShapePageBounds(s.id)
-    if (!bounds) continue
-    minX = Math.min(minX, bounds.x)
-    minY = Math.min(minY, bounds.y)
-    maxX = Math.max(maxX, bounds.x + bounds.w)
-    maxY = Math.max(maxY, bounds.y + bounds.h)
+  for (const s of shapes) {
+    const b = editor.getShapePageBounds(s.id)
+    if (!b) continue
+    minX = Math.min(minX, b.x)
+    minY = Math.min(minY, b.y)
+    maxX = Math.max(maxX, b.x + b.w)
+    maxY = Math.max(maxY, b.y + b.h)
   }
   if (!isFinite(minX)) return
 
-  const totalW = maxX - minX
-  const totalH = maxY - minY
-  const n = sorted.length
-
-  // Choose cols to approximate the existing aspect ratio of the fleet region
-  const aspectRatio = totalH > 0 ? totalW / totalH : 1
-  const cols = Math.max(1, Math.round(Math.sqrt(n * aspectRatio)))
-  const rows = Math.ceil(n / cols)
-  const cellW = Math.round(totalW / cols)
-  const cellH = Math.round(totalH / rows)
+  const srcW = maxX - minX || 1
+  const srcH = maxY - minY || 1
+  const tgt = targetBounds || { x: minX, y: minY, w: srcW, h: srcH }
 
   const updates: any[] = []
-  sorted.forEach((s, i) => {
-    const col = i % cols
-    const row = Math.floor(i / cols)
+  for (const s of shapes) {
+    const b = editor.getShapePageBounds(s.id)
+    if (!b) continue
+    const relX = (b.x - minX) / srcW
+    const relY = (b.y - minY) / srcH
+    const relW = b.w / srcW
+    const relH = b.h / srcH
     updates.push({
       id: s.id,
       type: s.type,
-      x: minX + col * cellW,
-      y: minY + row * cellH,
-      props: { w: cellW, h: cellH },
+      x: tgt.x + relX * tgt.w,
+      y: tgt.y + relY * tgt.h,
+      props: { w: Math.round(relW * tgt.w), h: Math.round(relH * tgt.h) },
     })
-  })
+  }
 
   editor.updateShapes(updates)
 }
@@ -189,8 +179,13 @@ export function FleetHUD({
   const draggingRef = useRef(false)
 
   // Reactively update fleet bounds when shapes change.
-  // Position updates: freeze during drag, recalculate on pointerup only.
-  // This prevents the auto-zoom panel from resizing mid-drag.
+  //
+  // Position updates: freeze during USER drag (so the auto-zoom panel doesn't
+  // thrash mid-resize), recalculate on pointerup. Updates from remote sync
+  // (Yjs from another tab or the server) recalculate IMMEDIATELY — those
+  // aren't drags and deferring them caused a nasty bug where the HUD would
+  // appear to "spontaneously zoom" minutes later when the user happened to
+  // click anywhere on the page (which fired the deferred handler).
   useEffect(() => {
     setFleetBounds(getFleetBounds(mainEditor))
 
@@ -206,24 +201,27 @@ export function FleetHUD({
       if (hasAddOrRemove) {
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
-        // Reflow remaining shapes into a clean grid when a fleet shape is
-        // deleted (but not when one is added — that would scramble fresh drops).
-        if (hasRemoval && !hasAddition) {
-          const remaining = mainEditor.getCurrentPageShapes()
-            .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-          if (remaining.length > 0) {
-            queueMicrotask(() => repackFleetShapes(mainEditor))
-          }
-        }
+        // Auto-reflow disabled — it was making things worse, not better.
+        // TODO: reimplement add+delete-as-identity later. For now shapes
+        // stay where they are on add/remove; user drags manually.
         return
       }
 
-      // Position/size updates: mark as dragging, recalc on pointerup
+      // Position/size updates
       const hasUpdate = Object.values(changes.updated)
         .some(([from, to]) => isFleetChange(from) || isFleetChange(to))
 
-      if (hasUpdate) {
+      if (!hasUpdate) return
+
+      // Only defer if the user is actively dragging (pointer is down inside
+      // tldraw). For programmatic/remote updates, recalc immediately so the
+      // HUD reflects the new bounds at the moment they change.
+      const isUserDragging = !!mainEditor.inputs?.isPointing
+      if (isUserDragging) {
         draggingRef.current = true
+      } else {
+        draggingRef.current = false
+        setFleetBounds(getFleetBounds(mainEditor))
       }
     }, { source: 'all', scope: 'document' })
 
@@ -253,10 +251,6 @@ export function FleetHUD({
     return () => document.body.classList.remove('fleet-hud-open')
   }, [expanded, fleetBounds])
 
-  const aliveCount = useMemo(() => {
-    return agents.filter((a: any) => !a.dead && !a.human).length
-  }, [agents])
-
   // Track camera so render recomputes canvas→screen projection for HUD x.
   // We poll via rAF because tldraw camera changes don't fire store listeners
   // on the same scope we care about.
@@ -278,12 +272,66 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded])
 
+  // Refuse HTML5 file/chip drops anywhere inside the HUD rectangle. The HUD
+  // wrap itself has pointer-events: none, so we can't put handlers on it; use
+  // capture-phase document listeners and check the cursor against the HUD's
+  // current bounding rect. Without this, dropping a markdown chip into the
+  // HUD area wedges the drag-over machinery somewhere downstream.
+  //
+  // Exception: drops onto chat input areas (textarea, input elements, or
+  // anything inside .fleet-chat-input-area) are allowed through so the user
+  // can drop image/file attachments into the chat composer.
+  useEffect(() => {
+    if (!expanded) return
+    const isInsideHud = (clientX: number, clientY: number) => {
+      const el = hudRef.current
+      if (!el) return false
+      const r = el.getBoundingClientRect()
+      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
+    }
+    const isInsideChatInput = (e: DragEvent): boolean => {
+      // Check the actual element under the cursor — if it's a text input or
+      // inside the chat composer area, let the drop fall through.
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (!target) return false
+      if (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && (target as HTMLInputElement).type !== 'hidden')) return true
+      return !!target.closest('.fleet-chat-input-area')
+    }
+    const onDragOver = (e: DragEvent) => {
+      if (!isInsideHud(e.clientX, e.clientY)) return
+      if (isInsideChatInput(e)) return  // allow — chat composer handles it
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'
+    }
+    const onDrop = (e: DragEvent) => {
+      if (!isInsideHud(e.clientX, e.clientY)) return
+      if (isInsideChatInput(e)) return  // allow — chat composer handles it
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    document.addEventListener('dragover', onDragOver, true)
+    document.addEventListener('drop', onDrop, true)
+    return () => {
+      document.removeEventListener('dragover', onDragOver, true)
+      document.removeEventListener('drop', onDrop, true)
+    }
+  }, [expanded])
+
+  const aliveCount = useMemo(() => {
+    return agents.filter((a: any) => !a.dead && !a.human).length
+  }, [agents])
+
   // Layout mode entry — create proxy on main, snapshot baselines, subscribe
   // to proxy changes for live anisotropic fan-out to every fleet shape.
   const handleLayoutEnter = useCallback(() => {
     if (layoutMode || !fleetBounds) return
 
-    // Compute the HUD's current canvas rect (same projection logic as render)
+    // Compute the HUD's current canvas rect (same projection logic as render).
+    // Auto-layout fallback must match the render path: viewport-anchored on
+    // the right side. Otherwise the proxy shape spawns at a different
+    // position than the rendered wrap, throwing the user into a confusing
+    // state on layout-mode entry.
     const cam = mainEditor.getCamera()
     const fbRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
     const autoScreenH = window.innerHeight * 0.8
@@ -377,6 +425,23 @@ export function FleetHUD({
   // value without depending on React state timing.
   const hudOverrideRef = useRef<HudOverride | null>(hudOverride)
   useEffect(() => { hudOverrideRef.current = hudOverride }, [hudOverride])
+
+  // Emergency reset: when the Fleet button in the TOC is clicked, it
+  // recreates the fleet shapes AND fires a `fleet-hud-reset` event so we
+  // also clear our position override. Without this, the HUD wrap stays
+  // wedged at whatever broken position it had, even after the shapes
+  // underneath get recreated.
+  useEffect(() => {
+    const onReset = () => {
+      setHudOverride(null)
+      // If we're stuck in layout mode, exit it cleanly.
+      if (layoutMode) {
+        try { handleLayoutExit() } catch {}
+      }
+    }
+    window.addEventListener('fleet-hud-reset', onReset)
+    return () => window.removeEventListener('fleet-hud-reset', onReset)
+  }, [layoutMode, handleLayoutExit])
 
   // During layout mode, derive the wrap rect and the clip-panel bounds
   // directly from the proxy shape via a tldraw `useValue` subscription.
@@ -516,7 +581,6 @@ export function FleetHUD({
   const autoScreenH = window.innerHeight * 0.8
   const autoZoom = autoScreenH / fleetBounds.h
   const autoScreenW = fleetBounds.w * autoZoom
-  const fbRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
 
   let panelLeft: number
   let panelTop: number
@@ -542,11 +606,65 @@ export function FleetHUD({
     panelHeight = hudOverride.screenH
     clipBounds = fleetBounds
   } else {
+    // Auto layout: canvas-anchored to the right edge of the fleet
+    // shapes so the HUD pans/zooms with the canvas like a shape.
+    // (This is the original behavior — Skip wants the HUD to track the
+    // doc as he pans, not stay glued to the viewport.) If the camera
+    // is pointed somewhere that puts this position off-screen, the
+    // TOC Fleet button is the recovery — it clears any override and
+    // re-centers fleet shapes.
+    const fbRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
     panelLeft = fbRight - autoScreenW
     panelTop = (window.innerHeight - autoScreenH) / 2
     panelWidth = autoScreenW
     panelHeight = autoScreenH
     clipBounds = fleetBounds
+  }
+
+  // No clamp on panelLeft/panelTop. The HUD can drift off-screen via pan
+  // or via layout-mode dragging — recovery is the Fleet button in the TOC
+  // (createFleetLayout) which clears the HUD override and recreates the
+  // shapes. Skip prefers no clamp + a working escape hatch over a clamp
+  // that breaks the canvas-anchored behavior in layout mode.
+  //
+  // Corner fallback for the controls: the controls cluster sits at the
+  // top-left of the wrap by default. If top-left is off-screen but at
+  // least one other corner of the wrap IS on-screen, reposition the
+  // controls to that corner so they remain reachable. (Even if the
+  // entire wrap is offscreen, the TOC Fleet button is the recovery
+  // path — but as long as ANY corner is visible we can do better.)
+  const vpW = window.innerWidth
+  const vpH = window.innerHeight
+  const corners = {
+    'top-left':     { x: panelLeft,                 y: panelTop },
+    'top-right':    { x: panelLeft + panelWidth,    y: panelTop },
+    'bottom-left':  { x: panelLeft,                 y: panelTop + panelHeight },
+    'bottom-right': { x: panelLeft + panelWidth,    y: panelTop + panelHeight },
+  }
+  function inViewport(c: { x: number; y: number }) {
+    return c.x >= 0 && c.x <= vpW && c.y >= 0 && c.y <= vpH
+  }
+  let controlsCorner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' = 'top-left'
+  if (!inViewport(corners['top-left'])) {
+    // Pick the first corner that IS in viewport, preferring top edges.
+    for (const c of ['top-right', 'bottom-left', 'bottom-right'] as const) {
+      if (inViewport(corners[c])) { controlsCorner = c; break }
+    }
+  }
+  const controlsStyle: React.CSSProperties = {}
+  if (controlsCorner === 'top-right') {
+    controlsStyle.right = 0
+    controlsStyle.top = 0
+    controlsStyle.left = 'auto'
+  } else if (controlsCorner === 'bottom-left') {
+    controlsStyle.left = 0
+    controlsStyle.bottom = 0
+    controlsStyle.top = 'auto'
+  } else if (controlsCorner === 'bottom-right') {
+    controlsStyle.right = 0
+    controlsStyle.bottom = 0
+    controlsStyle.left = 'auto'
+    controlsStyle.top = 'auto'
   }
 
   return (
@@ -557,7 +675,7 @@ export function FleetHUD({
         ref={hudRef}
         style={{ left: panelLeft, top: panelTop, width: panelWidth, height: panelHeight }}
       >
-        <div className="fleet-hud-controls">
+        <div className="fleet-hud-controls" style={controlsStyle}>
           <button
             className={`fleet-hud-layout${layoutMode ? ' active' : ''}`}
             onClick={layoutMode ? handleLayoutExit : handleLayoutEnter}

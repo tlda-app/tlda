@@ -145,7 +145,7 @@ export function useFleetAgents(frameId?: string): any[] {
 }
 
 
-const INBOX_API = 'http://localhost:5199'
+const INBOX_API = 'http://localhost:5176'
 
 export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
   const [items, setItems] = useState<any[]>([])
@@ -527,14 +527,16 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
 
 // --- Search API ---
 
-const DASHBOARD_URL = 'http://localhost:5199'
+const DASHBOARD_URL = 'http://localhost:5176'
 
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
-  const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return data.results || data || []
+  try {
+    const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.results || data || []
+  } catch { return [] }
 }
 
 export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: string; path: string; agent: string; agent_name: string; shared_at: string }>> {

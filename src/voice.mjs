@@ -264,7 +264,13 @@ function enterEdit() {
 }
 
 export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentColor) {
+  let wasRecording = false
   if (textarea !== _activeTextarea) {
+    // Hard reset voice on chat switch — same as double-shift-right.
+    // Without this, the old recognition session keeps running with a stale
+    // generation and onresult discards everything, making voice appear dead.
+    wasRecording = _recording
+    hardResetVoice()
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -272,9 +278,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
       _inputListeners = null
     }
-    // Switching textareas always enters Edit on the new one
     _state = 'edit'
-    _generation++
     _lastFinals = []
     _left = _interim = _right = ''
     if (textarea) {
@@ -296,7 +300,10 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   _activeAgentNames = agentNames || {}
   _activeAgentColor = agentColor || null
   _activeSendFn = sendFn || null
-  if (_recording) {
+  // If voice was recording before the chat switch, restart it on the new target
+  if (wasRecording && textarea) {
+    startRecording()
+  } else if (_recording) {
     const who = targetLabel()
     showHud(who ? `recording → ${who}` : 'recording', '#c87070')
   }

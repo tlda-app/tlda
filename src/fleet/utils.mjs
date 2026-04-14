@@ -314,7 +314,10 @@ export function renderMarkdown(html) {
 
   // KaTeX preamble macros — set by agents via set_preamble(), delivered via SSE
   const preambleMacros = getPreambleMacros()
-  const katexOpts = (displayMode) => ({ displayMode, throwOnError: false, strict: false, macros: { ...preambleMacros } })
+  // throwOnError: true so unparseable LaTeX falls through to the catch and
+  // renders as raw escaped text. With throwOnError: false KaTeX returns its
+  // own giant error-HTML structure, which we don't want dumped into chat.
+  const katexOpts = (displayMode) => ({ displayMode, throwOnError: true, strict: false, macros: { ...preambleMacros } })
 
   // Display math: $$...$$
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {

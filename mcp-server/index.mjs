@@ -1127,7 +1127,79 @@ async function highlightLine(doc, file, line) {
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
 
-async function addAnnotation(doc, line, text, { color = 'orange', width = 200, height = 150, side = 'right', file, choices, page: pageNum } = {}) {
+/**
+ * Parse a markdown options file into { text, choices } for an `add_annotation`
+ * call. Each H2 (`## Label`) becomes a choice; the label is everything after
+ * `## ` on that line, and the body (until the next H2 or EOF) becomes that
+ * option's preview content. The combined `text` stacks every option header +
+ * body so the math note renders all options inline, while `choices` provides
+ * the tappable button labels.
+ *
+ * Supports inline `$math$` and display `$$math$$` since the math-note render
+ * path uses the same KaTeX pipeline as the document.
+ *
+ * @param {string} filepath — absolute, ~-prefixed, or cwd-relative
+ * @returns {{ text: string, choices: string[] }}
+ * @throws if the file is missing or contains no H2 sections
+ */
+function parseOptionsFile(filepath) {
+  let resolved = filepath
+  if (resolved.startsWith('~/')) resolved = path.join(os.homedir(), resolved.slice(2))
+  if (!path.isAbsolute(resolved)) resolved = path.resolve(process.cwd(), resolved)
+  if (!fs.existsSync(resolved)) throw new Error(`options file not found: ${resolved}`)
+
+  const raw = fs.readFileSync(resolved, 'utf8')
+  const lines = raw.split('\n')
+
+  /** @type {Array<{ label: string, body: string[] }>} */
+  const sections = []
+  let current = null
+  for (const ln of lines) {
+    const m = ln.match(/^##\s+(.+?)\s*$/)
+    if (m) {
+      if (current) sections.push(current)
+      current = { label: m[1], body: [] }
+    } else if (current) {
+      current.body.push(ln)
+    }
+    // Lines before the first H2 are ignored.
+  }
+  if (current) sections.push(current)
+  if (sections.length === 0) {
+    throw new Error(`no \`## Option\` sections found in ${resolved}`)
+  }
+
+  const text = sections
+    .map(s => `**${s.label}**\n${s.body.join('\n').trim()}`)
+    .join('\n\n')
+  const choices = sections.map(s => s.label)
+  return { text, choices }
+}
+
+// Size presets for math notes. Agents pass `size: 'sm'|'md'|'lg'|'a5'`
+// instead of guessing pixel dimensions. Explicit `width`/`height` still
+// override. Default is 'md' (paragraph + math) — the old 200×150 was too
+// cramped for typical content. options_file path bumps to 'lg' since
+// multi-section notes are inherently bigger.
+const SIZE_PRESETS = {
+  sm: { width: 250, height: 100 },
+  md: { width: 450, height: 200 },
+  lg: { width: 650, height: 400 },
+  a5: { width: 559, height: 794 }, // A5 at 96dpi (148×210mm)
+}
+
+function resolveSize({ size, width, height }) {
+  const preset = (size && SIZE_PRESETS[size]) || SIZE_PRESETS.md
+  return {
+    width: typeof width === 'number' ? width : preset.width,
+    height: typeof height === 'number' ? height : preset.height,
+  }
+}
+
+async function addAnnotation(doc, line, text, { color = 'orange', size, width, height, side = 'right', file, choices, page: pageNum } = {}) {
+  const dims = resolveSize({ size, width, height })
+  width = dims.width
+  height = dims.height
   let linePos;
   if (line) {
     linePos = lookupLine(doc, line, file);
@@ -1811,22 +1883,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'add_annotation',
-      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers.',
+      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
-          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$)' },
+          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$). Required unless `options_file` is given.' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: orange). Convention: orange=claude, green=todd, violet=user.' },
-          width: { type: 'number', description: 'Note width in pixels (default: 200)' },
-          height: { type: 'number', description: 'Note height in pixels (default: 150)' },
+          size: { type: 'string', enum: ['sm', 'md', 'lg', 'a5'], description: 'Size preset: sm (250×100, one-line), md (450×200, default — paragraph + math), lg (650×400, multi-paragraph / derivations), a5 (559×794, A5 paper). options_file defaults to lg.' },
+          width: { type: 'number', description: 'Explicit width in pixels (overrides size preset).' },
+          height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or get_feedback.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or get_feedback. Mutually exclusive with `options_file`.' },
+          options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
-        required: ['doc', 'text'],
+        required: ['doc'],
       },
     },
     {
@@ -2065,6 +2139,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ref: { type: 'string', description: 'Version hash, or a time string (ISO, "20 minutes ago", etc.)' },
         },
         required: ['doc', 'ref'],
+      },
+    },
+    {
+      name: 'doc_compare',
+      description: 'Show two versions of a document side by side in the viewer. Places a second column of SVG pages from the specified shadow-repo version next to the live document. The user can drag the comparison column to align proofs. Call with ref=null to remove the comparison.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          ref: { type: ['string', 'null'], description: 'Shadow-repo version hash to compare against, or null to clear' },
+        },
+        required: ['doc'],
       },
     },
     {
@@ -2510,14 +2596,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'add_annotation') {
-    const { doc, line, page: pageNum, text, color, width, height, side, file, choices } = args;
-    if (!doc || (!line && !pageNum) || !text) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page), text' }], isError: true };
+    const { doc, line, page: pageNum, color, size, width, height, side, file, options_file: optionsFile } = args;
+    let { text, choices } = args;
+    let effectiveSize = size;
+    if (!doc || (!line && !pageNum)) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page)' }], isError: true };
+    }
+    if (optionsFile) {
+      if (text || choices) {
+        return { content: [{ type: 'text', text: '`options_file` is mutually exclusive with inline `text` / `choices`' }], isError: true };
+      }
+      try {
+        const parsed = parseOptionsFile(optionsFile);
+        text = parsed.text;
+        choices = parsed.choices;
+        // Multi-section options notes are inherently bigger than single-text
+        // notes — bump the default to `lg` unless the agent explicitly asked
+        // for a different size.
+        if (!effectiveSize) effectiveSize = 'lg';
+      } catch (e) {
+        return { content: [{ type: 'text', text: `Error parsing options_file: ${e.message}` }], isError: true };
+      }
+    }
+    if (!text) {
+      return { content: [{ type: 'text', text: 'Missing required parameter: text (or options_file)' }], isError: true };
     }
     try {
-      const result = await addAnnotation(doc, line, text, { color, width, height, side, file, choices, page: pageNum });
+      const result = await addAnnotation(doc, line, text, { color, size: effectiveSize, width, height, side, file, choices, page: pageNum });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
-      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"` }] };
+      const choicesNote = choices?.length ? `\n  choices: ${choices.join(' | ')}` : '';
+      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"${choicesNote}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3209,6 +3317,107 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'doc_compare') {
+    const doc = args?.doc;
+    const ref = args?.ref ?? null;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    try {
+      if (!ref) {
+        // Clear comparison — delete all compare-page shapes via server API
+        const shapes = await serverFetch(`/api/projects/${doc}/shapes`);
+        const compareShapes = (shapes || []).filter(s => (s.id || '').includes('compare-page'));
+        for (const s of compareShapes) {
+          await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+        }
+        return { content: [{ type: 'text', text: `Comparison cleared for ${doc}. Removed ${compareShapes.length} shapes.` }] };
+      }
+      const resolved = await resolveDocRef(doc, ref);
+      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
+      const hash7 = resolved.hash.slice(0, 7);
+      const project = await serverFetch(`/api/projects/${doc}`);
+      if (!project) return { content: [{ type: 'text', text: `Project ${doc} not found.` }], isError: true };
+
+      // Delete any existing compare shapes first
+      const existingShapes = await serverFetch(`/api/projects/${doc}/shapes`);
+      const oldCompare = (existingShapes || []).filter(s => (s.id || '').includes('compare-page'));
+      for (const s of oldCompare) {
+        await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+      }
+
+      // Get the live doc's page shapes to find the right edge
+      const livePages = (existingShapes || []).filter(s => s.type === 'svg-page' && !(s.id || '').includes('compare'));
+      let rightEdge = 0;
+      for (const p of livePages) {
+        const r = (p.x || 0) + (p.props?.w || 800);
+        if (r > rightEdge) rightEdge = r;
+      }
+      const compareX = rightEdge + 80;
+      const pageCount = project.pages || livePages.length;
+
+      // Layout constants
+      const TARGET_WIDTH = 800;
+      const PDF_HEIGHT = 792;
+      const PDF_WIDTH = 612;
+      const PAGE_GAP = 32;
+      const width = TARGET_WIDTH;
+      const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH);
+
+      // Create compare page shapes server-side
+      let top = 0;
+      const prefix = `compare-page-${Date.now().toString(36)}-`;
+      let created = 0;
+      for (let i = 0; i < pageCount; i++) {
+        await serverFetch(`/api/projects/${doc}/shapes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: `shape:${prefix}${i}`,
+            type: 'svg-page',
+            typeName: 'shape',
+            x: compareX,
+            y: top,
+            rotation: 0,
+            isLocked: true,
+            opacity: 0.85,
+            parentId: 'page:page',
+            props: { w: width, h: height, pageIndex: i },
+          }),
+        });
+        top += height + PAGE_GAP;
+        created++;
+      }
+
+      // Create the drag handle
+      await serverFetch(`/api/projects/${doc}/shapes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: `shape:${prefix}handle`,
+          type: 'geo',
+          typeName: 'shape',
+          x: compareX - 48,
+          y: 0,
+          rotation: 0,
+          isLocked: false,
+          opacity: 0.15,
+          parentId: 'page:page',
+          props: { w: 16, h: Math.min(top, 2000), geo: 'rectangle', fill: 'solid', color: 'grey', dash: 'solid' },
+        }),
+      });
+
+      // Broadcast signal so viewers know which shadow hash to fetch SVGs from
+      await serverFetch(`/api/projects/${doc}/signal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'signal:compare', data: { ref: resolved.hash, hash7, prefix, timestamp: Date.now() } }),
+      });
+
+      return { content: [{ type: 'text', text: `Comparison created: ${doc} at ${hash7} vs live. ${created} pages placed at x=${compareX}. Pan right to see both columns.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'doc_revert') {
     const doc = args?.doc;
     let ref = args?.ref;
@@ -3284,11 +3493,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const status = await serverFetch(`/api/projects/${doc}/build/status`);
       const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
       const errors = Array.isArray(errData) ? errData : [];
+      // Check viewer version vs latest build
+      let viewerInfo = '';
+      try {
+        const viewerSig = await serverFetch(`/api/projects/${doc}/signal/signal:viewer-version`);
+        const shadowHistory = await serverFetch(`/api/projects/${doc}/history/shadow`);
+        const latestVersions = shadowHistory?.versions || shadowHistory || [];
+        const latestHash = latestVersions[0]?.hash;
+        const viewerHash = viewerSig?.data?.hash;
+        if (latestHash && viewerHash) {
+          if (viewerHash.startsWith(latestHash.slice(0, 7)) || latestHash.startsWith(viewerHash.slice(0, 7))) {
+            viewerInfo = `**Viewer**: up to date (${viewerHash.slice(0, 7)})`;
+          } else {
+            const viewerTs = viewerSig?.data?.timestamp;
+            const latestTs = latestVersions[0]?.timestamp;
+            const ageMins = (viewerTs && latestTs) ? Math.round((latestTs - viewerTs) / 60000) : '?';
+            viewerInfo = `**Viewer**: ⚠ STALE — showing ${viewerHash.slice(0, 7)}, latest is ${latestHash.slice(0, 7)} (${ageMins} min behind). User may need to reload.`;
+          }
+        }
+      } catch {}
       const summary = [
         `**Phase**: ${status.phase || 'unknown'}`,
         `**Status**: ${status.status || 'unknown'}`,
         errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
-      ].join('\n');
+        viewerInfo,
+      ].filter(Boolean).join('\n');
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };

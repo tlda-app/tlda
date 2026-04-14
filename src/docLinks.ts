@@ -17,7 +17,7 @@ import type { LookupData } from './synctexLookup'
 // --- Reference pattern matching ---
 
 export interface DocRef {
-  type: 'page' | 'line' | 'theorem' | 'section' | 'equation'
+  type: 'page' | 'line' | 'theorem' | 'section' | 'equation' | 'label'  // label = exact LaTeX label match
   /** The matched text */
   text: string
   /** For page: page number. For line: line number. For theorem/section: display number string. */
@@ -52,6 +52,7 @@ const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string }
 
   // Line references
   { re: /\blines?\s+(\d+)(?:\s*[-–]\s*(\d+))?/gi, type: 'line' },
+
 ]
 
 /**
@@ -325,6 +326,87 @@ export function linkifyArrowRefs(
   return result.join('')
 }
 
+/**
+ * Scan HTML for exact LaTeX label names from the document and wrap them as doc-links.
+ * Matches any label key from labelRegions that appears literally in text nodes.
+ * Runs after linkifyDocRefs and linkifyArrowRefs — skips text already inside doc-links.
+ */
+export function linkifyLabelRefs(
+  html: string,
+  labelRegions: Record<string, LabelRegionInfo>,
+): string {
+  const labels = Object.keys(labelRegions)
+  if (labels.length === 0) return html
+
+  // Sort labels longest-first to avoid partial matches
+  labels.sort((a, b) => b.length - a.length)
+
+  // Build a single regex that matches any label as a whole word
+  const escaped = labels.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const labelRe = new RegExp(`(?:^|(?<=[\\s(""'']))(?:${escaped.join('|')})(?=$|[\\s).,;:!?""''])`, 'g')
+
+  // Process text outside HTML tags (same tag-splitting approach)
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) parts.push({ text: html.slice(lastIdx), isTag: false })
+
+  // Skip inside <a>, <code>, <pre>, doc-link, ref-chip
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
+  const SPAN_SKIP_OPEN = /^<span\s[^>]*class="[^"]*(?:doc-link|ref-chip)/i
+  const SPAN_OPEN = /^<span[\s>]/i
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (skipDepth > 0) {
+        if (SPAN_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth--
+      } else {
+        if (SKIP_OPEN.test(part.text) || SPAN_SKIP_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      }
+      result.push(part.text)
+      continue
+    }
+    if (skipDepth > 0) { result.push(part.text); continue }
+
+    // Replace label matches
+    labelRe.lastIndex = 0
+    let cursor = 0
+    let m: RegExpExecArray | null
+    let modified = false
+    const segments: string[] = []
+    while ((m = labelRe.exec(part.text)) !== null) {
+      const label = m[0]
+      const info = labelRegions[label]
+      if (!info) continue
+      modified = true
+      if (m.index > cursor) segments.push(part.text.slice(cursor, m.index))
+      segments.push(
+        `<span class="doc-link" data-ref-type="label" data-ref-label="${escAttr(label)}" data-ref-page="${info.page}" data-ref-y-top="${info.yTop}" data-ref-y-bottom="${info.yBottom}">${escAttr(label)}</span>`
+      )
+      cursor = m.index + label.length
+    }
+    if (modified) {
+      if (cursor < part.text.length) segments.push(part.text.slice(cursor))
+      result.push(segments.join(''))
+    } else {
+      result.push(part.text)
+    }
+  }
+  return result.join('')
+}
+
 // --- Reference resolution ---
 
 export interface ResolvedRef {
@@ -335,7 +417,15 @@ export interface ResolvedRef {
 /**
  * Build a resolver from lookup data. Returns a function that maps DocRef → page/y.
  */
-export function buildRefResolver(lookup: LookupData): (ref: DocRef) => ResolvedRef | null {
+export interface TheoremMapEntry {
+  label: string
+  type: string
+  number: string
+  page: number
+  title?: string
+}
+
+export function buildRefResolver(lookup: LookupData, theoremMap?: Record<string, TheoremMapEntry>): (ref: DocRef) => ResolvedRef | null {
   // Pre-index: sections in document order, theorem-like envs in order
   const sections: Array<{ num: string; page: number; y: number }> = []
   const envs: Record<string, Array<{ page: number; y: number; idx: number }>> = {}
@@ -427,12 +517,22 @@ export function buildRefResolver(lookup: LookupData): (ref: DocRef) => ResolvedR
       }
 
       case 'theorem': {
+        // First try theorem-map (authoritative: parsed from .aux file)
+        if (theoremMap && ref.envType) {
+          // Map envType to theorem-map type prefix (proposition→prop, definition→def, etc.)
+          const typePrefix = ref.envType.slice(0, 3)
+          for (const entry of Object.values(theoremMap)) {
+            if (entry.number === ref.value && entry.type === typePrefix) {
+              return { page: entry.page }
+            }
+          }
+        }
+
         if (!ref.envType) return null
         const envList = envs[ref.envType]
         if (!envList) return null
 
         // ref.value might be "3.1" (section.local) or just "1" (global counter)
-        // Try matching by global index first
         const parts = ref.value.split('.')
         if (parts.length === 1) {
           const idx = parseInt(parts[0])
@@ -441,13 +541,10 @@ export function buildRefResolver(lookup: LookupData): (ref: DocRef) => ResolvedR
             return { page: e.page, pdfY: e.y }
           }
         } else {
-          // "N.M" — try M-th instance within section N
-          // Also try as global counter (many papers use continuous numbering)
           const globalIdx = envList.findIndex(e => e.idx === parseInt(parts[parts.length - 1]))
           if (globalIdx >= 0) {
             return { page: envList[globalIdx].page, pdfY: envList[globalIdx].y }
           }
-          // Try treating the whole thing as a global index
           const lastNum = parseInt(parts[parts.length - 1])
           if (!isNaN(lastNum) && lastNum >= 1 && lastNum <= envList.length) {
             return { page: envList[lastNum - 1].page, pdfY: envList[lastNum - 1].y }

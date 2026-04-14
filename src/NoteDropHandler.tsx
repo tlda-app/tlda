@@ -32,8 +32,9 @@ export function NoteDropHandler() {
 
     function handleDragOver(e: DragEvent) {
       if (!isNoteDrag(e)) return
-      // Don't intercept dragover on the document panel
+      // Don't intercept dragover on the document panel or fleet HUD
       if (isOverOpenPanel(e)) return
+      if (isOverHud(e)) return
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
@@ -46,9 +47,19 @@ export function NoteDropHandler() {
       return null
     }
 
+    function isOverHud(e: DragEvent): boolean {
+      const hud = document.querySelector('.fleet-hud-wrap')
+      if (!hud) return false
+      const rect = hud.getBoundingClientRect()
+      return e.clientX >= rect.left && e.clientX <= rect.right &&
+             e.clientY >= rect.top && e.clientY <= rect.bottom
+    }
+
     function handleDrop(e: DragEvent) {
       // Don't intercept drops on the document panel (TOC drop-to-book)
       if (isOverOpenPanel(e)) return
+      // Don't create math notes on the fleet HUD
+      if (isOverHud(e)) return
 
       // Fleet scratch card drop — full content as MathNote
       const tldaDrop = e.dataTransfer?.getData('application/x-tlda-drop')
@@ -97,7 +108,7 @@ export function NoteDropHandler() {
           const isDoc = item.type === 'shared-doc'
           if (isDoc && e.shiftKey && item.path) {
             // Open as a full tlda document via fleet's share endpoint
-            fetch(`http://localhost:5199/api/tlda/share`, {
+            fetch(`http://localhost:5176/api/tlda/share`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: item.path })

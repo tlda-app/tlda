@@ -85,7 +85,7 @@
 
 /* Terminal output area */
 .terminal-card-body {
-  height: 180px;
+  height: 360px;
   overflow: hidden;
   position: relative;
   padding: 2px;

@@ -177,8 +177,28 @@ const ACTIVITY_NOISE = new Set([
   'ToolSearch',
 ])
 
+// Tools whose results should be captured and forwarded as pretty-printed cards
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread'])
+
+// Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
+// When a tool_use for a pretty-print tool arrives without a matching result in
+// the same batch, we stash the activity event here. When the result arrives in
+// a later batch, we send a follow-up activity event with the prettyResult.
+// Entries expire after 30s to avoid leaking memory on abandoned tool calls.
+const pendingPrettyPrint = new Map()  // id -> { agentId, evt, expiresAt }
+
 function extractActivityEvents(events) {
   const result = []
+  // Collect tool_results keyed by tool_use_id so we can match them
+  const toolResults = new Map()
+  for (const ev of events) {
+    if (!ev.blocks) continue
+    for (const block of ev.blocks) {
+      if (block.type === 'tool_result' && block.id) {
+        toolResults.set(block.id, block.text || '')
+      }
+    }
+  }
   for (const ev of events) {
     if (!ev.blocks) continue
     for (const block of ev.blocks) {
@@ -195,12 +215,36 @@ function extractActivityEvents(events) {
           input.query || input.description || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
         if (Object.keys(input).length > 0) evt.input = input
+        // Attach result for pretty-printed tools
+        if (PRETTY_PRINT_TOOLS.has(name) && block.id) {
+          if (toolResults.has(block.id)) {
+            const raw = toolResults.get(block.id)
+            evt.prettyResult = raw.length > 5000 ? raw.slice(0, 5000) + '\n\n… (truncated)' : raw
+          } else {
+            // Result not in this batch — stash and wait
+            pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
+          }
+        }
         result.push(evt)
       } else if (block.type === 'text' && block.text?.length > 20) {
         result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
       }
     }
     if (ev.usage) result.push({ tool: '_usage', ts: ev.timestamp, usage: ev.usage })
+  }
+  // Check if any tool_results in this batch match pending pretty-print requests
+  for (const [id, resultText] of toolResults) {
+    const pending = pendingPrettyPrint.get(id)
+    if (pending) {
+      pendingPrettyPrint.delete(id)
+      const capped = resultText.length > 5000 ? resultText.slice(0, 5000) + '\n\n… (truncated)' : resultText
+      result.push({ ...pending.evt, tool: '_prettyResult', prettyResult: capped })
+    }
+  }
+  // Expire old pending entries
+  const now = Date.now()
+  for (const [id, entry] of pendingPrettyPrint) {
+    if (now > entry.expiresAt) pendingPrettyPrint.delete(id)
   }
   return result
 }
@@ -239,6 +283,7 @@ function bufferActivity(agentId, evts) {
           input: evt.input || null,
           ts: evt.ts,
           ...(evt.usage ? { usage: evt.usage } : {}),
+          ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
         })
       }
     }
@@ -436,24 +481,44 @@ function syncSourceWatchers(projectList) {
     if (!p.sourceDir) continue
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
-    if (sourceWatchers.has(p.name)) continue
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set() }
+    // watchFiles: the set of files the build actually reads (from .fls).
+    // If null (no prior build), fall back to just the main file.
+    const watchSet = new Set(
+      p.watchFiles
+        ? p.watchFiles
+        : p.mainFile ? [p.mainFile] : []
+    )
+
+    // If watcher already exists, just update its watch set (the .fls
+    // may have changed after a build). Don't recreate the watcher.
+    if (sourceWatchers.has(p.name)) {
+      const existing = sourceWatchers.get(p.name)
+      existing.watchSet = watchSet
+      continue
+    }
+
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet }
     try {
       state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => {
         if (!filename) return
-        if (!isSourceFile(filename)) return
+        // Only react to files in the watch set, or any .tex/.bib if no
+        // watch set (bootstrapping — first build hasn't happened yet).
+        if (watchSet.size > 0) {
+          if (!watchSet.has(filename)) return
+        } else {
+          if (!isSourceFile(filename)) return
+        }
         state.pending.add(filename)
         if (state.debounce) clearTimeout(state.debounce)
         state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
       })
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir}`)
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched files)`)
 
-      // Push all current source files immediately so any changes that occurred
-      // while the daemon was disconnected are synced to the server. This is a
-      // no-op if files haven't changed (server deduplicates via writeSourceFile).
-      pushAllSourceFiles(p.name, p.sourceDir)
+      // On connect, push only the watched files (not the whole directory).
+      // This is a tiny payload — usually 2-5 text files.
+      pushWatchedFiles(p.name, p.sourceDir, watchSet)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
     }
@@ -472,27 +537,38 @@ function syncSourceWatchers(projectList) {
  * Called when a new watcher is set up so the server gets the current state,
  * catching any edits that occurred while the daemon was disconnected.
  */
-function pushAllSourceFiles(projectName, sourceDir) {
+/**
+ * Push only the watched files (from .fls) to the server on connect.
+ * If watchSet is empty (no prior build), push just .tex and .bib in the
+ * top-level directory to bootstrap the first build.
+ */
+function pushWatchedFiles(projectName, sourceDir, watchSet) {
   const files = []
-  function walk(dir, prefix) {
-    let entries
-    try { entries = fs.readdirSync(dir) } catch { return }
-    for (const entry of entries) {
-      const rel = prefix ? `${prefix}/${entry}` : entry
-      const full = path.join(dir, entry)
-      let st
-      try { st = fs.statSync(full) } catch { continue }
-      if (st.isDirectory()) {
-        walk(full, rel)
-      } else if (st.isFile() && isSourceFile(entry)) {
-        try { files.push({ path: rel, ...readFileForUpload(full) }) }
+  if (watchSet.size > 0) {
+    for (const rel of watchSet) {
+      const full = path.join(sourceDir, rel)
+      if (!fs.existsSync(full)) continue
+      try { files.push({ path: rel, ...readFileForUpload(full) }) }
+      catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+    }
+  } else {
+    // Bootstrap: top-level .tex and .bib only
+    try {
+      for (const entry of fs.readdirSync(sourceDir)) {
+        const ext = path.extname(entry).toLowerCase()
+        if (ext !== '.tex' && ext !== '.bib') continue
+        const full = path.join(sourceDir, entry)
+        try {
+          const st = fs.statSync(full)
+          if (!st.isFile()) continue
+        } catch { continue }
+        try { files.push({ path: entry, ...readFileForUpload(full) }) }
         catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
       }
-    }
+    } catch {}
   }
-  walk(sourceDir, '')
   if (files.length === 0) return
-  console.log(`[daemon] reconnect push: ${files.length} source files for ${projectName}`)
+  console.log(`[daemon] connect push: ${files.length} files for ${projectName}`)
   sendMsg({ type: 'source-change', project: projectName, files })
 }
 
@@ -713,8 +789,19 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
+let _droppedCount = 0
+let _droppedWarnAt = 0
 function sendMsg(obj) {
-  if (!ws || ws.readyState !== 1) return false
+  if (!ws || ws.readyState !== 1) {
+    _droppedCount++
+    const now = Date.now()
+    if (now - _droppedWarnAt > 5000) {
+      console.warn(`[daemon] dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
+      _droppedCount = 0
+      _droppedWarnAt = now
+    }
+    return false
+  }
   try { ws.send(JSON.stringify(obj)); return true }
   catch (e) { console.error(`[daemon] ws send: ${e.message}`); return false }
 }
@@ -842,6 +929,16 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGHUP', () => shutdown('SIGHUP'))
+// Catch every cause-of-death we can intercept. SIGKILL and SIGSTOP can't
+// be handled, but logging the rest narrows the post-mortem dramatically.
+for (const sig of ['SIGQUIT', 'SIGABRT', 'SIGPIPE', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGSEGV', 'SIGFPE']) {
+  try {
+    process.on(sig, () => {
+      console.error(`[daemon] received ${sig} — exiting`)
+      process.exit(1)
+    })
+  } catch { /* some signals can't be handled on this platform */ }
+}
 process.on('uncaughtException', (e) => {
   console.error(`[daemon] uncaught: ${e.stack || e.message}`)
 })
@@ -853,9 +950,47 @@ process.on('exit', (code) => {
   console.log(`[daemon] process exit (code=${code})`)
 })
 
-console.log(`[daemon] fleet-daemon ${VERSION} starting`)
+// Heartbeat: lets the post-mortem distinguish "died at startup" from
+// "died mid-life". If the log shows a heartbeat right before silence and
+// no exit trace, it's SIGKILL or equivalent. If startup never reached the
+// first heartbeat, the crash is in init. Once a minute is plenty.
+const HEARTBEAT_INTERVAL_MS = 60_000
+let _heartbeatTimer = null
+function startHeartbeat() {
+  if (_heartbeatTimer) return
+  _heartbeatTimer = setInterval(() => {
+    const mem = process.memoryUsage()
+    console.log(`[daemon] heartbeat pid=${process.pid} rss=${(mem.rss / 1e6).toFixed(1)}MB heap=${(mem.heapUsed / 1e6).toFixed(1)}MB uptime=${Math.round(process.uptime())}s`)
+  }, HEARTBEAT_INTERVAL_MS).unref?.() || _heartbeatTimer
+}
+
+// Periodically rebuild the search index so search_logs stays current.
+// Runs every 5 minutes. buildIncremental is idempotent and only indexes new content.
+let _searchRebuildTimer = null
+async function rebuildSearchIndex() {
+  try {
+    const { SearchIndex } = await import('../mcp-server/dashboard/search-index.mjs')
+    const idx = new SearchIndex(path.join(os.homedir(), '.claude', 'search-index.sqlite'))
+    const result = await idx.buildIncremental()
+    if (result.entriesAdded > 0) {
+      console.log(`[daemon] search index: +${result.entriesAdded} entries (${result.elapsed}s)`)
+    }
+  } catch (e) {
+    console.error(`[daemon] search index rebuild failed: ${e.message}`)
+  }
+}
+function startSearchRebuild() {
+  if (_searchRebuildTimer) return
+  // Initial build after 30s (let the daemon finish connecting first)
+  setTimeout(rebuildSearchIndex, 30_000)
+  _searchRebuildTimer = setInterval(rebuildSearchIndex, 5 * 60_000)
+}
+
+console.log(`[daemon] fleet-daemon ${VERSION} starting pid=${process.pid}`)
 console.log(`[daemon]   server      = ${SERVER}`)
 console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
+startHeartbeat()
+startSearchRebuild()
 connect()

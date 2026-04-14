@@ -52,6 +52,11 @@ export interface PanelContextValue {
   shadowHistoryVisible?: boolean
   onToggleShadowHistory?: () => void
   shadowHistoryVersionCount?: number
+  // Used to stamp outgoing chats with the doc version the user is viewing.
+  // shadowVersions[0] is the latest build; shadowActiveIdx > 0 means the
+  // user has scrubbed back to an older snapshot.
+  shadowVersions?: Array<{ hash: string; timestamp: number; message?: string }>
+  shadowActiveIdx?: number
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

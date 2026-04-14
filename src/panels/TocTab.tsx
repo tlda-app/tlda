@@ -224,7 +224,7 @@ export function TocTab() {
       setTocAdding(fileName)
 
       try {
-        const shareRes = await fetch('http://localhost:5199/api/tlda/share', {
+        const shareRes = await fetch('http://localhost:5176/api/tlda/share', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: item.path }),

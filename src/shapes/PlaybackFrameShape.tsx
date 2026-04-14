@@ -46,7 +46,7 @@ import {
 } from '../playback-context'
 import './PlaybackFrameShape.css'
 
-const FLEET_API = 'http://localhost:5199'
+const FLEET_API = 'http://localhost:5176'
 const DEFAULT_W = 500
 const SCRUBBER_H = 64
 const HEADER_H = 36

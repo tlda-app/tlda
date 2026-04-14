@@ -118,6 +118,19 @@ export function renderChatLine(m, ctx) {
       </div></div>`
   }
 
+  // --- Terminal card (voluntary pop from agent) ---
+  // Same UI shape as terminal_attention; only the trigger differs.
+  if (m._evType === 'terminal_card') {
+    const ts = timeShort(m.timestamp)
+    const label = esc(m._agentLabel || agentLabel(m.from))
+    const reason = esc(m._reason || 'requested attention')
+    const agentCls = getNickClass(m.from)
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-attention" data-lc-type="attention">
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${label}</span></span></div>
+      </div></div>`
+  }
+
   // --- Task lifecycle cards ---
   if (m._evType === 'delegate') {
     const ts = timeShort(m.timestamp)
@@ -131,9 +144,15 @@ export function renderChatLine(m, ctx) {
     const criteriaHtml = criteria.length > 0
       ? `<div class="lc-criteria">${criteria.map(c => `<div class="lc-criterion">\u2610 ${esc(c)}</div>`).join('')}</div>`
       : ''
+    // Show the full delegation message so the user can see what was actually asked
+    const message = m._message || m.text || ''
+    const messageHtml = message && message !== (m._description || '')
+      ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
+      : ''
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${fromCls}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="${toCls}">${esc(toLabel)}</span></span></div>
+        ${messageHtml}
         ${criteriaHtml}
       </div></div>`
   }
