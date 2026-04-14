@@ -66,6 +66,9 @@
 }
 
 .fleet-hud-controls {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: flex;
   gap: 2px;
   z-index: 1000;

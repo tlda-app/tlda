@@ -24,6 +24,40 @@ const HUMAN_HOST = os.hostname()
 
 const UPLOAD_DIR = '/tmp/fleet-uploads'
 
+// Minimal multipart/form-data parser for the single-file case used by browser
+// drag-and-drop. Returns { filename, contentType, content } for the first
+// part that has a filename, or null if none. Body is the raw request buffer.
+function extractFirstFilePart(body, boundary) {
+  const dashBoundary = Buffer.from(`--${boundary}`)
+  const crlfCrlf = Buffer.from('\r\n\r\n')
+  let pos = body.indexOf(dashBoundary)
+  while (pos !== -1) {
+    const headerStart = pos + dashBoundary.length + 2 // skip \r\n after boundary
+    const headerEnd = body.indexOf(crlfCrlf, headerStart)
+    if (headerEnd === -1) return null
+    const headers = body.slice(headerStart, headerEnd).toString('utf8')
+    const cd = headers.match(/Content-Disposition:.*?filename="([^"]*)"/i)
+    if (cd) {
+      const ct = headers.match(/Content-Type:\s*([^\r\n]+)/i)
+      const contentStart = headerEnd + crlfCrlf.length
+      const nextBoundary = body.indexOf(dashBoundary, contentStart)
+      if (nextBoundary === -1) return null
+      // The part ends with \r\n before the next boundary marker.
+      const contentEnd = nextBoundary - 2
+      return {
+        filename: cd[1],
+        contentType: ct ? ct[1].trim() : 'application/octet-stream',
+        content: body.slice(contentStart, contentEnd),
+      }
+    }
+    // Skip to next boundary if this part had no filename.
+    const next = body.indexOf(dashBoundary, headerEnd + crlfCrlf.length)
+    if (next === -1) return null
+    pos = next
+  }
+  return null
+}
+
 function copyAttachment(srcPath) {
   try {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true })
@@ -286,10 +320,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/chat ---
   router.post('/api/chat', (req, res) => {
-    const { message, to, from, cc, attachments, inline_attachments } = req.body || {}
+    const { message, to, from, cc, attachments, inline_attachments, context } = req.body || {}
     if (!message && (!attachments || !attachments.length)) { res.status(400).send('missing message'); return }
     if (!to || to === 'undefined' || to === 'null') { res.status(400).send('missing "to"'); return }
-    const resolve = (id) => { const a = fleetStore?.findAgent(id); return a ? a.id : null }
+    const resolve = (id) => {
+      if (id === HUMAN_FLEET_ID || id === 'skip') return HUMAN_FLEET_ID
+      const a = fleetStore?.findAgent(id); return a ? a.id : null
+    }
     const sender = from ? (resolve(from) || from) : HUMAN_FLEET_ID
     const recipient = resolve(to)
     if (!recipient) { res.status(404).send(`Recipient not found: "${to}"`); return }
@@ -340,15 +377,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         from: sender,
         to: recipient,
         text,
-        metadata: JSON.stringify({
+        metadata: {
           cc: ccResolved || undefined,
           attachments: processedAttachments || undefined,
           inline_attachments: inline_attachments || undefined,
           wiretap_cc: wiretapRecipients.length ? wiretapRecipients : undefined,
-        }),
+          context: context || undefined,
+        },
       })
-      // share() handles unread tracking internally
-      broadcastEvent('fleet-event', { type: 'chat', from: sender, to: recipient, id: event?.id, text, event_id: event?.id })
+      // No manual broadcast — share() already fires the listener that
+      // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
+      // The previous manual broadcast on top of that produced duplicate
+      // messages in receivers.
       res.json({ ok: true, event_id: event?.id })
     } else {
       res.json({ ok: true })
@@ -537,31 +577,51 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/upload ---
+  // Accepts two payload shapes:
+  //   1. Raw binary body with x-filename header (used by MCP screenshot
+  //      uploads that go through node-fetch directly).
+  //   2. multipart/form-data with a single `file` field (used by browser
+  //      drag-and-drop into chat). Parsed inline — we don't pull in multer
+  //      just to extract one part.
   router.post('/api/upload', (req, res) => {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true })
     const chunks = []
     req.on('data', chunk => chunks.push(chunk))
     req.on('end', () => {
       try {
-        const buf = Buffer.concat(chunks)
-        const origName = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : null
+        let body = Buffer.concat(chunks)
+        let origName = req.headers['x-filename']
+          ? decodeURIComponent(req.headers['x-filename'])
+          : null
+
+        // Multipart path: extract the first file part's filename + content.
+        const ct = req.headers['content-type'] || ''
+        if (ct.startsWith('multipart/form-data')) {
+          const m = ct.match(/boundary="?([^";]+)"?/)
+          if (!m) { res.status(400).json({ error: 'multipart boundary missing' }); return }
+          const part = extractFirstFilePart(body, m[1])
+          if (!part) { res.status(400).json({ error: 'no file part in multipart body' }); return }
+          body = part.content
+          if (!origName && part.filename) origName = part.filename
+        }
+
         let name
         if (origName) {
           name = `${Date.now()}-${origName}`
         } else {
           let ext = 'png'
-          if (buf[0] === 0xFF && buf[1] === 0xD8) ext = 'jpg'
-          else if (buf[0] === 0x47 && buf[1] === 0x49) ext = 'gif'
-          else if (buf[0] === 0x52 && buf[1] === 0x49) ext = 'webp'
-          else if (buf[0] === 0x3C) {
-            const head = buf.slice(0, 256).toString('utf8')
+          if (body[0] === 0xFF && body[1] === 0xD8) ext = 'jpg'
+          else if (body[0] === 0x47 && body[1] === 0x49) ext = 'gif'
+          else if (body[0] === 0x52 && body[1] === 0x49) ext = 'webp'
+          else if (body[0] === 0x3C) {
+            const head = body.slice(0, 256).toString('utf8')
             if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) ext = 'svg'
           }
           name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
         }
         const filePath = path.join(UPLOAD_DIR, name)
-        fs.writeFileSync(filePath, buf)
-        res.json({ path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` })
+        fs.writeFileSync(filePath, body)
+        res.json({ name, path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` })
       } catch (e) { res.status(500).json({ error: e.message }) }
     })
   })
@@ -621,6 +681,69 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (fleetStore) fleetStore.updateAgentStatus?.(agent, state, tool || null, ts)
     broadcastEvent('agent-status', { agent, state, tool: tool || null, ts })
     res.json({ ok: true })
+  })
+
+  // --- POST /api/mark-event-read ---
+  // Mark a single event read for a recipient. Used by terminal-card
+  // dismissal so the dismissed card doesn't auto-pop again on reload.
+  // Body: { event_id, agent }
+  router.post('/api/mark-event-read', (req, res) => {
+    const { event_id, agent: rawAgent } = req.body || {}
+    if (!event_id || !rawAgent) { res.status(400).json({ error: 'event_id and agent required' }); return }
+    const agent = fleetStore?.findAgent(rawAgent)
+    const agentId = agent?.id || rawAgent
+    const changed = fleetStore?.markEventRead?.(parseInt(event_id, 10), agentId)
+    if (changed) {
+      broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
+    }
+    res.json({ ok: true, changed: !!changed })
+  })
+
+  // --- POST /api/terminal-card ---
+  // Voluntary terminal-card request: an agent asks Skip to look at their
+  // terminal — e.g., "I'm stuck on a permission prompt" or "please paste
+  // this command into my session". The browser-side fleet chat listens for
+  // `terminal_card` events and pops a TerminalCard for `from`.
+  //
+  // The involuntary equivalent is `terminal_attention`, fired by the
+  // attention scanner when the watcher detects a stuck agent without the
+  // agent's involvement. They render the same UI; only the trigger differs.
+  router.post('/api/terminal-card', (req, res) => {
+    const { from: rawFrom, reason } = req.body || {}
+    if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
+    const agent = fleetStore?.findAgent(rawFrom)
+    if (!agent) { res.status(404).json({ error: `Agent not found: "${rawFrom}"` }); return }
+    if (!agent.tmux_session) {
+      res.status(400).json({ error: 'agent has no tmux_session — cannot attach terminal' })
+      return
+    }
+    if (!agent.machine_id) {
+      res.status(400).json({ error: 'agent has no machine_id — fleet daemon not registered' })
+      return
+    }
+    const label = agent.friendly_name || agent.id.slice(0, 12)
+    const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
+    const event = fleetStore?.share({
+      type: 'terminal_card',
+      from: agent.id,
+      to: HUMAN_FLEET_ID,
+      text,
+      metadata: JSON.stringify({
+        reason: reason || null,
+        agentId: agent.id,
+        agentLabel: label,
+      }),
+    })
+    broadcastEvent('fleet-event', {
+      type: 'terminal_card',
+      from: agent.id,
+      to: HUMAN_FLEET_ID,
+      id: event?.id,
+      event_id: event?.id,
+      text,
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+    })
+    res.json({ ok: true, event_id: event?.id })
   })
 
   // --- POST /api/cleanup ---

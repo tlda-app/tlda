@@ -2,7 +2,7 @@
  * TerminalShape — tldraw canvas shape embedding a live xterm.js terminal.
  *
  * Connects to an agent's tmux session via the fleet server WebSocket at
- * ws://localhost:5199/ws/terminal?agent=AGENT_ID
+ * ws://localhost:5176/ws/terminal?agent=AGENT_ID
  *
  * Features:
  *   - Live terminal output via xterm.js

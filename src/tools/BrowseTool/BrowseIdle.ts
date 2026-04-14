@@ -31,7 +31,7 @@ import {
 } from 'tldraw'
 
 // --- Fleet shape types that get DOM interaction ---
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
 // --- Inlined helpers (not exported from tldraw) ---
 

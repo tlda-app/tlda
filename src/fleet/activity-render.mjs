@@ -41,6 +41,120 @@ export const CHAT_TOOLS = new Set([
   'chat', 'delegate', 'mcp__fleet__chat', 'mcp__fleet__delegate',
 ])
 
+// --- Pretty-print tool results ---
+
+function renderPrettyResult(toolName, text, ctx) {
+  const tool = (toolName || '').toLowerCase()
+  if (tool.includes('get_thread') || tool.includes('thread')) {
+    return renderThreadResult(text, ctx)
+  }
+  if (tool.includes('search')) {
+    return renderSearchResult(text, ctx)
+  }
+  // Fallback: render as markdown
+  const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
+  return `<div class="tool-pretty-result">${md}</div>`
+}
+
+function renderThreadResult(text, ctx) {
+  // Format: "[timestamp] from → to\nmessage\n\n---\n\n[timestamp] from → to\n..."
+  // Split on --- separators
+  const msgs = text.split(/\n\n---\n\n/)
+  if (msgs.length <= 1) {
+    return `<div class="tool-pretty-result">${esc(text)}</div>`
+  }
+  const THREAD_PREVIEW = 5
+  const hasMoreMsgs = msgs.length > THREAD_PREVIEW
+  const renderMsg = (msg) => {
+    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
+    if (!headerMatch) return `<div class="pretty-thread-msg"><div class="pretty-msg-body">${esc(msg)}</div></div>`
+    const [, ts, from, to, body] = headerMatch
+    const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : ''
+    const toCls = ctx.getNickClass ? ctx.getNickClass(to) : ''
+    const shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
+    const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(body.trim()) : esc(body.trim())
+    return `<div class="pretty-thread-msg">
+      <div class="pretty-msg-header"><span class="pretty-ts">${esc(shortTs)}</span> <span class="${fromCls}">${esc(from)}</span> <span class="pretty-arrow">→</span> <span class="${toCls}">${esc(to)}</span></div>
+      <div class="pretty-msg-body">${bodyHtml}</div>
+    </div>`
+  }
+  // Show last N messages by default (most recent are most relevant)
+  const visibleMsgs = hasMoreMsgs ? msgs.slice(-THREAD_PREVIEW) : msgs
+  const rows = visibleMsgs.map(renderMsg).join('')
+  let moreHtml = ''
+  if (hasMoreMsgs) {
+    const hiddenRows = msgs.slice(0, msgs.length - THREAD_PREVIEW).map(renderMsg).join('')
+    moreHtml = `<div class="pretty-expand-btn">${msgs.length - THREAD_PREVIEW} earlier — show all</div>`
+      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+  }
+  const headerLine = text.match(/^(⚠️[^\n]*\n)?(\d+ messages:)\n/)
+  const header = headerLine ? `<div class="pretty-result-header">${esc(headerLine[0].trim())}</div>` : ''
+  return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
+}
+
+function renderSearchResult(text, ctx) {
+  // Format: "N results (X session, Y chat) — index: ...\n\nresult1\n\nresult2\n\n..."
+  // Each result: "timestamp | [source] [role] agent | snippet"
+  const parts = text.split('\n\n')
+  if (parts.length <= 1) {
+    return `<div class="tool-pretty-result">${esc(text)}</div>`
+  }
+  const header = parts[0]
+  const results = parts.slice(1)
+  const PREVIEW_COUNT = 5
+  const hasMore = results.length > PREVIEW_COUNT
+  const rows = results.slice(0, PREVIEW_COUNT).map((r, i) => {
+    // Parse "timestamp | [source] [role] agent | snippet" format
+    const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
+    const stripe = i % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
+    if (pipeMatch) {
+      const ts = pipeMatch[1].trim()
+      const source = pipeMatch[2].trim()
+      const snippet = pipeMatch[3].trim()
+      const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+      const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')  // strip date, keep time
+      return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
+        <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
+        <span class="pretty-search-source">${esc(source)}</span>
+        <span class="pretty-search-snippet">${highlightedSnippet}</span>
+      </div>`
+    }
+    // Fallback: unstructured result
+    const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+    return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
+  }).join('')
+  // Render remaining rows hidden, with expand button
+  let moreHtml = ''
+  if (hasMore) {
+    const hiddenRows = results.slice(PREVIEW_COUNT).map((r, i) => {
+      const idx = i + PREVIEW_COUNT
+      const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
+      const stripe = idx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
+      if (pipeMatch) {
+        const ts = pipeMatch[1].trim()
+        const source = pipeMatch[2].trim()
+        const snippet = pipeMatch[3].trim()
+        const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+        const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
+        return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
+          <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
+          <span class="pretty-search-source">${esc(source)}</span>
+          <span class="pretty-search-snippet">${highlightedSnippet}</span>
+        </div>`
+      }
+      const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+      return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
+    }).join('')
+    moreHtml = `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+      + `<div class="pretty-expand-btn">${results.length - PREVIEW_COUNT} more — show all</div>`
+  }
+  return `<div class="tool-pretty-result tool-pretty-search">
+    <div class="pretty-result-header">${esc(header)}</div>
+    ${rows}
+    ${moreHtml}
+  </div>`
+}
+
 // --- Tool helpers ---
 
 export function humanizeToolName(name) {
@@ -329,6 +443,9 @@ export function renderActivityGroup(group, ctx) {
       const cmdAttr = cmd ? ` data-cmd="${esc(cmd)}"` : ''
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
+      const prettyHtml = t._prettyResult
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx)
+        : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}">`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`
@@ -339,6 +456,7 @@ export function renderActivityGroup(group, ctx) {
         + `</div>`
         + diffHtml
         + codeCardHtml
+        + prettyHtml
     }).join('')
     const cardId = 'tr-' + Math.random().toString(36).slice(2, 8)
     return `<div class="tool-run-card" draggable="true" data-card-id="${cardId}">

@@ -258,6 +258,39 @@ export async function processProjectPush(name, body) {
   // New files written — if the viewer was pinned to an old version, unpin it now.
   broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: null, timestamp: Date.now() })
 
+  // LaTeX/SVG format: filter out source-change events for files that
+  // aren't part of the main file's include tree. The tree is captured
+  // from pdflatex's .fls after each successful build and stored as
+  // relevant-files.json in the project output dir. Files outside the
+  // tree (e.g. scratch notes under the project dir) still get mirrored
+  // above, but we skip the rebuild. If the set file doesn't exist yet,
+  // no rebuild either — bootstrap the set with a manual `tlda build`.
+  if (project.format === 'svg' && files?.length > 0) {
+    const relevantPath = join(getOutputDir(name), 'relevant-files.json')
+    if (!existsSync(relevantPath)) {
+      console.log(`[${name}] push skipped: relevant-files.json missing — run \`tlda build ${name}\` to bootstrap`)
+      return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'no-relevant-set' }
+    }
+    try {
+      const { files: relevantList } = JSON.parse(readFileSync(relevantPath, 'utf8'))
+      const relevantSet = new Set(relevantList || [])
+      const authorDir = project.sourceDir
+      const mirrorDir = getSourceDir(name)
+      const anyRelevant = files.some(f => {
+        const mirrorPath = join(mirrorDir, f.path)
+        if (relevantSet.has(mirrorPath)) return true
+        if (authorDir && relevantSet.has(join(authorDir, f.path))) return true
+        return false
+      })
+      if (!anyRelevant) {
+        return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'outside-tree' }
+      }
+    } catch (e) {
+      console.error(`[${name}] relevant-files.json parse failed: ${e.message}`)
+      return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'parse-failed' }
+    }
+  }
+
   // Non-SVG formats: kick off build async, return immediately.
   if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
@@ -276,8 +309,29 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // SVG/LaTeX format: kick off runBuild async, return immediately.
-  ;(async () => {
+  // SVG/LaTeX format: debounced build. runBuild kills any in-progress
+  // build and restarts — that was fine for single pushes but with a
+  // rapid-fire editor (math agent typing) each push killed the running
+  // build, so nothing ever completed. Debounce here so rapid edits
+  // coalesce into a single build that starts after the edits pause.
+  scheduleDebouncedBuild(name, priorityPages)
+  return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
+}
+
+// Per-project debounce for runBuild. Key = project name, value = timer id.
+// On each push we clear any pending timer and schedule a fresh one. The
+// build only fires after `BUILD_DEBOUNCE_MS` of quiet. Combined with
+// runBuild's existing "kill in-progress and restart" behavior, this
+// means: the LAST edit in a burst wins, and rapid bursts don't cause
+// thrashing.
+const _buildDebounceTimers = new Map()
+const BUILD_DEBOUNCE_MS = 1500
+
+function scheduleDebouncedBuild(name, priorityPages) {
+  const existing = _buildDebounceTimers.get(name)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(async () => {
+    _buildDebounceTimers.delete(name)
     try {
       await runBuild(name, { priorityPages })
       const updated = readProject(name)
@@ -290,8 +344,8 @@ export async function processProjectPush(name, body) {
     } catch (e) {
       console.error(`[api] Build failed for ${name}: ${e.message}`)
     }
-  })()
-  return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
+  }, BUILD_DEBOUNCE_MS)
+  _buildDebounceTimers.set(name, timer)
 }
 
 // Push files + trigger build
@@ -490,10 +544,16 @@ router.get('/:name/sync/health', requireRead, (req, res) => {
 })
 
 // POST /:name/signal — broadcast a signal to all connected viewers
-router.post('/:name/signal', requireRw, (req, res) => {
+router.post('/:name/signal', requireRw, async (req, res) => {
   const { key, ...data } = req.body
   if (!key) return res.status(400).json({ error: 'key is required' })
   broadcastSignal(syncRoomName(req.params.name), key, data)
+  // When a compare signal arrives, protect that hash from pruning
+  if (key === 'signal:compare') {
+    const { setCompareRef } = await import('../lib/shadow-repo.mjs')
+    const ref = data?.data?.ref
+    setCompareRef(req.params.name, ref ? ref.slice(0, 7) : null)
+  }
   res.json({ ok: true })
 })
 

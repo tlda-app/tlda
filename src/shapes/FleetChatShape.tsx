@@ -15,15 +15,12 @@ import {
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext } from 'react'
 
-import katex from 'katex'
-import { getActiveMacros } from '../katexMacros'
-import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
-import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
+import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
@@ -33,9 +30,9 @@ import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
-import { DocContext } from '../PanelContext'
+import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
-import { linkifyDocRefs, linkifyArrowRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo } from '../docLinks'
+import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { useLayoutMode } from './HudLayoutMode'
@@ -133,62 +130,20 @@ initVoice()
 
 // --- Markdown renderer using markdown-it + KaTeX ---
 
-const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
-
-// Wrap fenced code blocks with .code-block-wrap and a copy button (GitHub-style)
-md.renderer.rules.fence = (tokens, idx) => {
-  const token = tokens[idx]
-  const lang = token.info.trim()
-  const code = token.content
-  const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
-  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
-}
-
-function tldaRenderMarkdown(escapedHtml: string): string {
-  // Input is esc()'d — unescape for markdown-it
-  let text = escapedHtml
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-
-  // Strip system metadata tags
-  text = text.replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '')
-
-  // KaTeX: display math $$...$$
-  const macros = getActiveMacros()
-  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
-    try {
-      return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false, macros })
-    } catch { return `<div class="math-display">${esc(tex)}</div>` }
-  })
-
-  // KaTeX: inline math $...$
-  text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex) => {
-    try {
-      return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false, macros })
-    } catch { return `<span class="math-inline">${esc(tex)}</span>` }
-  })
-
-  // Render markdown
-  let result = md.render(text)
-
-  // Unwrap single <p> for inline chat layout
-  const trimmed = result.trim()
-  if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
-    result = trimmed.slice(3, -4)
-  }
-
-  // Make links open in new tab
-  result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
-
-  return result
+// Thin wrapper: delegate to the canonical renderMarkdown in utils.mjs.
+// Input may be esc()'d (from chat-render) or raw (from delegation cards).
+// renderMarkdown expects esc()'d input and un-escapes internally.
+function tldaRenderMarkdown(input: string): string {
+  // If input looks raw (not escaped), escape it first so renderMarkdown
+  // can un-escape and process normally.
+  const looksEscaped = input.includes('&amp;') || input.includes('&lt;') || input.includes('&gt;')
+  const escapedInput = looksEscaped ? input : esc(input)
+  return renderMarkdownUtil(escapedInput)
 }
 
 // --- Viewer context helper ---
 
-function gatherViewerContext(editor: any, doc: any, chatShapeId?: string) {
+function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, version?: string | null) {
   if (!editor || !doc) return null
   const camera = editor.getCamera()
   const viewport = editor.getViewportPageBounds()
@@ -198,19 +153,52 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string) {
       const b = page.bounds
       if (!b) return
       // Page is visible if it overlaps the viewport
-      if (b.x + b.width > viewport.minX && b.x < viewport.maxX &&
-          b.y + b.height > viewport.minY && b.y < viewport.maxY) {
+      // Box uses w/h, not width/height
+      const bw = b.w ?? b.width ?? 0
+      const bh = b.h ?? b.height ?? 0
+      if (b.x + bw > viewport.minX && b.x < viewport.maxX &&
+          b.y + bh > viewport.minY && b.y < viewport.maxY) {
         visiblePages.push(i + 1)
       }
     })
   }
   return {
     doc: doc.docName || null,
+    version: version || null,
     page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
     camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
     chatShapeId: chatShapeId || undefined,
     browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
   }
+}
+
+/**
+ * Resolve the document version the user is currently viewing. Prefer the
+ * shadow-repo version since that's what the MCP build pipeline considers
+ * authoritative. If the user has scrubbed the shadow slider, use the active
+ * snapshot; otherwise use the latest. Falls back to historyEntries for git
+ * commits if no shadow data is available. Returns a short hash that travels
+ * well in chat metadata.
+ */
+function currentDocVersion(panel: any): string | null {
+  const sv = panel?.shadowVersions
+  if (Array.isArray(sv) && sv.length > 0) {
+    const idx = (typeof panel.shadowActiveIdx === 'number' && panel.shadowActiveIdx >= 0)
+      ? panel.shadowActiveIdx
+      : 0
+    const entry = sv[idx] || sv[0]
+    if (entry?.hash) return String(entry.hash).slice(0, 12)
+  }
+  const entries = panel?.historyEntries
+  if (entries && entries.length > 0) {
+    const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)
+      ? panel.activeHistoryIdx
+      : 0
+    const entry = entries[idx]
+    const raw = entry?.commitHash || entry?.id
+    if (raw) return String(raw).slice(0, 12)
+  }
+  return null
 }
 
 // --- Shape definition ---
@@ -305,6 +293,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
   const doc = useContext(DocContext)
+  const panel = useContext(PanelContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
@@ -317,10 +306,10 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)
   const [labelRegions, setLabelRegions] = useState<Record<string, LabelRegionInfo>>({})
+  const [theoremMap, setTheoremMap] = useState<Record<string, TheoremMapEntry>>({})
   useEffect(() => {
     if (!doc?.docName) return
     loadLookup(doc.docName).then(setLookup)
-    // Load proof-info.json for label regions (arrow refs)
     const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
     const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
     fetch(`${base}docs/${doc.docName}/proof-info.json?t=${Date.now()}`)
@@ -329,9 +318,15 @@ function FleetChatComponent({ shape }: { shape: any }) {
         if (data?.labelRegions) setLabelRegions(data.labelRegions)
       })
       .catch(() => {})
+    fetch(`${base}docs/${doc.docName}/theorem-map.json?t=${Date.now()}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) setTheoremMap(data)
+      })
+      .catch(() => {})
   }, [doc?.docName])
 
-  const refResolver = useMemo(() => lookup ? buildRefResolver(lookup) : null, [lookup])
+  const refResolver = useMemo(() => lookup ? buildRefResolver(lookup, theoremMap) : null, [lookup, theoremMap])
 
   // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
   const frameId = shape.parentId as string | undefined
@@ -342,19 +337,45 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
-  // Terminal cards — set of agent IDs with open terminal cards
+  // Terminal cards — set of agent IDs with open terminal cards.
+  // Clicking X removes the card entirely (no freeze snapshot — same content
+  // appears in activity cards, and terminal output is ephemeral) AND marks
+  // the triggering events as read on the server. The auto-open useEffect
+  // only opens cards for events that are still unread, so a dismissed
+  // event won't re-pop on reload.
   const [terminalCards, setTerminalCards] = useState<Set<string>>(() => new Set())
   const openTerminal = useCallback((agentId: string) => {
     setTerminalCards(prev => new Set(prev).add(agentId))
   }, [])
   const closeTerminal = useCallback((agentId: string) => {
+    // Mark every unread terminal_card / terminal_attention event for this
+    // agent as read, so reload doesn't re-pop. Best-effort fire-and-forget.
+    const unreadEventIds = liveEvents
+      .filter((e: any) =>
+        (e._evType === 'terminal_card' || e._evType === 'terminal_attention') &&
+        e.from === agentId &&
+        e.read !== true && (e._dbId || e.id)
+      )
+      .map((e: any) => e._dbId || e.id)
+    for (const eid of unreadEventIds) {
+      fetch(`${FLEET_API}/api/mark-event-read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: eid, agent: 'fleet:skip' }),
+      }).catch(() => {})
+    }
     setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
-  }, [])
+  }, [liveEvents])
 
-  // Auto-open terminal cards when a "terminal_card" or "terminal_attention" event arrives
+  // Auto-open terminal cards when an UNREAD "terminal_card" or
+  // "terminal_attention" event arrives. The read state is canonical
+  // (server-side via the unread table); dismissing a card marks the
+  // event read so a reload doesn't re-pop. New events for the same
+  // agent arrive as unread → fresh card pops.
   useEffect(() => {
     for (const e of liveEvents) {
-      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention') && e.from && !terminalCards.has(e.from)) {
+      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention')
+          && e.from && e.read !== true && !terminalCards.has(e.from)) {
         openTerminal(e.from)
       }
     }
@@ -459,22 +480,23 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [events])
 
 
+  // Render all chat messages chronologically. Thinking line is rendered
+  // separately at the bottom of the JSX below.
   const renderedHtml = useMemo(() => {
-    // Group consecutive activity events from the same agent into cards
-    const parts: string[] = []
+    const out: string[] = []
     let activityGroup: any[] = []
 
     function flushActivity() {
       if (activityGroup.length === 0) return
-      parts.push(
+      out.push(
         `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`
       )
       activityGroup = []
     }
 
-    for (const m of chatMessages) {
+    for (let i = 0; i < chatMessages.length; i++) {
+      const m = chatMessages[i]
       if (m._activity) {
-        // Continue grouping if same agent, otherwise flush and start new group
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) {
           flushActivity()
         }
@@ -482,18 +504,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
       } else {
         flushActivity()
         const line = renderChatLine(m, ctx)
-        if (line) parts.push(line)
+        if (!line) continue
+        out.push(line)
       }
     }
     flushActivity()
 
-    return parts.join('')
+    return out.join('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages, ctx])
 
-  // Post-process HTML to add clickable doc links
-  const linkedHtml = useMemo(() => {
-    let html = renderedHtml
+  // Post-process HTML to add clickable doc links / chips.
+  const postProcessChatHtml = useCallback((input: string): string => {
+    let html = input
     // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
     // (otherwise "Theorem 3.2" inside a token gets wrapped in a doc-link span
     // and the regex can't match the original token)
@@ -581,10 +604,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
       html = linkifyArrowRefs(html, labelRegions)
+      html = linkifyLabelRefs(html, labelRegions)
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [renderedHtml, doc, labelRegions, imageSrcs, editor])
+  }, [doc, labelRegions, imageSrcs, editor])
+
+  const linkedHtml = useMemo(
+    () => postProcessChatHtml(renderedHtml),
+    [renderedHtml, postProcessChatHtml]
+  )
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -697,6 +726,20 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     e.stopPropagation()
     setDocLinkHover(null) // dismiss preview on click
+    // Update docview shape directly if one exists
+    const mainEd = (window as any).__tldraw_editor__
+    if (mainEd) {
+      const dvShape = mainEd.getCurrentPageShapes().find((s: any) => s.type === 'fleet-docview')
+      if (dvShape) {
+        const lbl = target.dataset.refLabel || ''
+        const dvTitle = lbl || `p.${resolved.page}`
+        if ((dvShape as any).isLocked) mainEd.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
+        mainEd.updateShape({
+          id: dvShape.id, type: dvShape.type,
+          props: { ...(dvShape as any).props, mode: 'manual', label: lbl, page: resolved.page, yTop: resolved.pdfY || 0, yBottom: (resolved.pdfY || 0) + 200, title: dvTitle },
+        })
+      }
+    }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
   }, [doc, refResolver, editor])
 
@@ -719,10 +762,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
     function onMouseOver(e: MouseEvent) {
       const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
       if (!target || !doc) return
-      // Skip unresolved arrow refs
       if (target.classList.contains('doc-link-unresolved')) return
 
-      // Debounce slightly to avoid flicker
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = setTimeout(() => {
         const refType = target.dataset.refType
@@ -743,17 +784,29 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
         if (!resolved) return
 
-        // Convert screen coords → shape-local coords
-        const containerEl = shapeContainerRef.current
-        if (!containerEl) return
-        const containerRect = containerEl.getBoundingClientRect()
-        const anchorRect = target.getBoundingClientRect()
-        const zoom = containerRect.width / w  // screen px per local px
-        const localX = (anchorRect.left - containerRect.left) / zoom
-        const localY = (anchorRect.top - containerRect.top) / zoom
-        const localW = anchorRect.width / zoom
-
-        setDocLinkHover({ resolved, localX, localY, localW, text: target.textContent || '' })
+        // Convert resolved ref to canvas bounds for AnnotationViewer
+        const pageIdx = resolved.page - 1
+        if (pageIdx < 0 || pageIdx >= doc.pages.length) return
+        const pageBounds = doc.pages[pageIdx].bounds
+        const REGION_H = pageBounds.height * 0.3  // show ~30% of the page around the reference
+        let cy: number
+        if (resolved.pdfY != null) {
+          const scale = pageBounds.height / PDF_HEIGHT
+          cy = pageBounds.y + resolved.pdfY * scale
+        } else {
+          cy = pageBounds.y + pageBounds.height / 2
+        }
+        const bounds = {
+          x: pageBounds.x,
+          y: cy - REGION_H / 2,
+          w: pageBounds.width,
+          h: REGION_H,
+        }
+        const chipRect = target.getBoundingClientRect()
+        const label = target.textContent?.trim() || `p.${resolved.page}`
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: { bounds, shapeIds: [], label, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
+        }))
       }, 150)
     }
 
@@ -761,9 +814,9 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!target.closest('.doc-link')) return
       const related = e.relatedTarget as HTMLElement | null
-      if (related?.closest('.doc-link-preview')) return
+      if (related?.closest('.annotation-viewer')) return
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
-      setDocLinkHover(null)
+      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
     }
 
     logEl.addEventListener('mouseover', onMouseOver)
@@ -861,7 +914,8 @@ function FleetChatComponent({ shape }: { shape: any }) {
     if (!logEl) return
 
     function onAnnotationOver(e: MouseEvent) {
-      const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
+      // Match annotation chips AND any ref-chip with bounds data (doc region refs)
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-bounds]') as HTMLElement | null
       if (!chip) return
       if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
       annotationHoverTimerRef.current = setTimeout(() => {
@@ -886,7 +940,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
     function onAnnotationOut(e: MouseEvent) {
       const target = e.target as HTMLElement
-      if (!target.closest('.ref-chip-annotation')) return
+      if (!target.closest('.ref-chip[data-bounds]')) return
       // Check if moving into the viewer itself
       const related = e.relatedTarget as HTMLElement | null
       if (related?.closest('.annotation-viewer')) return
@@ -960,6 +1014,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
+      if (userScrolledUp.current) return
       const el = logEl!
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
         el.scrollTop = el.scrollHeight
@@ -967,6 +1022,42 @@ function FleetChatComponent({ shape }: { shape: any }) {
     }
     logEl.addEventListener('load', onImgLoad, true)
     return () => logEl.removeEventListener('load', onImgLoad, true)
+  }, [])
+
+  // Lightbox: click on chat-image opens full-size overlay
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+    function onClick(e: Event) {
+      // Expand/collapse delegation message
+      const lcMsg = (e.target as HTMLElement).closest('.lc-message') as HTMLElement
+      if (lcMsg) {
+        lcMsg.classList.toggle('lc-message-collapsed')
+        return
+      }
+      // Expand tool result (show more search results / earlier thread messages)
+      const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
+      if (expandBtn) {
+        const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
+        if (moreRows) {
+          moreRows.style.display = moreRows.style.display === 'none' ? '' : 'none'
+          expandBtn.textContent = moreRows.style.display === 'none'
+            ? expandBtn.textContent!
+            : 'collapse'
+        }
+        return
+      }
+      const img = (e.target as HTMLElement).closest('img') as HTMLImageElement
+      if (!img) return
+      e.stopPropagation()
+      const overlay = document.createElement('div')
+      overlay.className = 'chat-lightbox'
+      overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
+      overlay.addEventListener('click', () => overlay.remove())
+      document.body.appendChild(overlay)
+    }
+    logEl.addEventListener('click', onClick)
+    return () => logEl.removeEventListener('click', onClick)
   }, [])
 
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
@@ -1003,7 +1094,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
     let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
       const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current) {
+      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current) {
         chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
       }
       prevHeight = newHeight
@@ -1157,29 +1248,34 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
 
+      // Only intercept on draggable elements — nick spans are NOT drag handles
+      // (text selection takes priority; agent filter pills come from the agents panel)
+      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts')
+
       // When the shape is selected in tldraw (handles visible), let tldraw handle
-      // the pointer so the user can drag the whole shape to move/resize it.
-      if (isSelectedRef.current) return
+      // the pointer so the user can drag the whole shape to move/resize it —
+      // UNLESS the click is on an inner draggable element (chip, timestamp, etc.).
+      // In that case we handle the drag ourselves and stop propagation below
+      // (after confirming a valid drag target) so tldraw doesn't translate the
+      // parent shape.
+      if (isSelectedRef.current && !isDraggable) return
+
+      if (!isDraggable) return
 
       const names = agentNamesRef.current
 
-      // Only intercept on draggable elements — nick spans are NOT drag handles
-      // (text selection takes priority; agent filter pills come from the agents panel)
-      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation)')
-      if (!isDraggable) return
-
       let drag: typeof dragRef.current = null
 
-      // Timestamp → message reference
+      // Timestamp → message reference (works in main chat, search results, thread views)
       {
-        const tsEl = target.closest('.chat-ts') as HTMLElement
+        const tsEl = target.closest('.chat-ts, .pretty-search-ts, .pretty-ts') as HTMLElement
         if (tsEl) {
-          const line = tsEl.closest('.chat-line') as HTMLElement
+          const line = tsEl.closest('.chat-line, .pretty-search-row, .pretty-thread-msg') as HTMLElement
           if (line) {
             const from = line.dataset.msgFrom || ''
-            const ts = line.dataset.msgTs || ''
+            const ts = line.dataset.msgTs || tsEl.getAttribute('title') || tsEl.textContent || ''
             const text = line.textContent?.slice(0, 200)?.trim() || ''
-            const nick = names[from] || from.replace('fleet:', '')
+            const nick = from ? (names[from] || from.replace('fleet:', '')) : ''
             drag = {
               pillId: null, pillType: 'msg', value: `msg:${from}:${ts}`,
               displayName: `${nick} ${tsEl.textContent || ''}`.trim(),
@@ -1672,18 +1768,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
           ))}
         </div>
 
-        {/* Doc-link hover preview — positioned relative to shape container */}
-        {docLinkHover && doc && (
-          <DocLinkPreview
-            resolved={docLinkHover.resolved}
-            localX={docLinkHover.localX}
-            localY={docLinkHover.localY}
-            text={docLinkHover.text}
-            docName={doc.docName}
-            shapeW={w}
-            onDismiss={() => setDocLinkHover(null)}
-          />
-        )}
 
         {/* Scroll-to-bottom button — appears when user has scrolled up */}
         {showScrollBtn && (
@@ -1760,6 +1844,29 @@ function FleetChatComponent({ shape }: { shape: any }) {
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
+                // Escape: clear if there's text, otherwise soft-interrupt any
+                // thinking sendTargets. Mirrors how Esc works in a terminal —
+                // you bail out of whatever the agent is currently doing so
+                // your next message lands at a real prompt instead of the
+                // unread queue.
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  if (ta.value !== '') {
+                    ta.value = ''
+                    ta.style.height = 'auto'
+                    return
+                  }
+                  const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
+                  if (thinkingTargets.length === 0) return
+                  for (const target of thinkingTargets) {
+                    fetch(`${FLEET_API}/api/interrupt`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ agent: target }),
+                    }).catch(() => {})
+                  }
+                  return
+                }
                 if (e.key === 'ArrowUp') {
                   const history = sentHistoryRef.current
                   if (history.length === 0) return
@@ -1828,23 +1935,26 @@ function FleetChatComponent({ shape }: { shape: any }) {
                   const doSend = () => {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
-                    const context = gatherViewerContext(editor, doc, shape.id)
-                    Promise.all(
-                      sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
-                    ).then((responses: Response[]) => {
-                      if (!responses.every(r => r.ok)) throw new Error('send failed')
-                      ta.value = ''
-                      ta.style.height = 'auto'
-                      resetTranscript()
-                      restartRecording()
-                      sentHistoryRef.current = [...sentHistoryRef.current, text]
-                      historyIndexRef.current = -1
-                      userScrolledUp.current = false; setShowScrollBtn(false)
-                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                    }).catch(() => {
-                      ta.style.borderColor = 'rgba(200, 112, 112, 0.6)'
-                      setTimeout(() => { ta.style.borderColor = '' }, 2000)
-                    })
+                    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                    // Optimistic send: clear immediately, retry on failure
+                    ta.value = ''
+                    ta.style.height = 'auto'
+                    resetTranscript()
+                    restartRecording()
+                    sentHistoryRef.current = [...sentHistoryRef.current, text]
+                    historyIndexRef.current = -1
+                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    const sendWithRetry = (attempt: number) => {
+                      Promise.all(
+                        sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
+                      ).then((responses: Response[]) => {
+                        if (!responses.every(r => r.ok)) throw new Error('send failed')
+                      }).catch(() => {
+                        if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                      })
+                    }
+                    sendWithRetry(1)
                   }
 
                   if (lineText.trim() === '') {
@@ -1871,14 +1981,14 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id)
+                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
                   return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id)
+                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
                   return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
@@ -2354,7 +2464,13 @@ function FilterOverlay({
       filterDropPreview.fromPreview = fromPreview
       filterDropPreview.replacePreview = replacePreview
       filterDropPreview.activePaneRole = (hoveredGroup?.pane as any) ?? null
-    } else {
+    } else if (filterDropPreview.shapeId === shapeId) {
+      // Only clear if WE are the current owner. If another chat has taken
+      // ownership in the interim (multiple FilterOverlays mounted), leave its
+      // state alone — otherwise this effect re-running on Chat A would wipe
+      // the preview Chat B just published, and the next pointerup on B would
+      // see a null shapeId and silently fall through to the position-based
+      // fallback (the longstanding "this chat won't filter anymore" bug).
       filterDropPreview.shapeId = null
       filterDropPreview.toPreview = null
       filterDropPreview.fromPreview = null
@@ -2362,11 +2478,16 @@ function FilterOverlay({
       filterDropPreview.activePaneRole = null
     }
     return () => {
-      filterDropPreview.shapeId = null
-      filterDropPreview.toPreview = null
-      filterDropPreview.fromPreview = null
-      filterDropPreview.replacePreview = null
-      filterDropPreview.activePaneRole = null
+      // Same ownership guard for unmount/re-run cleanup. The cleanup function
+      // fires on every dep change, not just unmount, so an unconditional clear
+      // would race with another chat's effect body publishing fresh state.
+      if (filterDropPreview.shapeId === shapeId) {
+        filterDropPreview.shapeId = null
+        filterDropPreview.toPreview = null
+        filterDropPreview.fromPreview = null
+        filterDropPreview.replacePreview = null
+        filterDropPreview.activePaneRole = null
+      }
     }
   }, [pillOver, toPreview, fromPreview, hoveredGroup, shapeId])
 

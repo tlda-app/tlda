@@ -21,7 +21,7 @@ if (!process.env.PATH?.includes(texbin)) {
   process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
-import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync } from 'fs'
+import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
@@ -339,16 +339,20 @@ async function compileLaTeX(ctx) {
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
 
-  // Build the pdflatex command — cwd is srcDir, output goes to buildDir
+  // Build the pdflatex command — cwd is srcDir, output goes to buildDir.
+  // -recorder emits <jobname>.fls listing every file read (INPUT) and
+  // written (OUTPUT); we parse it after a successful build to populate
+  // the project's relevant-files set, which the server uses to filter
+  // source-change events.
   let cmd
   if (fmtBase) {
-    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+    cmd = `pdflatex --output-format=dvi -synctex=1 -recorder -interaction=nonstopmode ` +
       `-output-directory="${buildDir}" -fmt="${fmtBase}" "${texBase}.tex"`
   } else {
     addLog('No format available — using pretex wrapper')
     const wrapperContent = PRETEX + '\n\\input{' + texBase + '.tex}\n'
     writeFileSync(join(buildDir, `${texBase}-wrapped.tex`), wrapperContent)
-    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+    cmd = `pdflatex --output-format=dvi -synctex=1 -recorder -interaction=nonstopmode ` +
       `-output-directory="${buildDir}" -jobname="${texBase}" "${texBase}-wrapped.tex"`
   }
 
@@ -694,6 +698,66 @@ function saveBuildCache(ctx) {
   }
 }
 
+// Parse the .fls file pdflatex -recorder produced and write a
+// relevant-files.json listing every INPUT path that lives inside the
+// project's sourceDir (the authoring directory, not the per-project
+// mirror under server/projects). The server uses this set to filter
+// source-change pushes from the daemon — changes to files outside the
+// set don't trigger rebuilds.
+function writeRelevantFiles(ctx) {
+  const { name, buildDir, texBase, srcDir, outDir, project, addLog } = ctx
+  const flsPath = join(buildDir, `${texBase}.fls`)
+  if (!existsSync(flsPath)) {
+    addLog(`Relevant files: .fls not found at ${flsPath} (skipping)`)
+    return
+  }
+  // The authoring source dir lives at project.sourceDir (daemon-watched).
+  // srcDir is the per-project mirror under server/projects/<name>/source/;
+  // pdflatex compiled from srcDir, so INPUT lines reference srcDir paths.
+  // We translate them to authoring-dir paths so the set matches what the
+  // daemon actually pushes from.
+  const authorDir = project?.sourceDir
+  const relevant = new Set()
+  let lineCount = 0
+  try {
+    const fls = readFileSync(flsPath, 'utf8')
+    for (const line of fls.split('\n')) {
+      if (!line.startsWith('INPUT ')) continue
+      lineCount++
+      let p = line.slice(6).trim()
+      if (!p) continue
+      // Absolute paths from texlive / system libs: skip.
+      if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
+      // Relative paths: resolve against srcDir (cwd of pdflatex).
+      if (!p.startsWith('/')) p = join(srcDir, p)
+      // Normalize — collapse any .. / . segments.
+      try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
+      // Only keep paths inside srcDir (the mirror) — translate to authorDir.
+      if (p.startsWith(srcDir + '/')) {
+        const rel = p.slice(srcDir.length + 1)
+        if (authorDir) relevant.add(join(authorDir, rel))
+        relevant.add(p)  // also keep mirror path for safety
+      } else if (authorDir && p.startsWith(authorDir + '/')) {
+        relevant.add(p)
+      }
+    }
+  } catch (e) {
+    addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
+    return
+  }
+  const outPath = join(outDir, 'relevant-files.json')
+  try {
+    writeFileSync(outPath, JSON.stringify({
+      generated_at: new Date().toISOString(),
+      source_dir: authorDir || srcDir,
+      files: [...relevant].sort(),
+    }, null, 2))
+    addLog(`Relevant files: ${relevant.size} entries from ${lineCount} INPUT lines`)
+  } catch (e) {
+    addLog(`Relevant files: write failed (non-fatal): ${e.message}`)
+  }
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
@@ -804,6 +868,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
     // Phase 6: Theorem map
     await generateTheoremMap(ctx)
+
+    // Phase 7: Relevant-files set (for source-change filtering). Parses
+    // the .fls file that pdflatex -recorder wrote and captures every
+    // INPUT path that lives inside the project's sourceDir.
+    writeRelevantFiles(ctx)
 
     // Finalize
     updateProject(name, {

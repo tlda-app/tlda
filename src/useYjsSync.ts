@@ -153,6 +153,17 @@ const viewPinHandle = bus.register<ViewPinSignal>({
 })
 export const onViewPinSignal = viewPinHandle.on
 
+// Compare: side-by-side version viewer signal. initBehavior: 'none' —
+// do NOT fire cached signal on reconnect. The compare shapes persist in
+// the Yjs store; re-firing would delete them (clearCompareShapes) and
+// try to recreate, which fails if the editor isn't ready yet.
+export type CompareSignal = { ref: string | null; hash7?: string; timestamp: number }
+const compareHandle = bus.register<CompareSignal>({
+  key: 'signal:compare',
+  initBehavior: 'discard',
+})
+export const onCompareSignal = compareHandle.on
+
 export type AgentAttentionSignal = { x: number; y: number; timestamp: number; agent?: string }
 const agentAttentionHandle = bus.register<AgentAttentionSignal>({ key: 'signal:agent-attention' })
 export const onAgentAttention = agentAttentionHandle.on

@@ -8,7 +8,7 @@ import {
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
-import { subscribeSvgText, getSvgText } from '../stores/svgTextStore'
+import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
 import { getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
 
@@ -59,21 +59,57 @@ function SvgPageComponent({ shape }: { shape: any }) {
     () => getSvgText(shape.id),
   )
 
+  // Auto-fetch SVG for compare pages: compare shapes sync via Yjs but
+  // the SVG text lives in a local JS Map that doesn't sync. Each browser
+  // must independently fetch the SVGs. Detect compare pages by shape ID
+  // and fetch from the shadow cache URL.
+  useEffect(() => {
+    if (svgText) return  // already have it
+    const idStr = shape.id as string
+    if (!idStr.includes('compare-page-')) return  // not a compare page
+    // Extract hash from Yjs signal (stored when compare was triggered)
+    // For now, try fetching from all available shadow caches
+    // The shape's pageIndex tells us which page to fetch (0-based → page-N.svg is 1-based)
+    const pageIdx = shape.props.pageIndex
+    // Read the compare ref from the signal cache
+    const fetchCompare = async () => {
+      try {
+        // Get doc name from URL query param
+        const docName = new URLSearchParams(window.location.search).get('doc') || 'bregman'
+        const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
+        if (!sigRes.ok) return
+        const sig = await sigRes.json()
+        const ref = sig?.data?.ref
+        if (!ref) return
+        const hash7 = ref.slice(0, 7)
+        const url = `/docs/${docName}/history/shadow-${hash7}/page-${pageIdx + 1}.svg`
+        const res = await fetch(url)
+        if (!res.ok) return
+        const text = await res.text()
+        setSvgText(shape.id as string, text)
+      } catch {}
+    }
+    fetchCompare()
+  }, [shape.id, shape.props.pageIndex, svgText])
+
   // Track what's currently injected so we skip redundant DOM work
   const injectedRef = useRef<string | null>(null)
   // Cached text element Y-positions for fast tinting (rebuilt on SVG injection)
   const textYCacheRef = useRef<{ el: SVGTextElement; y: number }[]>([])
 
 
-  // Track whether this page is near the viewport (±2 pages buffer)
+  // Track whether this page is near the viewport (±2 pages buffer).
+  // Check both axes — compare columns live at a different X position
+  // and would never render with a vertical-only check.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
-    const margin = shape.props.h * VIEWPORT_BUFFER_PAGES
-    // Simple vertical check — pages are stacked vertically
-    const shapeTop = shape.y
-    const shapeBottom = shape.y + shape.props.h
-    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
-  }, [editor, shape.id, shape.y, shape.props.h])
+    const b = editor.getShapePageBounds(shape.id)
+    if (!b) return false
+    const marginY = b.h * VIEWPORT_BUFFER_PAGES
+    const marginX = b.w * 2
+    return b.x + b.w > viewport.minX - marginX && b.x < viewport.maxX + marginX &&
+           b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
+  }, [editor, shape.id])
 
   // Subscribe to change store for THIS shape's highlights only (not all shapes)
   const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])
@@ -199,7 +235,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            overflow: 'visible',
+            overflow: 'hidden',
             pointerEvents: 'all',
           }}
         >

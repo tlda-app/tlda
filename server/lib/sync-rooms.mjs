@@ -209,23 +209,19 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
-  'fleet-tasks': {
+  'fleet-docview': {
     props: {
       w: T.number,
       h: T.number,
+      mode: T.string,
+      label: T.string,
+      page: T.number,
+      yTop: T.number,
+      yBottom: T.number,
+      title: T.string,
     },
     migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.fleet-tasks',
-      sequence: [],
-    }),
-  },
-  'fleet-inbox': {
-    props: {
-      w: T.number,
-      h: T.number,
-    },
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.fleet-inbox',
+      sequenceId: 'com.tldraw.shape.fleet-docview',
       sequence: [],
     }),
   },
@@ -593,10 +589,10 @@ export function getRoomRecords(docName, typeFilter) {
  */
 export async function putShape(docName, shape) {
   const room = getOrCreateRoom(docName)
-  // Use storage.transaction directly — updateStore is deprecated and doesn't trigger
-  // broadcastExternalStorageChanges (it writes without the internal txn id but doesn't
-  // go through the onChange path reliably). storage.transaction() fires onChange which
-  // triggers broadcastPatch to all connected sessions.
+  // storage.transaction writes to the Yjs doc but may not immediately
+  // broadcast to connected WebSocket clients. Shapes appear after
+  // reload or when the client re-syncs. For immediate visibility,
+  // shapes should be created client-side via the editor.
   room.storage.transaction((txn) => {
     txn.set(shape.id, shape)
   })

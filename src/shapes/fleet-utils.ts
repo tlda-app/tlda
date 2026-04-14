@@ -1,7 +1,7 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-pill']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
@@ -14,6 +14,10 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
 
 /**
  * Nuke all fleet shapes and recreate the default 3-column layout.
+ * Also clears the HUD position override and proxy shape so a wedged HUD
+ * (off-canvas, broken size, etc.) gets fully reset. This is the
+ * emergency-recovery escape hatch from any layout-mode mess.
+ *
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
 export function createFleetLayout(editor: Editor, agents: any[]) {
@@ -25,6 +29,19 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
+
+  // Clear HUD position override so the wrap reverts to auto-layout. Without
+  // this the HUD might still render at a wedged position even after the
+  // shapes are recreated.
+  try { localStorage.removeItem('fleet-hud-override') } catch {}
+  // Force a global reload of the FleetHUD's hudOverride state. The simplest
+  // signal: dispatch a custom event the FleetHUD listens for. We also nuke
+  // any leftover proxy shape from a half-finished layout-mode entry.
+  try {
+    const proxy = editor.getCurrentPageShapes().find(s => s.id === 'shape:fleet-hud-proxy')
+    if (proxy) editor.deleteShape(proxy.id)
+  } catch {}
+  try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
 
   // Fall back to most-recently-active agents only if no existing filter to restore
   const nonHuman = agents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
@@ -47,6 +64,9 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
   const agentsH = 330
   const searchH = totalH - gap - agentsH  // 300
   const totalW = leftW + gap + rightW     // 1180
+  // Rightmost chat is shortened to make room for a docview beneath it.
+  const rightChatH = Math.round(totalH * 0.75)
+  const docviewH = totalH - gap - rightChatH
 
   // Anchor: just left of the doc's left margin
   const pageShapes = editor.getCurrentPageShapes().filter(s =>
@@ -97,7 +117,14 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
       type: 'fleet-chat' as any,
       x: anchorX + leftW + gap + chatW + gap, y: anchorY,
       isLocked: false,
-      props: { w: chatW, h: totalH, filter: filter2 },
+      props: { w: chatW, h: rightChatH, filter: filter2 },
+    },
+    {
+      id: createShapeId(),
+      type: 'fleet-docview' as any,
+      x: anchorX + leftW + gap + chatW + gap, y: anchorY + rightChatH + gap,
+      isLocked: false,
+      props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
     },
   ])
 

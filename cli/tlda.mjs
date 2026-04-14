@@ -554,6 +554,36 @@ async function cmdPush() {
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
 
+// Idempotent daemon start — no-op if already running, spawns if not.
+// Used by `tlda server start` to make sure the daemon comes up alongside
+// the server. The daemon dying silently was a recurring source of pain.
+async function ensureFleetDaemonRunning() {
+  // Already running?
+  if (existsSync(FLEET_DAEMON_PIDFILE)) {
+    const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
+  }
+  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  if (!existsSync(daemonScript)) return // not installed; silently skip
+  const { spawn: cpSpawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+  if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
+  const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
+  const child = cpSpawn(process.execPath, [daemonScript], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: { ...process.env },
+  })
+  child.unref()
+  await new Promise(r => setTimeout(r, 800))
+  if (existsSync(FLEET_DAEMON_PIDFILE)) {
+    const pid = readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim()
+    console.log(green('Fleet daemon started') + dim(` (pid ${pid})`))
+  } else {
+    console.log(dim('Fleet daemon failed to start — see ' + FLEET_DAEMON_LOGFILE))
+  }
+}
+
 async function cmdFleetWatch(sub) {
   const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
 
@@ -2076,6 +2106,10 @@ ${tokenEnvLines.join('\n')}
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
+          // Also ensure the fleet daemon is up. The server depends on it for
+          // activity cards, terminal-chat extraction, and source watching;
+          // a server start with no daemon = silent failure for Skip.
+          await ensureFleetDaemonRunning()
           return
         }
       } catch {}

@@ -53,70 +53,55 @@ import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 
 // Render markdown + KaTeX math
-// Splits on math delimiters, renders non-math as markdown, math as KaTeX
+// Extracts math, replaces with placeholder tokens, renders the whole text as
+// markdown ONCE (so paragraph structure is correct), then swaps the rendered
+// KaTeX HTML back in. Rendering text segments individually causes markdown-it
+// to wrap each one in its own <p>, which produces spurious line breaks around
+// every inline $...$.
 function renderMarkdownMath(text: string, showErrors = false): string {
   const katexOptions = { macros: getActiveMacros(), throwOnError: true }
+  const placeholders: string[] = []
 
-  // Split text into math and non-math segments
-  // Preserve $$...$$ and $...$ as-is, render everything else as markdown
-  const segments: Array<{ type: 'text' | 'display' | 'inline'; content: string }> = []
-  let remaining = text
-
-  while (remaining.length > 0) {
-    // Look for display math first ($$...$$)
-    const displayMatch = remaining.match(/\$\$([\s\S]+?)\$\$/)
-    // Look for inline math ($...$)
-    const inlineMatch = remaining.match(/\$([^$\n]+)\$/)
-
-    const displayIdx = displayMatch?.index ?? Infinity
-    const inlineIdx = inlineMatch?.index ?? Infinity
-
-    if (displayIdx === Infinity && inlineIdx === Infinity) {
-      // No more math
-      segments.push({ type: 'text', content: remaining })
-      break
-    }
-
-    const nextMathIdx = Math.min(displayIdx, inlineIdx)
-    const isDisplay = displayIdx <= inlineIdx
-
-    // Text before math
-    if (nextMathIdx > 0) {
-      segments.push({ type: 'text', content: remaining.slice(0, nextMathIdx) })
-    }
-
-    if (isDisplay && displayMatch) {
-      segments.push({ type: 'display', content: displayMatch[1] })
-      remaining = remaining.slice(nextMathIdx + displayMatch[0].length)
-    } else if (inlineMatch) {
-      segments.push({ type: 'inline', content: inlineMatch[1] })
-      remaining = remaining.slice(nextMathIdx + inlineMatch[0].length)
+  const renderMath = (content: string, displayMode: boolean): string => {
+    try {
+      return katex.renderToString(content.trim(), { ...katexOptions, displayMode })
+    } catch (e: any) {
+      if (!showErrors) return ''
+      const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
+      return displayMode
+        ? `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
+        : `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
     }
   }
 
-  // Render each segment
-  return segments.map(seg => {
-    if (seg.type === 'display') {
-      try {
-        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: true })
-      } catch (e: any) {
-        if (!showErrors) return ''
-        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-        return `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
-      }
-    }
-    if (seg.type === 'inline') {
-      try {
-        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: false })
-      } catch (e: any) {
-        if (!showErrors) return ''
-        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-        return `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
-      }
-    }
-    // Markdown rendering for text segments
-    return md.render(seg.content)
-  }).join('')
+  const makeToken = (html: string): string => {
+    const idx = placeholders.length
+    placeholders.push(html)
+    // Alphanumeric token survives markdown-it untouched. Padded with letters
+    // so markdown-it doesn't see digits-only and treat as a list/ordinal.
+    return `MATHPLACEHOLDERZZZ${idx}ZZZ`
+  }
+
+  // Replace display math first ($$...$$), then inline ($...$). Surround
+  // display tokens with blank lines so markdown-it treats them as their own
+  // paragraph rather than wrapping them inside an existing block.
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content) => {
+    return `\n\n${makeToken(renderMath(content, true))}\n\n`
+  })
+  processed = processed.replace(/\$([^$\n]+)\$/g, (_m, content) => {
+    return makeToken(renderMath(content, false))
+  })
+
+  // Render the whole thing as markdown in one pass so paragraph/inline
+  // structure is correct.
+  let html = md.render(processed)
+
+  // Swap placeholders back. Display-math placeholders end up in their own
+  // <p>...</p>; unwrap those so the KaTeX block isn't nested in a paragraph.
+  html = html.replace(/<p>\s*(MATHPLACEHOLDERZZZ\d+ZZZ)\s*<\/p>/g, '$1')
+  html = html.replace(/MATHPLACEHOLDERZZZ(\d+)ZZZ/g, (_m, idx) => placeholders[Number(idx)] || '')
+
+  return html
 }
 
 // Legacy alias for KaTeX-only rendering (used in edit preview)
@@ -229,9 +214,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
+    // Match the MCP `md` size preset (450×200) so canvas-created notes have
+    // room for paragraph + math content without immediate resizing.
     return {
-      w: 200,
-      h: 50,
+      w: 450,
+      h: 200,
       text: '',
       color: 'light-blue',
       autoSize: true,

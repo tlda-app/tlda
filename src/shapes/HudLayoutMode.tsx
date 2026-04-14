@@ -15,7 +15,7 @@ import {
 import { useEffect, useState, useRef } from 'react'
 
 // --- Layout mode global state ---
-const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search']
+const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 const CONTAINER_PADDING = 20
 
 let _layoutMode = false
@@ -131,7 +131,7 @@ export function HudLayoutOverlay() {
       if (overlay && !overlay.contains(target)) {
         // Check the click isn't on a fleet shape (which is inside the container bounds
         // but rendered as a separate DOM element)
-        const isFleetShape = target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"]')
+        const isFleetShape = target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
         if (!isFleetShape) {
           e.stopImmediatePropagation()
           e.preventDefault()

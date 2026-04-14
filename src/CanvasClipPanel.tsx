@@ -96,9 +96,13 @@ export function CanvasClipPanel({
   }
 
   // Create copy store from main editor's document records
+  // Known shape types for this panel — shapes with unknown types are skipped during sync
+  const knownTypes = useMemo(() => new Set(shapeUtils.map((u: any) => u.type).filter(Boolean)), [shapeUtils])
+
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
     const docRecords = allRecords.filter(shouldSyncToCopy)
+      .filter(r => r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0)
       .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
@@ -110,12 +114,14 @@ export function CanvasClipPanel({
   useEffect(() => {
     // fleet-pill shapes are ephemeral drag ghosts — never sync between editors
     const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
+    // Skip shapes whose type isn't registered in this panel's store
+    const isUnknownShape = (r: any) => r.typeName === 'shape' && knownTypes.size > 0 && !knownTypes.has(r.type)
 
     // main → copy (unlock fleet shapes in HUD so they're draggable)
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
-          if (isPill(record)) continue
+          if (isPill(record) || isUnknownShape(record)) continue
           if (shouldSyncToCopy(record)) {
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
@@ -126,7 +132,7 @@ export function CanvasClipPanel({
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to)) continue
+          if (isPill(to) || isUnknownShape(to)) continue
           if (shouldSyncToCopy(to)) {
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
@@ -513,6 +519,9 @@ export function CanvasClipPanel({
     const el = canvasRef.current
     if (!el || !editor) return
     const onWheel = (e: WheelEvent) => {
+      // Let fleet-docview shapes handle their own wheel events
+      const target = e.target as HTMLElement
+      if (lockCamera && target?.closest('.fleet-docview')) return
       e.preventDefault()
       e.stopPropagation()
       if (lockCamera) {
@@ -532,8 +541,17 @@ export function CanvasClipPanel({
         }
       } else {
         const cam = editor.getCamera()
-        const dy = e.deltaY / cam.z
-        editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
+        if (e.ctrlKey || e.metaKey) {
+          // Pinch-zoom (ctrl+wheel or trackpad pinch)
+          const zoomFactor = 1 - e.deltaY * 0.005
+          const newZ = Math.max(0.1, Math.min(10, cam.z * zoomFactor))
+          editor.setCamera({ x: cam.x, y: cam.y, z: newZ })
+        } else {
+          // Pan both axes
+          const dx = e.deltaX / cam.z
+          const dy = e.deltaY / cam.z
+          editor.setCamera({ x: cam.x - dx, y: cam.y - dy, z: cam.z })
+        }
       }
     }
     el.addEventListener('wheel', onWheel, { passive: false, capture: true })
@@ -584,7 +602,7 @@ export function CanvasClipPanel({
   const fleetSelectedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!editor) return
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
     function update() {
       const container = editor!.getContainer()
@@ -693,7 +711,7 @@ export function CanvasClipPanel({
   )
 }
 
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
 function isDocRecord(record: TLRecord): boolean {
   return record.typeName === 'shape' || record.typeName === 'asset' ||

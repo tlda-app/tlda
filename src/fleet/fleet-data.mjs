@@ -55,8 +55,10 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  // Terminal attention events (permission prompts) bypass filters — they're urgent
+  // Terminal attention events (permission prompts) bypass filters — they're urgent.
+  // Same for terminal_card (voluntary terminal pop from an agent).
   if (event._evType === 'terminal_attention' || event.type === 'terminal_attention') return true
+  if (event._evType === 'terminal_card' || event.type === 'terminal_card') return true
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {
@@ -244,7 +246,7 @@ export function connect() {
         .then(data => {
           const missed = (data.events || []).filter(e => {
             const t = e.type || e.event_type
-            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention'
+            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention' || t === 'terminal_card'
           })
           const newEvents = []
           for (const raw of missed) {
@@ -372,7 +374,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
     })
     .map(convertChatEvent)
   _events = chatEvents
@@ -421,6 +423,7 @@ function convertChatEvent(e) {
     msg._fromLabel = e.metadata?.fromLabel || ''
     msg._toLabel = e.metadata?.toLabel || ''
     msg._criteria = e.metadata?.criteria || []
+    if (e.metadata?.message) msg._message = e.metadata.message
   } else if (type === 'task_done') {
     msg._evType = 'task_done'
     msg._description = e.text || ''
@@ -431,6 +434,10 @@ function convertChatEvent(e) {
     msg._reason = e.metadata?.reason || ''
     msg._agentLabel = e.metadata?.agentLabel || ''
     msg._snippet = e.metadata?.snippet || ''
+  } else if (type === 'terminal_card') {
+    msg._evType = 'terminal_card'
+    msg._reason = e.metadata?.reason || ''
+    msg._agentLabel = e.metadata?.agentLabel || ''
   } else if (type === 'terminal_user' || type === 'terminal_assistant') {
     msg._evType = type
     msg._source = e.source || 'terminal'
@@ -456,6 +463,7 @@ function convertChatEvent(e) {
     msg._toolArg = e.metadata?.arg || ''
     msg._toolInput = e.metadata?.input || null
     msg._toolDetail = e.metadata?.input ? toolContentDetail(tool === '_text' ? null : tool, e.metadata.input) : null
+    msg._prettyResult = e.metadata?.prettyResult || null
     msg.agent = msg.from
     if (msg._isText) msg.text = e.metadata?.arg || e.text
   }
@@ -479,7 +487,7 @@ export async function fetchHistory(agentId, limit = 200) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
     })
     .map(convertChatEvent)
 
@@ -495,7 +503,7 @@ export async function loadBefore(agentId, beforeTs, count = 100) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
     })
     .map(convertChatEvent)
 

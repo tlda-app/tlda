@@ -13,6 +13,15 @@ import { onShapeChange, onSignal } from './sync-rooms.mjs'
 
 const TLDA_FEEDBACK_FROM = 'fleet:tlda'
 
+/**
+ * Map a user-facing project name (e.g. "bregman") to the sync-rooms docName
+ * (e.g. "doc-bregman"). Callers pass the project name; internally we always
+ * operate on the prefixed name to match sync-rooms / viewer conventions.
+ */
+function toRoomName(projectName) {
+  return projectName.startsWith('doc-') ? projectName : `doc-${projectName}`
+}
+
 /** @type {Map<string, Set<string>>} docName → Set<agent_id> */
 const subscriptions = new Map()
 
@@ -25,24 +34,31 @@ const DRAW_TYPES = new Set(['draw', 'highlight', 'arrow', 'geo', 'text', 'line']
 /**
  * Lazy-attach sync-room listeners for a doc the first time anyone subscribes.
  * Detaches when the last subscriber leaves.
+ *
+ * @param {string} docName
+ * @param {(opts: { from: string, to: string, text: string, metadata: object }) => void} deliverChat
+ *   Callback that performs the full delivery pipeline: fleetStore.share +
+ *   fleetStore.addUnread + broadcastEvent. Supplied by the caller so we
+ *   don't have to import unified-server internals here.
  */
-function ensureListeners(docName, fleetStore) {
+function ensureListeners(docName, deliverChat) {
   if (activeListeners.has(docName)) return
+
+  const displayName = docName.startsWith('doc-') ? docName.slice(4) : docName
 
   const send = (text, extraMetadata = {}) => {
     const subs = subscriptions.get(docName)
     if (!subs || subs.size === 0) return
     for (const agent of subs) {
       try {
-        fleetStore?.share?.({
-          type: 'chat',
+        deliverChat({
           from: TLDA_FEEDBACK_FROM,
           to: agent,
           text,
-          metadata: JSON.stringify({ source: 'tlda-feedback', doc: docName, ...extraMetadata }),
+          metadata: { source: 'tlda-feedback', doc: displayName, ...extraMetadata },
         })
       } catch (e) {
-        console.error(`[tlda-feedback] share failed: ${e.message}`)
+        console.error(`[tlda-feedback] deliver failed: ${e.message}`)
       }
     }
   }
@@ -66,18 +82,18 @@ function ensureListeners(docName, fleetStore) {
         const anchorStr = anchor?.file
           ? ` (${anchor.file}${anchor.line ? ':' + anchor.line : ''})`
           : ''
-        send(`[tlda feedback] New note on ${docName} (${shape.id}): "${preview}"${anchorStr}`, { shape_id: shape.id, shape_type: sType })
+        send(`[tlda feedback] New note on ${displayName} (${shape.id}): "${preview}"${anchorStr}`, { shape_id: shape.id, shape_type: sType })
       } else if (DRAW_TYPES.has(sType)) {
         const x = Math.round(shape.x || 0)
         const y = Math.round(shape.y || 0)
-        send(`[tlda feedback] New ${sType} on ${docName} (${shape.id}) at (${x}, ${y})`, { shape_id: shape.id, shape_type: sType })
+        send(`[tlda feedback] New ${sType} on ${displayName} (${shape.id}) at (${x}, ${y})`, { shape_id: shape.id, shape_type: sType })
       }
     }
   })
 
   const unsubSignal = onSignal(docName, (signal) => {
     if (signal.key !== 'signal:ping') return
-    send(`[tlda feedback] Ping on ${docName}!`, { signal: 'ping' })
+    send(`[tlda feedback] Ping on ${displayName}!`, { signal: 'ping' })
   })
 
   activeListeners.set(docName, { unsubShape, unsubSignal })
@@ -95,14 +111,17 @@ function releaseListeners(docName) {
  * Subscribe an agent to feedback notifications for a doc.
  * @param {string} agent_id
  * @param {string} docName
- * @param {object} fleetStore — used for posting chat messages on events
+ * @param {(opts: { from: string, to: string, text: string, metadata: object }) => void} deliverChat
+ *   Full delivery pipeline callback (share + addUnread + broadcast).
  * @returns {{ ok: true }}
  */
-export function subscribe(agent_id, docName, fleetStore) {
-  if (!agent_id || !docName) throw new Error('missing agent_id or docName')
+export function subscribe(agent_id, projectName, deliverChat) {
+  if (!agent_id || !projectName) throw new Error('missing agent_id or projectName')
+  if (typeof deliverChat !== 'function') throw new Error('deliverChat required')
+  const docName = toRoomName(projectName)
   if (!subscriptions.has(docName)) subscriptions.set(docName, new Set())
   subscriptions.get(docName).add(agent_id)
-  ensureListeners(docName, fleetStore)
+  ensureListeners(docName, deliverChat)
   return { ok: true }
 }
 
@@ -112,7 +131,8 @@ export function subscribe(agent_id, docName, fleetStore) {
  * @param {string} docName
  * @returns {{ ok: true }}
  */
-export function unsubscribe(agent_id, docName) {
+export function unsubscribe(agent_id, projectName) {
+  const docName = toRoomName(projectName)
   const subs = subscriptions.get(docName)
   if (!subs) return { ok: true }
   subs.delete(agent_id)
@@ -142,7 +162,7 @@ export function unsubscribeAll(agent_id) {
 export function list(agent_id) {
   const docs = []
   for (const [docName, subs] of subscriptions) {
-    if (subs.has(agent_id)) docs.push(docName)
+    if (subs.has(agent_id)) docs.push(docName.startsWith('doc-') ? docName.slice(4) : docName)
   }
   return docs.sort()
 }

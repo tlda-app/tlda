@@ -40,6 +40,61 @@ body {
   pointer-events: none;
 }
 
+.version-stamp {
+  position: fixed;
+  top: 52px;
+  left: 16px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 0px;
+  pointer-events: all;
+  user-select: none;
+}
+.version-stamp-entry {
+  font-size: 9px;
+  font-family: 'SF Mono', Menlo, monospace;
+  color: rgba(0, 0, 0, 0.85);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1.4;
+  transition: opacity 0.2s, color 0.2s;
+}
+.version-stamp-entry:hover {
+  opacity: 0.8 !important;
+  color: rgba(60, 60, 180, 0.9);
+}
+.version-stamp-entry.active {
+  font-weight: 600;
+}
+html[data-theme="dark"] .version-stamp-entry {
+  color: rgba(255, 255, 255, 0.85);
+}
+html[data-theme="dark"] .version-stamp-entry:hover {
+  color: rgba(140, 140, 255, 0.9);
+}
+.sync-offline-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, monospace;
+  color: rgba(200, 80, 80, 0.7);
+  pointer-events: all;
+  user-select: none;
+  white-space: nowrap;
+  animation: pulse-offline 2s ease-in-out infinite;
+}
+@keyframes pulse-offline {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.version-stamp-hash {
+  font-size: 8px;
+  opacity: 0.5;
+  letter-spacing: 0.05em;
+}
+
 .view-pin-badge {
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, monospace;

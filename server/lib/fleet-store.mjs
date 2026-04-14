@@ -20,7 +20,10 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-const DB_PATH = '/tmp/fleet.db'; // moved from ~/.fleet to avoid Spotlight indexing blocking
+// Persistent DB under ~/.config/tlda/ (survives macOS reboots).
+// Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
+// Excluded from Spotlight via a .metadata_never_index file next to the DB.
+const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
 export class FleetStore {
@@ -191,6 +194,10 @@ export class FleetStore {
 
     this._markRead = this.db.prepare(`
       UPDATE unread SET read = 1 WHERE to_id = ? AND read = 0
+    `);
+
+    this._markEventRead = this.db.prepare(`
+      UPDATE unread SET read = 1 WHERE event_id = ? AND to_id = ?
     `);
 
     this._updateEventMetadata = this.db.prepare(`
@@ -788,6 +795,15 @@ export class FleetStore {
     return ids;
   }
 
+  // Mark a single event as read for one recipient. Used by terminal-card
+  // dismissal: clicking X on a terminal_card marks just THAT event read,
+  // so it doesn't auto-pop on reload, but other unread chats for the
+  // recipient are unaffected.
+  markEventRead(eventId, agentId) {
+    const result = this._markEventRead.run(eventId, agentId);
+    return result.changes > 0;
+  }
+
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
   }
@@ -889,6 +905,7 @@ export class FleetStore {
           msg._fromLabel = meta.fromLabel;
           msg._toLabel = meta.toLabel;
           msg._criteria = meta.criteria || [];
+          if (meta.message) msg._message = meta.message;
         }
       } else if (e.type === 'task_done') {
         msg._evType = 'task_done';
@@ -943,6 +960,7 @@ export class FleetStore {
           meta.fromLabel = m._fromLabel;
           meta.toLabel = m._toLabel;
           meta.criteria = m._criteria;
+          if (m._message) meta.message = m._message;
         }
         if (m.attachments) meta.attachments = m.attachments;
         if (m._timer) meta.timer = true;

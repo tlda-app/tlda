@@ -18,7 +18,7 @@ import './TerminalCard.css'
 // WebSocket for terminal — goes through Vite proxy in dev
 const FLEET_WS_HOST = typeof window !== 'undefined'
   ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-  : 'ws://localhost:5199'
+  : 'ws://localhost:5176'
 
 interface TerminalCardProps {
   agentId: string

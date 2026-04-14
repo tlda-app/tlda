@@ -90,6 +90,8 @@ function ClusterComponent({ shape }: { shape: any }) {
       setError(null)
     } catch (e: any) {
       setError(e.message || 'fetch failed')
+      // Stop polling after first failure — endpoint doesn't exist
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null }
     } finally {
       setLoading(false)
     }
