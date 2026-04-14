@@ -72,6 +72,8 @@ export function CanvasClipPanel({
   const [editor, setEditor] = useState<Editor | null>(null)
   const emphasizedIdsRef = useRef<Set<string>>(new Set())
   const lockedIdsRef = useRef<Set<string>>(new Set())
+  const boundsRef = useRef<ClipBounds | null>(bounds)
+  boundsRef.current = bounds
 
   // Expose editor to parent
   useEffect(() => {
@@ -87,11 +89,41 @@ export function CanvasClipPanel({
   // background. Mirroring non-fleet shapes (especially html-page shapes
   // containing iframes) into the HUD breaks hit testing for fleet shapes
   // because iframes capture pointer events and intercept clicks.
+
+  // Location-based filtering: only sync shapes that overlap the visible region.
+  // The visible region starts as the clip bounds (so the store is lightweight on
+  // mount) and expands as the user pans/zooms in the panel. Skipped for HUD mode
+  // which already filters to fleet shapes only.
+  const BOUNDS_PADDING = 200
+  const visibleRegionRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null)
+
+  // Initialize/reset visible region from clip bounds
+  const prevBoundsRef = useRef<ClipBounds | null>(null)
+  if (bounds && (bounds !== prevBoundsRef.current)) {
+    prevBoundsRef.current = bounds
+    visibleRegionRef.current = {
+      minX: bounds.x - BOUNDS_PADDING,
+      minY: bounds.y - BOUNDS_PADDING,
+      maxX: bounds.x + bounds.w + BOUNDS_PADDING,
+      maxY: bounds.y + bounds.h + BOUNDS_PADDING,
+    }
+  }
+
+  const shapeOverlapsVisibleRegion = (shapeId: string): boolean => {
+    const vr = visibleRegionRef.current
+    if (!vr || lockCamera) return true
+    const pb = mainEditor.getShapePageBounds(shapeId as any)
+    if (!pb) return true
+    return pb.x + pb.w > vr.minX && pb.x < vr.maxX &&
+      pb.y + pb.h > vr.minY && pb.y < vr.maxY
+  }
+
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
     // Never mirror the transient HUD layout-mode proxy shape into the HUD editor.
     if (r.typeName === 'shape' && (r as any).id === HUD_PROXY_SHAPE_ID) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
+    if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
   }
 
@@ -99,10 +131,12 @@ export function CanvasClipPanel({
   // Known shape types for this panel — shapes with unknown types are skipped during sync
   const knownTypes = useMemo(() => new Set(shapeUtils.map((u: any) => u.type).filter(Boolean)), [shapeUtils])
 
+  const isKnownShape = (r: TLRecord) =>
+    r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0
+
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
-    const docRecords = allRecords.filter(shouldSyncToCopy)
-      .filter(r => r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0)
+    const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
       .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
@@ -110,18 +144,77 @@ export function CanvasClipPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Dynamic viewport expansion: when the user pans/zooms in the panel,
+  // expand the visible region and pull in newly-visible shapes from main.
+  // Also handles bounds prop changes (e.g. switching to a different theorem).
+  useEffect(() => {
+    if (!editor || lockCamera) return
+
+    const expandAndSync = () => {
+      const cam = editor.getCamera()
+      const container = editor.getContainer()
+      const vw = container.clientWidth / cam.z
+      const vh = container.clientHeight / cam.z
+      const viewportMinX = -cam.x - BOUNDS_PADDING
+      const viewportMinY = -cam.y - BOUNDS_PADDING
+      const viewportMaxX = -cam.x + vw + BOUNDS_PADDING
+      const viewportMaxY = -cam.y + vh + BOUNDS_PADDING
+
+      const vr = visibleRegionRef.current
+      if (!vr) {
+        visibleRegionRef.current = { minX: viewportMinX, minY: viewportMinY, maxX: viewportMaxX, maxY: viewportMaxY }
+      } else {
+        // Only expand, never shrink — old shapes stay in the store
+        const expanded = viewportMinX < vr.minX || viewportMinY < vr.minY ||
+          viewportMaxX > vr.maxX || viewportMaxY > vr.maxY
+        if (!expanded) return
+        vr.minX = Math.min(vr.minX, viewportMinX)
+        vr.minY = Math.min(vr.minY, viewportMinY)
+        vr.maxX = Math.max(vr.maxX, viewportMaxX)
+        vr.maxY = Math.max(vr.maxY, viewportMaxY)
+      }
+
+      // Pull in newly-visible shapes
+      const toAdd: TLRecord[] = []
+      for (const r of mainEditor.store.allRecords()) {
+        if (!shouldSyncToCopy(r) || !isKnownShape(r)) continue
+        if (store.has(r.id)) continue
+        if (readOnly && r.typeName === 'shape') {
+          toAdd.push({ ...r, isLocked: true } as TLRecord)
+          lockedIdsRef.current.add(r.id)
+        } else {
+          toAdd.push(r)
+        }
+      }
+      if (toAdd.length > 0) {
+        store.mergeRemoteChanges(() => { store.put(toAdd) })
+      }
+    }
+
+    // Check on mount and whenever camera changes
+    expandAndSync()
+    const unsub = store.listen(({ changes }) => {
+      for (const [, to] of Object.values(changes.updated)) {
+        if ((to as any).typeName === 'camera') {
+          expandAndSync()
+          return
+        }
+      }
+    }, { scope: 'session', source: 'all' })
+
+    return unsub
+  }, [editor, mainEditor.store, store, lockCamera, readOnly])
+
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
     // fleet-pill shapes are ephemeral drag ghosts — never sync between editors
     const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
-    // Skip shapes whose type isn't registered in this panel's store
-    const isUnknownShape = (r: any) => r.typeName === 'shape' && knownTypes.size > 0 && !knownTypes.has(r.type)
 
     // main → copy (unlock fleet shapes in HUD so they're draggable)
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
-          if (isPill(record) || isUnknownShape(record)) continue
+          if (isPill(record) || !isKnownShape(record)) continue
           if (shouldSyncToCopy(record)) {
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
@@ -132,7 +225,7 @@ export function CanvasClipPanel({
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to) || isUnknownShape(to)) continue
+          if (isPill(to) || !isKnownShape(to)) continue
           if (shouldSyncToCopy(to)) {
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
