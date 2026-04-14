@@ -30,6 +30,7 @@
     "@codemirror/view": "^6.39.12",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@replit/codemirror-vim": "^6.3.0",
+    "@tanstack/react-virtual": "^3.13.23",
     "@tldraw/sync": "^4.3.1",
     "@xmldom/xmldom": "^0.8.11",
     "@xterm/addon-fit": "^0.11.0",
