@@ -765,7 +765,7 @@ function FleetChatComponent({ shape }: { shape: any }) {
 
   // Hover preview for doc-link spans
   const shapeContainerRef = useRef<HTMLDivElement>(null)
-  const [docLinkHover, setDocLinkHover] = useState<{
+  const [_docLinkHover, setDocLinkHover] = useState<{
     resolved: ResolvedRef
     /** Anchor position in shape-local coordinates */
     localX: number
@@ -1009,10 +1009,19 @@ function FleetChatComponent({ shape }: { shape: any }) {
     if (!userScrolledUp.current && rawItems.length > 0) {
       autoScrollingRef.current = true
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Clear the flag after the scroll event fires
-      requestAnimationFrame(() => { autoScrollingRef.current = false })
+      // Fallback: direct scrollTop in case scrollToIndex fires before the container
+      // has a stable height (e.g. initial mount before virtualizer measures the element),
+      // or when an existing item grows (activity cards, etc.) without adding new items.
+      requestAnimationFrame(() => {
+        const el = chatLogRef.current
+        if (el) el.scrollTop = el.scrollHeight
+        autoScrollingRef.current = false
+      })
     }
-  }, [rawItems.length])
+  // rawItems identity changes whenever any message content changes (not just length),
+  // so this fires for growing activity cards and in-place updates too.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawItems])
 
   // After images inside the log load, they expand the scroll height. Scroll to
   // bottom if we were close enough that we should follow new content.
@@ -1798,8 +1807,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
                 const el = chatLogRef.current
                 if (el) {
                   el.scrollTop = el.scrollHeight
-                  lastScrollHeight.current = el.scrollHeight
-                  lastDistFromBottom.current = 0
                 }
                 userScrolledUp.current = false; setShowScrollBtn(false)
                 setShowScrollBtn(false)
@@ -2130,7 +2137,7 @@ const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: 
 }, (prev, next) => prev.shape.props === next.shape.props)
 
 /** Floating preview panel — shows a clipped SVG region on doc-link hover */
-function DocLinkPreview({
+export function DocLinkPreview({
   resolved,
   localX,
   localY,

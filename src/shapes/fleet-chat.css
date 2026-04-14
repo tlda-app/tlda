@@ -2072,6 +2072,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-hud .clip-panel-canvas .tl-overlays__item { pointer-events: none !important; }
 .fleet-docview {
   overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.1);
 }
 /* Top-right horizontal sibling of .fleet-btn-group — back/forward/go buttons.
    Same styling as the vertical right-edge group, but laid out horizontally

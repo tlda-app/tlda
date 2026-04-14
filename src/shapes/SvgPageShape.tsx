@@ -184,6 +184,28 @@ function SvgPageComponent({ shape }: { shape: any }) {
       link.removeAttribute('xlink:href')
       link.removeAttribute('href')
       link.style.cursor = 'pointer'
+
+      // Expand hit area: inject a transparent rect with padding so that clicks
+      // near the link text (e.g. on surrounding brackets or whitespace) still fire.
+      // SVG <text> elements have no padding — without this, the clickable area is
+      // exactly the glyph bounding box, making precise clicking necessary.
+      const svgEl = link.closest('svg')
+      if (svgEl && link.childElementCount > 0) {
+        try {
+          const bbox = (link as unknown as SVGAElement).getBBox()
+          if (bbox.width > 0 && bbox.height > 0) {
+            const pad = 4
+            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+            rect.setAttribute('x', String(bbox.x - pad))
+            rect.setAttribute('y', String(bbox.y - pad))
+            rect.setAttribute('width', String(bbox.width + pad * 2))
+            rect.setAttribute('height', String(bbox.height + pad * 2))
+            rect.setAttribute('fill', 'transparent')
+            rect.setAttribute('pointer-events', 'all')
+            link.insertBefore(rect, link.firstChild)
+          }
+        } catch { /* getBBox may fail for off-screen elements */ }
+      }
     }
 
     // Apply any pending tint highlights

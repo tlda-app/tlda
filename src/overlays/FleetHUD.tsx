@@ -62,7 +62,8 @@ interface FleetHUDProps {
 /** Anisotropic scale: normalize each shape's position and size relative to the
  *  current bounding box, then apply to the target bounding box. Preserves
  *  each shape's proportional position and size — no packing, no uniform cells. */
-function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y: number; w: number; h: number }) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y: number; w: number; h: number }) {
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   if (shapes.length === 0) return

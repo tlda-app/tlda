@@ -20,7 +20,7 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  *
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
-export function createFleetLayout(editor: Editor, agents: any[]) {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' = '3col') {
   // Preserve existing chat filters before nuking — so Fleet button restores geometry
   // without losing filters the user has set by dragging agents.
   const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
@@ -58,12 +58,16 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
 
   const leftW = 340
   const gap = 10
-  const chatW = 410               // 2x the previous 205
-  const rightW = chatW * 2 + gap  // 830
+  // 3-col: two chats at 410 each → rightW 830.
+  // 2-col: one chat at 1.5x width (615) → rightW 615. Narrower overall.
+  const chatW3 = 410
+  const chatW2 = Math.round(chatW3 * 1.5)
+  const chatW = variant === '2col' ? chatW2 : chatW3
+  const rightW = variant === '2col' ? chatW2 : chatW3 * 2 + gap
   const totalH = 640
   const agentsH = 330
-  const searchH = totalH - gap - agentsH  // 300
-  const totalW = leftW + gap + rightW     // 1180
+  const searchH = totalH - gap - agentsH
+  const totalW = leftW + gap + rightW
   // Rightmost chat is shortened to make room for a docview beneath it.
   const rightChatH = Math.round(totalH * 0.75)
   const docviewH = totalH - gap - rightChatH
@@ -90,7 +94,7 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
     anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
   }
 
-  editor.createShapes([
+  const shapes: any[] = [
     {
       id: createShapeId(),
       type: 'fleet-agents' as any,
@@ -105,28 +109,52 @@ export function createFleetLayout(editor: Editor, agents: any[]) {
       isLocked: false,
       props: { w: leftW, h: searchH },
     },
-    {
-      id: createShapeId(),
-      type: 'fleet-chat' as any,
-      x: anchorX + leftW + gap, y: anchorY,
-      isLocked: false,
-      props: { w: chatW, h: totalH, filter: filter1 },
-    },
-    {
-      id: createShapeId(),
-      type: 'fleet-chat' as any,
-      x: anchorX + leftW + gap + chatW + gap, y: anchorY,
-      isLocked: false,
-      props: { w: chatW, h: rightChatH, filter: filter2 },
-    },
-    {
-      id: createShapeId(),
-      type: 'fleet-docview' as any,
-      x: anchorX + leftW + gap + chatW + gap, y: anchorY + rightChatH + gap,
-      isLocked: false,
-      props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-    },
-  ])
+  ]
+  if (variant === '3col') {
+    // Full-height chat (middle) + 75%-height chat (right) + docview (bottom-right)
+    shapes.push(
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: chatW, h: totalH, filter: filter1 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + chatW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: chatW, h: rightChatH, filter: filter2 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-docview' as any,
+        x: anchorX + leftW + gap + chatW + gap, y: anchorY + rightChatH + gap,
+        isLocked: false,
+        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+      },
+    )
+  } else {
+    // 2-col: single wider chat (75% height) + docview beneath it
+    shapes.push(
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: chatW, h: rightChatH, filter: filter1 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-docview' as any,
+        x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+        isLocked: false,
+        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+      },
+    )
+  }
+  editor.createShapes(shapes)
 
   editor.centerOnPoint(
     { x: anchorX + totalW / 2, y: anchorY + totalH / 2 },

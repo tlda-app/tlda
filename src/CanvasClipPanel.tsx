@@ -94,7 +94,7 @@ export function CanvasClipPanel({
   // The visible region starts as the clip bounds (so the store is lightweight on
   // mount) and expands as the user pans/zooms in the panel. Skipped for HUD mode
   // which already filters to fleet shapes only.
-  const BOUNDS_PADDING = 200
+  const BOUNDS_PADDING = 1500
   const visibleRegionRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null)
 
   // Initialize/reset visible region from clip bounds

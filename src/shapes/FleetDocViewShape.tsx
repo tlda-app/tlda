@@ -21,14 +21,13 @@ import {
   createShapeId,
   stopEventPropagation,
   useEditor,
-  useValue,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
-import { PDF_HEIGHT, TARGET_WIDTH, PAGE_GAP } from '../layoutConstants'
+import { PDF_HEIGHT } from '../layoutConstants'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -74,42 +73,35 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   // Get the main editor (the one behind the HUD)
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
 
-  // Navigation history stack
-  const historyRef = useRef<NavEntry[]>([])
-  const historyIdxRef = useRef(-1)
+  // Navigation history stack. Auto-populated by observing shape prop changes
+  // (ref clicks update the shape directly in SvgDocument, not via an event).
+  // We use state so nav buttons re-render when history grows.
+  const [history, setHistory] = useState<NavEntry[]>([])
+  const [historyIdx, setHistoryIdx] = useState(-1)
+  const suppressNextPushRef = useRef(false)
 
-  // Listen for doc-link clicks — update this shape to show the clicked region.
-  // Use mainEditor (not HUD editor) to ensure the update propagates via Yjs sync.
-  const shapeIdRef = useRef(shape.id)
-  shapeIdRef.current = shape.id
-  const shapeTypeRef = useRef(shape.type)
-  shapeTypeRef.current = shape.type
   useEffect(() => {
-    function onNavigate(e: Event) {
-      const detail = (e as CustomEvent).detail
-      if (!detail || !mainEditor) return
-      const pg = detail.page || 0
-      const yt = detail.yTop || 0
-      const yb = detail.yBottom || 0
-      const lbl = detail.label || ''
-      const displayTitle = lbl.replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ') || `p.${pg}`
-      // Push to navigation history
-      const entry: NavEntry = { label: lbl, page: pg, yTop: yt, yBottom: yb, title: displayTitle }
-      historyRef.current = [...historyRef.current.slice(0, historyIdxRef.current + 1), entry]
-      historyIdxRef.current = historyRef.current.length - 1
-      try {
-        if (mainEditor.getShape(shapeIdRef.current)?.isLocked) {
-          mainEditor.updateShape({ id: shapeIdRef.current, type: shapeTypeRef.current, isLocked: false })
-        }
-        mainEditor.updateShape({
-          id: shapeIdRef.current, type: shapeTypeRef.current,
-          props: { w, h, mode: pg ? 'manual' : 'ref', label: lbl, page: pg, yTop: yt, yBottom: yb, title: displayTitle },
-        })
-      } catch {}
+    if (suppressNextPushRef.current) {
+      suppressNextPushRef.current = false
+      return
     }
-    window.addEventListener('docview-navigate', onNavigate)
-    return () => window.removeEventListener('docview-navigate', onNavigate)
-  }, [mainEditor, w, h])
+    if (!page && !label) return // empty initial state
+    const entry: NavEntry = { label, page, yTop, yBottom, title }
+    setHistory(prev => {
+      const trimmed = prev.slice(0, historyIdx + 1)
+      // Don't push if identical to current tail
+      const last = trimmed[trimmed.length - 1]
+      if (last && last.label === entry.label && last.page === entry.page &&
+          last.yTop === entry.yTop && last.yBottom === entry.yBottom) return prev
+      return [...trimmed, entry]
+    })
+    setHistoryIdx(idx => {
+      // Only advance if we actually pushed above. This is a post-state check:
+      // setHistory runs first, so historyIdx should point to the new tail.
+      return idx + 1
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, label, page, yTop, yBottom])
 
   // Load proof-info for proof mode
   const [proofInfo, setProofInfo] = useState<any>(null)
@@ -158,7 +150,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
     if (mode === 'proof' && proofInfo?.proofPairs && mainEditor) {
       // Find which proof the user is currently viewing
-      const camera = mainEditor.getCamera()
       const viewport = mainEditor.getViewportPageBounds()
       const viewCenterY = viewport.y + viewport.h / 2
 
@@ -299,12 +290,14 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       <div className="fleet-btn-group fleet-btn-group-topright" onPointerDown={(e: any) => e.stopPropagation()}>
         <button
           className="fleet-layout-btn"
-          disabled={historyIdxRef.current <= 0}
+          disabled={historyIdx <= 0}
           onPointerUp={(e: any) => {
             e.stopPropagation()
-            if (historyIdxRef.current <= 0 || !mainEditor) return
-            historyIdxRef.current--
-            const entry = historyRef.current[historyIdxRef.current]
+            if (historyIdx <= 0 || !mainEditor) return
+            const newIdx = historyIdx - 1
+            const entry = history[newIdx]
+            setHistoryIdx(newIdx)
+            suppressNextPushRef.current = true
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, mode: 'manual', ...entry } })
           }}
@@ -312,12 +305,14 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         >←</button>
         <button
           className="fleet-layout-btn"
-          disabled={historyIdxRef.current >= historyRef.current.length - 1}
+          disabled={historyIdx >= history.length - 1}
           onPointerUp={(e: any) => {
             e.stopPropagation()
-            if (historyIdxRef.current >= historyRef.current.length - 1 || !mainEditor) return
-            historyIdxRef.current++
-            const entry = historyRef.current[historyIdxRef.current]
+            if (historyIdx >= history.length - 1 || !mainEditor) return
+            const newIdx = historyIdx + 1
+            const entry = history[newIdx]
+            setHistoryIdx(newIdx)
+            suppressNextPushRef.current = true
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, mode: 'manual', ...entry } })
           }}
@@ -366,8 +361,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
  * tldraw tree, positioned to overlay the shape's screen location.
  * This avoids the nested-tldraw crash (React error #300).
  */
-function DocViewPortal({
-  mainEditor, bounds, shapeUtils, licenseKey, panelWidth, panelHeight, shapeId, editor,
+export function DocViewPortal({
+  mainEditor, bounds, shapeUtils, licenseKey, panelWidth, panelHeight: _panelHeight, shapeId, editor: _editor,
 }: {
   mainEditor: Editor
   bounds: ClipBounds
