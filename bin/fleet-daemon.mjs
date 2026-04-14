@@ -789,8 +789,19 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
+let _droppedCount = 0
+let _droppedWarnAt = 0
 function sendMsg(obj) {
-  if (!ws || ws.readyState !== 1) return false
+  if (!ws || ws.readyState !== 1) {
+    _droppedCount++
+    const now = Date.now()
+    if (now - _droppedWarnAt > 5000) {
+      console.warn(`[daemon] dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
+      _droppedCount = 0
+      _droppedWarnAt = now
+    }
+    return false
+  }
   try { ws.send(JSON.stringify(obj)); return true }
   catch (e) { console.error(`[daemon] ws send: ${e.message}`); return false }
 }
