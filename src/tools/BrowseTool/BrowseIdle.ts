@@ -152,10 +152,16 @@ export class BrowseIdle extends StateNode {
     // selected shape.  Runs before fleet shapes' stopEventPropagation can
     // swallow the event, so the state machine always sees the click.
     this._deselHandler = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+
+      // Mark anchor link clicks as handled so tldraw skips setPointerCapture —
+      // letting the click event reach the <a data-anchor> element naturally.
+      if (target?.closest('[data-anchor]')) {
+        this.editor.markEventAsHandled(e)
+      }
+
       const selected = this.editor.getSelectedShapeIds()
       if (selected.length === 0) return
-
-      const target = e.target as HTMLElement | null
       if (!target) return
 
       // If clicking on a tldraw selection/resize handle, don't interfere

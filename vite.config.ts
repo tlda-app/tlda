@@ -45,20 +45,15 @@ export default defineConfig({
     proxy: {
       // Fleet WebSocket endpoints
       '/ws/fleet': {
-        target: 'ws://localhost:5199',
+        target: 'ws://localhost:5176',
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5199',
+        target: 'ws://localhost:5176',
         ws: true,
       },
-      // tlda-specific API routes → tlda server
-      '/api/projects': 'http://localhost:5176',
-      '/api/auth': 'http://localhost:5176',
-      '/api/recognize': 'http://localhost:5176',
-      '/api/local-image': 'http://localhost:5176',
-      // Remaining /api/* → fleet server (state, chat, activity, etc.)
-      '/api': 'http://localhost:5199',
+      // All API routes → unified server
+      '/api': 'http://localhost:5176',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',
     },
@@ -67,13 +62,9 @@ export default defineConfig({
     host: true,
     port: 5179,
     proxy: {
-      '/ws/fleet': { target: 'ws://localhost:5199', ws: true },
-      '/ws/terminal': { target: 'ws://localhost:5199', ws: true },
-      '/api/projects': 'http://localhost:5176',
-      '/api/auth': 'http://localhost:5176',
-      '/api/recognize': 'http://localhost:5176',
-      '/api/local-image': 'http://localhost:5176',
-      '/api': 'http://localhost:5199',
+      '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
+      '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
+      '/api': 'http://localhost:5176',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',
     },

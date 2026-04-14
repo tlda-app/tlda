@@ -61,7 +61,6 @@ import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from 
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
-import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
 import { FleetHUD } from './overlays/FleetHUD'
@@ -978,16 +977,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onGoThere={handleGoThere}
           onGoBack={handleGoBack}
           canGoBack={canGoBack}
-        />
-      )}
-      {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
-        <ProofStatementOverlay
-          mainEditor={editorRef.current}
-          proofData={proofDataRef.current}
-          pages={docContextValue.pages}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
         />
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
