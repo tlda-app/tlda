@@ -315,10 +315,10 @@ export function renderMarkdown(html, extraMacros) {
     return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX macros — use extraMacros if passed, otherwise use getActiveMacros()
-  // which returns the current document's preamble macros (set by the SVG loader)
-  // and falls back to defaultMacros (bregman macros) when no doc is loaded.
-  const preambleMacros = (extraMacros && Object.keys(extraMacros).length > 0) ? extraMacros : getActiveMacros()
+  // KaTeX macros — always start from getActiveMacros() (which includes defaultMacros),
+  // then merge project-specific extraMacros on top so they can override but defaults
+  // (like \griesz) are always available regardless of which doc is loaded.
+  const preambleMacros = { ...getActiveMacros(), ...(extraMacros || {}) }
   // throwOnError: true so unparseable LaTeX falls through to the catch and
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.
