@@ -68,7 +68,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, sendRpc, resolveRpc, daemonConnections }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -110,11 +110,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/human ---
   router.get('/api/human', (req, res) => {
     res.json({ id: HUMAN_FLEET_ID, host: HUMAN_HOST, name: HUMAN_NAME })
-  })
-
-  // --- GET /api/preamble ---
-  router.get('/api/preamble', (req, res) => {
-    res.json(preambleStore)
   })
 
   // --- GET /api/store/events ---
@@ -723,9 +718,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.post('/api/fleet-event', (req, res) => {
     const event = req.body
     if (event && event.type) {
-      if (event.type === 'preamble' && event.macros) {
-        preambleStore[event.target || 'default'] = event.macros
-      }
       broadcastEvent('fleet-event', event)
     }
     res.json({ ok: true })

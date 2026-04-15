@@ -79,7 +79,6 @@ const fleetStore = (() => {
 })()
 
 // Fleet state: in-memory
-const preambleStore = {}                    // target → { macro: definition }
 const wsFleetClients = new Set()            // active /ws/fleet connections
 
 // Daemon connections — keyed by machine_id. Each value is the live WS for
@@ -609,7 +608,7 @@ app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, preambleStore,
+  fleetStore, broadcastEvent, broadcastState,
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)

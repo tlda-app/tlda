@@ -14,6 +14,7 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { toolContentDetail } from './activity-render.mjs'
+import { setActiveMacros } from '../katexMacros'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -28,7 +29,6 @@ const MAX_EVENTS = 500    // keep only the most recent N events in memory; older
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
 let _lastEventId = 0
-const _preambles = {}     // target → { macro: definition }
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -114,7 +114,6 @@ export function getTasks() { return _tasks }
 export function getEvents() { return _events }
 export function getActivity(agentId) { return _events.filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
-export function getPreambleMacros(target = 'default') { return _preambles[target] || {} }
 
 // Returns { agentId: count } for unread messages from agents to the human
 export function getUnreadCountsForHuman() {
@@ -312,9 +311,9 @@ export function connect() {
           notify('open-doc', data)
           return
         }
-        // Preamble macros for KaTeX rendering
+        // Preamble macros for KaTeX rendering — set_preamble broadcasts these
         if (data.type === 'preamble' && data.macros) {
-          _preambles[data.target || 'default'] = data.macros
+          setActiveMacros(data.macros)
           return
         }
         const event = convertChatEvent(data)
@@ -357,14 +356,11 @@ export async function init() {
     }
   } catch {}
 
-  // Fetch initial state + history + preambles in parallel
-  const [stateRes, historyRes, preambleRes] = await Promise.all([
+  // Fetch initial state + history in parallel
+  const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
     fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
-    fetch(`${FLEET}/api/preamble`).then(r => r.json()).catch(() => ({})),
   ])
-  // Load preamble macros
-  Object.assign(_preambles, preambleRes)
 
   // Populate agents + tasks
   updateAgents(stateRes.agents || [])
