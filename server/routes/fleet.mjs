@@ -603,10 +603,24 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
       return
     }
-    sendRpc(route.machine_id, 'restart-mcp', {
-      tmux_session: agent.tmux_session,
-      skipPreflight: true,
-    }).catch(e => console.error(`restart-my-mcp daemon call failed: ${e.message}`))
+    try {
+      await sendRpc(route.machine_id, 'restart-mcp', {
+        tmux_session: agent.tmux_session,
+        skipPreflight: true,
+      })
+      // Notify the agent so it sees 📬 and resumes — the /mcp navigation
+      // left Claude Code in an interrupted state.
+      if (fleetStore) {
+        fleetStore.share({
+          type: 'chat',
+          from: HUMAN_FLEET_ID,
+          to: agent.id,
+          text: 'Fleet MCP restarted. Resume your task.',
+        })
+      }
+    } catch (e) {
+      console.error(`restart-my-mcp daemon call failed: ${e.message}`)
+    }
   })
 
   // --- POST /api/plan-mode-respond ---
