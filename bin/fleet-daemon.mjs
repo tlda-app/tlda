@@ -26,6 +26,17 @@
  *     and project list for this machine, then starts watching.
  *   - Reconnects with exponential backoff on WS drop. State lives on
  *     the server; reconnection is a no-op for the daemon's logical state.
+ *   - On reconnect (daemon-welcome after the first), auto-restarts the fleet
+ *     MCP for every alive agent with a tmux_session (staggered 500ms apart).
+ *     This handles the common case of a server restart disconnecting all MCPs.
+ *
+ * TODO: individual MCP crash detection (server restart covers the common case)
+ *   - Agents' MCPs can crash independently without a server restart.
+ *   - To detect these, add a heartbeat: MCP sends a ping every ~60s; server
+ *     tracks last_ping_at per agent; daemon polls (or server pushes) agents
+ *     whose last_ping_at is stale (> 2min) and restarts them.
+ *   - Requires: heartbeat message type in MCP register loop, server
+ *     last_ping_at column, and daemon polling logic or server-push "agent-stale".
  *
  * Cursor persistence:
  *   - JSONL byte offsets are persisted to ~/.config/tlda/daemon-cursors.json
@@ -255,6 +266,7 @@ let ws = null
 let backoff = 1000
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
+let hasReceivedWelcome = false    // true after first daemon-welcome; reconnects trigger MCP restart
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
@@ -960,11 +972,35 @@ function scheduleReconnect() {
 
 function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
+    const isReconnect = hasReceivedWelcome
+    hasReceivedWelcome = true
     agents = msg.agents || []
     projects = msg.projects || []
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
+    if (isReconnect) {
+      // Server just restarted — all agent MCPs are disconnected. Stagger restarts.
+      const toRestart = agents.filter(a => a.tmux_session && !a.dead)
+      if (toRestart.length > 0) {
+        console.log(`[daemon] reconnect: scheduling MCP restart for ${toRestart.length} agent(s)`)
+        toRestart.forEach((agent, i) => {
+          setTimeout(async () => {
+            console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id}`)
+            try {
+              await rpcRestartMcp({ tmux_session: agent.tmux_session, skipPreflight: true })
+              await fetch(`${SERVER}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to: agent.id, message: 'Fleet MCP restarted. Resume your task.' }),
+              }).catch(() => {})
+            } catch (e) {
+              console.error(`[daemon] auto-restart failed for ${agent.friendly_name || agent.id}: ${e.message}`)
+            }
+          }, i * 500)
+        })
+      }
+    }
     return
   }
   if (msg.type === 'agents-updated') {
