@@ -712,7 +712,17 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     const isMobileNow = editor.getViewportScreenBounds().width < 840
     if (isMobileNow === isMobile) return
     isMobile = isMobileNow
-    applyCameraBounds()
+    // Update constraints only — don't reset camera position (that would jump the user)
+    editor.setCameraOptions({
+      constraints: {
+        bounds: targetBounds,
+        padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
+        origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+        initialZoom: isSlides ? 'default' : 'fit-x-100',
+        baseZoom: 'default',
+        behavior: 'free',
+      },
+    })
   })
 
   applyCameraBounds()
