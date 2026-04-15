@@ -576,6 +576,30 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (result !== null) res.json(result)
   })
 
+  // --- POST /api/plan-mode-respond ---
+  // Responds to a plan-mode approval prompt for an agent.
+  // body: { agent: <id|name>, response: 'approve' | 'reject' }
+  // 'approve' sends key '1' + Enter (Yes, auto-accept edits)
+  // 'reject' sends Escape (dismiss / let user decide later)
+  router.post('/api/plan-mode-respond', async (req, res) => {
+    const { agent: agentQuery, response } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    if (response !== 'approve' && response !== 'reject') {
+      res.status(400).json({ error: 'response must be approve or reject' }); return
+    }
+    // For approve: send '1' then Enter (selects "Yes, auto-accept edits")
+    // For reject: send Escape (dismiss the prompt)
+    if (response === 'approve') {
+      const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
+      if (r1 !== null) res.json(r1)
+    } else {
+      const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+      if (r1 !== null) res.json(r1)
+    }
+  })
+
   // --- POST /api/upload ---
   // Accepts two payload shapes:
   //   1. Raw binary body with x-filename header (used by MCP screenshot

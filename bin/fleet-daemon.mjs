@@ -259,6 +259,77 @@ const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, ses
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 
+// ---------- plan mode detection ----------
+
+// Tracks last plan fingerprint per agent to avoid sending duplicates.
+const planModeHashes = new Map()        // agentId -> fingerprint string
+// Pending setTimeout handles for plan-mode checks. One check per agent at a time.
+const pendingPlanChecks = new Map()     // agentId -> timeoutHandle
+
+// Strip ANSI escape codes from terminal output.
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
+}
+
+async function checkForPlanModePrompt(agentId) {
+  pendingPlanChecks.delete(agentId)
+  const agent = agents.find(a => a.id === agentId)
+  if (!agent?.tmux_session) return
+
+  let pane
+  try {
+    const { stdout } = await execFileP('tmux',
+      ['capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
+      { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+    pane = stripAnsi(stdout)
+  } catch (e) {
+    console.error(`[daemon] plan-mode capture ${agentId}: ${e.message}`)
+    return
+  }
+
+  if (!pane.includes("Here is Claude's plan")) return
+
+  // Extract plan text between the two ╌╌╌ divider lines.
+  const lines = pane.split('\n')
+  let dividerIdx = []
+  for (let i = 0; i < lines.length; i++) {
+    if (/^[\s╌]{10,}$/.test(lines[i].trim()) || lines[i].includes('╌╌╌╌')) {
+      dividerIdx.push(i)
+    }
+  }
+  // Find the pair of dividers that straddles the plan content
+  let planText = ''
+  for (let d = 0; d < dividerIdx.length - 1; d++) {
+    const between = lines.slice(dividerIdx[d] + 1, dividerIdx[d + 1]).join('\n').trim()
+    if (between.length > 20) {
+      planText = between
+      break
+    }
+  }
+  if (!planText) planText = pane  // fallback: send full pane
+
+  const fingerprint = `${planText.length}:${planText.slice(0, 120)}`
+  if (planModeHashes.get(agentId) === fingerprint) return  // already sent this plan
+  planModeHashes.set(agentId, fingerprint)
+
+  sendMsg({
+    type: 'plan-mode-prompt',
+    agent_id: agentId,
+    plan_text: planText,
+    tmux_session: agent.tmux_session,
+  })
+  console.log(`[daemon] plan-mode-prompt sent for agent ${agentId}`)
+}
+
+function scheduleCheckForPlanModePrompt(agentId) {
+  if (pendingPlanChecks.has(agentId)) return  // already scheduled
+  const handle = setTimeout(() => checkForPlanModePrompt(agentId), 1500)
+  pendingPlanChecks.set(agentId, handle)
+}
+
+// ---------- activity event buffer ----------
+
 // Activity event buffer — flush at bounded rate (max 1 push per 2s) to
 // avoid spamming the server during a chatty agent. Mirrors the original
 // inline server's `_activityBuffer` / `_activityFlushTimer`.
@@ -449,6 +520,13 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
   if (parsedEvents.length > 0) {
     const activity = extractActivityEvents(parsedEvents)
     if (activity.length > 0) bufferActivity(agentId, activity)
+
+    // If Claude just emitted an assistant text block, schedule a terminal
+    // capture to check for a plan-mode approval prompt.
+    const hasAssistantText = parsedEvents.some(ev =>
+      ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'text' && b.text?.length > 0)
+    )
+    if (hasAssistantText) scheduleCheckForPlanModePrompt(agentId)
   }
 }
 

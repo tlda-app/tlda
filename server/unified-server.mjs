@@ -1313,6 +1313,26 @@ function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'plan-mode-prompt') {
+    if (!fleetStore) return
+    const { agent_id, plan_text, tmux_session } = msg
+    if (!agent_id || !plan_text) return
+    try {
+      fleetStore.share({
+        type: 'chat',
+        from: agent_id,
+        to: 'fleet:skip',
+        text: plan_text,
+        metadata: { type: 'plan_approval', tmux_session: tmux_session || null },
+        unread: true,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (e) {
+      console.error(`[fleet-daemon] plan-mode-prompt write: ${e.message}`)
+    }
+    return
+  }
+
   if (type === 'rpc-reply') {
     const entry = pendingRpcs.get(msg.id)
     if (!entry) return // unknown / already-timed-out RPC

@@ -525,6 +525,22 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
+      } else if (m.metadata?.type === 'plan_approval') {
+        flushActivity()
+        const agentId: string = m.from || ''
+        const agentObjs: any[] = ctx.getAgents()
+        const agentObj = agentObjs.find((a: any) => a.id === agentId)
+        const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
+        const planBodyHtml = ctx.renderMarkdown(esc(m.text || ''))
+        const html = `<div class="plan-card" data-agent-id="${esc(agentId)}">` +
+          `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
+          `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
+          `<div class="plan-card-body">${planBodyHtml}</div>` +
+          `<div class="plan-card-actions">` +
+          `<button class="plan-approve-btn" data-agent-id="${esc(agentId)}">✓ Go for it</button>` +
+          `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗ Stop</button>` +
+          `</div></div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, ctx)
@@ -1045,6 +1061,37 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogRef.current
     if (!logEl) return
     function onClick(e: Event) {
+      // Plan approval buttons
+      const approveBtn = (e.target as HTMLElement).closest('.plan-approve-btn') as HTMLElement
+      if (approveBtn) {
+        e.stopPropagation()
+        const agentId = approveBtn.dataset.agentId
+        if (agentId) {
+          fetch(`${FLEET_API}/api/plan-mode-respond`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId, response: 'approve' }),
+          }).catch(() => {})
+          const card = approveBtn.closest('.plan-card') as HTMLElement
+          if (card) card.classList.add('plan-card-approved')
+        }
+        return
+      }
+      const rejectBtn = (e.target as HTMLElement).closest('.plan-reject-btn') as HTMLElement
+      if (rejectBtn) {
+        e.stopPropagation()
+        const agentId = rejectBtn.dataset.agentId
+        if (agentId) {
+          fetch(`${FLEET_API}/api/plan-mode-respond`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId, response: 'reject' }),
+          }).catch(() => {})
+          const card = rejectBtn.closest('.plan-card') as HTMLElement
+          if (card) card.classList.add('plan-card-rejected')
+        }
+        return
+      }
       // Expand/collapse delegation message
       const lcMsg = (e.target as HTMLElement).closest('.lc-message') as HTMLElement
       if (lcMsg) {
@@ -1980,6 +2027,42 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
                     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+
+                    // Plan mode verbal approval: detect approval/rejection phrases and
+                    // forward them to the agent's terminal as plan-mode-respond calls.
+                    // We still send the message normally so the agent sees the text in context.
+                    const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
+                    const APPROVE_PHRASES = new Set([
+                      'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
+                      'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
+                      'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
+                    ])
+                    const REJECT_PHRASES = new Set([
+                      'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
+                      'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
+                    ])
+                    if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
+                      const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
+                      for (const agentId of sendTargets) {
+                        // Only respond if this agent has a visible plan card
+                        const chatLog = chatLogRef.current
+                        const hasCard = chatLog
+                          ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
+                              .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
+                          : false
+                        if (hasCard) {
+                          fetch(`${FLEET_API}/api/plan-mode-respond`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ agent: agentId, response: planResponse }),
+                          }).catch(() => {})
+                          // Mark the card visually
+                          const cards = chatLog?.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`)
+                          cards?.forEach((el) => el.classList.add(planResponse === 'approve' ? 'plan-card-approved' : 'plan-card-rejected'))
+                        }
+                      }
+                    }
+
                     // Optimistic send: clear immediately, retry on failure
                     ta.value = ''
                     ta.style.height = 'auto'
