@@ -2131,9 +2131,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
-                    // Plan mode: "/plan" sends Shift+Tab to the agent's terminal to enter plan mode.
-                    // Also catches voice variants like "let's plan", "plan mode", etc.
-                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b/i
+                    // Plan mode toggle: enter ("let's plan", "plan first", etc.) or exit
+                    // ("exit plan mode", "done planning", "back to normal"). Same endpoint
+                    // handles both — it reads current mode and sends the right # of BTabs.
+                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplan first\b|\bthink before\b|\bexit plan\b|\bdone planning\b|\bback to normal\b/i
                     if (ENTER_PLAN_RE.test(text)) {
                       for (const agentId of sendTargets) {
                         const agentName = agentNames[agentId] || agentId
