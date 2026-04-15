@@ -989,7 +989,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       const scrolledUp = el.scrollTop < lastScrollTopRef.current - 2  // user moved up (2px hysteresis)
       lastScrollTopRef.current = el.scrollTop
-      if (scrolledUp && distFromBottom > 60 && !userScrolledUp.current) {
+      if (scrolledUp && !userScrolledUp.current) {
         userScrolledUp.current = true
         setShowScrollBtn(true)
       } else if (distFromBottom <= 10 && userScrolledUp.current) {
