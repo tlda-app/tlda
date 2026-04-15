@@ -581,6 +581,34 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (result !== null) res.json(result)
   })
 
+  // --- POST /api/restart-my-mcp ---
+  // Agents call this to restart their OWN fleet MCP out-of-band (can't use
+  // the MCP tool for self-restart). Returns 202 immediately so the agent's
+  // bash subprocess finishes and Claude Code is back in the foreground before
+  // the daemon sends keystrokes to the session.
+  // body: { agent: <id|name> }
+  router.post('/api/restart-my-mcp', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    // Respond immediately — the daemon restart must happen AFTER the agent's
+    // HTTP request finishes so Claude Code has re-acquired the terminal.
+    res.status(202).json({ ok: true, message: 'restart scheduled' })
+    // 1.5s grace: enough time for the HTTP response to arrive, the bash tool
+    // to complete, and Claude Code to be back at the prompt before we type /mcp.
+    await new Promise(r => setTimeout(r, 1500))
+    const route = resolveRpc('restart-mcp', agent)
+    if (route.via === 'none') {
+      console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
+      return
+    }
+    sendRpc(route.machine_id, 'restart-mcp', {
+      tmux_session: agent.tmux_session,
+      skipPreflight: true,
+    }).catch(e => console.error(`restart-my-mcp daemon call failed: ${e.message}`))
+  })
+
   // --- POST /api/plan-mode-respond ---
   // Responds to a plan-mode approval prompt for an agent.
   // body: { agent: <id|name>, response: 'approve' | 'reject' }
