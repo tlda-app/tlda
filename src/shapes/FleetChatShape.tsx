@@ -2080,6 +2080,19 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
+                    // Plan mode toggle: if the message contains "let's plan" (or similar),
+                    // send Shift+Tab to each target agent to cycle them into plan mode.
+                    const ENTER_PLAN_RE = /\blet'?s plan\b|\bswitch to plan\b|\bplan mode\b|\benter plan\b/i
+                    if (ENTER_PLAN_RE.test(text)) {
+                      for (const agentId of sendTargets) {
+                        fetch(`${FLEET_API}/api/plan-mode-toggle`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ agent: agentId }),
+                        }).catch(() => {})
+                      }
+                    }
+
                     // Optimistic send: clear immediately, retry on failure
                     ta.value = ''
                     ta.style.height = 'auto'

@@ -600,6 +600,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
+  // --- POST /api/plan-mode-toggle ---
+  // Toggles an agent's permission mode by sending Shift+Tab to its terminal.
+  // body: { agent: <id|name> }
+  router.post('/api/plan-mode-toggle', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    // Shift+Tab in tmux key notation is 'BTab'
+    const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+    if (r1 !== null) res.json(r1)
+  })
+
   // --- POST /api/upload ---
   // Accepts two payload shapes:
   //   1. Raw binary body with x-filename header (used by MCP screenshot
