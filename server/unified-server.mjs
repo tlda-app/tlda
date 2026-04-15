@@ -101,6 +101,7 @@ const daemonConnections = new Map()         // machine_id -> ws
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
+const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
@@ -1252,6 +1253,7 @@ function handleDaemonWsMessage(ws, msg) {
     try {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
+        server_boot_id: SERVER_BOOT_ID,
         agents: agentsForMachine,
         projects: projectsForDaemon(),
       }))

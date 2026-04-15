@@ -63,6 +63,7 @@ const VERSION = '0.1.0'
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
+const LAST_BOOT_FILE = path.join(CONFIG_DIR, 'daemon-last-server-boot.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
@@ -266,7 +267,16 @@ let ws = null
 let backoff = 1000
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-let hasReceivedWelcome = false    // true after first daemon-welcome; reconnects trigger MCP restart
+// Persist the last-seen server boot_id so we can detect server restarts
+// even when the daemon itself was also restarted (by the daemon-supervisor).
+function readLastServerBootId() {
+  try { return JSON.parse(fs.readFileSync(LAST_BOOT_FILE, 'utf8'))?.server_boot_id ?? null }
+  catch { return null }
+}
+function writeLastServerBootId(id) {
+  try { fs.writeFileSync(LAST_BOOT_FILE, JSON.stringify({ server_boot_id: id })) }
+  catch (e) { console.error(`[daemon] failed to write last boot id: ${e.message}`) }
+}
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
@@ -972,18 +982,21 @@ function scheduleReconnect() {
 
 function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
-    const isReconnect = hasReceivedWelcome
-    hasReceivedWelcome = true
     agents = msg.agents || []
     projects = msg.projects || []
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
-    if (isReconnect) {
-      // Server just restarted — all agent MCPs are disconnected. Stagger restarts.
+
+    // Detect server restarts: compare server_boot_id to the last persisted value.
+    // If it changed, the server restarted and all agent MCPs are disconnected.
+    // (Daemon crash without server restart leaves the same boot_id — no restart needed.)
+    const newBootId = msg.server_boot_id ?? null
+    const lastBootId = readLastServerBootId()
+    if (newBootId && lastBootId && newBootId !== lastBootId) {
       const toRestart = agents.filter(a => a.tmux_session && !a.dead)
       if (toRestart.length > 0) {
-        console.log(`[daemon] reconnect: scheduling MCP restart for ${toRestart.length} agent(s)`)
+        console.log(`[daemon] server restarted (boot_id ${lastBootId} → ${newBootId}): scheduling MCP restart for ${toRestart.length} agent(s)`)
         toRestart.forEach((agent, i) => {
           setTimeout(async () => {
             console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id}`)
@@ -1001,6 +1014,7 @@ function handleServerMessage(msg) {
         })
       }
     }
+    if (newBootId) writeLastServerBootId(newBootId)
     return
   }
   if (msg.type === 'agents-updated') {
