@@ -44,7 +44,7 @@ type Source = typeof ALL_SOURCES[number]
 
 function parseSources(s: string | undefined): Source[] {
   try {
-    const arr = JSON.parse(s)
+    const arr = JSON.parse(s ?? 'null')
     if (Array.isArray(arr)) return arr.filter((x): x is Source => ALL_SOURCES.includes(x as Source))
   } catch {}
   return ['ref']

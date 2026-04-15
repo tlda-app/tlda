@@ -444,8 +444,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     editorRef, document, proofDataRef, proofDataReady,
   })
 
-  // --- Reload error state (page fetch failures → stale pill) ---
-  const [reloadErrors, setReloadErrors] = useState<ReloadResult | null>(null)
   // Remap warnings from reload (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
 
@@ -497,11 +495,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     setRefViewerRefs, refViewerLineRef, panelsLocalRef,
     onReloadResult: useCallback((result: ReloadResult | null) => {
       if (!result) {
-        setReloadErrors(null)
         setRemapWarnings([])
         return
       }
-      setReloadErrors(result.failedPages.length > 0 ? result : null)
       if (result.remapResult && result.remapResult.failed > 0) {
         const { failed, total } = result.remapResult
         setRemapWarnings([{
