@@ -56,10 +56,10 @@ export function TocTab() {
     return best
   }, [book])
 
-  // Re-fetch TOC when reload signal arrives
+  // Re-fetch TOC when reload signal arrives (partial or full — lookup.json is always regenerated)
   useEffect(() => {
-    return onReloadSignal((signal) => {
-      if (signal.type === 'full' && doc) {
+    return onReloadSignal((_signal) => {
+      if (doc) {
         clearLookupCache(doc.docName)
         setReloadCount(c => c + 1)
       }
