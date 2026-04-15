@@ -2,7 +2,8 @@
 // Extract LaTeX preamble macros and convert to KaTeX-compatible JSON
 // Usage: node extract-preamble.js input.tex output.json
 
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { dirname, join, resolve } from 'path'
 
 const texFile = process.argv[2]
 const outputFile = process.argv[3]
@@ -12,7 +13,27 @@ if (!texFile || !outputFile) {
   process.exit(1)
 }
 
-const tex = readFileSync(texFile, 'utf8')
+// Resolve \input/\include directives relative to a base directory.
+// Returns the fully expanded preamble text (inputs inlined, up to \begin{document}).
+function loadAndExpand(filePath, visited = new Set()) {
+  const abs = resolve(filePath)
+  if (visited.has(abs)) return ''
+  visited.add(abs)
+  let src
+  try { src = readFileSync(abs, 'utf8') } catch { return '' }
+  const base = dirname(abs)
+  // Inline \input{file} and \include{file} in preamble only
+  return src.replace(/\\(?:input|include)\{([^}]+)\}/g, (match, arg) => {
+    // Try with and without .tex extension
+    const candidates = [join(base, arg), join(base, arg + '.tex')]
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return loadAndExpand(candidate, visited)
+    }
+    return match // leave as-is if file not found
+  })
+}
+
+const tex = loadAndExpand(texFile)
 
 // Extract only the preamble (before \begin{document})
 const preambleMatch = tex.match(/^([\s\S]*?)\\begin\{document\}/)
