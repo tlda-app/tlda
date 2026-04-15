@@ -2680,7 +2680,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         if (a.session_id) ids.add(a.session_id);
         if (a.session_ids) for (const sid of a.session_ids) ids.add(sid);
       }
-      if (ids.size === 0) ids.add(args.agent);
+      if (ids.size === 0) {
+        // Try to resolve as a session ID prefix (8+ hex chars) — the entries table
+        // stores full UUIDs so an exact match on the prefix won't work.
+        if (/^[0-9a-f]{8}/i.test(args.agent)) {
+          try {
+            const rows = idx.db.prepare(
+              'SELECT DISTINCT session_id FROM entries WHERE session_id LIKE ? LIMIT 10'
+            ).all(args.agent.toLowerCase() + '%');
+            for (const r of rows) if (r.session_id) ids.add(r.session_id);
+          } catch {}
+        }
+        if (ids.size === 0) ids.add(args.agent); // last-resort fallback
+      }
       agentIds = [...ids];
     }
     // Search session logs (entries_fts)
