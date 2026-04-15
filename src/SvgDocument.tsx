@@ -64,7 +64,6 @@ import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
 import { FleetHUD } from './overlays/FleetHUD'
-import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -1019,17 +1018,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
         <BuildWarningPill warnings={buildWarnings} />
-        {editorRef.current && (
-          <BuildErrorOverlay
-            mainEditor={editorRef.current}
-            errors={buildErrors}
-            reloadErrors={reloadErrors}
-            doc={docContextValue}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-          />
-        )}
+        {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>
       {editorRef.current && (
         <FleetHUD
@@ -1110,16 +1099,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
             const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
             setRefViewerRefsLocal([{ label: anchorId, region }])
-            // Update fleet-docview shape directly if one exists
-            const dvShape = editor.getCurrentPageShapes().find((s: any) => s.type === 'fleet-docview')
-            if (dvShape) {
-              const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
-              if ((dvShape as any).isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
-              editor.updateShape({
-                id: dvShape.id, type: dvShape.type,
-                props: { ...(dvShape as any).props, mode: 'manual', label: anchorId, page: pageIdx + 1, yTop, yBottom, title: dvTitle },
+            // Update all fleet-docview shapes that have 'ref' in their sources
+            const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
+            editor.getCurrentPageShapes()
+              .filter((s: any) => s.type === 'fleet-docview')
+              .filter((s: any) => {
+                try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
               })
-            }
+              .forEach((dvShape: any) => {
+                if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
+                editor.updateShape({
+                  id: dvShape.id, type: dvShape.type,
+                  props: { ...dvShape.props, label: anchorId, page: pageIdx + 1, yTop, yBottom, title: dvTitle },
+                })
+              })
           })
 
           // Register HUD layout mode side effects (container ↔ fleet shape sync)
