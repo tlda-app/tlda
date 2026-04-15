@@ -122,6 +122,36 @@ router.get('/git/:hash/status', requireRead, (req, res) => {
 })
 
 /**
+ * GET /shadow/diff?ref1=<hash>&ref2=<hash> — Diff between two shadow repo refs.
+ * ref2 defaults to HEAD if omitted.
+ * NOTE: must be defined before /:id/diff or Express routes it as id="shadow".
+ */
+router.get('/shadow/diff', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { ref1, ref2 = 'HEAD' } = req.query
+
+  if (!ref1) return res.status(400).json({ error: 'ref1 is required' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const repoDir = getShadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) {
+    return res.status(400).json({ error: 'Shadow repo not initialized for this project' })
+  }
+
+  try {
+    const { stdout } = await execAsync(
+      `git diff "${ref1}" "${ref2}"`,
+      { cwd: repoDir, timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
+    )
+    res.json({ diff: stdout, ref1, ref2 })
+  } catch (e) {
+    res.status(500).json({ error: `shadow diff failed: ${e.message}` })
+  }
+})
+
+/**
  * GET /:id/diff — Text-based diff between a snapshot and current output.
  * Returns per-page change regions.
  */
@@ -501,35 +531,6 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
     })
   } catch (e) {
     res.status(500).json({ error: e.message })
-  }
-})
-
-/**
- * GET /shadow/diff?ref1=<hash>&ref2=<hash> — Diff between two shadow repo refs.
- * ref2 defaults to HEAD if omitted.
- */
-router.get('/shadow/diff', requireRead, async (req, res) => {
-  const { name } = req.params
-  const { ref1, ref2 = 'HEAD' } = req.query
-
-  if (!ref1) return res.status(400).json({ error: 'ref1 is required' })
-
-  const project = readProject(name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-
-  const repoDir = getShadowRepoDir(name)
-  if (!existsSync(join(repoDir, '.git'))) {
-    return res.status(400).json({ error: 'Shadow repo not initialized for this project' })
-  }
-
-  try {
-    const { stdout } = await execAsync(
-      `git diff "${ref1}" "${ref2}"`,
-      { cwd: repoDir, timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
-    )
-    res.json({ diff: stdout, ref1, ref2 })
-  } catch (e) {
-    res.status(500).json({ error: `shadow diff failed: ${e.message}` })
   }
 })
 
