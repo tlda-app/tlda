@@ -1,6 +1,7 @@
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
-import { getAgents, getAgent, getPreambleMacros } from './fleet-data.mjs'
+import { getAgents, getAgent } from './fleet-data.mjs'
+import { getActiveMacros } from '../katexMacros'
 import { myTldaUrl, isTldaUrl } from './tldaUrl.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
@@ -314,9 +315,10 @@ export function renderMarkdown(html, extraMacros) {
     return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX preamble macros — use extraMacros if passed (from ctx.preambleMacros),
-  // otherwise fall back to fleet SSE preamble from fleet-data.mjs.
-  const preambleMacros = (extraMacros && Object.keys(extraMacros).length > 0) ? extraMacros : getPreambleMacros()
+  // KaTeX macros — use extraMacros if passed, otherwise use getActiveMacros()
+  // which returns the current document's preamble macros (set by the SVG loader)
+  // and falls back to defaultMacros (bregman macros) when no doc is loaded.
+  const preambleMacros = (extraMacros && Object.keys(extraMacros).length > 0) ? extraMacros : getActiveMacros()
   // throwOnError: true so unparseable LaTeX falls through to the catch and
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.
