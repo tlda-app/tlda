@@ -2128,7 +2128,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     }
 
                     // Plan mode toggle: if the message contains "let's plan" (or similar),
-                    // send Shift+Tab to each target agent to cycle them into plan mode.
+                    // read current mode, send the right number of BTabs to land on plan mode.
                     const ENTER_PLAN_RE = /\blet'?s plan\b|\bswitch to plan\b|\bplan mode\b|\benter plan\b/i
                     if (ENTER_PLAN_RE.test(text)) {
                       for (const agentId of sendTargets) {
@@ -2136,7 +2136,17 @@ function FleetChatInner({ shape }: { shape: any }) {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ agent: agentId }),
-                        }).catch(() => {})
+                        })
+                          .then(r => r.ok ? r.json() : null)
+                          .then(data => {
+                            if (data?.mode) {
+                              const agentName = agentNames[agentId] || agentId
+                              const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
+                              const confirmMsg = `📋 ${agentName} → ${modeLabel}`
+                              sendMessage('fleet:skip', confirmMsg, {})
+                            }
+                          })
+                          .catch(() => {})
                       }
                     }
 

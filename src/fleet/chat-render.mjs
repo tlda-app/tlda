@@ -373,9 +373,11 @@ export function renderChatLine(m, ctx) {
   const isDelegator = activeTasks.some(t => t.delegated_by === m.from && t.agent === m.to)
   const isDelegatee = activeTasks.some(t => t.delegated_by === m.to && t.agent === m.from)
   const arrowHtml = isDelegator ? '&#8600;' : isDelegatee ? '&#8599;' : '&rarr;'
+  const planMode = sender?.metadata?.permission_mode === 'plan'
+  const planBadge = planMode ? '<span class="plan-mode-badge" title="plan mode">P</span>' : ''
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
-    : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
+    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20

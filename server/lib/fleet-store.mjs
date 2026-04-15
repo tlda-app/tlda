@@ -544,6 +544,16 @@ export class FleetStore {
       .run(JSON.stringify(metadata), new Date().toISOString(), id);
   }
 
+  updateAgentMeta(id, patch) {
+    // Merge patch into agent metadata JSON blob — no schema migration needed
+    const row = this._getAgent.get(id);
+    if (!row) return;
+    const metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    Object.assign(metadata, patch);
+    this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), id);
+  }
+
   _hydrateAgent(row) {
     return {
       ...row,

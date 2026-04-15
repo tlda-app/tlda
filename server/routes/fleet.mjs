@@ -644,24 +644,68 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     // For reject: send Escape (dismiss the prompt)
     if (response === 'approve') {
       const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
-      if (r1 !== null) res.json(r1)
+      if (r1 !== null) {
+        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+        broadcastState()
+        res.json(r1)
+      }
     } else {
       const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
-      if (r1 !== null) res.json(r1)
+      if (r1 !== null) {
+        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+        broadcastState()
+        res.json(r1)
+      }
     }
   })
 
   // --- POST /api/plan-mode-toggle ---
-  // Toggles an agent's permission mode by sending Shift+Tab to its terminal.
+  // Enters plan mode by capturing current mode then sending the right number
+  // of Shift+Tab presses to land on plan mode.
+  // Cycle (BTab goes forward): default → accept-edits → plan → default
   // body: { agent: <id|name> }
   router.post('/api/plan-mode-toggle', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    // Shift+Tab in tmux key notation is 'BTab'
-    const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
-    if (r1 !== null) res.json(r1)
+
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { res.status(503).json({ ok: false, error: route.error }); return }
+
+    const parseCCMode = (pane) => {
+      if (/plan mode on/i.test(pane)) return 'plan'
+      if (/accept edits on/i.test(pane)) return 'acceptEdits'
+      if (/auto.approve/i.test(pane) || /bypass/i.test(pane)) return 'auto'
+      return 'default'
+    }
+
+    try {
+      // Capture current mode
+      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const currentMode = parseCCMode(cap1?.content || '')
+
+      // Calculate BTabs needed: default(0)→acceptEdits(1)→plan(2)→default(0)
+      const btabs = currentMode === 'plan' ? 0 : currentMode === 'acceptEdits' ? 1 : 2
+
+      for (let i = 0; i < btabs; i++) {
+        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
+      }
+
+      // Confirm final mode
+      if (btabs > 0) await new Promise(r => setTimeout(r, 300))
+      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const finalMode = parseCCMode(cap2?.content || '')
+
+      // Store permission mode in agent metadata so UI can show persistent badge
+      fleetStore?.updateAgentMeta(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      broadcastState()
+
+      res.json({ ok: true, mode: finalMode, was: currentMode })
+    } catch (e) {
+      res.status(502).json({ ok: false, error: e.message })
+    }
   })
 
   // --- POST /api/upload ---
