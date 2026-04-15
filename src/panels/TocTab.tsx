@@ -699,9 +699,14 @@ export function FleetToggle() {
   // by counting fleet-chat shapes: 3-col has 2, 2-col has 1. No fleet shapes
   // at all → create 3-col (the default).
   const handleClick = useCallback(() => {
-    const chats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
-    const next = chats.length >= 2 ? '2col' : '3col'
-    createFleetLayout(editor, allAgents, next)
+    try {
+      const chats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
+      const next = chats.length >= 2 ? '2col' : '3col'
+      createFleetLayout(editor, allAgents, next)
+    } catch (e: any) {
+      console.error('[FleetToggle] createFleetLayout failed:', e)
+      alert('Fleet layout error: ' + (e?.message || String(e)))
+    }
   }, [editor, allAgents])
 
   return (
