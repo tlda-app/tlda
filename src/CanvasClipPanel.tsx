@@ -95,6 +95,9 @@ export function CanvasClipPanel({
   // mount) and expands as the user pans/zooms in the panel. Skipped for HUD mode
   // which already filters to fleet shapes only.
   const BOUNDS_PADDING = 1500
+  // Shapes farther than this from the current bounds get evicted when bounds jumps.
+  // 3× BOUNDS_PADDING gives a comfortable buffer before eviction to avoid thrashing.
+  const EVICT_PADDING = BOUNDS_PADDING * 3
   const visibleRegionRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null)
 
   // Initialize/reset visible region from clip bounds
@@ -204,6 +207,52 @@ export function CanvasClipPanel({
 
     return unsub
   }, [editor, mainEditor.store, store, lockCamera, readOnly])
+
+  // Sliding-window eviction: when bounds jumps significantly (e.g. clicking a ref on a
+  // different page), evict shapes from the copy store that are far outside the new target.
+  // This keeps the store bounded to ~3–6 pages instead of accumulating all 88 over time.
+  // Only applies to readOnly (docview) panels — HUD and main canvas keep everything.
+  const lastEvictBoundsRef = useRef<ClipBounds | null>(null)
+  useEffect(() => {
+    if (lockCamera || !bounds) return
+
+    const prev = lastEvictBoundsRef.current
+    // Only evict when bounds has moved significantly (more than one padding unit away)
+    const jumped = !prev ||
+      Math.abs(bounds.y - prev.y) > BOUNDS_PADDING ||
+      Math.abs(bounds.x - prev.x) > BOUNDS_PADDING
+    if (!jumped) return
+    lastEvictBoundsRef.current = bounds
+
+    // Evict shapes outside the evict window around the new bounds
+    const minX = bounds.x - EVICT_PADDING
+    const maxX = bounds.x + bounds.w + EVICT_PADDING
+    const minY = bounds.y - EVICT_PADDING
+    const maxY = bounds.y + bounds.h + EVICT_PADDING
+
+    const toRemove: TLRecord['id'][] = []
+    for (const r of store.allRecords()) {
+      if (r.typeName !== 'shape') continue
+      const pb = mainEditor.getShapePageBounds((r as any).id)
+      if (!pb) continue
+      if (pb.x + pb.w < minX || pb.x > maxX || pb.y + pb.h < minY || pb.y > maxY) {
+        toRemove.push(r.id)
+      }
+    }
+    if (toRemove.length > 0) {
+      store.mergeRemoteChanges(() => { store.remove(toRemove) })
+      // Clean up locked-ids tracking for evicted shapes
+      for (const id of toRemove) lockedIdsRef.current.delete(id)
+      // Reset visible region to the new bounds so expandAndSync re-fills from here
+      visibleRegionRef.current = {
+        minX: bounds.x - BOUNDS_PADDING,
+        minY: bounds.y - BOUNDS_PADDING,
+        maxX: bounds.x + bounds.w + BOUNDS_PADDING,
+        maxY: bounds.y + bounds.h + BOUNDS_PADDING,
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bounds?.x, bounds?.y, bounds?.w, bounds?.h, lockCamera, store, mainEditor])
 
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {

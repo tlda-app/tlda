@@ -136,12 +136,12 @@ initVoice()
 // Thin wrapper: delegate to the canonical renderMarkdown in utils.mjs.
 // Input may be esc()'d (from chat-render) or raw (from delegation cards).
 // renderMarkdown expects esc()'d input and un-escapes internally.
-function tldaRenderMarkdown(input: string): string {
+function tldaRenderMarkdown(input: string, macros?: Record<string, string>): string {
   // If input looks raw (not escaped), escape it first so renderMarkdown
   // can un-escape and process normally.
   const looksEscaped = input.includes('&amp;') || input.includes('&lt;') || input.includes('&gt;')
   const escapedInput = looksEscaped ? input : esc(input)
-  return renderMarkdownUtil(escapedInput)
+  return renderMarkdownUtil(escapedInput, macros)
 }
 
 // --- Viewer context helper ---
@@ -284,7 +284,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
     getAgents: () => agents,
     getTasks: () => tasks,
     tldaToken: null as string | null,
-    renderMarkdown: tldaRenderMarkdown,
+    renderMarkdown: (input: string) => tldaRenderMarkdown(input, preambleMacros),
     highlightSyntax,
     langFromFilePath,
     preambleMacros,
@@ -308,7 +308,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 }, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess)
 
 
-function FleetChatComponent({ shape }: { shape: any }) {
+function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
   const doc = useContext(DocContext)
@@ -510,9 +510,6 @@ function FleetChatComponent({ shape }: { shape: any }) {
   const rawItems = useMemo(() => {
     const items: RawItem[] = []
     let activityGroup: any[] = []
-    const cache = msgLineCache.current
-    const ctxVer = ctxVersionRef.current
-
     function flushActivity() {
       if (activityGroup.length === 0) return
       const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
@@ -978,19 +975,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
   }, [])
 
   // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
-  // With the virtualizer, scrollHeight changes constantly during item measurement so
-  // we can't use height-change detection to distinguish user scrolls from content growth.
-  // Instead: track whether a programmatic scroll is in flight to suppress false positives.
+  // Key distinction: only set userScrolledUp when scrollTop actually decreases (user scrolled up),
+  // NOT when scrollTop stays the same but scrollHeight grew (content pushed them away from bottom).
+  // The old autoScrollingRef approach was racy — virtualizer fires scroll events after the rAF
+  // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const autoScrollingRef = useRef(false)  // true while we're auto-scrolling to bottom
+  const lastScrollTopRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const onScroll = () => {
-      if (autoScrollingRef.current) return  // ignore scroll events we caused
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distFromBottom > 60 && !userScrolledUp.current) {
+      const scrolledUp = el.scrollTop < lastScrollTopRef.current - 2  // user moved up (2px hysteresis)
+      lastScrollTopRef.current = el.scrollTop
+      if (scrolledUp && distFromBottom > 60 && !userScrolledUp.current) {
         userScrolledUp.current = true
         setShowScrollBtn(true)
       } else if (distFromBottom <= 10 && userScrolledUp.current) {
@@ -1007,15 +1006,16 @@ function FleetChatComponent({ shape }: { shape: any }) {
   // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
     if (!userScrolledUp.current && rawItems.length > 0) {
-      autoScrollingRef.current = true
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
       // Fallback: direct scrollTop in case scrollToIndex fires before the container
       // has a stable height (e.g. initial mount before virtualizer measures the element),
       // or when an existing item grows (activity cards, etc.) without adding new items.
       requestAnimationFrame(() => {
         const el = chatLogRef.current
-        if (el) el.scrollTop = el.scrollHeight
-        autoScrollingRef.current = false
+        if (el) {
+          el.scrollTop = el.scrollHeight
+          lastScrollTopRef.current = el.scrollTop
+        }
       })
     }
   // rawItems identity changes whenever any message content changes (not just length),
@@ -1264,19 +1264,21 @@ function FleetChatComponent({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
 
-      // Only intercept on draggable elements — nick spans are NOT drag handles
-      // (text selection takes priority; agent filter pills come from the agents panel)
-      const isDraggable = target.closest('.chat-ts, .chat-activity-card, .code-block-header, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts')
+      // Only proceed with drag logic on draggable elements.
+      // Large items (activity cards, code block headers, tool lines) require
+      // clicking on their .drag-handle left-edge element. Small inline items
+      // (chips, timestamps) are draggable from the whole element.
+      const isDraggable = target.closest(
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts'
+      )
 
-      // When the shape is selected in tldraw (handles visible), let tldraw handle
-      // the pointer so the user can drag the whole shape to move/resize it —
-      // UNLESS the click is on an inner draggable element (chip, timestamp, etc.).
-      // In that case we handle the drag ourselves and stop propagation below
-      // (after confirming a valid drag target) so tldraw doesn't translate the
-      // parent shape.
-      if (isSelectedRef.current && !isDraggable) return
-
-      if (!isDraggable) return
+      if (!isDraggable) {
+        // Non-drag click — mark handled so tldraw skips setPointerCapture,
+        // but let the event propagate to the target so the browser can start
+        // text selection naturally (requires user-select:text on .chat-line).
+        editor.markEventAsHandled(e)
+        return
+      }
 
       const names = agentNamesRef.current
 
@@ -1303,7 +1305,24 @@ function FleetChatComponent({ shape }: { shape: any }) {
         }
       }
 
-      // Activity card
+      // Tool line (individual tool call row in activity card) — must check BEFORE
+      // activity card since tool lines are nested inside activity cards.
+      if (!drag) {
+        const toolLine = target.closest('.tool-line') as HTMLElement
+        if (toolLine) {
+          const toolName = toolLine.dataset.toolName || toolLine.querySelector('.tool-name')?.textContent || 'tool'
+          const toolArg = toolLine.dataset.toolArg || toolLine.querySelector('.tool-arg')?.textContent || ''
+          drag = {
+            pillId: null, pillType: 'tool', value: 'tool',
+            displayName: toolName,
+            color: '#c8b060', content: toolArg ? `${toolName}: ${toolArg}` : toolName,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // Activity card (only when NOT dragging from inside a tool line)
       if (!drag) {
         const actCard = target.closest('.chat-activity-card') as HTMLElement
         if (actCard) {

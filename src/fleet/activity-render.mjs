@@ -446,7 +446,8 @@ export function renderActivityGroup(group, ctx) {
       const prettyHtml = t._prettyResult
         ? renderPrettyResult(t._toolName, t._prettyResult, ctx)
         : ''
-      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}">`
+      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
+        + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`
         + `<span class="tool-name">${esc(t._toolName || '')}</span>`
@@ -459,12 +460,13 @@ export function renderActivityGroup(group, ctx) {
         + prettyHtml
     }).join('')
     const cardId = 'tr-' + Math.random().toString(36).slice(2, 8)
-    return `<div class="tool-run-card" draggable="true" data-card-id="${cardId}">
+    return `<div class="tool-run-card" data-card-id="${cardId}">
       <div class="tool-run-body">${toolLines}</div>
     </div>`
   }).join('')
 
-  return `<div class="chat-activity-card will-fold" draggable="true" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}">
+  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}">
+    <div class="drag-handle" title="Drag"></div>
     <div class="activity-header">
       <span class="activity-agent ${fromCls}">${esc(nick)}</span>
       <span class="activity-last-tool">${headerSummary}</span>

@@ -12,7 +12,7 @@ const MARGIN_PX = 400  // screen pixels of hysteresis on each side
 export function useIsInViewport(shapeId: string): boolean {
   const editor = useEditor()
   return useValue('isInViewport', () => {
-    const bounds = editor.getShapePageBounds(shapeId)
+    const bounds = editor.getShapePageBounds(shapeId as any)
     if (!bounds) return true  // unknown → assume visible
     const vp = editor.getViewportPageBounds()
     const zoom = editor.getZoomLevel()

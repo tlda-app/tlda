@@ -337,13 +337,71 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
    Nick spans and message text are selectable/copyable. */
 .fleet-chat-shape .chat-ts,
 .fleet-chat-shape .chat-activity-card,
+/* Large draggable items now only drag from their .drag-handle */
 .fleet-chat-shape .code-block-header,
 .fleet-chat-shape .tool-ref,
 .fleet-chat-shape .md-file-card,
 .fleet-chat-shape .tlda-card {
-  cursor: grab;
+  cursor: default;
   touch-action: none;
   user-select: none;
+}
+
+/* Drag handle — thin left strip on activity cards, code block headers, tool lines.
+   Same show/hide behavior as .fleet-btn-group: invisible by default, fades in on
+   mouse movement + hover. No background — just barely-visible '::' colons on a
+   transparent surface, like a very slightly textured area. */
+.fleet-chat-shape .drag-handle {
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 2s;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  letter-spacing: -1px;
+  color: currentColor;
+  user-select: none !important;
+}
+.fleet-chat-shape .drag-handle::before {
+  content: '::';
+}
+html.mousemove .fleet-chat-shape .chat-activity-card:hover > .drag-handle,
+html.mousemove .fleet-chat-shape .code-block-header:hover > .drag-handle,
+html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+.fleet-chat-shape .drag-handle:hover {
+  opacity: 0.5 !important;
+  transition: none;
+}
+
+/* Inside code-block-header (flex row): fixed-size flex child */
+.fleet-chat-shape .code-block-header > .drag-handle {
+  width: 12px;
+  height: 14px;
+}
+/* Inside activity card (not flex): absolute on left edge, full height */
+.fleet-chat-shape .chat-activity-card > .drag-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 1;
+}
+/* Inside tool-line (flex row): fixed-size flex child */
+.fleet-chat-shape .tool-line > .drag-handle {
+  width: 10px;
+}
+
+.fleet-chat-shape .chat-activity-card {
+  cursor: text;
+}
+.fleet-chat-shape .code-block-header {
+  cursor: text;
 }
 
 /* --- Chat line base --- */
@@ -356,6 +414,13 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   user-select: text !important;
   cursor: text;
 }
+/* tldraw sets user-select:none on .tl-container * which applies to child elements
+   even when .chat-line has user-select:text !important (inheritance loses to any
+   explicit rule). Override ALL children of .chat-line to be selectable. */
+.fleet-chat-shape .chat-line * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
 
 .fleet-chat-shape .chat-line.from-user {
   background: rgba(100, 140, 255, 0.04);
@@ -366,6 +431,8 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   color: var(--text-dim);
   font-size: 11px;
   margin-right: 4px;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 /* --- Nick --- */
@@ -817,6 +884,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   display: flex;
   gap: 4px;
   font-size: 10px;
+  position: relative;
 }
 .fleet-chat-shape .tool-linenum {
   color: var(--text-dim);
@@ -938,8 +1006,24 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   border: 1px solid rgba(128, 128, 128, 0.1);
   border-radius: 4px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: text;
   transition: background 0.1s;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+/* All descendants of activity cards are selectable too (same problem as .chat-line:
+   .tl-container * sets user-select:none on every element explicitly) */
+.fleet-chat-shape .chat-activity-card * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+/* Drag handles inside cards must stay non-selectable — higher specificity (0,3,0)
+   overrides the .chat-activity-card * rule above */
+.fleet-chat-shape .chat-activity-card > .drag-handle,
+.fleet-chat-shape .code-block-header > .drag-handle,
+.fleet-chat-shape .tool-line > .drag-handle {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 .fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
 .fleet-chat-shape .chat-activity-card .activity-header {

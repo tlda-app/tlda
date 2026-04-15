@@ -48,6 +48,45 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 const VIEWPORT_BUFFER_PAGES = IS_PHONE ? 4 : 2
 
+// Cache processed SVG HTML (post-fonts + word spaces + link processing) keyed by shape ID.
+// Avoids re-running the expensive injectWordSpaces on scroll-back re-injection.
+const processedSvgCache = new Map<string, { svgText: string; html: string }>()
+
+// Queue injectWordSpaces work one page per idle frame to avoid main-thread freeze on load.
+type WordSpaceJob = () => void
+const wordSpaceQueue: WordSpaceJob[] = []
+let wordSpaceScheduled = false
+
+function enqueueWordSpaces(job: WordSpaceJob) {
+  wordSpaceQueue.push(job)
+  if (!wordSpaceScheduled) {
+    wordSpaceScheduled = true
+    scheduleNextWordSpace()
+  }
+}
+
+function scheduleNextWordSpace() {
+  if (typeof requestIdleCallback !== 'undefined') {
+    requestIdleCallback(drainWordSpaceQueue, { timeout: 1500 })
+  } else {
+    setTimeout(drainWordSpaceQueue, 0)
+  }
+}
+
+function drainWordSpaceQueue() {
+  const job = wordSpaceQueue.shift()
+  if (job) {
+    job()
+    if (wordSpaceQueue.length > 0) {
+      scheduleNextWordSpace()
+    } else {
+      wordSpaceScheduled = false
+    }
+  } else {
+    wordSpaceScheduled = false
+  }
+}
+
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
@@ -138,6 +177,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
     // Already injected this exact content — skip
     if (injectedRef.current === svgText) return
 
+    // Check for cached processed HTML (avoids re-running expensive injectWordSpaces on scroll-back)
+    const cacheEntry = processedSvgCache.get(shape.id)
+    if (cacheEntry && cacheEntry.svgText === svgText) {
+      el.innerHTML = cacheEntry.html
+      injectedRef.current = svgText
+      const svgEl = el.querySelector('svg')
+      if (svgEl) {
+        const textEls = svgEl.querySelectorAll('text')
+        const tCache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
+        for (let i = 0; i < textEls.length; i++) {
+          tCache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
+        }
+        textYCacheRef.current = tCache
+      } else {
+        textYCacheRef.current = []
+      }
+      applyTinting(textYCacheRef.current, highlights)
+      return
+    }
+
     el.innerHTML = svgText
     injectedRef.current = svgText
 
@@ -151,18 +210,27 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     // Inject space characters between positioned SVG text fragments so native
     // browser text selection produces readable text (with word breaks).
-    // Must wait for fonts to load before measuring text widths.
+    // Must wait for fonts to load; queue one page per idle frame to avoid
+    // blocking the main thread when multiple pages load simultaneously.
     if (svgEl) {
       injectSvgFonts(svgEl)
-      document.fonts.ready.then(() => injectWordSpaces(svgEl))
+      const capturedSvgText = svgText
+      document.fonts.ready.then(() => {
+        enqueueWordSpaces(() => {
+          if (!containerRef.current || injectedRef.current !== capturedSvgText) return
+          injectWordSpaces(svgEl)
+          // Cache the fully-processed HTML so scroll-back re-injection is instant
+          processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
+        })
+      })
 
       // Build Y-position cache for fast tinting (avoids querySelectorAll + parseFloat on every highlight change)
       const textEls = svgEl.querySelectorAll('text')
-      const cache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
+      const tCache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
       for (let i = 0; i < textEls.length; i++) {
-        cache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
+        tCache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
       }
-      textYCacheRef.current = cache
+      textYCacheRef.current = tCache
     } else {
       textYCacheRef.current = []
     }
@@ -189,8 +257,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
       // near the link text (e.g. on surrounding brackets or whitespace) still fire.
       // SVG <text> elements have no padding — without this, the clickable area is
       // exactly the glyph bounding box, making precise clicking necessary.
-      const svgEl = link.closest('svg')
-      if (svgEl && link.childElementCount > 0) {
+      const svgElForLink = link.closest('svg')
+      if (svgElForLink && link.childElementCount > 0) {
         try {
           const bbox = (link as unknown as SVGAElement).getBBox()
           if (bbox.width > 0 && bbox.height > 0) {

@@ -300,13 +300,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/read-file ---
   router.get('/api/read-file', (req, res) => {
-    const filePath = req.query.path
+    let filePath = req.query.path
     if (!filePath) { res.status(400).send('Missing path parameter'); return }
     try {
       const content = fs.readFileSync(filePath, 'utf8')
       res.type('text/plain').send(content)
     } catch (e) {
-      res.status(404).send(`Could not read file: ${e.message}`)
+      res.status(404).send(`Could not read file: ${filePath}\n${e.message}`)
     }
   })
 

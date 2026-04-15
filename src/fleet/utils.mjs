@@ -1,3 +1,5 @@
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import { getAgents, getAgent, getPreambleMacros } from './fleet-data.mjs'
 import { myTldaUrl, isTldaUrl } from './tldaUrl.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
@@ -271,7 +273,7 @@ export function renderMarkdownLine(line) {
 }
 
 // --- Full markdown renderer (marked + DOMPurify with fleet extensions) ---
-export function renderMarkdown(html) {
+export function renderMarkdown(html, extraMacros) {
   // Input arrives esc()'d — unescape back to raw markdown for marked
   let text = html
     .replace(/&amp;/g, '&')
@@ -302,7 +304,7 @@ export function renderMarkdown(html) {
     const highlighted = (!shouldFold && lang) ? highlightSyntax(code, lang) : esc(code)
     const langLabel = (lang || langHint)
 
-    const header = `<div class="code-block-header" draggable="true">`
+    const header = `<div class="code-block-header"><span class="drag-handle" title="Drag"></span>`
       + (langLabel ? `<span class="code-block-lang">${esc(langLabel)}</span>` : '')
       + (shouldFold ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code'),t=e;if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');t.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');t.textContent='${lineCount} lines — show all'}})(this)">${lineCount} lines — show all</span>` : '')
       + `<span class="code-block-copy" title="Copy">⎘</span>`
@@ -312,8 +314,9 @@ export function renderMarkdown(html) {
     return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX preamble macros — set by agents via set_preamble(), delivered via SSE
-  const preambleMacros = getPreambleMacros()
+  // KaTeX preamble macros — use extraMacros if passed (from ctx.preambleMacros),
+  // otherwise fall back to fleet SSE preamble from fleet-data.mjs.
+  const preambleMacros = (extraMacros && Object.keys(extraMacros).length > 0) ? extraMacros : getPreambleMacros()
   // throwOnError: true so unparseable LaTeX falls through to the catch and
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.
@@ -323,7 +326,7 @@ export function renderMarkdown(html) {
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
     let rendered
     try {
-      if (typeof katex !== 'undefined') rendered = katex.renderToString(tex.trim(), katexOpts(true))
+      rendered = katex.renderToString(tex.trim(), katexOpts(true))
     } catch {}
     return ph(rendered || `<div class="math-display">${esc(tex)}</div>`, true)
   })
@@ -332,7 +335,7 @@ export function renderMarkdown(html) {
   text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex) => {
     let rendered
     try {
-      if (typeof katex !== 'undefined') rendered = katex.renderToString(tex.trim(), katexOpts(false))
+      rendered = katex.renderToString(tex.trim(), katexOpts(false))
     } catch {}
     return ph(rendered || `<span class="math-inline">${esc(tex)}</span>`)
   })
