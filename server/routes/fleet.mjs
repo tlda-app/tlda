@@ -122,28 +122,37 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const afterId = parseInt(req.query.after || '0')
     const beforeId = req.query.before ? parseInt(req.query.before) : null
-    const limit = Math.min(parseInt(req.query.limit || '100'), 2000)
+    const limit = Math.min(parseInt(req.query.limit || '200'), 5000)
+    const since = req.query.since || null   // ISO timestamp lower bound
+    const until = req.query.until || null   // ISO timestamp upper bound
     const type = req.query.type || null
     const agent = req.query.agent || null
     try {
       let events
       let total = null
       if (agent) {
-        // Include total count so callers can show pagination context
+        // Build WHERE clause with optional time filters
+        let where = '(from_id = ? OR to_id = ?)'
+        const baseParams = [agent, agent]
+        if (since) { where += ' AND timestamp >= ?'; baseParams.push(since) }
+        if (until) { where += ' AND timestamp <= ?'; baseParams.push(until) }
+
+        // Total count within the filtered window
         total = fleetStore.db.prepare(
-          'SELECT COUNT(*) as n FROM events WHERE (from_id = ? OR to_id = ?)'
-        ).get(agent, agent)?.n ?? null
+          `SELECT COUNT(*) as n FROM events WHERE ${where}`
+        ).get(...baseParams)?.n ?? null
+
         const q = afterId
-          ? 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) AND id > ? ORDER BY id ASC LIMIT ?'
+          ? `SELECT * FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
           : beforeId
-          ? 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) AND id < ? ORDER BY id DESC LIMIT ?'
-          : 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) ORDER BY id DESC LIMIT ?'
+          ? `SELECT * FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+          : `SELECT * FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
         events = afterId
-          ? fleetStore.db.prepare(q).all(agent, agent, afterId, limit)
+          ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
           : beforeId
-          ? fleetStore.db.prepare(q).all(agent, agent, beforeId, limit)
-          : fleetStore.db.prepare(q).all(agent, agent, limit)
-        if (!afterId) events.reverse()
+          ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
+          : fleetStore.db.prepare(q).all(...baseParams, limit)
+        if (beforeId) events.reverse()
       } else if (type) {
         events = fleetStore.db.prepare(
           'SELECT * FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?'

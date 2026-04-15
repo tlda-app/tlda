@@ -811,7 +811,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           since: { type: 'string', description: 'ISO timestamp — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
-          limit: { type: 'number', description: 'Max messages (default 50). Use since/until for time-based queries instead of large limits.' },
+          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp.' },
         },
       },
     },
@@ -2826,14 +2826,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let filtered = [];
     let serverTotal = null;
 
-    // Default: show last 500 events (enough for most sessions). Callers can pass
-    // a higher limit or use since/until for time-scoped queries. The server now
-    // returns `total` so we can show "X of Y" and a pagination hint.
-    const effectiveLimit = args.limit || 500;
+    // Server handles time filtering and pagination. page_size caps results per call;
+    // to get the next page, call again with since=<last returned timestamp>.
+    const pageSize = args.page_size || 200;
 
     const fetchEventsForAgent = async (agentId) => {
       const dashPort = process.env.FLEET_DASH_PORT || 5176;
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${effectiveLimit}`);
+      let url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${pageSize}`;
+      if (args.since) url += `&since=${encodeURIComponent(args.since)}`;
+      if (args.until) url += `&until=${encodeURIComponent(args.until)}`;
+      const res = await fetch(url);
       if (!res.ok) return;
       const data = await res.json();
       serverTotal = data.total ?? null;
@@ -2867,11 +2869,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: 'Provide either agent or task_id.' }], isError: true };
     }
 
-    // Apply time filters
-    if (args.since) filtered = filtered.filter(m => m.timestamp >= args.since);
-    if (args.until) filtered = filtered.filter(m => m.timestamp <= args.until);
-
-    // Sort by time, deduplicate, limit
+    // Sort by time and deduplicate (server already filters by since/until)
     filtered.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
     const seen = new Set();
     filtered = filtered.filter(m => {
@@ -2881,23 +2879,21 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return true;
     });
 
-    filtered = filtered.slice(-effectiveLimit);
-
     if (filtered.length === 0) {
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
     }
 
-    // Build header with total context and pagination hint
+    // Build header with total context and forward-pagination hint
     const fmtShort = (ts) => ts ? new Date(ts).toLocaleString() : '';
     const oldest = filtered[0]?.timestamp;
     const newest = filtered[filtered.length - 1]?.timestamp;
     const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
 
     let header;
-    if (serverTotal !== null && serverTotal > filtered.length) {
+    if (serverTotal !== null && filtered.length < serverTotal) {
       const hidden = serverTotal - filtered.length;
       header = `Showing ${filtered.length} of ${serverTotal} total messages${rangeStr}\n` +
-        `⚠️ ${hidden} earlier message(s) not shown — use \`until: "${oldest}"\` to page back`;
+        `⚠️ ${hidden} more message(s) not shown — call again with \`since: "${newest}"\` to get the next page`;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
     }
