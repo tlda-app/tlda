@@ -122,12 +122,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const afterId = parseInt(req.query.after || '0')
     const beforeId = req.query.before ? parseInt(req.query.before) : null
-    const limit = Math.min(parseInt(req.query.limit || '100'), 500)
+    const limit = Math.min(parseInt(req.query.limit || '100'), 2000)
     const type = req.query.type || null
     const agent = req.query.agent || null
     try {
       let events
+      let total = null
       if (agent) {
+        // Include total count so callers can show pagination context
+        total = fleetStore.db.prepare(
+          'SELECT COUNT(*) as n FROM events WHERE (from_id = ? OR to_id = ?)'
+        ).get(agent, agent)?.n ?? null
         const q = afterId
           ? 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) AND id > ? ORDER BY id ASC LIMIT ?'
           : beforeId
@@ -152,7 +157,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         events = fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = fleetStore.getLastEventId()
-      res.json({ events, lastId })
+      res.json({ events, lastId, total })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

@@ -2812,16 +2812,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const state = await loadState();
     const tasks = state.tasks || [];
     let filtered = [];
+    let serverTotal = null;
 
-    // When since/until is provided, timestamps scope the results — use a higher default limit
-    const effectiveLimit = args.limit || (args.since || args.until ? 500 : 50);
+    // Default: show last 500 events (enough for most sessions). Callers can pass
+    // a higher limit or use since/until for time-scoped queries. The server now
+    // returns `total` so we can show "X of Y" and a pagination hint.
+    const effectiveLimit = args.limit || 500;
 
     const fetchEventsForAgent = async (agentId) => {
       const dashPort = process.env.FLEET_DASH_PORT || 5176;
       const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${effectiveLimit}`);
       if (!res.ok) return;
-      const { events } = await res.json();
-      for (const e of (events || [])) {
+      const data = await res.json();
+      serverTotal = data.total ?? null;
+      for (const e of (data.events || [])) {
         const text = e.type === 'delegate'
           ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
           : e.type === 'task_done'
@@ -2871,9 +2875,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
     }
 
-    const truncationWarning = filtered.length === effectiveLimit
-      ? `⚠️ Thread truncated at ${effectiveLimit} messages. Use since/until to narrow, or pass a higher limit.\n\n`
-      : '';
+    // Build header with total context and pagination hint
+    const fmtShort = (ts) => ts ? new Date(ts).toLocaleString() : '';
+    const oldest = filtered[0]?.timestamp;
+    const newest = filtered[filtered.length - 1]?.timestamp;
+    const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
+
+    let header;
+    if (serverTotal !== null && serverTotal > filtered.length) {
+      const hidden = serverTotal - filtered.length;
+      header = `Showing ${filtered.length} of ${serverTotal} total messages${rangeStr}\n` +
+        `⚠️ ${hidden} earlier message(s) not shown — use \`until: "${oldest}"\` to page back`;
+    } else {
+      header = `${filtered.length} messages${rangeStr}`;
+    }
 
     // Format as readable thread
     const lines = filtered.map(m => {
@@ -2885,7 +2900,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return `[${ts}] ${from} → ${to}\n${m.text}`;
     });
 
-    return { content: [{ type: 'text', text: `${truncationWarning}${filtered.length} messages:\n\n${lines.join('\n\n---\n\n')}` }] };
+    return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n\n---\n\n')}` }] };
   }
 
   // ==== Labels & Interrupts ====
