@@ -1039,6 +1039,23 @@ function FleetChatInner({ shape }: { shape: any }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
+  // When the virtualizer measures items taller than the initial estimate (65px),
+  // getTotalSize() grows AFTER the rawItems effect already fired — so the initial
+  // scroll lands short of the true bottom. Chase it by scrolling whenever totalSize
+  // changes and the user hasn't intentionally scrolled up.
+  const virtualizerTotalSize = virtualizer.getTotalSize()
+  useEffect(() => {
+    if (userScrolledUp.current) return
+    const el = chatLogRef.current
+    if (!el) return
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (dist > 1) {
+      el.scrollTop = el.scrollHeight
+      lastScrollTopRef.current = el.scrollTop
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualizerTotalSize])
+
   // After images inside the log load, they expand the scroll height. Scroll to
   // bottom if we were close enough that we should follow new content.
   useEffect(() => {
