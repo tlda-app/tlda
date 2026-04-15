@@ -685,8 +685,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
-      // Calculate BTabs needed: default(0) → acceptEdits(1) → plan(2) → default(0)
-      const btabs = currentMode === 'plan' ? 0 : currentMode === 'acceptEdits' ? 1 : 2
+      // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
+      // Cycle: default → acceptEdits → plan → default
+      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {
         await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
