@@ -660,9 +660,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/plan-mode-toggle ---
-  // Enters plan mode by capturing current mode then sending the right number
-  // of Shift+Tab presses to land on plan mode.
-  // Cycle (BTab goes forward): default → accept-edits → plan → default
+  // Enters plan mode by reading the current mode then sending the right number
+  // of Shift+Tab (BTab) presses to land on plan mode.
+  // Cycle: default → accept-edits → plan → default
   // body: { agent: <id|name> }
   router.post('/api/plan-mode-toggle', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
@@ -685,7 +685,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
-      // Calculate BTabs needed: default(0)→acceptEdits(1)→plan(2)→default(0)
+      // Calculate BTabs needed: default(0) → acceptEdits(1) → plan(2) → default(0)
       const btabs = currentMode === 'plan' ? 0 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {

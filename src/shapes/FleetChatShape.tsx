@@ -1131,13 +1131,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = approveBtn.dataset.agentId
         if (agentId) {
+          const card = approveBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'approve' }),
-          }).catch(() => {})
-          const card = approveBtn.closest('.plan-card') as HTMLElement
-          if (card) card.classList.add('plan-card-approved')
+          })
+            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
+            .then(() => { if (card) card.classList.add('plan-card-approved') })
+            .catch(err => sendMessage('fleet:skip', `⚠️ plan approve failed: ${err.message}`, {}))
         }
         return
       }
@@ -1146,13 +1148,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = rejectBtn.dataset.agentId
         if (agentId) {
+          const card = rejectBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'reject' }),
-          }).catch(() => {})
-          const card = rejectBtn.closest('.plan-card') as HTMLElement
-          if (card) card.classList.add('plan-card-rejected')
+          })
+            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
+            .then(() => { if (card) card.classList.add('plan-card-rejected') })
+            .catch(err => sendMessage('fleet:skip', `⚠️ plan reject failed: ${err.message}`, {}))
         }
         return
       }
@@ -2127,26 +2131,27 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
-                    // Plan mode toggle: if the message contains "let's plan" (or similar),
-                    // read current mode, send the right number of BTabs to land on plan mode.
-                    const ENTER_PLAN_RE = /\blet'?s plan\b|\bswitch to plan\b|\bplan mode\b|\benter plan\b/i
+                    // Plan mode: "/plan" sends Shift+Tab to the agent's terminal to enter plan mode.
+                    // Also catches voice variants like "let's plan", "plan mode", etc.
+                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b/i
                     if (ENTER_PLAN_RE.test(text)) {
                       for (const agentId of sendTargets) {
+                        const agentName = agentNames[agentId] || agentId
                         fetch(`${FLEET_API}/api/plan-mode-toggle`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ agent: agentId }),
                         })
-                          .then(r => r.ok ? r.json() : null)
-                          .then(data => {
-                            if (data?.mode) {
-                              const agentName = agentNames[agentId] || agentId
+                          .then(r => r.json().then(data => ({ ok: r.ok, data })))
+                          .then(({ ok, data }) => {
+                            if (!ok || data?.error) {
+                              sendMessage('fleet:skip', `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+                            } else if (data?.mode) {
                               const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
-                              const confirmMsg = `📋 ${agentName} → ${modeLabel}`
-                              sendMessage('fleet:skip', confirmMsg, {})
+                              sendMessage('fleet:skip', `📋 ${agentName} → ${modeLabel}`, {})
                             }
                           })
-                          .catch(() => {})
+                          .catch(err => sendMessage('fleet:skip', `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
                       }
                     }
 
