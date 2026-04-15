@@ -308,7 +308,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 }, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess)
 
 
-function FleetChatComponent({ shape }: { shape: any }) {
+function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const layoutMode = useLayoutMode()
   const doc = useContext(DocContext)

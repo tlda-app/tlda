@@ -2123,3 +2123,88 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   white-space: nowrap;
 }
 .docview-goto { margin-left: auto; }
+
+/* DocView sources overlay */
+.docview-sources-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-panel, #1e1e2e);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  padding: 8px;
+  gap: 4px;
+}
+.docview-sources-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 2px;
+}
+.docview-sources-back {
+  font-size: 11px;
+  background: none;
+  border: none;
+  color: var(--accent, #7aa2f7);
+  cursor: pointer;
+  padding: 0 4px;
+}
+.docview-sources-back:hover { opacity: 0.8; }
+.docview-source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.docview-source-row:hover { background: rgba(255,255,255,0.05); }
+.docview-source-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.docview-source-label {
+  flex: 1;
+  color: var(--text, #cdd6f4);
+}
+.docview-source-desc {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* DocView error header bar */
+.docview-error-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  background: rgba(243, 139, 139, 0.12);
+  border-bottom: 1px solid rgba(243, 139, 139, 0.25);
+  font-size: 10px;
+  min-height: 18px;
+}
+.docview-error-icon {
+  color: #f38bab;
+  flex-shrink: 0;
+}
+.docview-error-msg {
+  flex: 1;
+  color: #f38bab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docview-error-count {
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
