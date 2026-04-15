@@ -1005,7 +1005,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       const scrolledUp = el.scrollTop < lastScrollTopRef.current - 2  // user moved up (2px hysteresis)
       lastScrollTopRef.current = el.scrollTop
-      if (scrolledUp && !userScrolledUp.current) {
+      // Require distFromBottom > 250 before marking as scrolled-up, so that
+      // programmatic scrollTop clamps (e.g. textarea collapsing on send causes
+      // clientHeight to grow, clamping scrollTop down) don't falsely suppress auto-scroll.
+      if (scrolledUp && distFromBottom > 250 && !userScrolledUp.current) {
         userScrolledUp.current = true
         setShowScrollBtn(true)
       } else if (distFromBottom <= 10 && userScrolledUp.current) {
