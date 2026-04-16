@@ -219,6 +219,7 @@ const customShapeSchemas = {
       yTop: T.number,
       yBottom: T.number,
       title: T.string,
+      sources: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-docview',
