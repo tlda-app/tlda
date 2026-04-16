@@ -116,6 +116,11 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   // --- Filter overlay ---
   const [showSources, setShowSources] = useState(false)
 
+  // Defer inner TLDraw mount to a normal async render cycle.
+  // Mounting synchronously during a flushSync (triggered by createShapes/updateShape)
+  // causes React error #300. useEffect always runs after the synchronous flush.
+  const [showDocView, setShowDocView] = useState(false)
+
   // --- Error source ---
   const [buildErrors, setBuildErrors] = useState<BuildError[]>([])
   const [errorIndex, setErrorIndex] = useState(0)
@@ -257,6 +262,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
     return null
   }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, resolvedErrors, errorIndex])
+
+  useEffect(() => { setShowDocView(!!bounds) }, [bounds])
 
   const activeSource: Source | null =
     (sources.includes('errors') && resolvedErrors.length > 0) ? 'errors' :
@@ -460,7 +467,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: currentError ? h - errorHeaderH : h }}
       >
-        {bounds && mainEditor ? (
+        {showDocView && bounds && mainEditor ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
