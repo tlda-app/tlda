@@ -183,14 +183,19 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     }
   }
 
-  // Build output with context
-  const contextLines = 1
-  const from = Math.max(0, startLine - 1 - contextLines)
-  const to = Math.min(allLines.length, endLine + contextLines)
+  // Build output: only hit lines + 1 line of context around each
+  const contextPad = 1
+  const includeLines = new Set()
+  for (const ln of sortedLineNums) {
+    for (let c = ln - contextPad; c <= ln + contextPad; c++) {
+      if (c >= 1 && c <= allLines.length) includeLines.add(c)
+    }
+  }
+  const sortedInclude = [...includeLines].sort((a, b) => a - b)
 
   const lines = []
-  for (let i = from; i < to; i++) {
-    const lineNum = i + 1
+  for (const lineNum of sortedInclude) {
+    const i = lineNum - 1
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
