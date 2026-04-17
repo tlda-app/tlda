@@ -847,9 +847,8 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
-            if (lockCamera) {
-              ed.user.updateUserPreferences({ isSnapMode: true })
-            }
+            // Note: isSnapMode is a global user preference shared across editors.
+            // Don't enable it here — it would affect the main editor too.
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected

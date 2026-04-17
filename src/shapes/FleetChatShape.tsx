@@ -1378,6 +1378,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
 
+      // If this shape is selected for drag/resize (fleet-drag-mode), let
+      // TLDraw handle everything — don't intercept pointer events.
+      if (isSelectedRef.current) return
+
       // Only proceed with drag logic on draggable elements.
       // Large items (activity cards, code block headers, tool lines) require
       // clicking on their .drag-handle left-edge element. Small inline items
