@@ -183,18 +183,14 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     }
   }
 
-  // Build output: only hit lines + 1 line of context around each
+  // Build output: full contiguous range with context, but only mark
+  // path-hit lines as highlighted (non-hit lines between are shown but not highlighted)
   const contextPad = 1
-  const includeLines = new Set()
-  for (const ln of sortedLineNums) {
-    for (let c = ln - contextPad; c <= ln + contextPad; c++) {
-      if (c >= 1 && c <= allLines.length) includeLines.add(c)
-    }
-  }
-  const sortedInclude = [...includeLines].sort((a, b) => a - b)
+  const from = Math.max(1, startLine - contextPad)
+  const to = Math.min(allLines.length, endLine + contextPad)
 
   const lines = []
-  for (const lineNum of sortedInclude) {
+  for (let lineNum = from; lineNum <= to; lineNum++) {
     const i = lineNum - 1
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
