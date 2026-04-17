@@ -2282,17 +2282,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'text'],
       },
     },
-    {
-      name: 'update_shared_doc',
-      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Doc name (as returned by share())' },
-        },
-        required: ['doc'],
-      },
-    },
+    // update_shared_doc removed — use `tlda push` CLI instead
   ],
 }));
 
@@ -3767,36 +3757,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
       }
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'update_shared_doc') {
-    const doc = args.doc;
-    if (!doc) return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
-    try {
-      const sharedDocsRes = await fetch(`${TLDA_SERVER}/api/shared-docs`, { headers: TLDA_AUTH_HEADERS });
-      const sharedDocs = sharedDocsRes.ok ? await sharedDocsRes.json() : [];
-      const sharedDoc = sharedDocs.find(d => d.doc === doc);
-      if (!sharedDoc) {
-        return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
-      }
-      let content;
-      try { content = fs.readFileSync(sharedDoc.path, 'utf8'); } catch (e) {
-        return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
-      }
-      const mainFile = path.basename(sharedDoc.path);
-      await serverFetch(`/api/projects/${doc}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [{ path: mainFile, content }],
-          sourceDir: path.dirname(sharedDoc.path),
-          session: process.env.CLAUDE_SESSION,
-        }),
-      });
-      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
