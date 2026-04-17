@@ -47,11 +47,12 @@
   pointer-events: auto;
 }
 
-/* Full-viewport overlay: EVERYTHING in the overlay tree is pointer-events: none
-   so clicks pass through to the main canvas. Only fleet shape content gets
-   pointer-events: auto carved back in. The wildcard is necessary because TLDraw
-   creates internal elements (tl-hit-test-blocker, tl-canvas, tl-overlays) with
-   their own pointer-events that would otherwise intercept. */
+/* Full-viewport overlay pointer-events architecture:
+   1. Everything in the overlay is pointer-events: none (clicks pass to main canvas)
+   2. Fleet shape elements get pointer-events: auto (interactive)
+   3. TLDraw selection/resize overlay items get pointer-events: auto (handles work)
+   The wildcard is necessary because TLDraw creates internal elements
+   (tl-hit-test-blocker, tl-canvas) with their own pointer-events. */
 .fleet-hud-wrap .clip-panel-fullvp,
 .fleet-hud-wrap .clip-panel-fullvp * {
   pointer-events: none !important;
@@ -65,6 +66,13 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
+  pointer-events: auto !important;
+}
+/* TLDraw selection/resize handles must be interactive.
+   tl-overlays__item children are the actual handles (SVGs, divs).
+   The tl-overlays container itself stays none so it doesn't block clicks. */
+.fleet-hud-wrap .clip-panel-fullvp .tl-overlays__item,
+.fleet-hud-wrap .clip-panel-fullvp .tl-overlays__item * {
   pointer-events: auto !important;
 }
 /* The HUD mirrors document records (including html-page shapes that contain
