@@ -133,19 +133,21 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   if (pageRecords.length === 0) return null
 
   // For each path point, find the nearest synctex record
+  // Only consider records within ~6pt vertically (half a line height)
   const hitRecords = new Set()
   for (const pt of points) {
     let bestDist = Infinity
     let best = null
     for (const r of pageRecords) {
-      const dist = Math.abs(r.y - pt.y) * 1.0 + Math.abs(r.x - pt.x) * 0.3
+      const yDist = Math.abs(r.y - pt.y)
+      if (yDist > 8) continue // must be on the same rendered line
+      const dist = yDist + Math.abs(r.x - pt.x) * 0.1
       if (dist < bestDist) {
         bestDist = dist
         best = r
       }
     }
-    // Only include if reasonably close (within ~15pt — about one line height)
-    if (best && bestDist < 20) {
+    if (best) {
       hitRecords.add(best)
     }
   }
