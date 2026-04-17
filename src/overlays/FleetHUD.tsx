@@ -349,11 +349,13 @@ export function FleetHUD({
   const cam = mainEditor.getCamera()
 
   if (panOffsetRef.current === null) {
+    // Center the camera on all fleet shapes so none are culled by tldraw's
+    // viewport culling. With z=1, canvas coords = screen coords + camera offset.
+    // Camera is set so the fleet bounds center maps to the screen center.
     const fbCenterX = fleetBounds.x + fleetBounds.w / 2
     const fbCenterY = fleetBounds.y + fleetBounds.h / 2
-    const desiredScreenY = window.innerHeight / 2
-    panOffsetRef.current = fbCenterX * (cam.z - 1) + cam.x * cam.z
-    cameraYRef.current = desiredScreenY - fbCenterY
+    panOffsetRef.current = window.innerWidth / 2 - fbCenterX
+    cameraYRef.current = window.innerHeight / 2 - fbCenterY
   }
 
   const overlayCam = {
