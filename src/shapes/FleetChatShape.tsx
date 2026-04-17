@@ -797,6 +797,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = setTimeout(() => {
+        // Re-check that cursor is still over a doc-link (user may have moved away)
+        const stillOver = document.querySelector('.doc-link:hover')
+        if (!stillOver) return
         const refType = target.dataset.refType
 
         let resolved: ResolvedRef | null = null
@@ -838,7 +841,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
           detail: { bounds, shapeIds: [], label, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
         }))
-      }, 150)
+      }, 800)
     }
 
     function onMouseOut(e: MouseEvent) {

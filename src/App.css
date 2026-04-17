@@ -682,3 +682,36 @@ body.text-select-mode ::selection {
 .tl-theme__dark .figure-zoom-reset:hover {
   color: rgba(255, 255, 255, 0.6);
 }
+
+/* Highlight source context card */
+.hl-source-card {
+  max-width: 480px;
+  background: rgba(20, 20, 30, 0.92);
+  color: #e0e0e0;
+  border-radius: 6px;
+  padding: 0;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity 1s ease-out;
+  overflow: hidden;
+}
+.hl-source-card-header {
+  padding: 4px 10px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.05);
+}
+.hl-source-card-body {
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.hl-source-card-match {
+  border-radius: 2px;
+  padding: 1px 2px;
+}

@@ -645,18 +645,22 @@ async function collectDrawnShapes(docName) {
       if (!bbox) continue;
       const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
       const gesture = classifyGesture(bbox);
-      const nearbyLines = findNearbyLines(docName, bbox);
+      // Use sourceLines from meta if available (unified resolution from viewer),
+      // otherwise fall back to bbox lookup (for old highlights or pen strokes)
+      const metaSourceLines = record.meta?.sourceLines;
+      const nearbyLines = (metaSourceLines && metaSourceLines.length > 0)
+        ? metaSourceLines.map(sl => ({ line: sl.line, content: sl.content, x: 0, y: 0 }))
+        : findNearbyLines(docName, bbox);
       const pos = describePagePosition(docName, bbox);
       const rendered = getRenderedText(docName, bbox);
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
-      const sourceLine = record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines,
         transcription, transcriptionVerified });
       continue;
     }
@@ -2278,17 +2282,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'text'],
       },
     },
-    {
-      name: 'update_shared_doc',
-      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Doc name (as returned by share())' },
-        },
-        required: ['doc'],
-      },
-    },
+    // update_shared_doc removed — use `tlda push` CLI instead
   ],
 }));
 
@@ -2397,7 +2391,11 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
     if (pos) text += ` ${pos.description}`;
-    if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
+    if (r.meta.sourceLines?.length > 0) {
+      const sl = r.meta.sourceLines;
+      const range = sl.length === 1 ? `line ${sl[0].line}` : `lines ${sl[0].line}–${sl[sl.length-1].line}`;
+      text += `, ${range}`;
+    }
     if (lines.length === 1) {
       text += `\n  text: "${lines[0]}"`;
     } else {
@@ -3147,7 +3145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
       const lines = feedback.map(f => {
         const icon = ICONS[f.type] || '📌';
-        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
+        const loc = f.lines ? ` (lines ${f.lines[0]}–${f.lines[1]})` : '';
         const status = f.addressed ? ' [addressed]' : '';
         const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
         return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
@@ -3759,36 +3757,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
       }
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'update_shared_doc') {
-    const doc = args.doc;
-    if (!doc) return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
-    try {
-      const sharedDocsRes = await fetch(`${TLDA_SERVER}/api/shared-docs`, { headers: TLDA_AUTH_HEADERS });
-      const sharedDocs = sharedDocsRes.ok ? await sharedDocsRes.json() : [];
-      const sharedDoc = sharedDocs.find(d => d.doc === doc);
-      if (!sharedDoc) {
-        return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
-      }
-      let content;
-      try { content = fs.readFileSync(sharedDoc.path, 'utf8'); } catch (e) {
-        return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
-      }
-      const mainFile = path.basename(sharedDoc.path);
-      await serverFetch(`/api/projects/${doc}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [{ path: mainFile, content }],
-          sourceDir: path.dirname(sharedDoc.path),
-          session: process.env.CLAUDE_SESSION,
-        }),
-      });
-      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }

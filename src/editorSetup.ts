@@ -11,7 +11,7 @@ import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
-import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
+import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
@@ -613,7 +613,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             setTimeout(checkSnap, 200)
             return
           }
-          snapHighlighterToText(editor, shape.id)
+          snapHighlighterToText(editor, shape.id, document.name)
           // Process highlight for feedback integration (understanding-line updates + signal)
           processHighlightFeedback(editor, shape.id, document.name)
         }
@@ -848,7 +848,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         if (id) {
           const shape = editor.getShape(id)
           if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
-            glowCleanup = showGlow(editor, id)
+            const glowOff = showGlow(editor, id)
+            const cardOff = showSourceContextCardForShape(editor, id)
+            glowCleanup = () => { glowOff?.(); cardOff?.() }
           }
           // Show transcription toast on hover for recognized draw shapes
           if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {
