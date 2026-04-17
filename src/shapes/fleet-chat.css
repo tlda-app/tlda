@@ -1892,13 +1892,15 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
    explicit pointer-events:all (chips, buttons, etc.) would otherwise intercept
    the click and start their own drag handlers instead of letting tldraw move
    the whole shape. */
-.fleet-drag-mode .tl-html-container {
+.fleet-drag-mode .tl-html-container,
+.fleet-drag-mode .tl-html-container * {
   pointer-events: none !important;
 }
 
 /* Button group — always interactive even in drag mode */
-.fleet-shape .fleet-btn-group {
-  pointer-events: auto;
+.fleet-drag-mode .fleet-btn-group,
+.fleet-drag-mode .fleet-btn-group * {
+  pointer-events: auto !important;
 }
 
 /* --- ClusterShape --- */
