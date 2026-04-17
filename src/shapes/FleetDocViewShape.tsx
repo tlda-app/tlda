@@ -107,6 +107,7 @@ interface NavEntry { label: string; page: number; yTop: number; yBottom: number;
 function FleetDocViewComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const doc = useContext(DocContext)
+  const isSelected = useValue('docview-selected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
 
   const { w, h, sources: sourcesRaw, label, page, yTop, yBottom, title } = shape.props
   const sources = parseSources(sourcesRaw)
@@ -527,13 +528,13 @@ export function DocViewPortal({
         containerRef.current.style.top = rect.top + 'px'
         containerRef.current.style.width = rect.width + 'px'
         containerRef.current.style.height = rect.height + 'px'
-        containerRef.current.style.pointerEvents = 'auto'
+        containerRef.current.style.pointerEvents = isSelected ? 'none' : 'auto'
       }
     }
     update()
     const interval = setInterval(update, 500)
     return () => clearInterval(interval)
-  }, [shapeId])
+  }, [shapeId, isSelected])
 
   if (!containerRef.current || !pos) return null
 
