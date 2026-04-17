@@ -47,28 +47,25 @@
   pointer-events: auto;
 }
 
-/* Full-viewport overlay: container is pointer-events: none,
-   but fleet shape elements are interactive */
-.fleet-hud-wrap .clip-panel-fullvp {
+/* Full-viewport overlay: EVERYTHING in the overlay tree is pointer-events: none
+   so clicks pass through to the main canvas. Only fleet shape content gets
+   pointer-events: auto carved back in. The wildcard is necessary because TLDraw
+   creates internal elements (tl-hit-test-blocker, tl-canvas, tl-overlays) with
+   their own pointer-events that would otherwise intercept. */
+.fleet-hud-wrap .clip-panel-fullvp,
+.fleet-hud-wrap .clip-panel-fullvp * {
   pointer-events: none !important;
 }
+/* Fleet shapes are interactive */
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] {
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
   pointer-events: auto !important;
-}
-/* Also need tl-html-layer to be pointer-events: none so non-fleet areas pass through */
-.fleet-hud-wrap .clip-panel-fullvp .tl-html-layer {
-  pointer-events: none !important;
-}
-/* tl-canvas background must pass through clicks */
-.fleet-hud-wrap .clip-panel-fullvp .tl-background,
-.fleet-hud-wrap .clip-panel-fullvp .tl-background__wrapper {
-  pointer-events: none !important;
-}
-.fleet-hud-wrap .clip-panel-fullvp .tl-canvas {
-  pointer-events: none !important;
 }
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
