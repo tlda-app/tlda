@@ -180,9 +180,10 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 
   const xMin = Math.min(startX, endX)
   const xMax = Math.max(startX, endX)
-  // Tight y-range: a single text line is ~12pt, so ±6pt is one line of tolerance
-  const yMin = Math.min(startY, endY) - 6
-  const yMax = Math.max(startY, endY) + 6
+  // Very tight y-range: ±2pt catches only the exact rendered line(s)
+  // A PDF text line is ~12pt tall, so ±2pt won't bleed into adjacent lines
+  const yMin = Math.min(startY, endY) - 2
+  const yMax = Math.max(startY, endY) + 2
 
   // Collect all synctex records in the highlight bbox, grouped by source line
   // Also collect ALL records for matched lines (for column estimation)
