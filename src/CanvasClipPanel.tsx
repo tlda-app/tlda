@@ -847,8 +847,10 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
-            // Note: isSnapMode is a global user preference shared across editors.
-            // Don't enable it here — it would affect the main editor too.
+            // Note: snap-to-grid (isSnapMode) is a global user preference
+            // shared across all editor instances. Don't enable it here —
+            // it affects the main editor too, making highlights snap.
+            // Users can toggle snap manually with Ctrl+Shift+S when needed.
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected
