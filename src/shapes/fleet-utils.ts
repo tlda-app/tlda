@@ -156,8 +156,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   }
   editor.createShapes(shapes)
 
-  editor.centerOnPoint(
-    { x: anchorX + totalW / 2, y: anchorY + totalH / 2 },
-    { animation: { duration: 300 } }
-  )
+  // Don't center the main canvas on fleet shapes — that disrupts the user's
+  // document position. The HUD overlay handles fleet shape visibility
+  // independently via its own camera.
 }

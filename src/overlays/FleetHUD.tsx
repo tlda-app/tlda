@@ -305,8 +305,11 @@ export function FleetHUD({
 
   // Emergency reset: when the Fleet button in the TOC is clicked, it
   // recreates the fleet shapes AND fires a `fleet-hud-reset` event.
+  // Reset camera refs so the overlay re-centers on the new shapes.
   useEffect(() => {
     const onReset = () => {
+      panOffsetRef.current = null
+      cameraYRef.current = null
       setFleetBounds(getFleetBounds(mainEditor))
     }
     window.addEventListener('fleet-hud-reset', onReset)
