@@ -1077,14 +1077,28 @@ async function handleVersionCommitted(msg) {
     }
   }
 
-  // Fetch from shadow repo then fast-forward merge
+  // Fetch from shadow repo, stash local changes, fast-forward merge, unstash
   try {
     await execFileP('git', ['fetch', 'tlda-shadow'], { cwd: sourceDir, timeout: 15000 })
     // Determine the branch name in the shadow repo
-    const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/master'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
-    const ref = refOut.trim() ? 'tlda-shadow/master' : 'FETCH_HEAD'
-    await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
-    console.log(`[daemon] synced ${projectName}: ${hash?.slice(0, 7)}`)
+    const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/main'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
+    const ref = refOut.trim() ? 'tlda-shadow/main' : 'FETCH_HEAD'
+
+    // Stash any local changes
+    const { stdout: stashOut } = await execFileP('git', ['stash', 'push', '-m', 'tlda-sync-stash'], { cwd: sourceDir, timeout: 10000 })
+    const didStash = !stashOut.includes('No local changes')
+
+    try {
+      await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
+      console.log(`[daemon] synced ${projectName}: ${hash?.slice(0, 7)}`)
+    } finally {
+      // Always unstash, even if merge fails
+      if (didStash) {
+        await execFileP('git', ['stash', 'pop'], { cwd: sourceDir, timeout: 10000 }).catch(e => {
+          console.warn(`[daemon] stash pop failed for ${projectName}: ${e.message}`)
+        })
+      }
+    }
   } catch (e) {
     console.warn(`[daemon] sync failed for ${projectName}: ${e.message}`)
   }
