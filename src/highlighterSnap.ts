@@ -12,7 +12,6 @@
 
 import type { Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
-import { loadLookup, type LookupData } from './synctexLookup'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -86,11 +85,12 @@ export interface GlowRect {
   h: number
 }
 
-/** A resolved source line from lookup.json, stored in highlight meta. */
+/** A resolved source line, stored in highlight meta. */
 export interface SourceLine {
   line: number
   content: string
   file?: string
+  highlighted?: boolean
 }
 
 /**
@@ -397,18 +397,14 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
 }
 
 /**
- * Find source lines matching a highlight's bounding box using lookup.json.
- * This is the client-side equivalent of the MCP server's findNearbyLines —
- * same data, same resolution, so Skip and agents see the same thing.
+ * Find source lines for a highlight by querying the server's synctex data.
+ * Returns the actual tex source with context and the highlighted region identified.
  */
 async function findSourceLinesFromBounds(
   docName: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor
 ): Promise<SourceLine[]> {
-  const lookup = await loadLookup(docName)
-  if (!lookup?.lines) return []
-
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
     .sort((a, b) => (a as any).y - (b as any).y)
@@ -427,30 +423,34 @@ async function findSourceLinesFromBounds(
   const topLeft = canvasToPdf(bounds.minX, bounds.minY, pages)
   const bottomRight = canvasToPdf(bounds.maxX, bounds.maxY, pages)
   if (!topLeft) return []
-  const page = topLeft.page
 
-  const yMargin = 15 // PDF points
-  const strokeW = bottomRight ? bottomRight.x - topLeft.x : 0
-  const useXFilter = strokeW > 50
+  // Query the server's synctex reverse lookup
+  const serverUrl = (window as any).__tlda_server || window.location.origin
+  const params = new URLSearchParams({
+    page: String(topLeft.page),
+    startX: String(topLeft.x),
+    startY: String(topLeft.y),
+    endX: String(bottomRight?.x ?? topLeft.x),
+    endY: String(bottomRight?.y ?? topLeft.y),
+    context: '2',
+  })
 
-  const mainFile = lookup.meta?.texFile ?? ''
-  const matches: SourceLine[] = []
+  try {
+    const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex?${params}`)
+    if (!resp.ok) return []
+    const data = await resp.json()
+    if (!data?.lines) return []
 
-  for (const [key, entry] of Object.entries(lookup.lines)) {
-    if (entry.page !== page) continue
-    if (entry.y < topLeft.y - yMargin || entry.y > (bottomRight?.y ?? topLeft.y) + yMargin) continue
-    if (useXFilter && bottomRight && (entry.x > bottomRight.x + 20 || entry.x < topLeft.x - 20)) continue
-
-    const colonIdx = key.indexOf(':')
-    const file = colonIdx >= 0 ? key.slice(0, colonIdx) : mainFile
-    const line = colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key)
-    const sl: SourceLine = { line, content: entry.content }
-    if (file !== mainFile) sl.file = file
-    matches.push(sl)
+    return data.lines.map((l: any) => {
+      const sl: SourceLine = { line: l.line, content: l.content }
+      if (l.highlighted) sl.highlighted = true
+      if (data.file) sl.file = data.file
+      return sl
+    })
+  } catch (e) {
+    console.warn('[highlighter-snap] synctex query failed:', e)
+    return []
   }
-
-  matches.sort((a, b) => a.line - b.line)
-  return matches
 }
 
 export function restoreHighlightsFromShapes(_editor: Editor) {}
@@ -483,13 +483,14 @@ function showSourceContextCard(
   const card = document.createElement('div')
   card.className = 'hl-source-card'
 
-  // Header: file + line range
-  const firstLine = sourceLines[0]
-  const lastLine = sourceLines[sourceLines.length - 1]
-  const file = firstLine.file || ''
-  const lineRange = sourceLines.length === 1
-    ? `L${firstLine.line}`
-    : `L${firstLine.line}–${lastLine.line}`
+  // Header: file + highlighted line range (not context lines)
+  const highlighted = sourceLines.filter(sl => sl.highlighted !== false)
+  const first = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
+  const last = highlighted.length > 0 ? highlighted[highlighted.length - 1] : sourceLines[sourceLines.length - 1]
+  const file = first.file || ''
+  const lineRange = first.line === last.line
+    ? `L${first.line}`
+    : `L${first.line}–${last.line}`
   const headerText = file ? `${file}:${lineRange}` : lineRange
 
   const header = document.createElement('div')
@@ -510,8 +511,16 @@ function showSourceContextCard(
 
     const contentEl = document.createElement('span')
     contentEl.textContent = sl.content
-    contentEl.style.borderLeft = `3px solid ${tintColor}`
-    contentEl.style.paddingLeft = '6px'
+    if (sl.highlighted !== false) {
+      // Highlighted line — bold border in highlight color
+      contentEl.style.borderLeft = `3px solid ${tintColor}`
+      contentEl.style.paddingLeft = '6px'
+    } else {
+      // Context line — dim border
+      contentEl.style.borderLeft = `1px solid rgba(255,255,255,0.15)`
+      contentEl.style.paddingLeft = '8px'
+      contentEl.style.opacity = '0.5'
+    }
 
     lineEl.appendChild(numEl)
     lineEl.appendChild(contentEl)
