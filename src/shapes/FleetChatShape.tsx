@@ -413,7 +413,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    userScrolledUp.current = false; setShowScrollBtn(false)
+    setShowScrollBtn(false)
   }, [filterKey])
 
   // Auto-load history when filter gives empty results (no live messages for this agent)
@@ -990,75 +990,38 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
-  // Key distinction: only set userScrolledUp when scrollTop actually decreases (user scrolled up),
-  // NOT when scrollTop stays the same but scrollHeight grew (content pushed them away from bottom).
-  // The old autoScrollingRef approach was racy — virtualizer fires scroll events after the rAF
-  // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
-  const userScrolledUp = useRef(false)
+  // Auto-scroll: follow new messages unless user has scrolled away from the bottom.
+  // Simple distance check — no state to get stuck. If the chat log is within
+  // AUTO_SCROLL_THRESHOLD pixels of the bottom, auto-scroll. Otherwise skip it.
+  // Exception: always scroll on initial load (before any messages render, scrollTop=0
+  // so nearBottom() would be false even though user hasn't scrolled up).
+  const AUTO_SCROLL_THRESHOLD = 150
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const lastScrollTopRef = useRef(0)
+  const hasInitialScrolled = useRef(false)
+  const nearBottom = () => {
+    if (!hasInitialScrolled.current) return true   // first load: always scroll
+    const el = chatLogRef.current
+    if (!el) return true
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) < AUTO_SCROLL_THRESHOLD
+  }
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-
-    // Scroll event: only used to RESET userScrolledUp when the user comes back
-    // to the bottom. Never used to SET it — that's the job of wheel/touch handlers
-    // below. Programmatic scrollTop changes (virtualizer corrections, textarea
-    // collapse clamping) fire scroll events too; using those to set userScrolledUp
-    // caused false positives that permanently suppressed auto-scroll.
     const onScroll = () => {
-      lastScrollTopRef.current = el.scrollTop
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distFromBottom <= 10 && userScrolledUp.current) {
-        userScrolledUp.current = false
-        setShowScrollBtn(false)
-      }
+      setShowScrollBtn(distFromBottom >= AUTO_SCROLL_THRESHOLD)
     }
-
-    // Wheel event: fires only on genuine user scroll gestures. Upward wheel =
-    // user is reading old messages → suppress auto-scroll.
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < -3 && !userScrolledUp.current) {
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
-      }
-    }
-
-    // Touch events: wheel doesn't fire on iOS/iPad for touch scrolling.
-    // Track swipe direction via touchstart/touchmove.
-    let touchStartY = 0
-    const onTouchStart = (e: TouchEvent) => { touchStartY = e.touches[0].clientY }
-    const onTouchMove = (e: TouchEvent) => {
-      // Finger moves DOWN the screen → content scrolls UP → user reading old messages
-      if (e.touches[0].clientY - touchStartY > 10 && !userScrolledUp.current) {
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
-      }
-    }
-
     el.addEventListener('scroll', onScroll)
-    el.addEventListener('wheel', onWheel, { passive: true })
-    el.addEventListener('touchstart', onTouchStart, { passive: true })
-    el.addEventListener('touchmove', onTouchMove, { passive: true })
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchmove', onTouchMove)
-    }
+    return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  // When the chat log's own height changes (e.g. the textarea grows and eats into
-  // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible — unless the user has intentionally scrolled up.
+  // When the chat log's own height changes (e.g. the textarea grows), scroll to bottom
+  // unless the user has scrolled away.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (userScrolledUp.current) return
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
+      if (nearBottom()) el.scrollTop = el.scrollHeight
     })
     ro.observe(el)
     return () => ro.disconnect()
@@ -1068,21 +1031,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
   // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
-    if (!userScrolledUp.current && rawItems.length > 0) {
+    if (nearBottom() && rawItems.length > 0) {
+      hasInitialScrolled.current = true
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Fallback: direct scrollTop in case scrollToIndex fires before the container
-      // has a stable height (e.g. initial mount before virtualizer measures the element),
-      // or when an existing item grows (activity cards, etc.) without adding new items.
       requestAnimationFrame(() => {
         const el = chatLogRef.current
-        if (el) {
-          el.scrollTop = el.scrollHeight
-          lastScrollTopRef.current = el.scrollTop
-        }
+        if (el) el.scrollTop = el.scrollHeight
       })
     }
-  // rawItems identity changes whenever any message content changes (not just length),
-  // so this fires for growing activity cards and in-place updates too.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
@@ -1092,14 +1048,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   // changes and the user hasn't intentionally scrolled up.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (userScrolledUp.current) return
+    if (!nearBottom()) return
     const el = chatLogRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (dist > 1) {
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
-    }
+    if (dist > 1) el.scrollTop = el.scrollHeight
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
 
@@ -1110,11 +1063,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (userScrolledUp.current) return
       const el = logEl!
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
-        el.scrollTop = el.scrollHeight
-      }
+      if (nearBottom()) el.scrollTop = el.scrollHeight
     }
     logEl.addEventListener('load', onImgLoad, true)
     return () => logEl.removeEventListener('load', onImgLoad, true)
@@ -1225,8 +1175,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
       const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current) {
-        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+      if (newHeight > prevHeight && nearBottom()) {
+        chatLogRef.current!.scrollTop = chatLogRef.current!.scrollHeight
       }
       prevHeight = newHeight
     })
@@ -1942,7 +1892,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 if (el) {
                   el.scrollTop = el.scrollHeight
                 }
-                userScrolledUp.current = false; setShowScrollBtn(false)
+                setShowScrollBtn(false)
                 setShowScrollBtn(false)
               }}
               style={{
@@ -2163,7 +2113,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    setShowScrollBtn(false)
                     if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
