@@ -192,7 +192,7 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
 // Synctex reverse lookup: PDF position → source context
 router.get('/:name/synctex', requireRead, async (req, res) => {
   const { getSourceContext } = await import('../lib/synctex-query.mjs')
-  const { page, startX, startY, endX, endY, context } = req.query
+  const { page, startX, startY, endX, endY, context, text } = req.query
   if (!page || !startX || !startY) {
     return res.status(400).json({ error: 'Required: page, startX, startY' })
   }
@@ -202,7 +202,8 @@ router.get('/:name/synctex', requireRead, async (req, res) => {
       parseInt(page),
       parseFloat(startX), parseFloat(startY),
       parseFloat(endX || startX), parseFloat(endY || startY),
-      parseInt(context) || 2
+      parseInt(context) || 2,
+      text || ''
     )
     if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
     res.json(result)

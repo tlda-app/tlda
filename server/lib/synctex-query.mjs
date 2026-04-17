@@ -165,9 +165,10 @@ export async function pdfToSource(projectName, page, pdfX, pdfY) {
  * @param {number} endX - right X in PDF points
  * @param {number} endY - bottom Y in PDF points
  * @param {number} [contextLines=2] - extra lines of context above/below
- * @returns {Promise<{ file: string, startLine: number, endLine: number, lines: Array<{line: number, content: string, highlighted: boolean}> } | null>}
+ * @param {string} [highlightText] - SVG-extracted text to fuzzy-match for substring highlighting
+ * @returns {Promise<{ file: string, startLine: number, endLine: number, lines: Array<{line: number, content: string, highlighted: boolean, hlStart?: number, hlEnd?: number}> } | null>}
  */
-export async function getSourceContext(projectName, page, startX, startY, endX, endY, contextLines = 2) {
+export async function getSourceContext(projectName, page, startX, startY, endX, endY, contextLines = 2, highlightText = '') {
   const data = await loadSynctex(projectName)
   if (!data) return null
 
@@ -221,6 +222,39 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
     })
   }
 
+  // Try to find the exact substring within the highlighted source lines
+  // by fuzzy-matching the SVG-extracted text against the stripped-tex source
+  if (highlightText) {
+    const hlLines = lines.filter(l => l.highlighted)
+    const fullSource = hlLines.map(l => l.content).join(' ')
+    // Strip tex commands to get plain text for matching
+    const stripped = stripTex(fullSource)
+    // Normalize the SVG text (collapse spaces, remove ligature artifacts)
+    const normalizedHl = highlightText.replace(/\s+/g, ' ').trim()
+
+    // Find the best substring match of normalizedHl within stripped
+    const match = fuzzySubstringMatch(stripped, normalizedHl)
+    if (match) {
+      // Map the match position back to the original source (with tex commands)
+      const sourceMatch = mapStrippedToSource(fullSource, match.start, match.end)
+      if (sourceMatch) {
+        // Find which lines and columns the match spans
+        let charOffset = 0
+        for (const l of hlLines) {
+          const lineLen = l.content.length
+          const matchStart = sourceMatch.start - charOffset
+          const matchEnd = sourceMatch.end - charOffset
+
+          if (matchEnd > 0 && matchStart < lineLen) {
+            l.hlStart = Math.max(0, matchStart)
+            l.hlEnd = Math.min(lineLen, matchEnd)
+          }
+          charOffset += lineLen + 1 // +1 for the space we joined with
+        }
+      }
+    }
+  }
+
   // Derive relative file name
   const srcDir = sourceDir(projectName)
   let relFile = file
@@ -231,4 +265,87 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
   } catch {}
 
   return { file: relFile, startLine, endLine, lines }
+}
+
+/** Strip tex commands to get approximate plain text. */
+function stripTex(tex) {
+  return tex
+    .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')  // \cmd{content} → content
+    .replace(/\\[a-zA-Z]+/g, '')                 // \cmd → ''
+    .replace(/[{}$^_~]/g, '')                    // remove braces, math, etc.
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Find best fuzzy substring match of query within text. Returns {start, end} in text coords or null. */
+function fuzzySubstringMatch(text, query) {
+  if (!query || query.length < 3) return null
+  const tLower = text.toLowerCase()
+  const qLower = query.toLowerCase()
+
+  // Try exact substring first
+  const exact = tLower.indexOf(qLower)
+  if (exact >= 0) return { start: exact, end: exact + query.length }
+
+  // Try with first/last few words (SVG text often has garbled edges)
+  const words = qLower.split(/\s+/).filter(w => w.length > 2)
+  if (words.length < 2) return null
+
+  // Find the first word that matches
+  const firstWord = words[0]
+  const lastWord = words[words.length - 1]
+  const firstIdx = tLower.indexOf(firstWord)
+  const lastIdx = tLower.lastIndexOf(lastWord)
+
+  if (firstIdx >= 0 && lastIdx >= 0 && lastIdx >= firstIdx) {
+    return { start: firstIdx, end: lastIdx + lastWord.length }
+  }
+
+  // Try middle words if edges are garbled
+  for (let i = 1; i < words.length - 1; i++) {
+    const idx = tLower.indexOf(words[i])
+    if (idx >= 0) {
+      // Expand outward to find word boundaries
+      const start = Math.max(0, idx - 20)
+      const end = Math.min(text.length, idx + words[i].length + 20)
+      return { start, end }
+    }
+  }
+
+  return null
+}
+
+/** Map a position in stripped text back to position in original source. */
+function mapStrippedToSource(source, strippedStart, strippedEnd) {
+  const stripped = stripTex(source)
+  // Build character map: stripped index → source index
+  // This is approximate — we re-strip and align
+  let si = 0 // source index
+  let di = 0 // stripped index
+  const strippedChars = stripTex(source)
+
+  // Simple approach: find the stripped substring, then search for it in source
+  const matchedText = stripped.slice(strippedStart, strippedEnd)
+  // Find this text in the source (allowing tex commands interspersed)
+  const pattern = matchedText.split('').map(c =>
+    c === ' ' ? '\\s+(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?\\s*)*' : escapeRegex(c)
+  ).join('(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?)*\\s*')
+
+  try {
+    const re = new RegExp(pattern, 'i')
+    const m = source.match(re)
+    if (m) {
+      return { start: m.index, end: m.index + m[0].length }
+    }
+  } catch {
+    // Regex too complex — fall back to proportional mapping
+  }
+
+  // Proportional fallback
+  const ratio = source.length / Math.max(1, stripped.length)
+  return { start: Math.round(strippedStart * ratio), end: Math.round(strippedEnd * ratio) }
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

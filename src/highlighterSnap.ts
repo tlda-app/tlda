@@ -91,6 +91,8 @@ export interface SourceLine {
   content: string
   file?: string
   highlighted?: boolean
+  hlStart?: number  // start column of highlighted substring
+  hlEnd?: number    // end column of highlighted substring
 }
 
 /**
@@ -276,7 +278,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   // Resolve source lines via lookup.json (same data agents see)
   // This is async but we fire-and-forget — meta gets updated when lookup resolves
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor) : []
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText) : []
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -403,7 +405,8 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
 async function findSourceLinesFromBounds(
   docName: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
-  editor: Editor
+  editor: Editor,
+  highlightText = ''
 ): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
@@ -433,6 +436,7 @@ async function findSourceLinesFromBounds(
     endX: String(bottomRight?.x ?? topLeft.x),
     endY: String(bottomRight?.y ?? topLeft.y),
     context: '2',
+    ...(highlightText ? { text: highlightText } : {}),
   })
 
   try {
@@ -444,6 +448,8 @@ async function findSourceLinesFromBounds(
     return data.lines.map((l: any) => {
       const sl: SourceLine = { line: l.line, content: l.content }
       if (l.highlighted) sl.highlighted = true
+      if (l.hlStart != null) sl.hlStart = l.hlStart
+      if (l.hlEnd != null) sl.hlEnd = l.hlEnd
       if (data.file) sl.file = data.file
       return sl
     })
@@ -510,13 +516,42 @@ function showSourceContextCard(
     numEl.textContent = String(sl.line)
 
     const contentEl = document.createElement('span')
-    contentEl.textContent = sl.content
-    if (sl.highlighted === true) {
-      // Highlighted line — bold border in highlight color
+    contentEl.style.paddingLeft = '6px'
+
+    // Check for substring highlight within the line
+    const hlStart = (sl as any).hlStart
+    const hlEnd = (sl as any).hlEnd
+    if (hlStart != null && hlEnd != null && hlStart < hlEnd) {
+      // Show line with highlighted substring
+      const before = sl.content.slice(0, hlStart)
+      const match = sl.content.slice(hlStart, hlEnd)
+      const after = sl.content.slice(hlEnd)
+      if (before) {
+        const s = document.createElement('span')
+        s.textContent = before
+        s.style.opacity = '0.5'
+        contentEl.appendChild(s)
+      }
+      const hlSpan = document.createElement('span')
+      hlSpan.textContent = match
+      hlSpan.style.backgroundColor = tintColor + '40'
+      hlSpan.style.borderRadius = '2px'
+      hlSpan.style.padding = '0 1px'
+      contentEl.appendChild(hlSpan)
+      if (after) {
+        const s = document.createElement('span')
+        s.textContent = after
+        s.style.opacity = '0.5'
+        contentEl.appendChild(s)
+      }
       contentEl.style.borderLeft = `3px solid ${tintColor}`
-      contentEl.style.paddingLeft = '6px'
+    } else if (sl.highlighted === true) {
+      // Whole line highlighted (no substring match)
+      contentEl.textContent = sl.content
+      contentEl.style.borderLeft = `3px solid ${tintColor}`
     } else {
-      // Context line — dim border
+      // Context line
+      contentEl.textContent = sl.content
       contentEl.style.borderLeft = `1px solid rgba(255,255,255,0.15)`
       contentEl.style.paddingLeft = '8px'
       contentEl.style.opacity = '0.5'
