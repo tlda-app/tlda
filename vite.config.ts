@@ -45,28 +45,28 @@ export default defineConfig({
     proxy: {
       // Fleet WebSocket endpoints
       '/ws/fleet': {
-        target: 'ws://localhost:5177',
+        target: 'ws://localhost:5176',
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5177',
+        target: 'ws://localhost:5176',
         ws: true,
       },
       // All API routes → unified server
-      '/api': 'http://localhost:5177',
-      '/docs': 'http://localhost:5177',
-      '/health': 'http://localhost:5177',
+      '/api': 'http://localhost:5176',
+      '/docs': 'http://localhost:5176',
+      '/health': 'http://localhost:5176',
     },
   },
   preview: {
     host: true,
     port: 5179,
     proxy: {
-      '/ws/fleet': { target: 'ws://localhost:5177', ws: true },
-      '/ws/terminal': { target: 'ws://localhost:5177', ws: true },
-      '/api': 'http://localhost:5177',
-      '/docs': 'http://localhost:5177',
-      '/health': 'http://localhost:5177',
+      '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
+      '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
+      '/api': 'http://localhost:5176',
+      '/docs': 'http://localhost:5176',
+      '/health': 'http://localhost:5176',
     },
   },
   optimizeDeps: {
