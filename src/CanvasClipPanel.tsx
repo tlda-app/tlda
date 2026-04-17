@@ -692,6 +692,12 @@ export function CanvasClipPanel({
       // Let fleet-docview shapes handle their own wheel events
       const target = e.target as HTMLElement
       if (lockCamera && target?.closest('.fleet-docview')) return
+      // In fullViewport mode, only handle wheel events over fleet shapes.
+      // Events over empty areas should pass through to the main canvas.
+      if (fullViewport) {
+        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+        if (!fleetShape) return // let event pass through
+      }
       e.preventDefault()
       e.stopPropagation()
       if (lockCamera) {
