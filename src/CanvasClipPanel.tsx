@@ -49,6 +49,13 @@ interface CanvasClipPanelProps {
    *  and a running 250ms animation lags the target, making content visibly
    *  grow as the user resizes the HUD smaller. */
   liveEdit?: boolean
+  /** Direct camera control — bypasses bounds-based camera computation.
+   *  When set, the camera is set to this value directly. Used by the
+   *  full-viewport fleet overlay where FleetHUD computes the camera. */
+  cameraOverride?: { x: number; y: number; z: number }
+  /** When true, the panel renders full-viewport with transparent background
+   *  and pointer-events: none on the container. Fleet shapes get pointer-events: auto. */
+  fullViewport?: boolean
   children?: React.ReactNode
 }
 
@@ -67,6 +74,8 @@ export function CanvasClipPanel({
   emphasizeShapeIds,
   readOnly = false,
   liveEdit = false,
+  cameraOverride,
+  fullViewport = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -522,6 +531,25 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!editor || !bounds) return
 
+    // Direct camera control — skip all bounds-based computation.
+    // Set extremely wide constraints so nothing gets culled or clamped.
+    if (cameraOverride) {
+      cancelAnimationFrame(animFrameRef.current)
+      editor.setCameraOptions({
+        constraints: {
+          bounds: { x: -100000, y: -100000, w: 200000, h: 200000 },
+          behavior: 'inside',
+          origin: { x: 0.5, y: 0.5 },
+          padding: { x: 0, y: 0 },
+          initialZoom: 'default',
+          baseZoom: 'default',
+        },
+        zoomSteps: [0.01, 100],
+      })
+      editor.setCamera(cameraOverride)
+      return
+    }
+
     // readOnly mode: free infinite canvas, just set initial camera position
     if (readOnly) {
       const zoom = panelWidth / bounds.w
@@ -632,7 +660,7 @@ export function CanvasClipPanel({
     initialBoundsRef.current = false
 
     return () => cancelAnimationFrame(animFrameRef.current)
-  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit])
+  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit, cameraOverride?.x, cameraOverride?.y, cameraOverride?.z])
 
   // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
   useEffect(() => {
@@ -804,19 +832,8 @@ export function CanvasClipPanel({
 
   if (!bounds) return null
 
-  return (
-    <div
-      ref={panelRef}
-      className={`clip-panel ${className || ''}`}
-      style={{ width: panelWidth, height: canvasHeight + 20 }}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-    >
-      {children}
-      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
-        <Tldraw
+  const tldrawEl = (
+    <Tldraw
           store={store}
           shapeUtils={shapeUtils}
           tools={tools}
@@ -848,6 +865,36 @@ export function CanvasClipPanel({
             }
           }}
         />
+  )
+
+  if (fullViewport) {
+    return (
+      <div
+        ref={panelRef}
+        className={`clip-panel clip-panel-fullvp ${className || ''}`}
+        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', background: 'transparent', boxShadow: 'none', borderRadius: 0, overflow: 'visible' }}
+      >
+        {children}
+        <div ref={canvasRef} className="clip-panel-canvas clip-panel-canvas-fullvp" style={{ height: '100vh', width: '100vw', background: 'transparent', overflow: 'visible', clipPath: 'none' }}>
+          {tldrawEl}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      className={`clip-panel ${className || ''}`}
+      style={{ width: panelWidth, height: canvasHeight + 20 }}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+    >
+      {children}
+      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
+        {tldrawEl}
       </div>
     </div>
   )

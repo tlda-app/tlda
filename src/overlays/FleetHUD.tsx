@@ -567,105 +567,37 @@ export function FleetHUD({
 
   // Expanded: CanvasClipPanel with fleet region.
   //
-  // Geometry rules:
-  //   - During layout mode: drive everything from the proxy shape via the
-  //     `layoutProxyRect` useValue subscription. The wrap and its content
-  //     update in the same tldraw render tick (no React state race).
-  //   - Otherwise, if HudOverride is set, render at (canvasX projected to
-  //     screen x, screenY, screenW, screenH).
-  //   - Otherwise, fall back to the auto layout.
+  // Full-viewport overlay: the HUD covers the entire screen with a transparent
+  // overlay. Fleet shapes render at their canvas positions mapped to screen via
+  // a camera with z=1. Horizontal position tracks the main canvas (pans with
+  // the document); vertical position is fixed (shapes stay at their screen row).
   //
-  // cameraTick participates in the dependency-less inline calculation so
-  // the component re-renders on pan/zoom at rest.
+  // Camera math (z=1):
+  //   screenX = canvasX + camX  → camX adjusts so shapes track doc horizontally
+  //   screenY = canvasY + camY  → camY is fixed so shapes don't scroll vertically
+  //
+  // For horizontal tracking with the document, we want the fleet shapes to
+  // appear at the same screen X as they would on the main canvas:
+  //   mainScreenX = (canvasX + mainCam.x) * mainCam.z
+  //   overlayScreenX = canvasX + camX
+  //   Setting equal: camX = canvasX * (mainCam.z - 1) + mainCam.x * mainCam.z
+  // This depends on canvasX, so we use the fleet bounds center as reference.
+  // Shapes near the center track perfectly; distant shapes drift slightly.
+  //
+  // For vertical lock: camY = desiredScreenY - fleetCenter.y
+  // desiredScreenY = viewport center minus half the fleet height, or stored override.
   void cameraTick
   const cam = mainEditor.getCamera()
-  const autoScreenH = window.innerHeight * 0.8
-  const autoZoom = autoScreenH / fleetBounds.h
-  const autoScreenW = fleetBounds.w * autoZoom
+  const fbCenterX = fleetBounds.x + fleetBounds.w / 2
+  const fbCenterY = fleetBounds.y + fleetBounds.h / 2
 
-  let panelLeft: number
-  let panelTop: number
-  let panelWidth: number
-  let panelHeight: number
-  let clipBounds: ClipBounds
+  // Desired screen Y for the fleet center — stored override or viewport center
+  const desiredScreenY = hudOverride?.screenY ?? (window.innerHeight / 2)
 
-  if (layoutProxyRect) {
-    panelLeft = layoutProxyRect.wrapLeft
-    panelTop = layoutProxyRect.wrapTop
-    panelWidth = layoutProxyRect.wrapWidth
-    panelHeight = layoutProxyRect.wrapHeight
-    clipBounds = {
-      x: layoutProxyRect.boundsX,
-      y: layoutProxyRect.boundsY,
-      w: layoutProxyRect.boundsW,
-      h: layoutProxyRect.boundsH,
-    }
-  } else if (hudOverride) {
-    panelLeft = (hudOverride.canvasX + cam.x) * cam.z
-    panelTop = hudOverride.screenY
-    panelWidth = hudOverride.screenW
-    panelHeight = hudOverride.screenH
-    clipBounds = fleetBounds
-  } else {
-    // Auto layout: canvas-anchored to the right edge of the fleet
-    // shapes so the HUD pans/zooms with the canvas like a shape.
-    // (This is the original behavior — Skip wants the HUD to track the
-    // doc as he pans, not stay glued to the viewport.) If the camera
-    // is pointed somewhere that puts this position off-screen, the
-    // TOC Fleet button is the recovery — it clears any override and
-    // re-centers fleet shapes.
-    const fbRight = (fleetBounds.x + fleetBounds.w + cam.x) * cam.z
-    panelLeft = fbRight - autoScreenW
-    panelTop = (window.innerHeight - autoScreenH) / 2
-    panelWidth = autoScreenW
-    panelHeight = autoScreenH
-    clipBounds = fleetBounds
-  }
-
-  // No clamp on panelLeft/panelTop. The HUD can drift off-screen via pan
-  // or via layout-mode dragging — recovery is the Fleet button in the TOC
-  // (createFleetLayout) which clears the HUD override and recreates the
-  // shapes. Skip prefers no clamp + a working escape hatch over a clamp
-  // that breaks the canvas-anchored behavior in layout mode.
-  //
-  // Corner fallback for the controls: the controls cluster sits at the
-  // top-left of the wrap by default. If top-left is off-screen but at
-  // least one other corner of the wrap IS on-screen, reposition the
-  // controls to that corner so they remain reachable. (Even if the
-  // entire wrap is offscreen, the TOC Fleet button is the recovery
-  // path — but as long as ANY corner is visible we can do better.)
-  const vpW = window.innerWidth
-  const vpH = window.innerHeight
-  const corners = {
-    'top-left':     { x: panelLeft,                 y: panelTop },
-    'top-right':    { x: panelLeft + panelWidth,    y: panelTop },
-    'bottom-left':  { x: panelLeft,                 y: panelTop + panelHeight },
-    'bottom-right': { x: panelLeft + panelWidth,    y: panelTop + panelHeight },
-  }
-  function inViewport(c: { x: number; y: number }) {
-    return c.x >= 0 && c.x <= vpW && c.y >= 0 && c.y <= vpH
-  }
-  let controlsCorner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' = 'top-left'
-  if (!inViewport(corners['top-left'])) {
-    // Pick the first corner that IS in viewport, preferring top edges.
-    for (const c of ['top-right', 'bottom-left', 'bottom-right'] as const) {
-      if (inViewport(corners[c])) { controlsCorner = c; break }
-    }
-  }
-  const controlsStyle: React.CSSProperties = {}
-  if (controlsCorner === 'top-right') {
-    controlsStyle.right = 0
-    controlsStyle.top = 0
-    controlsStyle.left = 'auto'
-  } else if (controlsCorner === 'bottom-left') {
-    controlsStyle.left = 0
-    controlsStyle.bottom = 0
-    controlsStyle.top = 'auto'
-  } else if (controlsCorner === 'bottom-right') {
-    controlsStyle.right = 0
-    controlsStyle.bottom = 0
-    controlsStyle.left = 'auto'
-    controlsStyle.top = 'auto'
+  const overlayCam = {
+    x: fbCenterX * (cam.z - 1) + cam.x * cam.z,
+    y: desiredScreenY - fbCenterY,
+    z: 1,
   }
 
   return (
@@ -674,16 +606,9 @@ export function FleetHUD({
       <div
         className="fleet-hud-wrap"
         ref={hudRef}
-        style={{ left: panelLeft, top: panelTop, width: panelWidth, height: panelHeight }}
+        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
       >
-        <div className="fleet-hud-controls" style={controlsStyle}>
-          <button
-            className={`fleet-hud-layout${layoutMode ? ' active' : ''}`}
-            onClick={layoutMode ? handleLayoutExit : handleLayoutEnter}
-            title={layoutMode ? 'Exit layout mode (click or Esc)' : 'Move / resize HUD'}
-          >
-            ⊞
-          </button>
+        <div className="fleet-hud-controls" style={{ position: 'fixed', top: 4, left: 4 }}>
           <button
             className="fleet-hud-close"
             onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
@@ -694,14 +619,16 @@ export function FleetHUD({
         </div>
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={clipBounds}
+          bounds={fleetBounds}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={licenseKey}
-          panelWidth={panelWidth}
+          panelWidth={window.innerWidth}
           maxHeightFraction={1}
           lockCamera={true}
-          liveEdit={layoutMode}
+          liveEdit={true}
+          cameraOverride={overlayCam}
+          fullViewport={true}
           className="fleet-hud"
         />
       </div>

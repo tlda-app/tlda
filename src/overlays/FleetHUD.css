@@ -46,6 +46,30 @@
   background: transparent !important;
   pointer-events: auto;
 }
+
+/* Full-viewport overlay: container is pointer-events: none,
+   but fleet shape elements are interactive */
+.fleet-hud-wrap .clip-panel-fullvp {
+  pointer-events: none !important;
+}
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] {
+  pointer-events: auto !important;
+}
+/* Also need tl-html-layer to be pointer-events: none so non-fleet areas pass through */
+.fleet-hud-wrap .clip-panel-fullvp .tl-html-layer {
+  pointer-events: none !important;
+}
+/* tl-canvas background must pass through clicks */
+.fleet-hud-wrap .clip-panel-fullvp .tl-background,
+.fleet-hud-wrap .clip-panel-fullvp .tl-background__wrapper {
+  pointer-events: none !important;
+}
+.fleet-hud-wrap .clip-panel-fullvp .tl-canvas {
+  pointer-events: none !important;
+}
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
    fleet shapes. iframes capture pointer events regardless of any pe:none on
