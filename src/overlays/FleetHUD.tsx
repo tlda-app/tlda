@@ -350,7 +350,7 @@ export function FleetHUD({
   const fbCenterY = fleetBounds.y + fleetBounds.h / 2
 
   // Desired screen Y for the fleet center — stored override or viewport center
-  const desiredScreenY = hudOverride?.screenY ?? (window.innerHeight / 2)
+  const desiredScreenY = window.innerHeight / 2
 
   const overlayCam = {
     x: fbCenterX * (cam.z - 1) + cam.x * cam.z,
