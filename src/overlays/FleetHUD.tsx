@@ -146,9 +146,11 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // Zoom correction ref: passed to CanvasClipPanel to scale fleet shape X
-  // positions during sync so spacing is correct at any main-canvas zoom level.
-  const zoomCorrectionRef = useRef({ z: mainEditor.getCamera().z })
+  // Pan offset: accumulated screen-pixel offset from panning only.
+  // Initialized from the current camera on first expand, then only updated
+  // when the user pans (cam.z unchanged). Zoom changes are ignored so fleet
+  // shapes stay at their current screen positions during zoom.
+  const panOffsetRef = useRef<number | null>(null)
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -227,9 +229,10 @@ export function FleetHUD({
   // We poll via rAF because tldraw camera changes don't fire store listeners
   // on the same scope we care about.
   //
-  // On zoom change: update zoomCorrectionRef AND reposition all fleet shapes
-  // in the overlay store. The sync listener applies zoom correction to new/updated
-  // shapes, but existing shapes need repositioning when z changes.
+  // Pan-only tracking: panOffsetRef accumulates screen-pixel offsets from panning.
+  // When the user zooms (cam.z changes), we freeze panOffsetRef — fleet shapes stay
+  // at their current screen positions. When the user pans (cam.z unchanged), we
+  // update panOffsetRef by deltaCamX * cam.z (the screen-pixel pan amount).
   useEffect(() => {
     if (!expanded) return
     let rafId: number
@@ -237,29 +240,17 @@ export function FleetHUD({
     let lastCamZ = mainEditor.getCamera().z
     const poll = () => {
       const cam = mainEditor.getCamera()
-      const zChanged = cam.z !== lastCamZ
-      if (cam.x !== lastCamX || zChanged) {
-        lastCamX = cam.x
-        lastCamZ = cam.z
-        zoomCorrectionRef.current = { z: cam.z }
-        setCameraTick(t => t + 1)
-
-        // On zoom change, reposition fleet shapes in the overlay store
-        if (zChanged) {
-          const overlayEditor = overlayEditorRef.current
-          if (overlayEditor) {
-            const mainShapes = mainEditor.getCurrentPageShapes()
-              .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-            if (mainShapes.length > 0) {
-              const updates = mainShapes.map(s => ({
-                id: s.id, type: s.type, x: s.x * cam.z,
-              }))
-              overlayEditor.store.mergeRemoteChanges(() => {
-                overlayEditor.updateShapes(updates as any)
-              })
-            }
+      if (cam.x !== lastCamX || cam.z !== lastCamZ) {
+        if (cam.z === lastCamZ) {
+          // Pure pan: update offset by screen-pixel delta
+          if (panOffsetRef.current !== null) {
+            panOffsetRef.current += (cam.x - lastCamX) * cam.z
           }
         }
+        // Zoom: freeze panOffsetRef (don't update)
+        lastCamX = cam.x
+        lastCamZ = cam.z
+        setCameraTick(t => t + 1)
       }
       rafId = requestAnimationFrame(poll)
     }
@@ -346,22 +337,28 @@ export function FleetHUD({
   // Expanded: CanvasClipPanel with fleet region.
   //
   // Full-viewport overlay: fleet shapes render at z=1 (fixed size) with their
-  // X positions zoom-corrected in the copy store (overlayX = mainX * mainZ).
-  // The camera maps these scaled positions to screen:
-  //   screenX = overlayX + camX = mainX * mainZ + mainCamX * mainZ
-  //            = (mainX + mainCamX) * mainZ  ← matches main canvas ✓
+  // Pan-offset camera: fleet shapes stay at fixed screen positions during zoom,
+  // but track document panning. panOffsetRef accumulates screen-pixel pan deltas;
+  // zoom changes are ignored.
   //
-  // Vertical lock: camY maps fleet center to viewport center. Shapes keep their
-  // canvas Y positions (vertical spacing is zoom-independent since overlay z=1).
+  // Vertical lock: camY maps fleet center to viewport center.
   void cameraTick
   const cam = mainEditor.getCamera()
+  const fbCenterX = fleetBounds.x + fleetBounds.w / 2
   const fbCenterY = fleetBounds.y + fleetBounds.h / 2
+
+  // Initialize panOffset on first render from the current camera.
+  // Uses the reference-point formula so shapes start at their current
+  // main-canvas screen positions.
+  if (panOffsetRef.current === null) {
+    panOffsetRef.current = fbCenterX * (cam.z - 1) + cam.x * cam.z
+  }
 
   // Desired screen Y for the fleet center — stored override or viewport center
   const desiredScreenY = window.innerHeight / 2
 
   const overlayCam = {
-    x: cam.x * cam.z,
+    x: panOffsetRef.current,
     y: desiredScreenY - fbCenterY,
     z: 1,
   }
@@ -395,7 +392,6 @@ export function FleetHUD({
           liveEdit={true}
           cameraOverride={overlayCam}
           fullViewport={true}
-          zoomCorrectionRef={zoomCorrectionRef}
           onEditorMount={(e) => { overlayEditorRef.current = e }}
           className="fleet-hud"
         />
