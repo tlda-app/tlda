@@ -130,29 +130,17 @@ export async function pdfToSource(projectName, page, pdfX, pdfY) {
   let best = null
   let bestDist = Infinity
 
+  // Filter to source files only (skip .sty/.cls)
+  const sourceFileIds = new Set()
+  for (const [id, path] of data.inputMap) {
+    if (path.endsWith('.tex')) sourceFileIds.add(id)
+  }
+
   for (const r of pageRecords) {
-    // Skip non-source files
-    if (!data.inputMap.has(r.inputId)) continue
+    if (!sourceFileIds.has(r.inputId)) continue
 
-    let dist
-    if (r.w > 0) {
-      // Bounding box containment check
-      const top = r.y - r.h
-      const bottom = r.y + r.d
-      const left = r.x
-      const right = r.x + r.w
-
-      if (pdfY >= top - 2 && pdfY <= bottom + 2 && pdfX >= left - 2 && pdfX <= right + 2) {
-        dist = 0 // Inside the box
-      } else {
-        // Distance to box
-        const dx = Math.max(left - pdfX, 0, pdfX - right)
-        const dy = Math.max(top - pdfY, 0, pdfY - bottom)
-        dist = Math.sqrt(dx * dx + dy * dy)
-      }
-    } else {
-      dist = Math.abs(r.y - pdfY) + Math.abs(r.x - pdfX) * 0.1 // Y-weighted
-    }
+    // Y-weighted distance (y matters much more than x for line identification)
+    const dist = Math.abs(r.y - pdfY) * 1.0 + Math.abs(r.x - pdfX) * 0.05
 
     if (dist < bestDist) {
       bestDist = dist
@@ -180,14 +168,41 @@ export async function pdfToSource(projectName, page, pdfX, pdfY) {
  * @returns {Promise<{ file: string, startLine: number, endLine: number, lines: Array<{line: number, content: string, highlighted: boolean}> } | null>}
  */
 export async function getSourceContext(projectName, page, startX, startY, endX, endY, contextLines = 2) {
+  const data = await loadSynctex(projectName)
+  if (!data) return null
+
+  // Find ALL synctex records in the y-range on this page (from source .tex files)
+  const sourceFileIds = new Set()
+  for (const [id, path] of data.inputMap) {
+    if (path.endsWith('.tex')) sourceFileIds.add(id)
+  }
+
+  const yMin = Math.min(startY, endY) - 5
+  const yMax = Math.max(startY, endY) + 5
+  const matchedLines = new Set()
+  let matchedFile = null
+
+  for (const r of data.records) {
+    if (r.page !== page) continue
+    if (!sourceFileIds.has(r.inputId)) continue
+    if (r.y >= yMin && r.y <= yMax) {
+      matchedLines.add(r.line)
+      if (!matchedFile) matchedFile = data.inputMap.get(r.inputId)
+    }
+  }
+
+  // Also do point lookups for start/end as fallback
   const start = await pdfToSource(projectName, page, startX, startY)
   const end = await pdfToSource(projectName, page, endX, endY)
+  if (start) { matchedLines.add(start.line); if (!matchedFile) matchedFile = start.file }
+  if (end) matchedLines.add(end.line)
 
-  if (!start) return null
+  if (matchedLines.size === 0 || !matchedFile) return null
 
-  const file = start.file
-  const startLine = start.line
-  const endLine = end ? Math.max(end.line, startLine) : startLine
+  const sortedLines = [...matchedLines].sort((a, b) => a - b)
+  const file = matchedFile
+  const startLine = sortedLines[0]
+  const endLine = sortedLines[sortedLines.length - 1]
 
   // Read the actual tex file
   if (!existsSync(file)) return null

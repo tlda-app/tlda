@@ -511,7 +511,7 @@ function showSourceContextCard(
 
     const contentEl = document.createElement('span')
     contentEl.textContent = sl.content
-    if (sl.highlighted !== false) {
+    if (sl.highlighted === true) {
       // Highlighted line — bold border in highlight color
       contentEl.style.borderLeft = `3px solid ${tintColor}`
       contentEl.style.paddingLeft = '6px'
