@@ -48,11 +48,11 @@ export function NoteDropHandler() {
     }
 
     function isOverHud(e: DragEvent): boolean {
-      const hud = document.querySelector('.fleet-hud-wrap')
-      if (!hud) return false
-      const rect = hud.getBoundingClientRect()
-      return e.clientX >= rect.left && e.clientX <= rect.right &&
-             e.clientY >= rect.top && e.clientY <= rect.bottom
+      // With the full-viewport overlay, check if the cursor is over an actual
+      // fleet shape element — not the HUD bounding rect (which is the whole screen).
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (!target) return false
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
     }
 
     function handleDrop(e: DragEvent) {
