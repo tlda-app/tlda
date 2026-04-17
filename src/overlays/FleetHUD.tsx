@@ -240,41 +240,34 @@ export function FleetHUD({
     return () => cancelAnimationFrame(rafId)
   }, [mainEditor, expanded])
 
-  // Refuse HTML5 file/chip drops anywhere inside the HUD rectangle. The HUD
-  // wrap itself has pointer-events: none, so we can't put handlers on it; use
-  // capture-phase document listeners and check the cursor against the HUD's
-  // current bounding rect. Without this, dropping a markdown chip into the
-  // HUD area wedges the drag-over machinery somewhere downstream.
-  //
-  // Exception: drops onto chat input areas (textarea, input elements, or
-  // anything inside .fleet-chat-input-area) are allowed through so the user
-  // can drop image/file attachments into the chat composer.
+  // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
+  // With the full-viewport overlay, we check if the drop target is inside
+  // an actual fleet shape, not the HUD bounding rect.
+  // Drops onto chat input areas are allowed (file attachments).
+  // Drops on empty canvas (not on a fleet shape) pass through to tldraw.
   useEffect(() => {
     if (!expanded) return
-    const isInsideHud = (clientX: number, clientY: number) => {
-      const el = hudRef.current
-      if (!el) return false
-      const r = el.getBoundingClientRect()
-      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
+    const isInsideFleetShape = (clientX: number, clientY: number) => {
+      const target = document.elementFromPoint(clientX, clientY)
+      if (!target) return false
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
     }
     const isInsideChatInput = (e: DragEvent): boolean => {
-      // Check the actual element under the cursor — if it's a text input or
-      // inside the chat composer area, let the drop fall through.
       const target = document.elementFromPoint(e.clientX, e.clientY)
       if (!target) return false
       if (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && (target as HTMLInputElement).type !== 'hidden')) return true
       return !!target.closest('.fleet-chat-input-area')
     }
     const onDragOver = (e: DragEvent) => {
-      if (!isInsideHud(e.clientX, e.clientY)) return
-      if (isInsideChatInput(e)) return  // allow — chat composer handles it
+      if (!isInsideFleetShape(e.clientX, e.clientY)) return
+      if (isInsideChatInput(e)) return
       e.preventDefault()
       e.stopPropagation()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'
     }
     const onDrop = (e: DragEvent) => {
-      if (!isInsideHud(e.clientX, e.clientY)) return
-      if (isInsideChatInput(e)) return  // allow — chat composer handles it
+      if (!isInsideFleetShape(e.clientX, e.clientY)) return
+      if (isInsideChatInput(e)) return
       e.preventDefault()
       e.stopPropagation()
     }
