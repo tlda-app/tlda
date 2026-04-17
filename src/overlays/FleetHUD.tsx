@@ -146,11 +146,13 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // Pan offset: accumulated screen-pixel offset from panning only.
-  // Initialized from the current camera on first expand, then only updated
-  // when the user pans (cam.z unchanged). Zoom changes are ignored so fleet
-  // shapes stay at their current screen positions during zoom.
+  // Camera offsets: initialized on first expand, then frozen.
+  // panOffsetRef (X): accumulated screen-pixel offset from panning only.
+  //   Only updated when the user pans (cam.z unchanged). Zoom is ignored.
+  // cameraYRef (Y): set once from fleet bounds center. Never updated by
+  //   shape moves — prevents "drag one shape, all shapes shift" bug.
   const panOffsetRef = useRef<number | null>(null)
+  const cameraYRef = useRef<number | null>(null)
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -337,29 +339,26 @@ export function FleetHUD({
   // Expanded: CanvasClipPanel with fleet region.
   //
   // Full-viewport overlay: fleet shapes render at z=1 (fixed size) with their
-  // Pan-offset camera: fleet shapes stay at fixed screen positions during zoom,
-  // but track document panning. panOffsetRef accumulates screen-pixel pan deltas;
-  // zoom changes are ignored.
+  // Camera offsets are initialized once on first expand and then frozen.
+  // panOffsetRef (X): only updated by pan deltas, not by zoom or shape moves.
+  // cameraYRef (Y): set once from fleet bounds center, never updated by shape moves.
   //
-  // Vertical lock: camY maps fleet center to viewport center.
+  // This prevents the "drag one shape, all shapes move" bug: without freezing,
+  // moving a shape changes fleetBounds → changes camera → shifts all shapes.
   void cameraTick
   const cam = mainEditor.getCamera()
-  const fbCenterX = fleetBounds.x + fleetBounds.w / 2
-  const fbCenterY = fleetBounds.y + fleetBounds.h / 2
 
-  // Initialize panOffset on first render from the current camera.
-  // Uses the reference-point formula so shapes start at their current
-  // main-canvas screen positions.
   if (panOffsetRef.current === null) {
+    const fbCenterX = fleetBounds.x + fleetBounds.w / 2
+    const fbCenterY = fleetBounds.y + fleetBounds.h / 2
+    const desiredScreenY = window.innerHeight / 2
     panOffsetRef.current = fbCenterX * (cam.z - 1) + cam.x * cam.z
+    cameraYRef.current = desiredScreenY - fbCenterY
   }
-
-  // Desired screen Y for the fleet center — stored override or viewport center
-  const desiredScreenY = window.innerHeight / 2
 
   const overlayCam = {
     x: panOffsetRef.current,
-    y: desiredScreenY - fbCenterY,
+    y: cameraYRef.current!,
     z: 1,
   }
 
