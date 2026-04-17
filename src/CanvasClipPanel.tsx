@@ -55,6 +55,11 @@ interface CanvasClipPanelProps {
   /** When true, the panel renders full-viewport with transparent background
    *  and pointer-events: none on the container. Fleet shapes get pointer-events: auto. */
   fullViewport?: boolean
+  /** Ref holding the current zoom level for position correction.
+   *  When set, fleet shape X positions are scaled by z during main→overlay sync
+   *  and divided by z during overlay→main sync. This lets the overlay render at
+   *  z=1 (fixed shape size) while maintaining correct screen spacing at any zoom. */
+  zoomCorrectionRef?: React.RefObject<{ z: number }>
   children?: React.ReactNode
 }
 
@@ -75,6 +80,7 @@ export function CanvasClipPanel({
   liveEdit = false,
   cameraOverride,
   fullViewport = false,
+  zoomCorrectionRef,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -145,8 +151,13 @@ export function CanvasClipPanel({
 
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
+    const z = zoomCorrectionRef?.current?.z ?? 1
+    const applyInitialZoom = (r: TLRecord): TLRecord => {
+      if (z === 1 || r.typeName !== 'shape' || !FLEET_TYPES.has((r as any).type)) return r
+      return { ...r, x: (r as any).x * z } as TLRecord
+    }
     const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
-      .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
+      .map(r => applyInitialZoom(lockCamera ? lockNonFleetUnlockFleet(r) : r))
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
@@ -265,28 +276,45 @@ export function CanvasClipPanel({
     // fleet-pill shapes are ephemeral drag ghosts — never sync between editors
     const isPill = (r: any) => r.typeName === 'shape' && r.type === 'fleet-pill'
 
+    // Zoom correction: scale fleet shape X positions so the overlay (z=1) shows
+    // correct spacing at any main-canvas zoom level.
+    // main→overlay: overlayX = mainX * z  (canvas → screen coords)
+    // overlay→main: mainX = overlayX / z  (screen → canvas coords)
+    const applyZoomToOverlay = (record: TLRecord): TLRecord => {
+      if (!zoomCorrectionRef?.current) return record
+      const z = zoomCorrectionRef.current.z
+      if (z === 1 || record.typeName !== 'shape' || !FLEET_TYPES.has((record as any).type)) return record
+      return { ...record, x: (record as any).x * z } as TLRecord
+    }
+    const applyZoomToMain = (record: TLRecord): TLRecord => {
+      if (!zoomCorrectionRef?.current) return record
+      const z = zoomCorrectionRef.current.z
+      if (z === 1 || record.typeName !== 'shape' || !FLEET_TYPES.has((record as any).type)) return record
+      return { ...record, x: (record as any).x / z } as TLRecord
+    }
+
     // main → copy (unlock fleet shapes in HUD so they're draggable)
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isPill(record) || !isKnownShape(record)) continue
           if (shouldSyncToCopy(record)) {
+            let r = lockCamera ? lockNonFleetUnlockFleet(record) : record
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
-              store.put([{ ...record, isLocked: true } as any])
+              r = { ...r, isLocked: true } as any
               lockedIdsRef.current.add(record.id)
-            } else {
-              store.put([lockCamera ? lockNonFleetUnlockFleet(record) : record])
             }
+            store.put([applyZoomToOverlay(r)])
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
           if (isPill(to) || !isKnownShape(to)) continue
           if (shouldSyncToCopy(to)) {
+            let r = lockCamera ? lockNonFleetUnlockFleet(to) : to
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
-              store.put([{ ...to, isLocked: true } as any])
-            } else {
-              store.put([lockCamera ? lockNonFleetUnlockFleet(to) : to])
+              r = { ...r, isLocked: true } as any
             }
+            store.put([applyZoomToOverlay(r)])
           }
         }
         for (const record of Object.values(changes.removed)) {
@@ -316,13 +344,15 @@ export function CanvasClipPanel({
         if (isPill(record)) continue
         if (!isDocRecord(record)) continue
         if (lockCamera && !isFleetShape(record)) continue
-        mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
+        let r = lockCamera ? relockFleetShape(record) : record
+        mainEditor.store.put([applyZoomToMain(r)])
       }
       for (const [, to] of Object.values(changes.updated)) {
         if (isPill(to)) continue
         if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
         if (lockCamera && !isFleetShape(to)) continue
-        mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
+        let r = lockCamera ? relockFleetShape(to) : to
+        mainEditor.store.put([applyZoomToMain(r)])
       }
       for (const record of Object.values(changes.removed)) {
         if (isPill(record)) continue

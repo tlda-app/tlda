@@ -145,6 +145,10 @@ export function FleetHUD({
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const overlayEditorRef = useRef<Editor | null>(null)
+  // Zoom correction ref: passed to CanvasClipPanel to scale fleet shape X
+  // positions during sync so spacing is correct at any main-canvas zoom level.
+  const zoomCorrectionRef = useRef({ z: mainEditor.getCamera().z })
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -222,6 +226,10 @@ export function FleetHUD({
   // Track camera so render recomputes canvas→screen projection for HUD x.
   // We poll via rAF because tldraw camera changes don't fire store listeners
   // on the same scope we care about.
+  //
+  // On zoom change: update zoomCorrectionRef AND reposition all fleet shapes
+  // in the overlay store. The sync listener applies zoom correction to new/updated
+  // shapes, but existing shapes need repositioning when z changes.
   useEffect(() => {
     if (!expanded) return
     let rafId: number
@@ -229,10 +237,29 @@ export function FleetHUD({
     let lastCamZ = mainEditor.getCamera().z
     const poll = () => {
       const cam = mainEditor.getCamera()
-      if (cam.x !== lastCamX || cam.z !== lastCamZ) {
+      const zChanged = cam.z !== lastCamZ
+      if (cam.x !== lastCamX || zChanged) {
         lastCamX = cam.x
         lastCamZ = cam.z
+        zoomCorrectionRef.current = { z: cam.z }
         setCameraTick(t => t + 1)
+
+        // On zoom change, reposition fleet shapes in the overlay store
+        if (zChanged) {
+          const overlayEditor = overlayEditorRef.current
+          if (overlayEditor) {
+            const mainShapes = mainEditor.getCurrentPageShapes()
+              .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+            if (mainShapes.length > 0) {
+              const updates = mainShapes.map(s => ({
+                id: s.id, type: s.type, x: s.x * cam.z,
+              }))
+              overlayEditor.store.mergeRemoteChanges(() => {
+                overlayEditor.updateShapes(updates as any)
+              })
+            }
+          }
+        }
       }
       rafId = requestAnimationFrame(poll)
     }
@@ -318,35 +345,23 @@ export function FleetHUD({
 
   // Expanded: CanvasClipPanel with fleet region.
   //
-  // Full-viewport overlay: the HUD covers the entire screen with a transparent
-  // overlay. Fleet shapes render at their canvas positions mapped to screen via
-  // a camera with z=1. Horizontal position tracks the main canvas (pans with
-  // the document); vertical position is fixed (shapes stay at their screen row).
+  // Full-viewport overlay: fleet shapes render at z=1 (fixed size) with their
+  // X positions zoom-corrected in the copy store (overlayX = mainX * mainZ).
+  // The camera maps these scaled positions to screen:
+  //   screenX = overlayX + camX = mainX * mainZ + mainCamX * mainZ
+  //            = (mainX + mainCamX) * mainZ  ← matches main canvas ✓
   //
-  // Camera math (z=1):
-  //   screenX = canvasX + camX  → camX adjusts so shapes track doc horizontally
-  //   screenY = canvasY + camY  → camY is fixed so shapes don't scroll vertically
-  //
-  // For horizontal tracking with the document, we want the fleet shapes to
-  // appear at the same screen X as they would on the main canvas:
-  //   mainScreenX = (canvasX + mainCam.x) * mainCam.z
-  //   overlayScreenX = canvasX + camX
-  //   Setting equal: camX = canvasX * (mainCam.z - 1) + mainCam.x * mainCam.z
-  // This depends on canvasX, so we use the fleet bounds center as reference.
-  // Shapes near the center track perfectly; distant shapes drift slightly.
-  //
-  // For vertical lock: camY = desiredScreenY - fleetCenter.y
-  // desiredScreenY = viewport center minus half the fleet height, or stored override.
+  // Vertical lock: camY maps fleet center to viewport center. Shapes keep their
+  // canvas Y positions (vertical spacing is zoom-independent since overlay z=1).
   void cameraTick
   const cam = mainEditor.getCamera()
-  const fbCenterX = fleetBounds.x + fleetBounds.w / 2
   const fbCenterY = fleetBounds.y + fleetBounds.h / 2
 
   // Desired screen Y for the fleet center — stored override or viewport center
   const desiredScreenY = window.innerHeight / 2
 
   const overlayCam = {
-    x: fbCenterX * (cam.z - 1) + cam.x * cam.z,
+    x: cam.x * cam.z,
     y: desiredScreenY - fbCenterY,
     z: 1,
   }
@@ -380,6 +395,8 @@ export function FleetHUD({
           liveEdit={true}
           cameraOverride={overlayCam}
           fullViewport={true}
+          zoomCorrectionRef={zoomCorrectionRef}
+          onEditorMount={(e) => { overlayEditorRef.current = e }}
           className="fleet-hud"
         />
       </div>
