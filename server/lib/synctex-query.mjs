@@ -178,24 +178,44 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
     if (path.endsWith('.tex')) sourceFileIds.add(id)
   }
 
+  const xMin = Math.min(startX, endX)
+  const xMax = Math.max(startX, endX)
   const yMin = Math.min(startY, endY) - 5
   const yMax = Math.max(startY, endY) + 5
-  const matchedLines = new Set()
+
+  // Collect all synctex records in the highlight bbox, grouped by source line
+  // Also collect ALL records for matched lines (for column estimation)
+  const insideRecords = [] // records inside the highlight bbox
+  const allRecordsByLine = new Map() // line → all records for that line on this page
   let matchedFile = null
 
   for (const r of data.records) {
     if (r.page !== page) continue
     if (!sourceFileIds.has(r.inputId)) continue
-    if (r.y >= yMin && r.y <= yMax) {
-      matchedLines.add(r.line)
+
+    const inYRange = r.y >= yMin && r.y <= yMax
+    const inXRange = r.x >= xMin - 10 && r.x <= xMax + 10
+    const inBbox = inYRange && inXRange
+
+    if (inYRange) {
       if (!matchedFile) matchedFile = data.inputMap.get(r.inputId)
+      // Collect ALL records for this line (for column estimation)
+      if (!allRecordsByLine.has(r.line)) allRecordsByLine.set(r.line, [])
+      allRecordsByLine.get(r.line).push(r)
+    }
+    if (inBbox) {
+      insideRecords.push(r)
     }
   }
 
   // Also do point lookups for start/end as fallback
   const start = await pdfToSource(projectName, page, startX, startY)
   const end = await pdfToSource(projectName, page, endX, endY)
-  if (start) { matchedLines.add(start.line); if (!matchedFile) matchedFile = start.file }
+  if (start && !matchedFile) matchedFile = start.file
+
+  // Determine matched line range
+  const matchedLines = new Set(insideRecords.map(r => r.line))
+  if (start) matchedLines.add(start.line)
   if (end) matchedLines.add(end.line)
 
   if (matchedLines.size === 0 || !matchedFile) return null
@@ -222,8 +242,37 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
     })
   }
 
-  // Try to find the exact substring within the highlighted source lines
-  // by fuzzy-matching the SVG-extracted text against the stripped-tex source
+  // --- Method 1: synctex x-record column estimation ---
+  // For each highlighted line, use the x-positions of synctex records to estimate
+  // which portion of the source line falls within the highlight's x-range.
+  for (const l of lines) {
+    if (!l.highlighted) continue
+    const lineRecords = allRecordsByLine.get(l.line)
+    if (!lineRecords || lineRecords.length < 2) continue
+
+    // Sort all records for this line by x-position
+    const sorted = [...lineRecords].sort((a, b) => a.x - b.x)
+    const lineXMin = sorted[0].x
+    const lineXMax = sorted[sorted.length - 1].x
+    const lineXRange = lineXMax - lineXMin
+
+    if (lineXRange <= 0) continue
+
+    // Find which fraction of the line's x-range the highlight covers
+    const hlXStart = Math.max(xMin, lineXMin)
+    const hlXEnd = Math.min(xMax, lineXMax)
+    if (hlXEnd <= hlXStart) continue
+
+    const fracStart = (hlXStart - lineXMin) / lineXRange
+    const fracEnd = (hlXEnd - lineXMin) / lineXRange
+
+    // Map fractions to column positions in the source text
+    const srcLen = l.content.length
+    l.hlStart = Math.max(0, Math.round(fracStart * srcLen))
+    l.hlEnd = Math.min(srcLen, Math.round(fracEnd * srcLen))
+  }
+
+  // --- Method 2: fuzzy text matching (validates/refines method 1) ---
   if (highlightText) {
     const hlLines = lines.filter(l => l.highlighted)
     const fullSource = hlLines.map(l => l.content).join(' ')
