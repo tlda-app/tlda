@@ -422,19 +422,21 @@ async function findSourceLinesFromBounds(
       height: (s.props as any).h,
     }))
 
-  // Convert highlight bbox corners to PDF coords
-  const topLeft = canvasToPdf(bounds.minX, bounds.minY, pages)
-  const bottomRight = canvasToPdf(bounds.maxX, bounds.maxY, pages)
-  if (!topLeft) return []
+  // Convert highlight center + x-range to PDF coords
+  const centerY = (bounds.minY + bounds.maxY) / 2
+  const center = canvasToPdf((bounds.minX + bounds.maxX) / 2, centerY, pages)
+  const left = canvasToPdf(bounds.minX, centerY, pages)
+  const right = canvasToPdf(bounds.maxX, centerY, pages)
+  if (!center) return []
 
-  // Query the server's synctex reverse lookup
+  // Query the server's synctex reverse lookup with center point
   const serverUrl = (window as any).__tlda_server || window.location.origin
   const params = new URLSearchParams({
-    page: String(topLeft.page),
-    startX: String(topLeft.x),
-    startY: String(topLeft.y),
-    endX: String(bottomRight?.x ?? topLeft.x),
-    endY: String(bottomRight?.y ?? topLeft.y),
+    page: String(center.page),
+    startX: String(left?.x ?? center.x),
+    startY: String(center.y),
+    endX: String(right?.x ?? center.x),
+    endY: String(center.y),
     context: '1',
     ...(highlightText ? { text: highlightText } : {}),
   })
