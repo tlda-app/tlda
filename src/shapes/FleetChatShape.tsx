@@ -997,6 +997,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [autoscrollPaused, setAutoscrollPaused] = useState(false)
   const lastScrollTopRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
@@ -1056,19 +1057,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (userScrolledUp.current) return
+      if (userScrolledUp.current || autoscrollPaused) return
       el.scrollTop = el.scrollHeight
       lastScrollTopRef.current = el.scrollTop
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [autoscrollPaused])
 
   // Scroll to last item when new messages arrive (virtualizer-aware).
   // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
   // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
-    if (!userScrolledUp.current && rawItems.length > 0) {
+    if (!userScrolledUp.current && !autoscrollPaused && rawItems.length > 0) {
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
       // Fallback: direct scrollTop in case scrollToIndex fires before the container
       // has a stable height (e.g. initial mount before virtualizer measures the element),
@@ -1092,7 +1093,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // changes and the user hasn't intentionally scrolled up.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (userScrolledUp.current) return
+    if (userScrolledUp.current || autoscrollPaused) return
     const el = chatLogRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
@@ -1110,7 +1111,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (userScrolledUp.current) return
+      if (userScrolledUp.current || autoscrollPaused) return
       const el = logEl!
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
         el.scrollTop = el.scrollHeight
@@ -1225,7 +1226,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
       const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current) {
+      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current && !autoscrollPaused) {
         chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
       }
       prevHeight = newHeight
@@ -1930,20 +1931,50 @@ function FleetChatInner({ shape }: { shape: any }) {
         </div>
 
 
-        {/* Scroll-to-bottom button — appears when user has scrolled up */}
-        {showScrollBtn && (
-          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+        {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
+        <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+          {/* Pause/play toggle — always visible */}
+          <button
+            onPointerDown={stopEventPropagation}
+            onClick={(e) => {
+              stopEventPropagation(e)
+              setAutoscrollPaused(p => !p)
+            }}
+            style={{
+              position: 'absolute',
+              right: showScrollBtn ? 34 : 8,
+              bottom: 4,
+              width: 22,
+              height: 22,
+              borderRadius: '50%',
+              border: 'none',
+              background: 'transparent',
+              color: 'rgba(200, 200, 200, 1)',
+              opacity: autoscrollPaused ? 0.7 : 0.35,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 12,
+              lineHeight: 1,
+              padding: 0,
+              transition: 'opacity 0.2s, right 0.1s',
+            }}
+            title={autoscrollPaused ? 'Resume auto-scroll' : 'Pause auto-scroll'}
+          >
+            {autoscrollPaused ? '▶' : '⏸'}
+          </button>
+          {/* Scroll-to-bottom — appears when user has scrolled up */}
+          {showScrollBtn && (
             <button
               className="fleet-scroll-bottom-btn"
               onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 stopEventPropagation(e)
                 const el = chatLogRef.current
-                if (el) {
-                  el.scrollTop = el.scrollHeight
-                }
+                if (el) el.scrollTop = el.scrollHeight
                 userScrolledUp.current = false; setShowScrollBtn(false)
-                setShowScrollBtn(false)
+                setAutoscrollPaused(false)
               }}
               style={{
                 position: 'absolute',
@@ -1970,8 +2001,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             >
               ▼
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Input */}
         <div
