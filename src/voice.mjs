@@ -164,6 +164,7 @@ let _sleepDetectInterval = null
 let _sleepDetectLast = 0
 let _deadRestarts = 0
 let _gotAudioThisSession = false
+let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -226,13 +227,91 @@ function ensureHud() {
   return _hud
 }
 
+// Health dot: green at 20% when audio is flowing, amber at 40% when no audio.
+// Both states are visible while recording — green = hearing you, amber = not hearing you.
+// Dot is hidden when not recording.
+const DOT_GREEN = '#7ab8a0'
+const DOT_AMBER = '#c8956a'
+const DOT_GREEN_OPACITY = '0.2'
+const DOT_AMBER_OPACITY = '0.4'
+const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
+let _healthDot = null
+let _healthDotTimer = null
+
+function ensureHealthDot() {
+  if (_healthDot) return _healthDot
+  _healthDot = document.createElement('span')
+  Object.assign(_healthDot.style, {
+    display: 'none',
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    marginRight: '6px',
+    flexShrink: '0',
+    transition: 'opacity 0.3s, background-color 0.3s',
+  })
+  return _healthDot
+}
+
+// Call when onresult fires — audio is flowing
+function dotAudioFlowing() {
+  if (!_recording) return
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_GREEN
+  requestAnimationFrame(() => { dot.style.opacity = DOT_GREEN_OPACITY })
+  // Schedule transition to amber after silence
+  clearTimeout(_healthDotTimer)
+  _healthDotTimer = setTimeout(dotAudioStale, AUDIO_FLOWING_MS)
+}
+
+// Audio went stale — no results for AUDIO_FLOWING_MS
+function dotAudioStale() {
+  if (!_recording) return
+  const dot = ensureHealthDot()
+  dot.style.backgroundColor = DOT_AMBER
+  dot.style.opacity = DOT_AMBER_OPACITY
+}
+
+// Show amber dot immediately (recording started, no audio yet)
+function dotRecordingStart() {
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_AMBER
+  requestAnimationFrame(() => { dot.style.opacity = DOT_AMBER_OPACITY })
+}
+
+function hideHealthDot() {
+  clearTimeout(_healthDotTimer)
+  _healthDotTimer = null
+  if (_healthDot) {
+    _healthDot.style.opacity = '0'
+    setTimeout(() => { if (_healthDot) _healthDot.style.display = 'none' }, 300)
+  }
+}
+
 function showHud(text, stateColor) {
   const hud = ensureHud()
   clearTimeout(_fadeTimer)
-  hud.textContent = text
+  // Build HUD content with health dot + text
+  const dot = ensureHealthDot()
+  hud.textContent = ''
+  hud.style.display = 'flex'
+  hud.style.alignItems = 'center'
+  hud.appendChild(dot)
+  const span = document.createElement('span')
+  span.textContent = text
+  hud.appendChild(span)
   hud.style.color = _activeAgentColor || stateColor || 'rgba(255,255,255,0.7)'
-  hud.style.display = 'block'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
+}
+
+// Show recording status — text uses agent color, dot shows health separately
+function showRecordingHud() {
+  const who = targetLabel()
+  const mode = _mathMode ? ' [math]' : ''
+  const text = who ? `recording → ${who}${mode}` : `recording${mode}`
+  showHud(text, '#c87070')
 }
 
 function hideHud() {
@@ -304,8 +383,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   if (wasRecording && textarea) {
     startRecording()
   } else if (_recording) {
-    const who = targetLabel()
-    showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+    showRecordingHud()
   }
 }
 
@@ -371,6 +449,8 @@ function _setupRecognition() {
 
     _gotAudioThisSession = true
     _deadRestarts = 0
+    _lastResultTime = Date.now()
+    dotAudioFlowing()
     clearTimeout(_watchdogTimer)
     _watchdogTimer = setTimeout(watchdogRestart, 8000)
 
@@ -453,10 +533,7 @@ function _setupRecognition() {
             try { _recognition.stop() } catch {}
           }
           setTimeout(() => {
-            if (_recording) {
-              const w = targetLabel()
-              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
-            }
+            if (_recording) showRecordingHud()
           }, 1600)
           return
         }
@@ -490,10 +567,7 @@ function _setupRecognition() {
             try { _recognition.stop() } catch {}
           }
           setTimeout(() => {
-            if (_recording) {
-              const w = targetLabel()
-              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
-            }
+            if (_recording) showRecordingHud()
           }, 2600)
           return
         }
@@ -541,8 +615,7 @@ function _setupRecognition() {
         try {
           _recognition.start()
           _watchdogTimer = setTimeout(watchdogRestart, 8000)
-          const who = targetLabel()
-          showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+          showRecordingHud()
         } catch (err) {
           console.warn('voice: not-allowed retry failed', err)
           stopRecording()
@@ -563,11 +636,10 @@ function _setupRecognition() {
         _setupRecognition()
         try {
           _recognition.start()
-          const who = targetLabel()
-          showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+          showRecordingHud()
         } catch (err) {
           console.warn('voice: retry failed', err)
-          showHud('mic failed — tap to restart', '#c87070')
+          showHud('mic failed — tap shift', '#c87070')
           fadeHud(5000)
           _recording = false
         }
@@ -607,13 +679,8 @@ function _setupRecognition() {
 
 function watchdogRestart() {
   if (!_recording) return
-  if (!_gotAudioThisSession) {
-    _deadRestarts++
-    if (_deadRestarts >= 3) {
-      showHud('voice dead — restart browser', '#c87070')
-      return
-    }
-  }
+  // No give-up state — always retry. The health dot shows amber when
+  // audio isn't flowing; the user sees that and can double-shift if needed.
   _gotAudioThisSession = false
   // Preserve text: commit interim to left, freeze current state
   if (_state === 'speech') {
@@ -733,9 +800,10 @@ function startRecording() {
   _generation++
   _lastFinals = []
   _left = _interim = _right = ''
+  _lastResultTime = 0
 
-  const who = targetLabel()
-  showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+  showRecordingHud()
+  dotRecordingStart()
 
   _audioCaptureRetries = 0
   _deadRestarts = 0
@@ -775,6 +843,7 @@ function stopRecording() {
   _sessionTimer = null
   clearInterval(_sleepDetectInterval)
   _sleepDetectInterval = null
+  hideHealthDot()
 
   if (_recognition) {
     _recognition.onresult = null
@@ -820,7 +889,9 @@ async function hardResetVoice() {
   _audioCaptureRetries = 0
   _deadRestarts = 0
   _gotAudioThisSession = false
+  _lastResultTime = 0
   _sleepDetectLast = 0
+  hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
   // SpeechRecognition uses the same underlying audio plumbing as
   // getUserMedia, so cycling a mic stream here jogs the internal state.
@@ -971,11 +1042,7 @@ export function addVocabReplacement(pattern, replacement) {
 }
 export function setMathMode(on) {
   _mathMode = on
-  if (_recording) {
-    const who = targetLabel()
-    const mode = on ? ' [math]' : ''
-    showHud(who ? `recording → ${who}${mode}` : `recording${mode}`, '#c87070')
-  }
+  if (_recording) showRecordingHud()
 }
 export function isMathMode() { return _mathMode }
 export function getGeneration() { return _generation }
