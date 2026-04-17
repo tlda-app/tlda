@@ -250,6 +250,21 @@
   font-family: 'SF Mono', Menlo, Consolas, monospace;
 }
 
+.picker-sync, .picker-sync-header {
+  width: 2.5rem;
+  text-align: center;
+}
+
+.picker-sync input[type="checkbox"] {
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+
+.picker-table tbody tr:hover .picker-sync input[type="checkbox"] {
+  opacity: 0.8;
+}
+
 .picker-archive {
   width: 2rem;
   text-align: center;

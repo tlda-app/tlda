@@ -147,6 +147,17 @@ router.patch('/:name/archive', requireRw, (req, res) => {
   }
 })
 
+// Toggle autoSync (git mirror sync)
+router.patch('/:name/auto-sync', requireRw, (req, res) => {
+  try {
+    const { autoSync } = req.body
+    const project = updateProject(req.params.name, { autoSync: !!autoSync })
+    res.json({ ok: true, autoSync: project.autoSync })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
 // Delete project
 router.delete('/:name', requireRw, (req, res) => {
   try {

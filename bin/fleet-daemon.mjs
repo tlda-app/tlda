@@ -1027,6 +1027,10 @@ function handleServerMessage(msg) {
     syncSourceWatchers(projects)
     return
   }
+  if (msg.type === 'version-committed') {
+    handleVersionCommitted(msg)
+    return
+  }
   if (msg.type === 'daemon-evict') {
     evicted = true
     const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
@@ -1040,6 +1044,50 @@ function handleServerMessage(msg) {
     return
   }
   // Unknown message — ignore for forward compatibility.
+}
+
+// ---------- git mirror sync ----------
+
+async function handleVersionCommitted(msg) {
+  const { project: projectName, hash, repoPath, autoSync } = msg
+  if (!autoSync) return
+
+  const project = projects.find(p => p.name === projectName)
+  if (!project?.sourceDir) return
+
+  const sourceDir = project.sourceDir
+
+  // Check if sourceDir is a git repo
+  try {
+    await execFileP('git', ['rev-parse', '--git-dir'], { cwd: sourceDir, timeout: 5000 })
+  } catch {
+    return // not a git repo
+  }
+
+  // Ensure shadow repo is added as a remote
+  try {
+    await execFileP('git', ['remote', 'get-url', 'tlda-shadow'], { cwd: sourceDir, timeout: 5000 })
+  } catch {
+    // Remote doesn't exist, add it
+    try {
+      await execFileP('git', ['remote', 'add', 'tlda-shadow', repoPath], { cwd: sourceDir, timeout: 5000 })
+    } catch (e) {
+      console.warn(`[daemon] failed to add tlda-shadow remote for ${projectName}: ${e.message}`)
+      return
+    }
+  }
+
+  // Fetch from shadow repo then fast-forward merge
+  try {
+    await execFileP('git', ['fetch', 'tlda-shadow'], { cwd: sourceDir, timeout: 15000 })
+    // Determine the branch name in the shadow repo
+    const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/master'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
+    const ref = refOut.trim() ? 'tlda-shadow/master' : 'FETCH_HEAD'
+    await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
+    console.log(`[daemon] synced ${projectName}: ${hash?.slice(0, 7)}`)
+  } catch (e) {
+    console.warn(`[daemon] sync failed for ${projectName}: ${e.message}`)
+  }
 }
 
 // ---------- lifecycle ----------

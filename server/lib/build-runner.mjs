@@ -27,7 +27,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
 import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
@@ -906,6 +906,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         cacheSvgSnapshot(name, result.hash).catch(e => {
           ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
         })
+        emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
