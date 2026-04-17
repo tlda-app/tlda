@@ -121,19 +121,23 @@ export function createFeedbackFromHighlight(editor: Editor, shapeId: string): Hi
 
   const text = meta?.highlightText || ''
   const highlightLines = meta?.highlightLines || []
-  const sourceLine = meta?.sourceLine ?? null
+  const sourceLines = meta?.sourceLines as Array<{ line: number; content: string; file?: string }> | undefined
 
   if (!text) return null
+
+  // Derive line range and page from sourceLines
+  const firstLine = sourceLines?.[0]?.line ?? null
+  const lastLine = sourceLines?.[sourceLines.length - 1]?.line ?? null
 
   return {
     type,
     label,
     color: hlColor,
     shapeId: shape.id,
-    lines: sourceLine != null ? [sourceLine, sourceLine] : null,
+    lines: firstLine != null && lastLine != null ? [firstLine, lastLine] : null,
     text,
     highlightLines,
-    page: sourceLine,
+    page: null,
     timestamp: Date.now(),
   }
 }

@@ -645,18 +645,22 @@ async function collectDrawnShapes(docName) {
       if (!bbox) continue;
       const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
       const gesture = classifyGesture(bbox);
-      const nearbyLines = findNearbyLines(docName, bbox);
+      // Use sourceLines from meta if available (unified resolution from viewer),
+      // otherwise fall back to bbox lookup (for old highlights or pen strokes)
+      const metaSourceLines = record.meta?.sourceLines;
+      const nearbyLines = (metaSourceLines && metaSourceLines.length > 0)
+        ? metaSourceLines.map(sl => ({ line: sl.line, content: sl.content, x: 0, y: 0 }))
+        : findNearbyLines(docName, bbox);
       const pos = describePagePosition(docName, bbox);
       const rendered = getRenderedText(docName, bbox);
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
-      const sourceLine = record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines,
         transcription, transcriptionVerified });
       continue;
     }
@@ -2397,7 +2401,11 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
     if (pos) text += ` ${pos.description}`;
-    if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
+    if (r.meta.sourceLines?.length > 0) {
+      const sl = r.meta.sourceLines;
+      const range = sl.length === 1 ? `line ${sl[0].line}` : `lines ${sl[0].line}–${sl[sl.length-1].line}`;
+      text += `, ${range}`;
+    }
     if (lines.length === 1) {
       text += `\n  text: "${lines[0]}"`;
     } else {
@@ -3147,7 +3155,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
       const lines = feedback.map(f => {
         const icon = ICONS[f.type] || '📌';
-        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
+        const loc = f.lines ? ` (lines ${f.lines[0]}–${f.lines[1]})` : '';
         const status = f.addressed ? ' [addressed]' : '';
         const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
         return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
