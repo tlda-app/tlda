@@ -37,7 +37,6 @@ import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, r
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
-import { useLayoutMode } from './HudLayoutMode'
 import { useIsInViewport } from './useIsInViewport'
 import './fleet-chat.css'
 
@@ -310,7 +309,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const layoutMode = useLayoutMode()
+  const isSelected = useValue('isSelected-chat', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
@@ -1797,7 +1796,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: layoutMode ? 'none' : 'all',
+        pointerEvents: isSelected ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
