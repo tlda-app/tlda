@@ -140,7 +140,7 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     let best = null
     for (const r of pageRecords) {
       const yDist = Math.abs(r.y - pt.y)
-      if (yDist > 8) continue // must be on the same rendered line
+      if (yDist > 10) continue // must be on the same rendered line (~12pt spacing)
       const dist = yDist + Math.abs(r.x - pt.x) * 0.1
       if (dist < bestDist) {
         bestDist = dist
@@ -303,10 +303,9 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 
   const xMin = Math.min(startX, endX)
   const xMax = Math.max(startX, endX)
-  // Very tight y-range: ±2pt catches only the exact rendered line(s)
-  // A PDF text line is ~12pt tall, so ±2pt won't bleed into adjacent lines
-  const yMin = Math.min(startY, endY) - 2
-  const yMax = Math.max(startY, endY) + 2
+  // Tight y-range: ±4pt catches the rendered line without bleeding into adjacent
+  const yMin = Math.min(startY, endY) - 4
+  const yMax = Math.max(startY, endY) + 4
 
   // Collect all synctex records in the highlight bbox, grouped by source line
   // Also collect ALL records for matched lines (for column estimation)
