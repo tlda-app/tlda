@@ -88,11 +88,10 @@
 .fleet-hud-wrap [class*="watermark"] {
   display: none !important;
 }
-/* Disable Chrome zoom:2 fix inside the HUD — the HUD tldraw instance
-   has its own scaling and the doubling breaks hit testing */
-.fleet-hud-wrap .tl-canvas__in-front {
-  zoom: 1 !important;
-}
+/* Let tldraw's DPR zoom fix (zoom:2 on Retina) apply normally — the old
+   HUD had its own scaling that conflicted, but the full-viewport overlay
+   doesn't. Overriding to zoom:1 caused a DPR-proportional offset between
+   visual shape positions and hit-test positions. */
 
 .fleet-hud-controls {
   position: absolute;
