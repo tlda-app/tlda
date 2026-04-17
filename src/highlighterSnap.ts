@@ -278,7 +278,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   // Resolve source lines via lookup.json (same data agents see)
   // This is async but we fire-and-forget — meta gets updated when lookup resolves
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText) : []
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape) : []
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -398,15 +398,49 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
   }
 }
 
+/** Decode base64 highlight path to points (browser-compatible). */
+function decodeHighlightPath(b64: string): Array<{ x: number; y: number }> {
+  if (!b64 || b64.length === 0) return []
+  const raw = atob(b64)
+  const buf = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i)
+  const dv = new DataView(buf.buffer)
+  if (buf.length < 12) return []
+
+  const points: Array<{ x: number; y: number }> = []
+  let x = dv.getFloat32(0, true)
+  let y = dv.getFloat32(4, true)
+  points.push({ x, y })
+
+  // Subsequent: Float16 LE deltas (6 bytes per point: dx, dy, dz)
+  for (let off = 12; off + 5 < buf.length; off += 6) {
+    x += float16(dv.getUint16(off, true))
+    y += float16(dv.getUint16(off + 2, true))
+    points.push({ x, y })
+  }
+  return points
+}
+
+function float16(bits: number): number {
+  const sign = bits >> 15
+  const exp = (bits >> 10) & 0x1f
+  const frac = bits & 0x3ff
+  if (exp === 0) { const v = frac * (Math.pow(2, -14) / 1024); return sign ? -v : v }
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity)
+  const v = Math.pow(2, exp - 15) * (1 + frac / 1024)
+  return sign ? -v : v
+}
+
 /**
- * Find source lines for a highlight by querying the server's synctex data.
- * Returns the actual tex source with context and the highlighted region identified.
+ * Find source text for a highlight by tracing its path through synctex records.
+ * Decodes the highlight path, converts points to PDF coords, sends to server.
  */
 async function findSourceLinesFromBounds(
   docName: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
-  highlightText = ''
+  highlightText = '',
+  shape?: any
 ): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
@@ -422,27 +456,49 @@ async function findSourceLinesFromBounds(
       height: (s.props as any).h,
     }))
 
-  // Convert highlight center + x-range to PDF coords
-  const centerY = (bounds.minY + bounds.maxY) / 2
-  const center = canvasToPdf((bounds.minX + bounds.maxX) / 2, centerY, pages)
-  const left = canvasToPdf(bounds.minX, centerY, pages)
-  const right = canvasToPdf(bounds.maxX, centerY, pages)
-  if (!center) return []
+  // Decode the highlight path and convert to PDF coords
+  const pathPoints: Array<{ x: number; y: number }> = []
+  const segments = shape?.props?.segments || []
+  for (const seg of segments) {
+    if (seg.path) {
+      const pts = decodeHighlightPath(seg.path)
+      for (const pt of pts) {
+        // Points are relative to shape position
+        const canvasX = (shape?.x ?? 0) + pt.x
+        const canvasY = (shape?.y ?? 0) + pt.y
+        const pdf = canvasToPdf(canvasX, canvasY, pages)
+        if (pdf) pathPoints.push({ x: pdf.x, y: pdf.y })
+      }
+    }
+  }
 
-  // Query the server's synctex reverse lookup with center point
+  // Fallback: if no path decoded, use center point
+  if (pathPoints.length === 0) {
+    const centerY = (bounds.minY + bounds.maxY) / 2
+    const center = canvasToPdf((bounds.minX + bounds.maxX) / 2, centerY, pages)
+    if (!center) return []
+    pathPoints.push({ x: center.x, y: center.y })
+  }
+
+  // Determine page from first point
+  const firstPdf = canvasToPdf(bounds.minX, bounds.minY, pages)
+  if (!firstPdf) return []
+
+  // Sample path to ~20 points max for the query
+  const sampled = pathPoints.length <= 20 ? pathPoints
+    : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
+
   const serverUrl = (window as any).__tlda_server || window.location.origin
-  const params = new URLSearchParams({
-    page: String(center.page),
-    startX: String(left?.x ?? center.x),
-    startY: String(center.y),
-    endX: String(right?.x ?? center.x),
-    endY: String(center.y),
-    context: '1',
-    ...(highlightText ? { text: highlightText } : {}),
-  })
-
   try {
-    const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex?${params}`)
+    const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page: firstPdf.page,
+        points: sampled,
+        text: highlightText || undefined,
+      }),
+    })
     if (!resp.ok) return []
     const data = await resp.json()
     if (!data?.lines) return []

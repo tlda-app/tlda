@@ -109,6 +109,126 @@ export function clearSynctexCache(projectName) {
 }
 
 /**
+ * Path-based source lookup: given a sequence of PDF points (the highlight's
+ * center path), find the nearest synctex record for each point. Returns the
+ * source text passage with the matched region highlighted.
+ *
+ * @param {string} projectName
+ * @param {number} page - 1-indexed PDF page
+ * @param {Array<{x: number, y: number}>} points - PDF coordinates along the path
+ * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
+ */
+export async function getSourceFromPath(projectName, page, points, highlightText = '') {
+  const data = await loadSynctex(projectName)
+  if (!data || points.length === 0) return null
+
+  // Filter to source .tex files
+  const sourceFileIds = new Set()
+  for (const [id, path] of data.inputMap) {
+    if (path.endsWith('.tex')) sourceFileIds.add(id)
+  }
+
+  // Get all synctex records on this page from source files
+  const pageRecords = data.records.filter(r => r.page === page && sourceFileIds.has(r.inputId))
+  if (pageRecords.length === 0) return null
+
+  // For each path point, find the nearest synctex record
+  const hitRecords = new Set()
+  for (const pt of points) {
+    let bestDist = Infinity
+    let best = null
+    for (const r of pageRecords) {
+      const dist = Math.abs(r.y - pt.y) * 1.0 + Math.abs(r.x - pt.x) * 0.3
+      if (dist < bestDist) {
+        bestDist = dist
+        best = r
+      }
+    }
+    // Only include if reasonably close (within ~15pt — about one line height)
+    if (best && bestDist < 20) {
+      hitRecords.add(best)
+    }
+  }
+
+  if (hitRecords.size === 0) return null
+
+  // Get the unique source lines hit, in order
+  const hitLines = new Map() // line → { minX, maxX } of hit records
+  let hitFile = null
+  for (const r of hitRecords) {
+    if (!hitFile) hitFile = data.inputMap.get(r.inputId)
+    if (!hitLines.has(r.line)) hitLines.set(r.line, { minX: r.x, maxX: r.x })
+    const entry = hitLines.get(r.line)
+    entry.minX = Math.min(entry.minX, r.x)
+    entry.maxX = Math.max(entry.maxX, r.x)
+  }
+
+  if (!hitFile) return null
+
+  // Read the tex source
+  if (!existsSync(hitFile)) return null
+  const content = readFileSync(hitFile, 'utf8')
+  const allLines = content.split('\n')
+
+  const sortedLineNums = [...hitLines.keys()].sort((a, b) => a - b)
+  const startLine = sortedLineNums[0]
+  const endLine = sortedLineNums[sortedLineNums.length - 1]
+
+  // Get all records for hit lines (for column estimation)
+  const allRecordsByLine = new Map()
+  for (const r of pageRecords) {
+    if (hitLines.has(r.line)) {
+      if (!allRecordsByLine.has(r.line)) allRecordsByLine.set(r.line, [])
+      allRecordsByLine.get(r.line).push(r)
+    }
+  }
+
+  // Build output with context
+  const contextLines = 1
+  const from = Math.max(0, startLine - 1 - contextLines)
+  const to = Math.min(allLines.length, endLine + contextLines)
+
+  const lines = []
+  for (let i = from; i < to; i++) {
+    const lineNum = i + 1
+    const isHit = hitLines.has(lineNum)
+    const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
+
+    // Column estimation for hit lines
+    if (isHit) {
+      const hitRange = hitLines.get(lineNum)
+      const lineRecs = allRecordsByLine.get(lineNum) || []
+      if (lineRecs.length >= 2) {
+        const sorted = [...lineRecs].sort((a, b) => a.x - b.x)
+        const lineXMin = sorted[0].x
+        const lineXMax = sorted[sorted.length - 1].x
+        const lineXRange = lineXMax - lineXMin
+        if (lineXRange > 0) {
+          const fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
+          const fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
+          const srcLen = allLines[i].length
+          entry.hlStart = Math.max(0, Math.round(fracStart * srcLen))
+          entry.hlEnd = Math.min(srcLen, Math.round(fracEnd * srcLen))
+        }
+      }
+    }
+
+    lines.push(entry)
+  }
+
+  // Derive relative file name
+  const srcDir = sourceDir(projectName)
+  let relFile = hitFile
+  try {
+    if (hitFile.startsWith(realResolve(srcDir))) {
+      relFile = hitFile.slice(realResolve(srcDir).length + 1)
+    }
+  } catch {}
+
+  return { file: relFile, startLine, endLine, lines }
+}
+
+/**
  * Reverse lookup: given PDF page + coordinates, find the source location.
  *
  * @param {string} projectName

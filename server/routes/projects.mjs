@@ -212,6 +212,22 @@ router.get('/:name/synctex', requireRead, async (req, res) => {
   }
 })
 
+// Synctex path-based lookup: trace highlight path through synctex records
+router.post('/:name/synctex-path', requireRead, async (req, res) => {
+  const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
+  const { page, points, text } = req.body
+  if (!page || !points?.length) {
+    return res.status(400).json({ error: 'Required: page, points[]' })
+  }
+  try {
+    const result = await getSourceFromPath(req.params.name, page, points, text || '')
+    if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Preamble macros (KaTeX-compatible, parsed during build from main tex file)
 router.get('/:name/macros', requireRead, (req, res) => {
   const outputPath = join(getOutputDir(req.params.name), 'macros.json')
