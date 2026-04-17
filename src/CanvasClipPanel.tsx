@@ -871,6 +871,30 @@ export function CanvasClipPanel({
         />
   )
 
+  // In fullViewport mode, prevent the overlay's tldraw from capturing HTML5
+  // drag events when the cursor is not over a fleet shape. Without this,
+  // chips dragged onto the main canvas get swallowed by the overlay's tldraw.
+  useEffect(() => {
+    if (!fullViewport) return
+    const el = canvasRef.current
+    if (!el) return
+    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
+    const handler = (e: DragEvent) => {
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it
+      // Not over a fleet shape — block the overlay's tldraw from seeing this
+      e.stopPropagation()
+    }
+    el.addEventListener('dragover', handler, { capture: true })
+    el.addEventListener('dragenter', handler, { capture: true })
+    el.addEventListener('drop', handler, { capture: true })
+    return () => {
+      el.removeEventListener('dragover', handler, { capture: true })
+      el.removeEventListener('dragenter', handler, { capture: true })
+      el.removeEventListener('drop', handler, { capture: true })
+    }
+  }, [fullViewport])
+
   if (fullViewport) {
     return (
       <div
