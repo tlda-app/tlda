@@ -435,7 +435,7 @@ async function findSourceLinesFromBounds(
     startY: String(topLeft.y),
     endX: String(bottomRight?.x ?? topLeft.x),
     endY: String(bottomRight?.y ?? topLeft.y),
-    context: '2',
+    context: '1',
     ...(highlightText ? { text: highlightText } : {}),
   })
 
@@ -489,8 +489,8 @@ function showSourceContextCard(
   const card = document.createElement('div')
   card.className = 'hl-source-card'
 
-  // Header: file + highlighted line range (not context lines)
-  const highlighted = sourceLines.filter(sl => sl.highlighted !== false)
+  // Header: file + line range
+  const highlighted = sourceLines.filter(sl => sl.highlighted === true)
   const first = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
   const last = highlighted.length > 0 ? highlighted[highlighted.length - 1] : sourceLines[sourceLines.length - 1]
   const file = first.file || ''
@@ -504,64 +504,83 @@ function showSourceContextCard(
   header.textContent = headerText
   card.appendChild(header)
 
-  // Source lines
-  const pre = document.createElement('pre')
-  pre.className = 'hl-source-card-code'
-  for (const sl of sourceLines) {
-    const lineEl = document.createElement('div')
-    lineEl.className = 'hl-source-card-line'
+  // Render as continuous flowing text, not line-by-line
+  // Join all highlighted lines into a passage, find the highlighted substring,
+  // show it with context words on each side
+  const body = document.createElement('div')
+  body.className = 'hl-source-card-body'
 
-    const numEl = document.createElement('span')
-    numEl.className = 'hl-source-card-linenum'
-    numEl.textContent = String(sl.line)
+  // Build full passage from highlighted lines
+  const hlLines = highlighted.length > 0 ? highlighted : sourceLines
+  const passage = hlLines.map(l => l.content).join(' ')
 
-    const contentEl = document.createElement('span')
-    contentEl.style.paddingLeft = '6px'
+  // Check if any line has substring highlights (hlStart/hlEnd)
+  const hasSubstring = hlLines.some(l => l.hlStart != null && l.hlEnd != null)
 
-    // Check for substring highlight within the line
-    const hlStart = (sl as any).hlStart
-    const hlEnd = (sl as any).hlEnd
-    if (hlStart != null && hlEnd != null && hlStart < hlEnd) {
-      // Show line with highlighted substring
-      const before = sl.content.slice(0, hlStart)
-      const match = sl.content.slice(hlStart, hlEnd)
-      const after = sl.content.slice(hlEnd)
+  if (hasSubstring) {
+    // Find the highlighted substring within the joined passage
+    // Reconstruct from per-line hlStart/hlEnd
+    let offset = 0
+    let passageHlStart = -1
+    let passageHlEnd = -1
+    for (const l of hlLines) {
+      if (l.hlStart != null && l.hlEnd != null) {
+        if (passageHlStart === -1) passageHlStart = offset + l.hlStart
+        passageHlEnd = offset + l.hlEnd
+      }
+      offset += l.content.length + 1 // +1 for the join space
+    }
+
+    if (passageHlStart >= 0 && passageHlEnd > passageHlStart) {
+      // Show: ...context before... [highlighted text] ...context after...
+      const contextChars = 40
+      const before = passage.slice(Math.max(0, passageHlStart - contextChars), passageHlStart)
+      const match = passage.slice(passageHlStart, passageHlEnd)
+      const after = passage.slice(passageHlEnd, passageHlEnd + contextChars)
+
+      if (passageHlStart > contextChars) {
+        const ellipsis = document.createElement('span')
+        ellipsis.textContent = '...'
+        ellipsis.style.opacity = '0.3'
+        body.appendChild(ellipsis)
+      }
+
       if (before) {
         const s = document.createElement('span')
         s.textContent = before
         s.style.opacity = '0.5'
-        contentEl.appendChild(s)
+        body.appendChild(s)
       }
+
       const hlSpan = document.createElement('span')
       hlSpan.textContent = match
+      hlSpan.className = 'hl-source-card-match'
       hlSpan.style.backgroundColor = tintColor + '40'
-      hlSpan.style.borderRadius = '2px'
-      hlSpan.style.padding = '0 1px'
-      contentEl.appendChild(hlSpan)
+      body.appendChild(hlSpan)
+
       if (after) {
         const s = document.createElement('span')
         s.textContent = after
         s.style.opacity = '0.5'
-        contentEl.appendChild(s)
+        body.appendChild(s)
       }
-      contentEl.style.borderLeft = `3px solid ${tintColor}`
-    } else if (sl.highlighted === true) {
-      // Whole line highlighted (no substring match)
-      contentEl.textContent = sl.content
-      contentEl.style.borderLeft = `3px solid ${tintColor}`
-    } else {
-      // Context line
-      contentEl.textContent = sl.content
-      contentEl.style.borderLeft = `1px solid rgba(255,255,255,0.15)`
-      contentEl.style.paddingLeft = '8px'
-      contentEl.style.opacity = '0.5'
-    }
 
-    lineEl.appendChild(numEl)
-    lineEl.appendChild(contentEl)
-    pre.appendChild(lineEl)
+      if (passageHlEnd + contextChars < passage.length) {
+        const ellipsis = document.createElement('span')
+        ellipsis.textContent = '...'
+        ellipsis.style.opacity = '0.3'
+        body.appendChild(ellipsis)
+      }
+    } else {
+      // Fallback: show the whole passage
+      body.textContent = passage.length > 200 ? passage.slice(0, 197) + '...' : passage
+    }
+  } else {
+    // No substring match — show the highlighted passage as-is
+    body.textContent = passage.length > 200 ? passage.slice(0, 197) + '...' : passage
   }
-  card.appendChild(pre)
+
+  card.appendChild(body)
 
   // Position
   const left = Math.min(screenPos.x + 12, window.innerWidth - 380)

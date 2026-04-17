@@ -685,12 +685,14 @@ body.text-select-mode ::selection {
 
 /* Highlight source context card */
 .hl-source-card {
-  max-width: 360px;
+  max-width: 480px;
   background: rgba(20, 20, 30, 0.92);
   color: #e0e0e0;
   border-radius: 6px;
   padding: 0;
-  font-family: system-ui, sans-serif;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.6;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   pointer-events: auto;
   cursor: pointer;
@@ -699,31 +701,17 @@ body.text-select-mode ::selection {
   overflow: hidden;
 }
 .hl-source-card-header {
-  padding: 5px 10px;
+  padding: 4px 10px;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.4);
   background: rgba(255, 255, 255, 0.05);
-  font-family: 'SF Mono', 'Menlo', monospace;
 }
-.hl-source-card-code {
-  margin: 0;
-  padding: 6px 10px;
-  font-size: 11px;
-  line-height: 1.5;
-  font-family: 'SF Mono', 'Menlo', monospace;
-  overflow-x: auto;
-  max-height: 200px;
-  overflow-y: auto;
+.hl-source-card-body {
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-.hl-source-card-line {
-  display: flex;
-  gap: 8px;
-  white-space: pre;
-}
-.hl-source-card-linenum {
-  color: rgba(255, 255, 255, 0.3);
-  min-width: 3ch;
-  text-align: right;
-  flex-shrink: 0;
-  user-select: none;
+.hl-source-card-match {
+  border-radius: 2px;
+  padding: 1px 2px;
 }

@@ -180,8 +180,9 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 
   const xMin = Math.min(startX, endX)
   const xMax = Math.max(startX, endX)
-  const yMin = Math.min(startY, endY) - 5
-  const yMax = Math.max(startY, endY) + 5
+  // Tight y-range: a single text line is ~12pt, so ±6pt is one line of tolerance
+  const yMin = Math.min(startY, endY) - 6
+  const yMax = Math.max(startY, endY) + 6
 
   // Collect all synctex records in the highlight bbox, grouped by source line
   // Also collect ALL records for matched lines (for column estimation)
