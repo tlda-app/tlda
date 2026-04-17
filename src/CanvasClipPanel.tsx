@@ -541,7 +541,11 @@ export function CanvasClipPanel({
           initialZoom: 'default',
           baseZoom: 'default',
         },
-        zoomSteps: [0.01, 100],
+        // Lock zoom to exactly z=1 — the overlay must never zoom.
+        // TLDraw's internal wheel handler can still fire before our
+        // capture-phase handler, so constraining zoomSteps to [1, 1]
+        // prevents any zoom change from sticking.
+        zoomSteps: [cameraOverride.z, cameraOverride.z],
       })
       editor.setCamera(cameraOverride)
       return
