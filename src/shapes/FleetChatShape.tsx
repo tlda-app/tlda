@@ -309,7 +309,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const isSelected = useValue('isSelected-chat', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
@@ -1796,7 +1795,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: isSelected ? 'none' : 'all',
+        pointerEvents: 'all',
         overflow: 'visible',
       }}
     >

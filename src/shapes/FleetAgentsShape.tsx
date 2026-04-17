@@ -13,7 +13,6 @@ import {
   stopEventPropagation,
   useEditor,
   createShapeId,
-  useValue,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
@@ -309,7 +308,6 @@ function useLastMessages(agents: any[]): Record<string, string> {
 
 function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const isSelected = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
   const { w, h } = shape.props
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
@@ -392,7 +390,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: isSelected ? 'none' : 'all',
+        pointerEvents: 'all',
         overflow: 'hidden',
       }}
     >
