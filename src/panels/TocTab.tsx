@@ -688,14 +688,12 @@ export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()
 
-  // Click: cycle between 3-col and 2-col layouts. Detect current layout
-  // by checking for fleet-docview shapes (3-col has one, 2-col doesn't).
-  // No fleet shapes → create 3-col (the default).
+  // Click: cycle between 3-col and split layouts. Each click toggles.
+  // State persisted in localStorage so it survives page reloads.
   const handleClick = useCallback(() => {
-    const fleet = editor.getCurrentPageShapes().filter(s =>
-      ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'].includes(s.type as string))
-    const hasDocview = fleet.some(s => (s.type as string) === 'fleet-docview')
-    const next = fleet.length === 0 ? '3col' : hasDocview ? '2col' : '3col'
+    const current = localStorage.getItem('fleet-layout') || '3col'
+    const next = current === '3col' ? '2col' : '3col'
+    localStorage.setItem('fleet-layout', next)
     createFleetLayout(editor, allAgents, next)
   }, [editor, allAgents])
 
