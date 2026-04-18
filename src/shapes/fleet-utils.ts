@@ -154,6 +154,16 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     //   = screenW - chatWide - docLeftScreen + leftGroupRight
     const leftGroupRight = anchorX + leftW + gap + chatWide
     const MARGIN_GAP = 20
+    // Find document right edge on screen to position the right-margin chat
+    let docRightScreen = window.innerWidth / 2
+    if (pageShapes.length > 0) {
+      let maxPageRight = -Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b) { const r = b.x + b.w; if (r > maxPageRight) maxPageRight = r }
+      }
+      docRightScreen = editor.pageToScreen({ x: maxPageRight, y: 0 }).x
+    }
     let docLeftScreen = window.innerWidth / 2
     if (pageShapes.length > 0) {
       let minPageX = Infinity
@@ -163,8 +173,12 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       }
       docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
     }
-    const rightChatX = window.innerWidth - chatWide - MARGIN_GAP -
-      (docLeftScreen - MARGIN_GAP - leftGroupRight)
+    // Camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRight
+    // Right chat screen position = rightChatX + camX
+    // We want right chat left edge at: docRightScreen + MARGIN_GAP
+    // So: rightChatX = docRightScreen + MARGIN_GAP - camX
+    const camX = docLeftScreen - MARGIN_GAP - leftGroupRight
+    const rightChatX = docRightScreen + MARGIN_GAP - camX
 
     shapes.push(
       // Left margin: wide chat (3/4 height) + docview (1/4 height)
