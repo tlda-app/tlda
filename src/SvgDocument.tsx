@@ -1,4 +1,5 @@
-import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore } from 'react'
+import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore, Component } from 'react'
+import type { ReactNode, ErrorInfo } from 'react'
 import {
   Tldraw,
   react,
@@ -28,7 +29,6 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
-import { HudLayoutOverlay, registerLayoutSideEffects } from './shapes/HudLayoutMode'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
@@ -134,6 +134,69 @@ function VersionStampSlot() {
   return <>{content}</>
 }
 
+
+// Error boundary for individual shape renders — catches throws in a shape's component()
+// and shows a small error placeholder instead of crashing the entire app.
+class ShapeErrorBoundary extends Component<
+  { shapeType: string; children: ReactNode },
+  { hasError: boolean; errorMsg: string }
+> {
+  constructor(props: { shapeType: string; children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false, errorMsg: '' }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, errorMsg: error.message }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`Shape render error [${this.props.shapeType}]:`, error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          width: '100%', height: '100%', minWidth: 40, minHeight: 24,
+          background: 'rgba(220, 38, 38, 0.15)', border: '1px solid rgba(220, 38, 38, 0.4)',
+          borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, color: '#dc2626', fontFamily: 'monospace', padding: '2px 6px',
+          pointerEvents: 'all',
+        }}>
+          {this.props.shapeType}: error
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// Wrap a ShapeUtil class so its component() renders inside a ShapeErrorBoundary.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function withShapeErrorBoundary<T extends new (...args: any[]) => any>(Util: T): T {
+  const originalComponent = Util.prototype.component
+  if (!originalComponent) return Util
+
+  // Create a subclass that overrides component() with an error-boundary wrapper
+  const Wrapped = class extends (Util as any) {
+    component(shape: any) {
+      const inner = originalComponent.call(this, shape)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const typeName = (this.constructor as any).type || 'unknown'
+      return <ShapeErrorBoundary shapeType={typeName}>{inner}</ShapeErrorBoundary>
+    }
+  } as unknown as T
+
+  // Preserve static fields (type, props, migrations, etc.)
+  Object.defineProperty(Wrapped, 'type', { value: (Util as any).type, configurable: true })
+  Object.defineProperty(Wrapped, 'props', { value: (Util as any).props, configurable: true })
+  if ((Util as any).migrations) {
+    Object.defineProperty(Wrapped, 'migrations', { value: (Util as any).migrations, configurable: true })
+  }
+
+  return Wrapped
+}
 
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
@@ -772,7 +835,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       override indicator() { return null as any }
     }
     const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    const all = [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil];
+    // Wrap every custom shape util with an error boundary so a single broken shape
+    // renders an error placeholder instead of crashing the entire app.
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
   }, [])
@@ -1111,9 +1177,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               })
           })
 
-          // Register HUD layout mode side effects (container ↔ fleet shape sync)
-          registerLayoutSideEffects(editor)
-
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
           shapeIdsArrayRef.current = editorSetup.shapeIds
@@ -1405,7 +1468,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <NoteDropHandler />
       <MarkdownDropHandler />
       <TocDropTargetManager />
-      <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </VersionStampContext.Provider>

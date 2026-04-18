@@ -85,19 +85,29 @@ export interface GlowRect {
   h: number
 }
 
+/** A resolved source line, stored in highlight meta. */
+export interface SourceLine {
+  line: number
+  content: string
+  file?: string
+  highlighted?: boolean
+  hlStart?: number  // start column of highlighted substring
+  hlEnd?: number    // end column of highlighted substring
+}
+
 /**
  * Attempt to extract text under a highlight shape and attach as metadata.
  * Call this after a highlight stroke is completed.
  */
-export function snapHighlighterToText(editor: Editor, shapeId: string) {
+export function snapHighlighterToText(editor: Editor, shapeId: string, docName?: string) {
   try {
-    _snapHighlighterToText(editor, shapeId)
+    _snapHighlighterToText(editor, shapeId, docName)
   } catch (e: any) {
     console.warn('[highlighter-snap] Error:', e?.message || String(e))
   }
 }
 
-function _snapHighlighterToText(editor: Editor, shapeId: string) {
+function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: string) {
   const shape = editor.getShape(shapeId as any)
   if (!shape) return
 
@@ -213,9 +223,6 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
     const near = sorted.slice(0, 3)
     const nearDesc = near.map(f => `y=${f.y.toFixed(1)} dist=${Math.abs(f.y-hlCenterY).toFixed(1)} "${f.text}"`).join(', ')
     console.warn(`[highlighter-snap] 0/${fragments.length} matched. centerY=${hlCenterY.toFixed(1)} hlH=${hlHeight.toFixed(1)} x=[${hlMinX.toFixed(0)},${hlMaxX.toFixed(0)}]. Nearest: ${nearDesc}`)
-    if ((window as any).__hlDebug !== false) {
-      showCaptureToast(`(no match — nearest: ${near[0] ? `"${near[0].text}" dist=${Math.abs(near[0].y - hlCenterY).toFixed(1)}` : 'none'})`, bounds, editor)
-    }
     return
   }
 
@@ -263,37 +270,37 @@ function _snapHighlighterToText(editor: Editor, shapeId: string) {
   const matchedText = lines.join(' ')
   if (!matchedText.trim()) return
 
-  const midX = bounds.minX + bounds.width / 2
-  const midY = bounds.minY + bounds.height / 2
-  const sourceLine = getSourceLine(midX, midY, editor)
-
   const hlColor = (shape.props as any).color || 'yellow'
 
   // Flash-tint the matched text elements (before updateShape, which can trigger re-renders)
   flashTint(matchedFragments, hlColor)
 
-  // Debug toast: show captured text briefly (toggle with window.__hlDebug = false to disable)
-  if ((window as any).__hlDebug !== false) {
-    showCaptureToast(matchedText, bounds, editor)
-  }
+  // Resolve source lines via lookup.json (same data agents see)
+  // This is async but we fire-and-forget — meta gets updated when lookup resolves
+  const resolveAndStore = async () => {
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape) : []
 
-  // Attach metadata to the highlight shape (deferred so flash isn't wiped by re-render)
-  setTimeout(() => {
+    // Attach metadata to the highlight shape
     editor.updateShape({
       id: shape.id,
       type: shape.type,
       meta: {
         highlightText: matchedText,
         highlightLines: lines,
-        sourceLine,
+        sourceLines,
         pageShapeId: pageShape.id,
         glowRects,
         glowColor: hlColor,
       },
     } as any)
-  }, 50)
 
-  console.log(`[highlighter-snap] Matched ${lines.length} line(s): "${matchedText.substring(0, 80)}..."`)
+    // Show source context card
+    showSourceContextCard(sourceLines, hlColor, bounds, editor)
+
+    console.log(`[highlighter-snap] Matched ${lines.length} line(s), ${sourceLines.length} source line(s): "${matchedText.substring(0, 80)}..."`)
+  }
+  // Defer slightly so flash isn't wiped by re-render
+  setTimeout(resolveAndStore, 50)
 }
 
 /** Resolve tint color, compensating for dark mode filter if needed. */
@@ -391,8 +398,50 @@ export function showGlow(editor: Editor, shapeId: string): (() => void) | null {
   }
 }
 
-/** Look up source line from canvas position using the document's page layout. */
-function getSourceLine(x: number, y: number, editor: Editor): number | null {
+/** Decode base64 highlight path to points (browser-compatible). */
+function decodeHighlightPath(b64: string): Array<{ x: number; y: number }> {
+  if (!b64 || b64.length === 0) return []
+  const raw = atob(b64)
+  const buf = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i)
+  const dv = new DataView(buf.buffer)
+  if (buf.length < 12) return []
+
+  const points: Array<{ x: number; y: number }> = []
+  let x = dv.getFloat32(0, true)
+  let y = dv.getFloat32(4, true)
+  points.push({ x, y })
+
+  // Subsequent: Float16 LE deltas (6 bytes per point: dx, dy, dz)
+  for (let off = 12; off + 5 < buf.length; off += 6) {
+    x += float16(dv.getUint16(off, true))
+    y += float16(dv.getUint16(off + 2, true))
+    points.push({ x, y })
+  }
+  return points
+}
+
+function float16(bits: number): number {
+  const sign = bits >> 15
+  const exp = (bits >> 10) & 0x1f
+  const frac = bits & 0x3ff
+  if (exp === 0) { const v = frac * (Math.pow(2, -14) / 1024); return sign ? -v : v }
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity)
+  const v = Math.pow(2, exp - 15) * (1 + frac / 1024)
+  return sign ? -v : v
+}
+
+/**
+ * Find source text for a highlight by tracing its path through synctex records.
+ * Decodes the highlight path, converts points to PDF coords, sends to server.
+ */
+async function findSourceLinesFromBounds(
+  docName: string,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  editor: Editor,
+  highlightText = '',
+  shape?: any
+): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
     .sort((a, b) => (a as any).y - (b as any).y)
@@ -407,45 +456,235 @@ function getSourceLine(x: number, y: number, editor: Editor): number | null {
       height: (s.props as any).h,
     }))
 
-  const result = canvasToPdf(x, y, pages)
-  return result?.page ?? null
+  // Decode the highlight path and convert to PDF coords
+  const pathPoints: Array<{ x: number; y: number }> = []
+  const segments = shape?.props?.segments || []
+  for (const seg of segments) {
+    if (seg.path) {
+      const pts = decodeHighlightPath(seg.path)
+      for (const pt of pts) {
+        // Points are relative to shape position
+        const canvasX = (shape?.x ?? 0) + pt.x
+        const canvasY = (shape?.y ?? 0) + pt.y
+        const pdf = canvasToPdf(canvasX, canvasY, pages)
+        if (pdf) pathPoints.push({ x: pdf.x, y: pdf.y })
+      }
+    }
+  }
+
+  // Fallback: if no path decoded, use center point
+  if (pathPoints.length === 0) {
+    const centerY = (bounds.minY + bounds.maxY) / 2
+    const center = canvasToPdf((bounds.minX + bounds.maxX) / 2, centerY, pages)
+    if (!center) return []
+    pathPoints.push({ x: center.x, y: center.y })
+  }
+
+  // Determine page from first point
+  const firstPdf = canvasToPdf(bounds.minX, bounds.minY, pages)
+  if (!firstPdf) return []
+
+  // Sample path to ~20 points max for the query
+  const sampled = pathPoints.length <= 20 ? pathPoints
+    : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
+
+  const serverUrl = (window as any).__tlda_server || window.location.origin
+  try {
+    const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page: firstPdf.page,
+        points: sampled,
+        text: highlightText || undefined,
+      }),
+    })
+    if (!resp.ok) return []
+    const data = await resp.json()
+    if (!data?.lines) return []
+
+    return data.lines.map((l: any) => {
+      const sl: SourceLine = { line: l.line, content: l.content }
+      if (l.highlighted) sl.highlighted = true
+      if (l.hlStart != null) sl.hlStart = l.hlStart
+      if (l.hlEnd != null) sl.hlEnd = l.hlEnd
+      if (data.file) sl.file = data.file
+      return sl
+    })
+  } catch (e) {
+    console.warn('[highlighter-snap] synctex query failed:', e)
+    return []
+  }
 }
 
 export function restoreHighlightsFromShapes(_editor: Editor) {}
 
-/** Toggle highlight debug mode. When on, shows captured text as a toast after each highlight. */
+/** Toggle highlight debug mode (legacy — source context card replaces the debug toast). */
 export function toggleHighlightDebug(): boolean {
   const on = !(window as any).__hlDebug
   ;(window as any).__hlDebug = on
   return on
 }
 
-/** Show a transient toast with captured text near the highlight. */
-function showCaptureToast(text: string, bounds: { minX: number; minY: number; maxX: number; maxY: number }, editor: Editor) {
-  const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
+/**
+ * Show a transient source context card near a highlight.
+ * Displays the resolved tex source lines with the matched region highlighted.
+ * Also used on hover (browse tool) — call showSourceContextCardForShape for that.
+ */
+function showSourceContextCard(
+  sourceLines: SourceLine[],
+  hlColor: string,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  editor: Editor,
+  persistent = false
+): HTMLElement | null {
+  if (sourceLines.length === 0) return null
 
-  const toast = document.createElement('div')
-  toast.textContent = text.length > 80 ? text.slice(0, 77) + '…' : text
-  Object.assign(toast.style, {
+  const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
+  const tintColor = TINT_COLORS[hlColor] || TINT_COLORS.yellow
+
+  // Build the card
+  const card = document.createElement('div')
+  card.className = 'hl-source-card'
+
+  // Header: file + line range
+  const highlighted = sourceLines.filter(sl => sl.highlighted === true)
+  const first = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
+  const last = highlighted.length > 0 ? highlighted[highlighted.length - 1] : sourceLines[sourceLines.length - 1]
+  const file = first.file || ''
+  const lineRange = first.line === last.line
+    ? `L${first.line}`
+    : `L${first.line}–${last.line}`
+  const headerText = file ? `${file}:${lineRange}` : lineRange
+
+  const header = document.createElement('div')
+  header.className = 'hl-source-card-header'
+  header.textContent = headerText
+  card.appendChild(header)
+
+  // Render as continuous flowing text, not line-by-line
+  // Join all highlighted lines into a passage, find the highlighted substring,
+  // show it with context words on each side
+  const body = document.createElement('div')
+  body.className = 'hl-source-card-body'
+
+  // Build full passage from highlighted lines
+  const hlLines = highlighted.length > 0 ? highlighted : sourceLines
+  const passage = hlLines.map(l => l.content).join(' ')
+
+  // Check if any line has substring highlights (hlStart/hlEnd)
+  const hasSubstring = hlLines.some(l => l.hlStart != null && l.hlEnd != null)
+
+  if (hasSubstring) {
+    // Find the highlighted substring within the joined passage
+    // Reconstruct from per-line hlStart/hlEnd
+    let offset = 0
+    let passageHlStart = -1
+    let passageHlEnd = -1
+    for (const l of hlLines) {
+      if (l.hlStart != null && l.hlEnd != null) {
+        if (passageHlStart === -1) passageHlStart = offset + l.hlStart
+        passageHlEnd = offset + l.hlEnd
+      }
+      offset += l.content.length + 1 // +1 for the join space
+    }
+
+    if (passageHlStart >= 0 && passageHlEnd > passageHlStart) {
+      // Show: ...context before... [highlighted text] ...context after...
+      const contextChars = 40
+      const before = passage.slice(Math.max(0, passageHlStart - contextChars), passageHlStart)
+      const match = passage.slice(passageHlStart, passageHlEnd)
+      const after = passage.slice(passageHlEnd, passageHlEnd + contextChars)
+
+      if (passageHlStart > contextChars) {
+        const ellipsis = document.createElement('span')
+        ellipsis.textContent = '...'
+        ellipsis.style.opacity = '0.3'
+        body.appendChild(ellipsis)
+      }
+
+      if (before) {
+        const s = document.createElement('span')
+        s.textContent = before
+        s.style.opacity = '0.5'
+        body.appendChild(s)
+      }
+
+      const hlSpan = document.createElement('span')
+      hlSpan.textContent = match
+      hlSpan.className = 'hl-source-card-match'
+      hlSpan.style.backgroundColor = tintColor + '40'
+      body.appendChild(hlSpan)
+
+      if (after) {
+        const s = document.createElement('span')
+        s.textContent = after
+        s.style.opacity = '0.5'
+        body.appendChild(s)
+      }
+
+      if (passageHlEnd + contextChars < passage.length) {
+        const ellipsis = document.createElement('span')
+        ellipsis.textContent = '...'
+        ellipsis.style.opacity = '0.3'
+        body.appendChild(ellipsis)
+      }
+    } else {
+      // Fallback: show the whole passage
+      body.textContent = passage.length > 200 ? passage.slice(0, 197) + '...' : passage
+    }
+  } else {
+    // No substring match — show the highlighted passage as-is
+    body.textContent = passage.length > 200 ? passage.slice(0, 197) + '...' : passage
+  }
+
+  card.appendChild(body)
+
+  // Position
+  const left = Math.min(screenPos.x + 12, window.innerWidth - 380)
+  const top = Math.max(screenPos.y - 10, 8)
+  Object.assign(card.style, {
     position: 'fixed',
-    left: `${Math.min(screenPos.x + 8, window.innerWidth - 320)}px`,
-    top: `${Math.max(screenPos.y - 30, 8)}px`,
-    maxWidth: '300px',
-    padding: '4px 8px',
-    background: 'rgba(0,0,0,0.8)',
-    color: '#fff',
-    fontSize: '11px',
-    lineHeight: '1.3',
-    borderRadius: '4px',
+    left: `${left}px`,
+    top: `${top}px`,
     zIndex: '99999',
-    pointerEvents: 'none',
-    opacity: '1',
-    transition: 'opacity 1s ease-out',
-    fontFamily: 'system-ui, sans-serif',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
   })
-  document.body.appendChild(toast)
-  setTimeout(() => { toast.style.opacity = '0' }, 3000)
-  setTimeout(() => { toast.remove() }, 4000)
+
+  // Click to dismiss
+  card.addEventListener('click', (e) => {
+    e.stopPropagation()
+    card.remove()
+  })
+
+  document.body.appendChild(card)
+
+  if (!persistent) {
+    // Auto-fade after 4 seconds
+    setTimeout(() => { card.style.opacity = '0' }, 4000)
+    setTimeout(() => { card.remove() }, 5000)
+  }
+
+  return card
+}
+
+/**
+ * Show source context card for an existing highlight shape (e.g. on hover).
+ * Returns a cleanup function to remove the card.
+ */
+export function showSourceContextCardForShape(editor: Editor, shapeId: string): (() => void) | null {
+  const shape = editor.getShape(shapeId as any)
+  if (!shape || (shape.type as string) !== 'highlight') return null
+
+  const meta = shape.meta as any
+  const sourceLines: SourceLine[] = meta?.sourceLines
+  if (!sourceLines || sourceLines.length === 0) return null
+
+  const bounds = editor.getShapePageBounds(shapeId as any)
+  if (!bounds) return null
+
+  const hlColor = meta?.glowColor || (shape.props as any).color || 'yellow'
+  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true)
+  if (!card) return null
+
+  return () => { card.remove() }
 }

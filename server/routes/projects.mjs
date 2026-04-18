@@ -147,6 +147,17 @@ router.patch('/:name/archive', requireRw, (req, res) => {
   }
 })
 
+// Toggle autoSync (git mirror sync)
+router.patch('/:name/auto-sync', requireRw, (req, res) => {
+  try {
+    const { autoSync } = req.body
+    const project = updateProject(req.params.name, { autoSync: !!autoSync })
+    res.json({ ok: true, autoSync: project.autoSync })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
 // Delete project
 router.delete('/:name', requireRw, (req, res) => {
   try {
@@ -186,6 +197,45 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
     res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
   } catch (e) {
     res.status(400).json({ error: e.message })
+  }
+})
+
+// Synctex reverse lookup: PDF position → source context
+router.get('/:name/synctex', requireRead, async (req, res) => {
+  const { getSourceContext } = await import('../lib/synctex-query.mjs')
+  const { page, startX, startY, endX, endY, context, text } = req.query
+  if (!page || !startX || !startY) {
+    return res.status(400).json({ error: 'Required: page, startX, startY' })
+  }
+  try {
+    const result = await getSourceContext(
+      req.params.name,
+      parseInt(page),
+      parseFloat(startX), parseFloat(startY),
+      parseFloat(endX || startX), parseFloat(endY || startY),
+      parseInt(context) || 2,
+      text || ''
+    )
+    if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Synctex path-based lookup: trace highlight path through synctex records
+router.post('/:name/synctex-path', requireRead, async (req, res) => {
+  const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
+  const { page, points, text } = req.body
+  if (!page || !points?.length) {
+    return res.status(400).json({ error: 'Required: page, points[]' })
+  }
+  try {
+    const result = await getSourceFromPath(req.params.name, page, points, text || '')
+    if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
   }
 })
 

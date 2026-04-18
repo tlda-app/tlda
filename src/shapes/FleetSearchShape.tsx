@@ -25,7 +25,6 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { appendToken } from '../authToken'
-import { useLayoutMode } from './HudLayoutMode'
 import { useIsInViewport } from './useIsInViewport'
 import './fleet-chat.css'
 
@@ -296,7 +295,6 @@ function resolveTimeFilter(val: string): string | null {
 
 function FleetSearchInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const agents = useFleetAgents()
@@ -448,7 +446,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: layoutMode ? 'none' : 'all',
+        pointerEvents: 'all',
         overflow: 'visible',
       }}
     >

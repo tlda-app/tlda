@@ -645,18 +645,22 @@ async function collectDrawnShapes(docName) {
       if (!bbox) continue;
       const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
       const gesture = classifyGesture(bbox);
-      const nearbyLines = findNearbyLines(docName, bbox);
+      // Use sourceLines from meta if available (unified resolution from viewer),
+      // otherwise fall back to bbox lookup (for old highlights or pen strokes)
+      const metaSourceLines = record.meta?.sourceLines;
+      const nearbyLines = (metaSourceLines && metaSourceLines.length > 0)
+        ? metaSourceLines.map(sl => ({ line: sl.line, content: sl.content, x: 0, y: 0 }))
+        : findNearbyLines(docName, bbox);
       const pos = describePagePosition(docName, bbox);
       const rendered = getRenderedText(docName, bbox);
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
-      const sourceLine = record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines,
         transcription, transcriptionVerified });
       continue;
     }
@@ -1955,11 +1959,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           startLine: { type: 'number', description: 'First source line to highlight' },
-          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line)' },
+          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line). Optional when text is provided.' },
           color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
+          text: { type: 'string', description: 'Specific text to highlight (substring from the source). When provided, highlights just this text instead of full lines. startLine is used as a hint for where to search.' },
         },
-        required: ['doc', 'startLine', 'endLine'],
+        required: ['doc', 'startLine'],
       },
     },
     {
@@ -2198,17 +2203,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'text'],
       },
     },
-    {
-      name: 'update_shared_doc',
-      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Doc name (as returned by share())' },
-        },
-        required: ['doc'],
-      },
-    },
+    // update_shared_doc removed — use `tlda push` CLI instead
   ],
 }));
 
@@ -2317,7 +2312,11 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
     if (pos) text += ` ${pos.description}`;
-    if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
+    if (r.meta.sourceLines?.length > 0) {
+      const sl = r.meta.sourceLines;
+      const range = sl.length === 1 ? `line ${sl[0].line}` : `lines ${sl[0].line}–${sl[sl.length-1].line}`;
+      text += `, ${range}`;
+    }
     if (lines.length === 1) {
       text += `\n  text: "${lines[0]}"`;
     } else {
@@ -2678,12 +2677,180 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // signal_reload handler removed — folded into push
 
   if (name === 'draw_highlight') {
-    const { doc, startLine, endLine, color = 'orange', file } = args;
-    if (!doc || startLine == null || endLine == null) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine' }], isError: true };
+    const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
+    if (!doc || startLine == null) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine' }], isError: true };
     }
+    // endLine is required unless text is provided
+    const endLine = endLineArg ?? startLine;
 
     try {
+      // --- Text-based highlighting: find exact text position and narrow the highlight ---
+      if (text) {
+        // Read source file from the server
+        const sourceFile = file || null;
+        const sourceFileName = sourceFile ? path.basename(sourceFile) : null;
+        let sourceContent;
+        try {
+          const srcUrl = sourceFileName
+            ? `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(sourceFileName)}`
+            : `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/main`;
+          const srcRes = await fetch(srcUrl, { headers: TLDA_AUTH_HEADERS });
+          if (!srcRes.ok) {
+            // If 'main' didn't work, try getting project info for the actual main file name
+            if (!sourceFileName) {
+              const projRes = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}`, { headers: TLDA_AUTH_HEADERS });
+              if (projRes.ok) {
+                const projData = await projRes.json();
+                const mainFile = projData.mainFile || projData.main;
+                if (mainFile) {
+                  const srcRes2 = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(mainFile)}`, { headers: TLDA_AUTH_HEADERS });
+                  if (srcRes2.ok) sourceContent = await srcRes2.text();
+                }
+              }
+            }
+            if (!sourceContent) {
+              return { content: [{ type: 'text', text: `Could not read source file for ${doc}` }], isError: true };
+            }
+          } else {
+            sourceContent = await srcRes.text();
+          }
+        } catch (e) {
+          return { content: [{ type: 'text', text: `Error reading source: ${e.message}` }], isError: true };
+        }
+
+        const sourceLines = sourceContent.split('\n');
+        // Search for text near startLine (±10 lines)
+        const searchStart = Math.max(0, startLine - 11); // 0-indexed
+        const searchEnd = Math.min(sourceLines.length, startLine + 10);
+        const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n');
+
+        const matchIdx = searchRegion.indexOf(text);
+        if (matchIdx === -1) {
+          return { content: [{ type: 'text', text: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` }], isError: true };
+        }
+
+        // Convert matchIdx back to line number and column
+        const beforeMatch = searchRegion.slice(0, matchIdx);
+        const matchStartLine = searchStart + beforeMatch.split('\n').length; // 1-indexed
+        const matchStartCol = beforeMatch.split('\n').pop().length; // 0-indexed column in that line
+
+        const matchEndOffset = matchIdx + text.length;
+        const beforeEnd = searchRegion.slice(0, matchEndOffset);
+        const matchEndLine = searchStart + beforeEnd.split('\n').length; // 1-indexed
+        const matchEndCol = beforeEnd.split('\n').pop().length; // 0-indexed column past end
+
+        const pageW = getPageWidth(doc);
+        const segments = [];
+        let hlLeft = Infinity, hlRight = -Infinity;
+        let hlTop = Infinity, hlBottom = -Infinity;
+
+        for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          // Full-line highlight width (text start to near-right edge)
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          // Determine column range for this line within the match
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          // Proportional x mapping: column fraction → x position
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          hlLeft = Math.min(hlLeft, xStart);
+          hlRight = Math.max(hlRight, xEnd);
+          hlTop = Math.min(hlTop, canvas.y - 3);
+          hlBottom = Math.max(hlBottom, canvas.y + 3);
+        }
+
+        if (hlLeft === Infinity) {
+          return { content: [{ type: 'text', text: `No lookup entries found for matched lines ${matchStartLine}–${matchEndLine}` }], isError: true };
+        }
+
+        const width = hlRight - hlLeft;
+        const height = hlBottom - hlTop;
+        const numLines = matchEndLine - matchStartLine + 1;
+        const lineH = numLines > 1 ? height / numLines : 0;
+
+        for (let i = 0; i < numLines; i++) {
+          const ln = matchStartLine + i;
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          // Segment coordinates are relative to the shape's (hlLeft, hlTop)
+          const segLeft = xStart - hlLeft;
+          const segRight = xEnd - hlLeft;
+          const y = (canvas.y - 3) - hlTop + (numLines <= 1 ? 0 : 0);
+          segments.push({ type: 'free', path: encodeB64Path([
+            { x: segLeft, y, z: 0.5 },
+            { x: segRight, y, z: 0.5 },
+          ])});
+        }
+
+        const shapeId = generateShapeId();
+        const shapeIndex = await getNextShapeIndex(doc);
+        const firstPos = lookupLine(doc, matchStartLine, file);
+        const shape = {
+          id: shapeId,
+          type: 'highlight',
+          x: hlLeft,
+          y: hlTop,
+          index: shapeIndex,
+          rotation: 0,
+          isLocked: false,
+          opacity: 0.7,
+          props: {
+            segments,
+            color,
+            size: 's',
+            isComplete: true,
+            isPen: false,
+            scale: 1,
+            scaleX: 1,
+            scaleY: 1,
+          },
+          meta: {
+            createdAt: Date.now(),
+            createdBy: 'claude',
+            sourceAnchor: { file: file || './' + (firstPos?.texFile || 'main.tex'), line: matchStartLine },
+            highlightedText: text,
+            ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+            ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
+          },
+          parentId: 'page:page',
+          typeName: 'shape',
+        };
+
+        await createShapeRest(doc, shape);
+        return { content: [{ type: 'text', text: `Highlight drawn: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" at lines ${matchStartLine}–${matchEndLine}, page ${firstPos?.page}, ${color} (${shapeId})` }] };
+      }
+
+      // --- Full-line highlighting (original behavior) ---
       // Look up canvas positions for start and end lines
       const startPos = lookupLine(doc, startLine, file);
       const endPos = lookupLine(doc, endLine, file);
@@ -2994,7 +3161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
       const lines = feedback.map(f => {
         const icon = ICONS[f.type] || '📌';
-        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
+        const loc = f.lines ? ` (lines ${f.lines[0]}–${f.lines[1]})` : '';
         const status = f.addressed ? ' [addressed]' : '';
         const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
         return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
@@ -3423,36 +3590,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
       }
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'update_shared_doc') {
-    const doc = args.doc;
-    if (!doc) return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
-    try {
-      const sharedDocsRes = await fetch(`${TLDA_SERVER}/api/shared-docs`, { headers: TLDA_AUTH_HEADERS });
-      const sharedDocs = sharedDocsRes.ok ? await sharedDocsRes.json() : [];
-      const sharedDoc = sharedDocs.find(d => d.doc === doc);
-      if (!sharedDoc) {
-        return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
-      }
-      let content;
-      try { content = fs.readFileSync(sharedDoc.path, 'utf8'); } catch (e) {
-        return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
-      }
-      const mainFile = path.basename(sharedDoc.path);
-      await serverFetch(`/api/projects/${doc}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: [{ path: mainFile, content }],
-          sourceDir: path.dirname(sharedDoc.path),
-          session: process.env.CLAUDE_SESSION,
-        }),
-      });
-      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }

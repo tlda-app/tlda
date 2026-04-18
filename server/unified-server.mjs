@@ -38,7 +38,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { initProjectStore, listProjects } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
@@ -300,6 +300,9 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
 // watching its source files.
 onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
+  if (event?.type === 'version-committed') {
+    broadcastDaemonVersionCommitted(event.name, event.hash)
+  }
 })
 
 // ---------- RPC routing ----------
@@ -1231,6 +1234,24 @@ function broadcastDaemonProjectsUpdated() {
   }
 }
 
+function broadcastDaemonVersionCommitted(projectName, hash) {
+  if (daemonConnections.size === 0) return
+  const project = readProject(projectName)
+  const repoPath = join(getProjectsDir(), projectName, 'shadow-repo')
+  for (const [, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try {
+      dws.send(JSON.stringify({
+        type: 'version-committed',
+        project: projectName,
+        hash,
+        repoPath,
+        autoSync: project?.autoSync !== false,
+      }))
+    } catch {}
+  }
+}
+
 function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -1455,6 +1476,7 @@ function generateManifest() {
             ...(project.members && { members: project.members }),
             ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
+            autoSync: project.autoSync !== false,
           }
         } catch (e) {
           console.error(`[manifest] Failed to read ${projectJsonPath}:`, e.message)
