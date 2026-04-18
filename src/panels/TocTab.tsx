@@ -734,7 +734,7 @@ export function FleetToggle() {
 
   return (
     <div className="toc-diff-hint" onClick={handleClick}>
-      <span className="toc-toggle-icon">{'\u2693'}</span> {label}
+      <img src="/basestar.svg" alt="" style={{ width: 14, height: 14, verticalAlign: 'middle', marginRight: 4, opacity: 0.6 }} /> {label}
     </div>
   )
 }
