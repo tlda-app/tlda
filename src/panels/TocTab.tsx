@@ -734,7 +734,7 @@ export function FleetToggle() {
 
   return (
     <div className="toc-diff-hint" onClick={handleClick}>
-      <img src="/basestar.svg" alt="" style={{ width: 10, height: 10, verticalAlign: 'middle', marginRight: 4, opacity: 0.6 }} /> {label}
+      <img src="/basestar.svg" alt="" style={{ width: 10, height: 10, verticalAlign: 'middle', marginRight: 4, opacity: 0.6, position: 'relative' as const, top: 1 }} /> {label}
     </div>
   )
 }
