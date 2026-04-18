@@ -27,7 +27,7 @@ import {
   useValue,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
@@ -108,6 +108,26 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const doc = useContext(DocContext)
   const isSelected = useValue('docview-selected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = isSelected
+
+  // Capture-phase pointerdown: fires before tldraw's tl-container listener
+  // can intercept. Marks clicks as handled so tldraw skips setPointerCapture.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
 
   const { w, h, sources: sourcesRaw, label, page, yTop, yBottom, title } = shape.props
   const sources = parseSources(sourcesRaw)
@@ -287,6 +307,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   return (
     <div
+      ref={containerRef}
       className="fleet-docview fleet-shape"
       style={{ width: w, height: h, position: 'relative' }}
       onPointerDown={stopEventPropagation}
