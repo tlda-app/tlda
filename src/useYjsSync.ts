@@ -92,12 +92,33 @@ export function onForwardSync(cb: ForwardSyncCallback) {
   return () => { forwardSyncCallbacks.delete(cb) }
 }
 
-const screenshotHandle = bus.register<{ timestamp: number }>({
+export type ScreenshotRequest = {
+  timestamp: number
+  /** Optional canvas bounds — if provided, capture this region instead of the viewport */
+  bounds?: { x: number; y: number; w: number; h: number }
+  /** Optional page number — if provided (and no bounds), capture this page */
+  page?: number
+  /** Agent name requesting the screenshot */
+  agent?: string
+}
+const screenshotHandle = bus.register<ScreenshotRequest>({
   key: 'signal:screenshot-request',
   initBehavior: 'fire-if-recent',
   recentMs: 10000,
 })
 export const onScreenshotRequest = screenshotHandle.on
+
+export type ScreenshotBoundsSignal = {
+  bounds: { x: number; y: number; w: number; h: number }
+  agent?: string
+  timestamp: number
+}
+const screenshotBoundsHandle = bus.register<ScreenshotBoundsSignal>({
+  key: 'signal:screenshot-bounds',
+  initBehavior: 'fire-if-recent',
+  recentMs: 5000,
+})
+export const onScreenshotBounds = screenshotBoundsHandle.on
 
 export type CameraLinkSignal = { x: number; y: number; z: number; viewerId: string; timestamp: number }
 const cameraLinkHandle = bus.register<CameraLinkSignal>({

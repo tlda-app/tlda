@@ -915,6 +915,31 @@ function rpcStopTerminalWatch({ tmux_session }) {
   return { ok: true }
 }
 
+async function rpcSpawn({ name, model, cwd, doc, respawn }) {
+  // Generate a temp name if none provided
+  const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
+  // Resolve cwd from doc name if not explicitly set
+  let resolvedCwd = cwd
+  if (!resolvedCwd && doc) {
+    const project = projects.find(p => p.name === doc)
+    if (project?.sourceDir) resolvedCwd = project.sourceDir
+  }
+  const spawnScript = process.env.FLEET_SPAWN || 'fleet-spawn'
+  const args = respawn ? [agentName] : ['--fresh', agentName]
+  if (model) args.push('--model', model)
+  if (resolvedCwd) args.push('--cwd', resolvedCwd)
+  args.push('--no-attach')
+  try {
+    const { stdout, stderr } = await execFileP(spawnScript, args, {
+      timeout: 30000,
+      env: { ...process.env, PATH: process.env.PATH },
+    })
+    return { ok: true, name, stdout: stdout.trim(), stderr: stderr.trim() }
+  } catch (e) {
+    throw new Error(`fleet-spawn failed: ${e.stderr || e.message}`)
+  }
+}
+
 const RPC_HANDLERS = {
   'send-key': rpcSendKey,
   'send-text': rpcSendText,
@@ -925,6 +950,7 @@ const RPC_HANDLERS = {
   'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
+  'spawn': rpcSpawn,
 }
 
 async function handleRpc(msg) {

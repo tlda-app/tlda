@@ -1,12 +1,18 @@
 import { useEffect } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onForwardSync, onScreenshotRequest, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
+
+export interface ScreenshotCaptureState {
+  bounds: { x: number; y: number; w: number; h: number }
+  agent?: string
+  timestamp: number
+}
 
 interface UseYjsSignalsParams {
   editorRef: React.MutableRefObject<Editor | null>
@@ -20,6 +26,7 @@ interface UseYjsSignalsParams {
   refViewerLineRef: React.MutableRefObject<number | null>
   panelsLocalRef: React.MutableRefObject<boolean>
   onReloadResult?: (result: ReloadResult | null) => void
+  setScreenshotCapture?: (state: ScreenshotCaptureState | null) => void
 }
 
 export function useYjsSignals({
@@ -27,7 +34,7 @@ export function useYjsSignals({
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   setRefViewerRefs, refViewerLineRef, panelsLocalRef,
-  onReloadResult,
+  onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   // Subscribe to Yjs reload signals
   useEffect(() => {
@@ -137,18 +144,46 @@ export function useYjsSignals({
     window.addEventListener('pointerdown', onInteract, true)
     window.addEventListener('keydown', onInteract, true)
 
-    const unsub = onScreenshotRequest(async () => {
+    const unsub = onScreenshotRequest(async (signal: any) => {
       const editor = editorRef.current
       if (!editor || !isSignalConnected()) return
       // Delay based on staleness: recently active viewers respond first (0-2s)
-      // This lets the most interactive viewer win the race
-      const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1) // 0..1 over 30s
+      const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1)
       const delay = Math.round(staleness * 2000)
       if (delay > 0) await new Promise(r => setTimeout(r, delay))
       try {
-        const viewportBounds = editor.getViewportPageBounds()
+        // Determine capture bounds: explicit bounds > page > viewport
+        let captureBounds: { x: number; y: number; w: number; h: number } | null = null
+        if (signal.bounds) {
+          captureBounds = { x: signal.bounds.x, y: signal.bounds.y, w: signal.bounds.w, h: signal.bounds.h }
+        } else if (signal.page) {
+          const pageShapes = editor.getCurrentPageShapes().filter((s: any) => s.type === 'svg-page')
+          const sorted = [...pageShapes].sort((a: any, b: any) => a.y - b.y)
+          const target = sorted[signal.page - 1]
+          if (target) {
+            const b = editor.getShapePageBounds(target.id)
+            if (b) captureBounds = { x: b.x, y: b.y, w: b.w, h: b.h }
+          }
+        }
+        if (!captureBounds) {
+          const vp = editor.getViewportPageBounds()
+          captureBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h }
+        }
+
+        if (signal.bounds || signal.page) {
+          // Targeted screenshot: render via CanvasClipPanel (handles off-screen content).
+          // The ScreenshotCapture component handles rendering, capturing, and sending
+          // the signal:screenshot response.
+          if (setScreenshotCapture) {
+            setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
+          }
+          return
+        }
+
+        // Viewport screenshot (no bounds/page specified): capture current view directly
+        const vp = editor.getViewportPageBounds()
         const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
+          bounds: vp,
           background: true,
           scale: 1,
           pixelRatio: 1,
@@ -163,7 +198,7 @@ export function useYjsSignals({
           reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
         })
         writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-        console.log(`[Screenshot] Captured ${Math.round(base64.length / 1024)}KB`)
+        console.log(`[Screenshot] Captured viewport (${Math.round(base64.length / 1024)}KB)`)
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)
       }
@@ -172,6 +207,58 @@ export function useYjsSignals({
       unsub()
       window.removeEventListener('pointerdown', onInteract, true)
       window.removeEventListener('keydown', onInteract, true)
+    }
+  }, [])
+
+  // Screenshot bounds: auto-show annotation viewer over the chat placeholder
+  useEffect(() => {
+    let scrollCleanup: (() => void) | null = null
+
+    const unsub = onScreenshotBounds((signal: any) => {
+      if (!signal.bounds) return
+      const label = signal.agent ? `📷 ${signal.agent}` : '📷 screenshot'
+
+      function showAtPlaceholder() {
+        // Find the most recent screenshot placeholder in any chat
+        const placeholder = document.querySelector('.screenshot-placeholder') as HTMLElement | null
+        if (!placeholder) {
+          // No placeholder visible — show as floating panel
+          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+            detail: { bounds: signal.bounds, shapeIds: [], label, pinned: true }
+          }))
+          return
+        }
+        const rect = placeholder.getBoundingClientRect()
+        // Only show if placeholder is visible
+        if (rect.bottom < 0 || rect.top > window.innerHeight) {
+          window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+          return
+        }
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: {
+            bounds: signal.bounds,
+            shapeIds: [],
+            label,
+            pinned: true,
+            chipRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+          }
+        }))
+      }
+
+      showAtPlaceholder()
+
+      // Track scroll in the chat log to move the overlay
+      const chatLog = document.querySelector('.fleet-chat-log')
+      if (chatLog) {
+        const onScroll = () => showAtPlaceholder()
+        chatLog.addEventListener('scroll', onScroll, { passive: true })
+        scrollCleanup = () => chatLog.removeEventListener('scroll', onScroll)
+      }
+    })
+
+    return () => {
+      unsub()
+      scrollCleanup?.()
     }
   }, [])
 

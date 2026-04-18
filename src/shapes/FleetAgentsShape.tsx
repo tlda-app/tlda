@@ -347,6 +347,18 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('seen')
   const [sortAsc, setSortAsc] = useState(false)
 
+  // Spawn: project selector. Default to current doc, dropdown shows all projects.
+  const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
+  const [spawnDoc, setSpawnDoc] = useState(currentDoc)
+  const [projectList, setProjectList] = useState<string[]>([])
+  const [showSpawnPicker, setShowSpawnPicker] = useState(false)
+  useEffect(() => {
+    if (!showSpawnPicker) return
+    fetch('/api/projects').then(r => r.ok ? r.json() : []).then(projects => {
+      setProjectList((projects as any[]).map((p: any) => p.name).sort())
+    }).catch(() => {})
+  }, [showSpawnPicker])
+
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
     return tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
@@ -551,15 +563,39 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             {staleCount > 0 && <span style={{ marginLeft: 6 }}>· {staleCount} stale</span>}
           </span>
           <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
+            {showSpawnPicker && (
+              <span className="fleet-agents-spawn-search-wrap">
+                <input
+                  className="fleet-agents-spawn-search"
+                  value={spawnDoc}
+                  onChange={(e) => setSpawnDoc(e.target.value)}
+                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setShowSpawnPicker(false) }}
+                  placeholder="project"
+                  autoFocus
+                  list="spawn-projects"
+                />
+                <datalist id="spawn-projects">
+                  {projectList.filter(p => !spawnDoc || p.toLowerCase().includes(spawnDoc.toLowerCase())).map(p =>
+                    <option key={p} value={p} />
+                  )}
+                </datalist>
+              </span>
+            )}
             <button
               className="fleet-agents-spawn-btn"
-              title="Spawn Sonnet agent"
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6') }}
+              title={showSpawnPicker ? 'Hide project picker' : `Spawning in: ${spawnDoc || '(none)'}`}
+              onPointerUp={(e) => { e.stopPropagation(); setShowSpawnPicker(v => !v) }}
+              style={{ opacity: showSpawnPicker ? 0.8 : undefined }}
+            >📂</button>
+            <button
+              className="fleet-agents-spawn-btn"
+              title={`Spawn Sonnet in ${spawnDoc || 'default dir'}`}
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6', spawnDoc || undefined) }}
             >+S</button>
             <button
               className="fleet-agents-spawn-btn"
-              title="Spawn Opus agent"
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6') }}
+              title={`Spawn Opus in ${spawnDoc || 'default dir'}`}
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6', spawnDoc || undefined) }}
             >+O</button>
           </span>
         </div>

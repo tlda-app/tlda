@@ -911,6 +911,23 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
   padding: 0 4px 3px;
   border-bottom: 1px solid var(--glass-3);
 }
+/* Screenshot placeholder — reserves space for CanvasClipPanel overlay */
+.fleet-chat-shape .screenshot-placeholder {
+  width: 100%;
+  height: 200px;
+  border-radius: 6px;
+  background: rgba(100, 100, 200, 0.06);
+  border: 1px solid rgba(100, 100, 200, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0;
+  position: relative;
+}
+.fleet-chat-shape .screenshot-placeholder-label {
+  color: rgba(150, 150, 200, 0.4);
+  font-size: 12px;
+}
 /* Thread messages — look like normal chat lines */
 .fleet-chat-shape .tool-pretty-thread {
   border-left: 2px solid var(--accent, #7a9ec8);
@@ -1506,6 +1523,20 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
+}
+.fleet-agents-shape .fleet-agents-spawn-search {
+  background: rgba(30,30,40,0.9);
+  color: #ccc;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  font-size: 8px;
+  padding: 2px 4px;
+  width: 80px;
+  font-family: inherit;
+  outline: none;
+}
+.fleet-agents-shape .fleet-agents-spawn-search:focus {
+  border-color: rgba(128,128,128,0.5);
 }
 
 /* --- Search shape enhancements --- */

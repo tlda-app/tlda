@@ -177,11 +177,11 @@ export async function respawnAgent(id) {
   })
 }
 
-export async function spawnAgent(model) {
+export async function spawnAgent(model, doc) {
   return fetch(`${FLEET}/api/spawn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, ...(doc ? { doc } : {}) }),
   })
 }
 

@@ -2450,13 +2450,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
+    // Use signal-based capture (no puppeteer dependency)
     try {
-      const base64 = await headlessScreenshot(docName, targetPage);
+      const signalData = { timestamp: Date.now() };
+      if (targetPage) signalData.page = targetPage;
+      await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
+      const result = await new Promise((resolve) => {
+        const stream = connectSignalStream(docName, (signal) => {
+          if (signal.key === 'signal:screenshot' && signal.data) {
+            clearTimeout(timer);
+            stream.close();
+            resolve(signal);
+          }
+        });
+        const timer = setTimeout(() => {
+          stream.close();
+          resolve(null);
+        }, 8000);
+      });
+      if (result?.data) {
+        return {
+          content: [
+            { type: 'text', text: `Screenshot${targetPage ? ` (page ${targetPage})` : ''} (${Math.round(result.data.length / 1024)}KB)` },
+            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
+          ],
+        };
+      }
       return {
-        content: [
-          { type: 'text', text: `Screenshot (${Math.round(base64.length / 1024)}KB)` },
-          { type: 'image', data: base64, mimeType: 'image/png' },
-        ],
+        content: [{ type: 'text', text: 'No viewer responded — open the document in a browser first.' }],
+        isError: true,
       };
     } catch (e) {
       return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
@@ -2490,12 +2512,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'Missing bounds — provide ref or x/y/w/h' }], isError: true };
     }
     try {
-      const base64 = await headlessScreenshotCrop(docName, bounds, padding, args?.shapeId || null);
+      // Try signal-based capture first (non-disruptive, no puppeteer)
+      await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now(), bounds });
+      const result = await new Promise((resolve) => {
+        const stream = connectSignalStream(docName, (signal) => {
+          if (signal.key === 'signal:screenshot' && signal.data) {
+            clearTimeout(timer);
+            stream.close();
+            resolve(signal);
+          }
+        });
+        const timer = setTimeout(() => { stream.close(); resolve(null) }, 8000);
+      });
+      if (result?.data) {
+        return {
+          content: [
+            { type: 'text', text: `Cropped screenshot (${Math.round(result.data.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
+            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
+          ],
+        };
+      }
       return {
-        content: [
-          { type: 'text', text: `Cropped screenshot (${Math.round(base64.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
-          { type: 'image', data: base64, mimeType: 'image/png' },
-        ],
+        content: [{ type: 'text', text: 'No viewer responded — open the document in a browser first.' }],
+        isError: true,
       };
     } catch (e) {
       return { content: [{ type: 'text', text: `Crop screenshot failed: ${e.message}` }], isError: true };
