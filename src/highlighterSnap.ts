@@ -12,6 +12,7 @@
 
 import type { Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
+import { chatInsertBus } from './shapes/FleetPillShape'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -536,7 +537,8 @@ function showSourceContextCard(
   hlColor: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
-  persistent = false
+  persistent = false,
+  shapeId?: string,
 ): HTMLElement | null {
   if (sourceLines.length === 0) return null
 
@@ -655,6 +657,26 @@ function showSourceContextCard(
     zIndex: '99999',
   })
 
+  // Click card to insert chip into active chat input
+  if (shapeId) {
+    card.style.cursor = 'grab'
+    card.setAttribute('data-shape-id', shapeId)
+    const highlighted = sourceLines.filter(sl => sl.highlighted === true)
+    const first = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
+    const displayText = (first?.content?.slice(0, 40) || 'highlight').replace(/[«»]/g, '')
+    const token = `«highlight:${displayText}#${shapeId}»`
+
+    card.addEventListener('pointerdown', (e) => {
+      e.stopPropagation()
+      e.preventDefault()
+      // Insert token into chat via chatInsertBus (broadcast to all chats)
+      chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token } }))
+      card.style.opacity = '0.5'
+      setTimeout(() => { card.style.opacity = '1' }, 300)
+    })
+    return card // skip the click-to-dismiss below
+  }
+
   // Click to dismiss
   card.addEventListener('click', (e) => {
     e.stopPropagation()
@@ -681,14 +703,19 @@ export function showSourceContextCardForShape(editor: Editor, shapeId: string): 
   if (!shape || (shape.type as string) !== 'highlight') return null
 
   const meta = shape.meta as any
-  const sourceLines: SourceLine[] = meta?.sourceLines
-  if (!sourceLines || sourceLines.length === 0) return null
+  let sourceLines: SourceLine[] = meta?.sourceLines
+  // Fallback: if no sourceLines, create one from highlightText
+  if (!sourceLines || sourceLines.length === 0) {
+    const hlText = meta?.highlightText || meta?.highlightedText
+    if (!hlText) return null
+    sourceLines = [{ line: 0, content: hlText, highlighted: true }]
+  }
 
   const bounds = editor.getShapePageBounds(shapeId as any)
   if (!bounds) return null
 
   const hlColor = meta?.glowColor || (shape.props as any).color || 'yellow'
-  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true)
+  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true, shapeId)
   if (!card) return null
 
   return () => { card.remove() }

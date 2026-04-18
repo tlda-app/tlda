@@ -11,7 +11,7 @@ import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
-import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow, showSourceContextCardForShape } from './highlighterSnap'
+import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
@@ -838,19 +838,41 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   {
     let glowCleanup: (() => void) | null = null
     let glowShapeId: string | null = null
+    let cleanupTimer: ReturnType<typeof setTimeout> | null = null
     editor.store.listen(() => {
       try {
         const hoveredId = editor.getHoveredShapeId()
         const id = hoveredId ?? null
         if (id === glowShapeId) return
+        // Bridge zone: delay cleanup so cursor can move to the card
+        if (!id && glowCleanup) {
+          if (cleanupTimer) clearTimeout(cleanupTimer)
+          cleanupTimer = setTimeout(() => {
+            // Check if cursor is over the card
+            const card = document.querySelector('.hl-source-card:hover')
+            if (card) {
+              // Card is hovered — keep it alive, listen for card mouseleave
+              const onLeave = () => {
+                card.removeEventListener('mouseleave', onLeave)
+                if (glowCleanup) { glowCleanup(); glowCleanup = null }
+                glowShapeId = null
+              }
+              card.addEventListener('mouseleave', onLeave)
+              return
+            }
+            if (glowCleanup) { glowCleanup(); glowCleanup = null }
+            glowShapeId = null
+          }, 300)
+          return
+        }
+        if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null }
         if (glowCleanup) { glowCleanup(); glowCleanup = null }
         glowShapeId = id
         if (id) {
           const shape = editor.getShape(id)
-          if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
-            const glowOff = showGlow(editor, id)
+          if (shape?.type === 'highlight') {
             const cardOff = showSourceContextCardForShape(editor, id)
-            glowCleanup = () => { glowOff?.(); cardOff?.() }
+            glowCleanup = () => { cardOff?.() }
           }
           // Show transcription toast on hover for recognized draw shapes
           if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {
