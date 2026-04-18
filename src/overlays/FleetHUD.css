@@ -57,8 +57,9 @@
 .fleet-hud-wrap .clip-panel-fullvp * {
   pointer-events: none !important;
 }
-/* Fleet shapes are interactive + override tldraw's SVG cursor so all
-   areas within the shape show a normal cursor instead of the tldraw arrow. */
+/* Fleet shapes are interactive — restore pointer-events so content
+   (buttons, inputs, scrollable areas) works. No cursor override —
+   the cursor should reflect the actual interaction state. */
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"],
@@ -68,13 +69,12 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
   pointer-events: auto !important;
-  cursor: default;
 }
-/* TLDraw selection/resize handles must be interactive.
-   tl-overlays__item children are the actual handles (SVGs, divs).
-   The tl-overlays container itself stays none so it doesn't block clicks. */
-.fleet-hud-wrap .clip-panel-fullvp .tl-overlays__item,
-.fleet-hud-wrap .clip-panel-fullvp .tl-overlays__item * {
+/* TLDraw selection/resize handles must be interactive, but shape
+   indicators (hover outlines) must NOT block clicks on shape content.
+   Only restore pointer-events on the selection foreground (resize handles). */
+.fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg,
+.fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg * {
   pointer-events: auto !important;
 }
 /* The HUD mirrors document records (including html-page shapes that contain

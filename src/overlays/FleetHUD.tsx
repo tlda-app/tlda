@@ -245,6 +245,14 @@ export function FleetHUD({
     return () => {
       document.body.classList.remove('fleet-hud-open')
       fleetHudOpenRef.current = false
+      // Touch again on close so shapes become visible in main editor
+      const shapes = mainEditor.getCurrentPageShapes()
+        .filter(s => FLEET_SHAPE_TYPES_SET.has(s.type as string))
+      if (shapes.length > 0) {
+        mainEditor.updateShapes(shapes.map(s => ({
+          id: s.id, type: s.type, meta: { ...s.meta, _visTick: Date.now() },
+        })))
+      }
     }
   }, [expanded, fleetBounds, mainEditor])
 
