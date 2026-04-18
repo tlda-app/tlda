@@ -63,7 +63,9 @@ import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
-import { FleetHUD } from './overlays/FleetHUD'
+import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
+
+const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -827,6 +829,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowActiveIdx,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions, shadowActiveIdx])
 
+  // When the fleet HUD overlay is open, hide fleet shapes in the main editor
+  // from both rendering AND hit-testing. The overlay renders its own copies.
+  // Uses a stable ref (fleetHudOpenRef) so the callback identity never changes
+  // (changing it would recreate the entire editor).
+  const getShapeVisibility = useCallback((shape: any) => {
+    if (fleetHudOpenRef.current && FLEET_TYPES_FOR_VIS.has(shape.type)) return 'hidden' as const
+    return undefined
+  }, [])
+
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
     // it draws a blue path outline that competes with our text glow effect
@@ -1110,6 +1121,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         shapeUtils={shapeUtils}
         tools={tools}
         overrides={overrides}
+        getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor

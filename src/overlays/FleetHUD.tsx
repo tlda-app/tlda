@@ -15,6 +15,12 @@ import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+const FLEET_SHAPE_TYPES_SET = new Set(FLEET_SHAPE_TYPES)
+
+/** Mutable flag: true when the HUD overlay is expanded. Read by
+ *  getShapeVisibility on the main editor to hide fleet shapes from
+ *  hit-testing (they're rendered by the overlay instead). */
+export const fleetHudOpenRef = { current: false }
 
 interface FleetHUDProps {
   mainEditor: Editor
@@ -219,13 +225,28 @@ export function FleetHUD({
   // main canvas — avoids the "two copies" issue where both the HUD and main
   // canvas show the same shapes simultaneously.
   useEffect(() => {
-    if (expanded && fleetBounds) {
+    const isOpen = !!(expanded && fleetBounds)
+    fleetHudOpenRef.current = isOpen
+    if (isOpen) {
       document.body.classList.add('fleet-hud-open')
     } else {
       document.body.classList.remove('fleet-hud-open')
     }
-    return () => document.body.classList.remove('fleet-hud-open')
-  }, [expanded, fleetBounds])
+    // Touch fleet shapes so tldraw's getShapeVisibility cache invalidates.
+    // The cache is keyed on shape records — bumping meta triggers recomputation.
+    const fleetShapes = mainEditor.getCurrentPageShapes()
+      .filter(s => FLEET_SHAPE_TYPES_SET.has(s.type as string))
+    if (fleetShapes.length > 0) {
+      const tick = Date.now()
+      mainEditor.updateShapes(fleetShapes.map(s => ({
+        id: s.id, type: s.type, meta: { ...s.meta, _visTick: tick },
+      })))
+    }
+    return () => {
+      document.body.classList.remove('fleet-hud-open')
+      fleetHudOpenRef.current = false
+    }
+  }, [expanded, fleetBounds, mainEditor])
 
   // Track camera so render recomputes canvas→screen projection for HUD x.
   // We poll via rAF because tldraw camera changes don't fire store listeners
@@ -298,45 +319,6 @@ export function FleetHUD({
       document.removeEventListener('drop', onDrop, true)
     }
   }, [expanded])
-
-  // Block the MAIN editor from processing pointer events that land on overlay
-  // fleet shapes. The main editor's tl-canvas React handler fires in bubble
-  // phase; we intercept at capture phase on the main editor's container and
-  // mark the event as handled so tldraw skips it entirely. This prevents the
-  // main editor's stale hit-test region (shifted by camera offset) from
-  // interfering with the overlay's shapes.
-  useEffect(() => {
-    if (!expanded) return
-    const mainContainer = mainEditor.getContainer()
-    if (!mainContainer) return
-
-    const isOverFleetShape = (e: PointerEvent) => {
-      const target = e.target as HTMLElement
-      return !!target?.closest?.(
-        '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], ' +
-        '[data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
-      )
-    }
-
-    function onPointerDown(e: PointerEvent) {
-      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
-    }
-    function onPointerMove(e: PointerEvent) {
-      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
-    }
-    function onPointerUp(e: PointerEvent) {
-      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
-    }
-
-    mainContainer.addEventListener('pointerdown', onPointerDown, true)
-    mainContainer.addEventListener('pointermove', onPointerMove, true)
-    mainContainer.addEventListener('pointerup', onPointerUp, true)
-    return () => {
-      mainContainer.removeEventListener('pointerdown', onPointerDown, true)
-      mainContainer.removeEventListener('pointermove', onPointerMove, true)
-      mainContainer.removeEventListener('pointerup', onPointerUp, true)
-    }
-  }, [expanded, mainEditor])
 
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length

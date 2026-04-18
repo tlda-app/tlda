@@ -333,8 +333,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       // tracks handled events independently, and the main editor's capture
       // listener fires before the overlay editor's (higher in DOM tree).
       editor.markEventAsHandled(e)
-      const mainEditor = (window as any).__tldraw_editor__
-      if (mainEditor && mainEditor !== editor) mainEditor.markEventAsHandled(e)
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)

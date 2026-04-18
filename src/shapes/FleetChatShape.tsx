@@ -1399,10 +1399,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         // Non-drag click — mark handled so tldraw skips setPointerCapture,
         // but let the event propagate to the target so the browser can start
         // text selection naturally (requires user-select:text on .chat-line).
-        // Mark on BOTH editors — each tracks handled events independently.
         editor.markEventAsHandled(e)
-        const mainEditor = (window as any).__tldraw_editor__
-        if (mainEditor && mainEditor !== editor) mainEditor.markEventAsHandled(e)
         return
       }
 
