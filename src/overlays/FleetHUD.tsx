@@ -299,6 +299,45 @@ export function FleetHUD({
     }
   }, [expanded])
 
+  // Block the MAIN editor from processing pointer events that land on overlay
+  // fleet shapes. The main editor's tl-canvas React handler fires in bubble
+  // phase; we intercept at capture phase on the main editor's container and
+  // mark the event as handled so tldraw skips it entirely. This prevents the
+  // main editor's stale hit-test region (shifted by camera offset) from
+  // interfering with the overlay's shapes.
+  useEffect(() => {
+    if (!expanded) return
+    const mainContainer = mainEditor.getContainer()
+    if (!mainContainer) return
+
+    const isOverFleetShape = (e: PointerEvent) => {
+      const target = e.target as HTMLElement
+      return !!target?.closest?.(
+        '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], ' +
+        '[data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
+      )
+    }
+
+    function onPointerDown(e: PointerEvent) {
+      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
+    }
+    function onPointerMove(e: PointerEvent) {
+      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
+    }
+    function onPointerUp(e: PointerEvent) {
+      if (isOverFleetShape(e)) mainEditor.markEventAsHandled(e)
+    }
+
+    mainContainer.addEventListener('pointerdown', onPointerDown, true)
+    mainContainer.addEventListener('pointermove', onPointerMove, true)
+    mainContainer.addEventListener('pointerup', onPointerUp, true)
+    return () => {
+      mainContainer.removeEventListener('pointerdown', onPointerDown, true)
+      mainContainer.removeEventListener('pointermove', onPointerMove, true)
+      mainContainer.removeEventListener('pointerup', onPointerUp, true)
+    }
+  }, [expanded, mainEditor])
+
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
