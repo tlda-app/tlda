@@ -544,15 +544,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Service health dots */}
-        {serviceHealth && (
-          <div className="fleet-agents-health">
-            <HealthDot ok={serviceHealth.tlda.ok} label="tlda" />
-            <HealthDot ok={serviceHealth.fleet.ok} label="fleet" detail={serviceHealth.fleet.error} />
-            <HealthDot ok={serviceHealth.sync.ok} label="sync" />
-          </div>
-        )}
-
         {/* Footer */}
         <div className="fleet-agents-footer">
           <span>
