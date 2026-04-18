@@ -724,11 +724,9 @@ export function FleetToggle() {
 
   let label: React.ReactNode
   if (nextState === '3col') {
-    // Next: left layout → "Fleet|"
-    label = <>Fleet<span style={{ display: 'inline-block', width: 2, height: '1em', background: 'currentColor', verticalAlign: 'text-bottom', marginLeft: 2 }} /></>
+    label = <>Fleet|</>
   } else if (nextState === '2col') {
-    // Next: split layout → "Flee|t"
-    label = <>Flee<span style={{ display: 'inline-block', width: 2, height: '1em', background: 'currentColor', verticalAlign: 'text-bottom', marginLeft: 1, marginRight: 1 }} />t</>
+    label = <>Flee|t</>
   } else {
     // Next: off → strikethrough
     label = <span style={{ textDecoration: 'line-through' }}>Fleet</span>
