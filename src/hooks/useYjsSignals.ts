@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onForwardSync, onScreenshotRequest, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
@@ -207,6 +207,58 @@ export function useYjsSignals({
       unsub()
       window.removeEventListener('pointerdown', onInteract, true)
       window.removeEventListener('keydown', onInteract, true)
+    }
+  }, [])
+
+  // Screenshot bounds: auto-show annotation viewer over the chat placeholder
+  useEffect(() => {
+    let scrollCleanup: (() => void) | null = null
+
+    const unsub = onScreenshotBounds((signal: any) => {
+      if (!signal.bounds) return
+      const label = signal.agent ? `📷 ${signal.agent}` : '📷 screenshot'
+
+      function showAtPlaceholder() {
+        // Find the most recent screenshot placeholder in any chat
+        const placeholder = document.querySelector('.screenshot-placeholder') as HTMLElement | null
+        if (!placeholder) {
+          // No placeholder visible — show as floating panel
+          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+            detail: { bounds: signal.bounds, shapeIds: [], label, pinned: true }
+          }))
+          return
+        }
+        const rect = placeholder.getBoundingClientRect()
+        // Only show if placeholder is visible
+        if (rect.bottom < 0 || rect.top > window.innerHeight) {
+          window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+          return
+        }
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: {
+            bounds: signal.bounds,
+            shapeIds: [],
+            label,
+            pinned: true,
+            chipRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+          }
+        }))
+      }
+
+      showAtPlaceholder()
+
+      // Track scroll in the chat log to move the overlay
+      const chatLog = document.querySelector('.fleet-chat-log')
+      if (chatLog) {
+        const onScroll = () => showAtPlaceholder()
+        chatLog.addEventListener('scroll', onScroll, { passive: true })
+        scrollCleanup = () => chatLog.removeEventListener('scroll', onScroll)
+      }
+    })
+
+    return () => {
+      unsub()
+      scrollCleanup?.()
     }
   }, [])
 

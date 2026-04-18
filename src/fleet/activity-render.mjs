@@ -51,9 +51,22 @@ function renderPrettyResult(toolName, text, ctx) {
   if (tool.includes('search')) {
     return renderSearchResult(text, ctx)
   }
+  if (tool.includes('screenshot')) {
+    return renderScreenshotResult(text)
+  }
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
+}
+
+function renderScreenshotResult(text) {
+  // Render a placeholder that the AnnotationViewer overlay will position over.
+  // Height matches how images display in chat (~200px).
+  const pageMatch = text.match(/page (\d+)/i)
+  const label = pageMatch ? `📷 p.${pageMatch[1]}` : '📷'
+  return `<div class="screenshot-placeholder" data-screenshot="true">
+    <span class="screenshot-placeholder-label">${esc(label)}</span>
+  </div>`
 }
 
 function renderThreadResult(text, ctx) {

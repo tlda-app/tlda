@@ -108,6 +108,18 @@ const screenshotHandle = bus.register<ScreenshotRequest>({
 })
 export const onScreenshotRequest = screenshotHandle.on
 
+export type ScreenshotBoundsSignal = {
+  bounds: { x: number; y: number; w: number; h: number }
+  agent?: string
+  timestamp: number
+}
+const screenshotBoundsHandle = bus.register<ScreenshotBoundsSignal>({
+  key: 'signal:screenshot-bounds',
+  initBehavior: 'fire-if-recent',
+  recentMs: 5000,
+})
+export const onScreenshotBounds = screenshotBoundsHandle.on
+
 export type CameraLinkSignal = { x: number; y: number; z: number; viewerId: string; timestamp: number }
 const cameraLinkHandle = bus.register<CameraLinkSignal>({
   key: 'signal:camera-link',

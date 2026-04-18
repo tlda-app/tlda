@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { writeSignal } from '../useYjsSync'
+import { getHumanId } from '../fleet/fleet-data.mjs'
 import type { ScreenshotCaptureState } from '../hooks/useYjsSignals'
 import './RefViewer.css'
 
@@ -50,7 +51,7 @@ export function ScreenshotCapture({
           bounds: vp,
           background: true,
           scale: 1,
-          pixelRatio: 2,
+          pixelRatio: 1,
         })
         const buf = await result.blob.arrayBuffer()
         const reader = new FileReader()
@@ -60,6 +61,13 @@ export function ScreenshotCapture({
         })
         writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
         console.log(`[ScreenshotCapture] Captured ${Math.round(base64.length / 1024)}KB`)
+
+        // Broadcast bounds so chat can show annotation viewer for this screenshot
+        writeSignal('signal:screenshot-bounds', {
+          bounds: capture.bounds,
+          agent: capture.agent,
+          timestamp: Date.now(),
+        })
       } catch (e) {
         console.warn('[ScreenshotCapture] Capture failed:', e)
       }

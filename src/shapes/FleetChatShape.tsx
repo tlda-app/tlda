@@ -848,7 +848,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     function onMouseOut(e: MouseEvent) {
       const target = e.target as HTMLElement
-      if (!target.closest('.doc-link')) return
+      if (!target.closest('.doc-link') && !target.closest('.screenshot-inline')) return
       const related = e.relatedTarget as HTMLElement | null
       if (related?.closest('.annotation-viewer')) return
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
