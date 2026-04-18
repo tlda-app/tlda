@@ -312,6 +312,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
       if (!el!.contains(target)) return
       if (isSelectedRef.current) return
       editor.markEventAsHandled(e)
+      const mainEditor = (window as any).__tldraw_editor__
+      if (mainEditor && mainEditor !== editor) mainEditor.markEventAsHandled(e)
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)

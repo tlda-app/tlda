@@ -329,7 +329,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       // Let pill-drag elements handle their own events (they call stopEventPropagation)
       const isDraggable = target.closest('.fleet-agents-pill, .fleet-agents-label-chip')
       if (isDraggable) return
+      // Mark handled on BOTH this editor and the main editor — each editor
+      // tracks handled events independently, and the main editor's capture
+      // listener fires before the overlay editor's (higher in DOM tree).
       editor.markEventAsHandled(e)
+      const mainEditor = (window as any).__tldraw_editor__
+      if (mainEditor && mainEditor !== editor) mainEditor.markEventAsHandled(e)
     }
 
     document.addEventListener('pointerdown', onPointerDown, true)
