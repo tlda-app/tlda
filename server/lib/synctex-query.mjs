@@ -207,8 +207,16 @@ export async function getSourceFromPath(projectName, page, points, highlightText
         const lineXMax = sorted[sorted.length - 1].x
         const lineXRange = lineXMax - lineXMin
         if (lineXRange > 0) {
-          const fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
-          const fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
+          let fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
+          let fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
+          // If only one record was hit, expand to cover neighboring records
+          if (fracEnd - fracStart < 0.05 && sorted.length > 1) {
+            const hitIdx = sorted.findIndex(r => r.x >= hitRange.minX)
+            const lo = Math.max(0, hitIdx - 1)
+            const hi = Math.min(sorted.length - 1, hitIdx + 1)
+            fracStart = Math.max(0, (sorted[lo].x - lineXMin) / lineXRange)
+            fracEnd = Math.min(1, (sorted[hi].x - lineXMin) / lineXRange)
+          }
           const srcLen = allLines[i].length
           entry.hlStart = Math.max(0, Math.round(fracStart * srcLen))
           entry.hlEnd = Math.min(srcLen, Math.round(fracEnd * srcLen))

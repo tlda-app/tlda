@@ -568,62 +568,67 @@ function showSourceContextCard(
   const body = document.createElement('div')
   body.className = 'hl-source-card-body'
 
-  // Build full passage from highlighted lines
+  // Build full passage from ALL lines (highlighted + context)
+  const passage = sourceLines.map(l => l.content).join(' ')
   const hlLines = highlighted.length > 0 ? highlighted : sourceLines
-  const passage = hlLines.map(l => l.content).join(' ')
 
   // Check if any line has substring highlights (hlStart/hlEnd)
   const hasSubstring = hlLines.some(l => l.hlStart != null && l.hlEnd != null)
 
   if (hasSubstring) {
-    // Find the highlighted substring within the joined passage
-    // Reconstruct from per-line hlStart/hlEnd
+    // Collect per-line highlight ranges mapped to passage offsets
+    const hlRanges: Array<{ start: number; end: number }> = []
     let offset = 0
-    let passageHlStart = -1
-    let passageHlEnd = -1
-    for (const l of hlLines) {
-      if (l.hlStart != null && l.hlEnd != null) {
-        if (passageHlStart === -1) passageHlStart = offset + l.hlStart
-        passageHlEnd = offset + l.hlEnd
+    for (const l of sourceLines) {
+      if (l.hlStart != null && l.hlEnd != null && l.hlEnd > l.hlStart) {
+        hlRanges.push({ start: offset + l.hlStart, end: offset + l.hlEnd })
       }
-      offset += l.content.length + 1 // +1 for the join space
+      offset += l.content.length + 1
     }
 
-    if (passageHlStart >= 0 && passageHlEnd > passageHlStart) {
-      // Show: ...context before... [highlighted text] ...context after...
+    if (hlRanges.length > 0) {
+      // Render passage with multiple non-contiguous highlights
       const contextChars = 40
-      const before = passage.slice(Math.max(0, passageHlStart - contextChars), passageHlStart)
-      const match = passage.slice(passageHlStart, passageHlEnd)
-      const after = passage.slice(passageHlEnd, passageHlEnd + contextChars)
+      const firstHl = hlRanges[0].start
+      const lastHl = hlRanges[hlRanges.length - 1].end
+      const showStart = Math.max(0, firstHl - contextChars)
+      const showEnd = Math.min(passage.length, lastHl + contextChars)
 
-      if (passageHlStart > contextChars) {
+      if (showStart > 0) {
         const ellipsis = document.createElement('span')
         ellipsis.textContent = '...'
         ellipsis.style.opacity = '0.3'
         body.appendChild(ellipsis)
       }
 
-      if (before) {
+      // Walk through the visible range, alternating between plain and highlighted
+      let cursor = showStart
+      for (const range of hlRanges) {
+        // Plain text before this highlight
+        if (cursor < range.start) {
+          const s = document.createElement('span')
+          s.textContent = passage.slice(cursor, range.start)
+          s.style.opacity = '0.5'
+          body.appendChild(s)
+        }
+        // Highlighted text
+        const hlSpan = document.createElement('span')
+        hlSpan.textContent = passage.slice(range.start, range.end)
+        hlSpan.className = 'hl-source-card-match'
+        hlSpan.style.backgroundColor = tintColor + '40'
+        body.appendChild(hlSpan)
+        cursor = range.end
+      }
+
+      // Trailing context after last highlight
+      if (cursor < showEnd) {
         const s = document.createElement('span')
-        s.textContent = before
+        s.textContent = passage.slice(cursor, showEnd)
         s.style.opacity = '0.5'
         body.appendChild(s)
       }
 
-      const hlSpan = document.createElement('span')
-      hlSpan.textContent = match
-      hlSpan.className = 'hl-source-card-match'
-      hlSpan.style.backgroundColor = tintColor + '40'
-      body.appendChild(hlSpan)
-
-      if (after) {
-        const s = document.createElement('span')
-        s.textContent = after
-        s.style.opacity = '0.5'
-        body.appendChild(s)
-      }
-
-      if (passageHlEnd + contextChars < passage.length) {
+      if (showEnd < passage.length) {
         const ellipsis = document.createElement('span')
         ellipsis.textContent = '...'
         ellipsis.style.opacity = '0.3'
