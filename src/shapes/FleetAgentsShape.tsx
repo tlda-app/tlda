@@ -12,9 +12,10 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  useValue,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -309,6 +310,35 @@ function useLastMessages(agents: any[]): Record<string, string> {
 function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+
+  // Capture-phase pointerdown: fires before tldraw's tl-container listener
+  // can intercept. Marks non-drag clicks as handled so tldraw skips
+  // setPointerCapture (which would steal the event from shape content).
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      // If shape is selected for drag/resize, let tldraw handle everything
+      if (isSelectedRef.current) return
+      // Let pill-drag elements handle their own events (they call stopEventPropagation)
+      const isDraggable = target.closest('.fleet-agents-pill, .fleet-agents-label-chip')
+      if (isDraggable) return
+      // Mark handled on BOTH this editor and the main editor — each editor
+      // tracks handled events independently, and the main editor's capture
+      // listener fires before the overlay editor's (higher in DOM tree).
+      editor.markEventAsHandled(e)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
+
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
   const tasks = useFleetTasks(frameId)
@@ -407,6 +437,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       }}
     >
       <div
+        ref={containerRef}
         className="fleet-shape fleet-agents-shape"
         style={{
           width: '100%',

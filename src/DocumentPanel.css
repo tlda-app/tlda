@@ -204,7 +204,7 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   right: 0;
   width: var(--panel-full-width);
   max-height: 85vh;
-  z-index: 999;
+  z-index: 1001;
   background: transparent;
   display: flex;
   flex-direction: column;

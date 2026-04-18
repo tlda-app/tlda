@@ -46,6 +46,37 @@
   background: transparent !important;
   pointer-events: auto;
 }
+
+/* Full-viewport overlay pointer-events architecture:
+   1. Everything in the overlay is pointer-events: none (clicks pass to main canvas)
+   2. Fleet shape elements get pointer-events: auto (interactive)
+   3. TLDraw selection/resize overlay items get pointer-events: auto (handles work)
+   The wildcard is necessary because TLDraw creates internal elements
+   (tl-hit-test-blocker, tl-canvas) with their own pointer-events. */
+.fleet-hud-wrap .clip-panel-fullvp,
+.fleet-hud-wrap .clip-panel-fullvp * {
+  pointer-events: none !important;
+}
+/* Fleet shapes are interactive — restore pointer-events so content
+   (buttons, inputs, scrollable areas) works. No cursor override —
+   the cursor should reflect the actual interaction state. */
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
+  pointer-events: auto !important;
+}
+/* TLDraw selection/resize handles must be interactive, but shape
+   indicators (hover outlines) must NOT block clicks on shape content.
+   Only restore pointer-events on the selection foreground (resize handles). */
+.fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg,
+.fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg * {
+  pointer-events: auto !important;
+}
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
    fleet shapes. iframes capture pointer events regardless of any pe:none on
@@ -59,11 +90,10 @@
 .fleet-hud-wrap [class*="watermark"] {
   display: none !important;
 }
-/* Disable Chrome zoom:2 fix inside the HUD — the HUD tldraw instance
-   has its own scaling and the doubling breaks hit testing */
-.fleet-hud-wrap .tl-canvas__in-front {
-  zoom: 1 !important;
-}
+/* Let tldraw's DPR zoom fix (zoom:2 on Retina) apply normally — the old
+   HUD had its own scaling that conflicted, but the full-viewport overlay
+   doesn't. Overriding to zoom:1 caused a DPR-proportional offset between
+   visual shape positions and hit-test positions. */
 
 .fleet-hud-controls {
   position: absolute;
@@ -73,40 +103,6 @@
   gap: 2px;
   z-index: 1000;
   pointer-events: auto;
-}
-
-/* Layout mode: make the HUD interior hit-test invisible so pointerdowns
-   pass through to the proxy shape on the main canvas behind. We have to
-   nuke every descendant because mirrored fleet shapes (.fleet-chat-shape
-   etc.) set pointer-events: auto on themselves, which cascades through
-   any less-specific parent rule. Controls (.fleet-hud-controls) carve
-   themselves back out so the ⊞ button stays clickable. */
-.fleet-hud-wrap.fleet-hud-layout-mode,
-.fleet-hud-wrap.fleet-hud-layout-mode * {
-  pointer-events: none !important;
-}
-.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls,
-.fleet-hud-wrap.fleet-hud-layout-mode .fleet-hud-controls * {
-  pointer-events: auto !important;
-}
-
-/* Visual cue for active layout mode */
-.fleet-hud-layout.active {
-  color: rgba(80, 120, 200, 0.85);
-}
-
-.fleet-hud-lock {
-  border: none;
-  background: none;
-  font-size: 13px;
-  cursor: pointer;
-  padding: 2px 4px;
-  line-height: 1;
-  opacity: 0.15;
-  transition: opacity 0.2s;
-}
-.fleet-hud-lock:hover {
-  opacity: 0.6;
 }
 
 .fleet-hud-close {
@@ -120,21 +116,6 @@
   transition: color 0.2s;
 }
 .fleet-hud-close:hover {
-  color: rgba(100, 100, 100, 0.6);
-}
-
-.fleet-hud-layout {
-  border: none;
-  background: none;
-  color: rgba(100, 100, 100, 0.30);
-  font-size: 13px;
-  cursor: grab;
-  padding: 2px 4px;
-  line-height: 1;
-  letter-spacing: -1px;
-  transition: color 0.2s;
-}
-.fleet-hud-layout:hover {
   color: rgba(100, 100, 100, 0.6);
 }
 
@@ -165,13 +146,6 @@ html[data-theme="dark"] .fleet-drop-ghost {
 }
 
 /* Dark mode */
-html[data-theme="dark"] .fleet-hud-layout {
-  color: rgba(255, 255, 255, 0.30);
-}
-html[data-theme="dark"] .fleet-hud-layout:hover {
-  color: rgba(255, 255, 255, 0.6);
-}
-
 html[data-theme="dark"] .fleet-pill {
   background: rgba(20, 20, 32, 0.7);
   color: rgba(160, 160, 160, 0.5);

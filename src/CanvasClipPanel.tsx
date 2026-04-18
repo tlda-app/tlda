@@ -13,7 +13,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
-import { HUD_PROXY_SHAPE_ID } from './overlays/FleetHUD'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -49,6 +48,13 @@ interface CanvasClipPanelProps {
    *  and a running 250ms animation lags the target, making content visibly
    *  grow as the user resizes the HUD smaller. */
   liveEdit?: boolean
+  /** Direct camera control — bypasses bounds-based camera computation.
+   *  When set, the camera is set to this value directly. Used by the
+   *  full-viewport fleet overlay where FleetHUD computes the camera. */
+  cameraOverride?: { x: number; y: number; z: number }
+  /** When true, the panel renders full-viewport with transparent background
+   *  and pointer-events: none on the container. Fleet shapes get pointer-events: auto. */
+  fullViewport?: boolean
   children?: React.ReactNode
 }
 
@@ -67,6 +73,8 @@ export function CanvasClipPanel({
   emphasizeShapeIds,
   readOnly = false,
   liveEdit = false,
+  cameraOverride,
+  fullViewport = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -123,8 +131,6 @@ export function CanvasClipPanel({
 
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
-    // Never mirror the transient HUD layout-mode proxy shape into the HUD editor.
-    if (r.typeName === 'shape' && (r as any).id === HUD_PROXY_SHAPE_ID) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
     if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
@@ -522,6 +528,29 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!editor || !bounds) return
 
+    // Direct camera control — skip all bounds-based computation.
+    // Set extremely wide constraints so nothing gets culled or clamped.
+    if (cameraOverride) {
+      cancelAnimationFrame(animFrameRef.current)
+      editor.setCameraOptions({
+        constraints: {
+          bounds: { x: -100000, y: -100000, w: 200000, h: 200000 },
+          behavior: 'inside',
+          origin: { x: 0.5, y: 0.5 },
+          padding: { x: 0, y: 0 },
+          initialZoom: 'default',
+          baseZoom: 'default',
+        },
+        // Lock zoom to exactly z=1 — the overlay must never zoom.
+        // TLDraw's internal wheel handler can still fire before our
+        // capture-phase handler, so constraining zoomSteps to [1, 1]
+        // prevents any zoom change from sticking.
+        zoomSteps: [cameraOverride.z, cameraOverride.z],
+      })
+      editor.setCamera(cameraOverride)
+      return
+    }
+
     // readOnly mode: free infinite canvas, just set initial camera position
     if (readOnly) {
       const zoom = panelWidth / bounds.w
@@ -632,7 +661,7 @@ export function CanvasClipPanel({
     initialBoundsRef.current = false
 
     return () => cancelAnimationFrame(animFrameRef.current)
-  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit])
+  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit, cameraOverride?.x, cameraOverride?.y, cameraOverride?.z])
 
   // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
   useEffect(() => {
@@ -664,6 +693,12 @@ export function CanvasClipPanel({
       // Let fleet-docview shapes handle their own wheel events
       const target = e.target as HTMLElement
       if (lockCamera && target?.closest('.fleet-docview')) return
+      // In fullViewport mode, only handle wheel events over fleet shapes.
+      // Events over empty areas should pass through to the main canvas.
+      if (fullViewport) {
+        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+        if (!fleetShape) return // let event pass through
+      }
       e.preventDefault()
       e.stopPropagation()
       if (lockCamera) {
@@ -804,19 +839,8 @@ export function CanvasClipPanel({
 
   if (!bounds) return null
 
-  return (
-    <div
-      ref={panelRef}
-      className={`clip-panel ${className || ''}`}
-      style={{ width: panelWidth, height: canvasHeight + 20 }}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-    >
-      {children}
-      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
-        <Tldraw
+  const tldrawEl = (
+    <Tldraw
           store={store}
           shapeUtils={shapeUtils}
           tools={tools}
@@ -827,9 +851,10 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
-            if (lockCamera) {
-              ed.user.updateUserPreferences({ isSnapMode: true })
-            }
+            // Note: snap-to-grid (isSnapMode) is a global user preference
+            // shared across all editor instances. Don't enable it here —
+            // it affects the main editor too, making highlights snap.
+            // Users can toggle snap manually with Ctrl+Shift+S when needed.
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected
@@ -848,6 +873,60 @@ export function CanvasClipPanel({
             }
           }}
         />
+  )
+
+  // In fullViewport mode, prevent the overlay's tldraw from capturing HTML5
+  // drag events when the cursor is not over a fleet shape. Without this,
+  // chips dragged onto the main canvas get swallowed by the overlay's tldraw.
+  useEffect(() => {
+    if (!fullViewport) return
+    const el = canvasRef.current
+    if (!el) return
+    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
+    const handler = (e: DragEvent) => {
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it
+      // Not over a fleet shape — block the overlay's tldraw from seeing this
+      e.stopPropagation()
+    }
+    el.addEventListener('dragover', handler, { capture: true })
+    el.addEventListener('dragenter', handler, { capture: true })
+    el.addEventListener('drop', handler, { capture: true })
+    return () => {
+      el.removeEventListener('dragover', handler, { capture: true })
+      el.removeEventListener('dragenter', handler, { capture: true })
+      el.removeEventListener('drop', handler, { capture: true })
+    }
+  }, [fullViewport])
+
+  if (fullViewport) {
+    return (
+      <div
+        ref={panelRef}
+        className={`clip-panel clip-panel-fullvp ${className || ''}`}
+        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', background: 'transparent', boxShadow: 'none', borderRadius: 0, overflow: 'visible' }}
+      >
+        {children}
+        <div ref={canvasRef} className="clip-panel-canvas clip-panel-canvas-fullvp" style={{ height: '100vh', width: '100vw', background: 'transparent', overflow: 'visible', clipPath: 'none' }}>
+          {tldrawEl}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      className={`clip-panel ${className || ''}`}
+      style={{ width: panelWidth, height: canvasHeight + 20 }}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+    >
+      {children}
+      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
+        {tldrawEl}
       </div>
     </div>
   )

@@ -12,7 +12,7 @@ import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../c
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { createFleetLayout } from '../shapes/fleet-utils'
+import { createFleetLayout, forceDeleteShapes } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -684,22 +684,57 @@ export function ZoneWidthSlider() {
   )
 }
 
+const FLEET_STATES = ['off', '3col', '2col'] as const
+type FleetState = typeof FLEET_STATES[number]
+const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+function detectFleetState(editor: any): FleetState {
+  const fleet = editor.getCurrentPageShapes().filter((s: any) =>
+    FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
+  if (fleet.length === 0) return 'off'
+  return (localStorage.getItem('fleet-layout') as FleetState) || '3col'
+}
+
 export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()
+  const [state, setState] = useState<FleetState>(() => detectFleetState(editor))
 
-  // Click: toggle between 3-col (default) and 2-col. Detects current layout
-  // by counting fleet-chat shapes: 3-col has 2, 2-col has 1. No fleet shapes
-  // at all → create 3-col (the default).
   const handleClick = useCallback(() => {
-    const chats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
-    const next = chats.length >= 2 ? '2col' : '3col'
-    createFleetLayout(editor, allAgents, next)
+    const current = detectFleetState(editor)
+    const idx = FLEET_STATES.indexOf(current)
+    const next = FLEET_STATES[(idx + 1) % FLEET_STATES.length]
+    setState(next)
+    localStorage.setItem('fleet-layout', next)
+    if (next === 'off') {
+      const fleet = editor.getCurrentPageShapes().filter((s: any) =>
+        FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
+      if (fleet.length > 0) forceDeleteShapes(editor, fleet.map((s: any) => s.id))
+      localStorage.setItem('fleet-hud-expanded', '0')
+      window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+    } else {
+      localStorage.setItem('fleet-hud-expanded', '1')
+      createFleetLayout(editor, allAgents, next === '3col' ? '3col' : '2col')
+    }
   }, [editor, allAgents])
+
+  // Button shows the NEXT state
+  const nextIdx = (FLEET_STATES.indexOf(state) + 1) % FLEET_STATES.length
+  const nextState = FLEET_STATES[nextIdx]
+
+  let label: React.ReactNode
+  if (nextState === '3col') {
+    label = <>Fleet|</>
+  } else if (nextState === '2col') {
+    label = <>Flee|t</>
+  } else {
+    // Next: off → strikethrough
+    label = <span style={{ textDecoration: 'line-through' }}>Fleet</span>
+  }
 
   return (
     <div className="toc-diff-hint" onClick={handleClick}>
-      <span className="toc-toggle-icon">{'\u2693'}</span> Fleet
+      <img src="/basestar.svg" alt="" style={{ width: 10, height: 10, verticalAlign: 'middle', marginRight: 4, opacity: 0.6, position: 'relative' as const, top: 2 }} /> {label}
     </div>
   )
 }

@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useCallback, useRef, useMemo, useLayoutEffect, memo } from 'react'
+import { useState, useCallback, useRef, useMemo, useLayoutEffect, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -297,6 +297,27 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+
+  // Capture-phase pointerdown: fires before tldraw's tl-container listener
+  // can intercept. Marks clicks as handled so tldraw skips setPointerCapture.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
+
   const agents = useFleetAgents()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
@@ -451,6 +472,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
       }}
     >
       <div
+        ref={containerRef}
         className="fleet-shape fleet-search-shape"
         style={{
           width: '100%',

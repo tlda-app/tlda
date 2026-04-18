@@ -61,12 +61,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
 
   const leftW = 340
   const gap = 10
-  // 3-col: two chats at 410 each → rightW 830.
-  // 2-col: one chat at 1.5x width (615) → rightW 615. Narrower overall.
   const chatW3 = 410
-  const chatW2 = Math.round(chatW3 * 1.5)
-  const chatW = variant === '2col' ? chatW2 : chatW3
-  const rightW = variant === '2col' ? chatW2 : chatW3 * 2 + gap
+  const rightW = chatW3 * 2 + gap
   const totalH = 640
   const agentsH = 330
   const searchH = totalH - gap - agentsH
@@ -75,7 +71,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   const rightChatH = Math.round(totalH * 0.75)
   const docviewH = totalH - gap - rightChatH
 
-  // Anchor: just left of the doc's left margin
+  // Anchor: just left of the doc's left margin. All three columns sit
+  // together in the left margin as a contiguous block.
   const pageShapes = editor.getCurrentPageShapes().filter(s =>
     (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
   let anchorX = 0, anchorY = 0
@@ -121,46 +118,97 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: totalH, filter: filter1 },
+        props: { w: chatW3, h: totalH, filter: filter1 },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
-        x: anchorX + leftW + gap + chatW + gap, y: anchorY,
+        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: rightChatH, filter: filter2 },
+        props: { w: chatW3, h: rightChatH, filter: filter2 },
       },
       {
         id: createShapeId(),
         type: 'fleet-docview' as any,
-        x: anchorX + leftW + gap + chatW + gap, y: anchorY + rightChatH + gap,
+        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
       },
     )
   } else {
-    // 2-col: single wider chat (75% height) + docview beneath it
+    // Split L/R: left margin has agents+search + wide chat (3/4) + docview (1/4).
+    // Right margin has a wide chat (full height). Chats are 1.5x wider than 3-col.
+    const chatWide = Math.round(chatW3 * 1.5) // 615
+    // The left group right edge (in page coords) is what the overlay camera
+    // uses to compute its X offset. We need to place the right-margin chat
+    // at a page X such that, under the overlay camera, it appears at the
+    // right edge of the screen.
+    //
+    // Overlay camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRightEdge
+    // where leftGroupRightEdge = anchorX + leftW + gap + chatWide
+    // Screen position of right chat = rightChatPageX + camX
+    // We want it at: screenW - chatWide - MARGIN_GAP
+    //
+    // So: rightChatPageX = (screenW - chatWide - MARGIN_GAP) - camX
+    //   = (screenW - chatWide - MARGIN_GAP) - (docLeftScreen - MARGIN_GAP - leftGroupRight)
+    //   = screenW - chatWide - docLeftScreen + leftGroupRight
+    const leftGroupRight = anchorX + leftW + gap + chatWide
+    const MARGIN_GAP = 20
+    // Find document right edge on screen to position the right-margin chat
+    let docRightScreen = window.innerWidth / 2
+    if (pageShapes.length > 0) {
+      let maxPageRight = -Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b) { const r = b.x + b.w; if (r > maxPageRight) maxPageRight = r }
+      }
+      docRightScreen = editor.pageToScreen({ x: maxPageRight, y: 0 }).x
+    }
+    let docLeftScreen = window.innerWidth / 2
+    if (pageShapes.length > 0) {
+      let minPageX = Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b && b.x < minPageX) minPageX = b.x
+      }
+      docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
+    }
+    // Camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRight
+    // Right chat screen position = rightChatX + camX
+    // We want right chat left edge at: docRightScreen + MARGIN_GAP
+    // So: rightChatX = docRightScreen + MARGIN_GAP - camX
+    const camX = docLeftScreen - MARGIN_GAP - leftGroupRight
+    const rightChatX = docRightScreen + MARGIN_GAP - camX
+
     shapes.push(
+      // Left margin: wide chat (3/4 height) + docview (1/4 height)
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: rightChatH, filter: filter1 },
+        props: { w: chatWide, h: rightChatH, filter: filter1 },
       },
       {
         id: createShapeId(),
         type: 'fleet-docview' as any,
         x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+      },
+      // Right margin: wide chat (full height)
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: rightChatX, y: anchorY,
+        isLocked: false,
+        props: { w: chatWide, h: totalH, filter: filter2 },
       },
     )
   }
   editor.createShapes(shapes)
 
-  editor.centerOnPoint(
-    { x: anchorX + totalW / 2, y: anchorY + totalH / 2 },
-    { animation: { duration: 300 } }
-  )
+  // Don't center the main canvas on fleet shapes — that disrupts the user's
+  // document position. The HUD overlay handles fleet shape visibility
+  // independently via its own camera.
 }
