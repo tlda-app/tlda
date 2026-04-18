@@ -63,6 +63,7 @@ import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
+import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
@@ -389,6 +390,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const ensurePagesAtBottomRef = useRef<(() => void) | null>(null)
   const focusChangeRef = useRef<((currentPage: number) => void) | null>(null)
 
+  // --- Screenshot capture state ---
+  const [screenshotCapture, setScreenshotCapture] = useState<import('./hooks/useYjsSignals').ScreenshotCaptureState | null>(null)
+
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
   const panelsLocalRef = useRef(true)
@@ -556,6 +560,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
     setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+    setScreenshotCapture,
     onReloadResult: useCallback((result: ReloadResult | null) => {
       if (!result) {
         setRemapWarnings([])
@@ -1038,6 +1043,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onGoThere={handleGoThere}
           onGoBack={handleGoBack}
           canGoBack={canGoBack}
+        />
+      )}
+      {screenshotCapture && editorRef.current && (
+        <ScreenshotCapture
+          mainEditor={editorRef.current}
+          capture={screenshotCapture}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={LICENSE_KEY}
+          onClose={() => setScreenshotCapture(null)}
+          onGoThere={(bounds) => {
+            editorRef.current?.centerOnPoint(
+              { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
+              { animation: { duration: 300 } }
+            )
+          }}
         />
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (

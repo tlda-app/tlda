@@ -8,6 +8,12 @@ import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
 
+export interface ScreenshotCaptureState {
+  bounds: { x: number; y: number; w: number; h: number }
+  agent?: string
+  timestamp: number
+}
+
 interface UseYjsSignalsParams {
   editorRef: React.MutableRefObject<Editor | null>
   document: SvgDocument
@@ -20,6 +26,7 @@ interface UseYjsSignalsParams {
   refViewerLineRef: React.MutableRefObject<number | null>
   panelsLocalRef: React.MutableRefObject<boolean>
   onReloadResult?: (result: ReloadResult | null) => void
+  setScreenshotCapture?: (state: ScreenshotCaptureState | null) => void
 }
 
 export function useYjsSignals({
@@ -27,7 +34,7 @@ export function useYjsSignals({
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   setRefViewerRefs, refViewerLineRef, panelsLocalRef,
-  onReloadResult,
+  onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   // Subscribe to Yjs reload signals
   useEffect(() => {
@@ -137,18 +144,46 @@ export function useYjsSignals({
     window.addEventListener('pointerdown', onInteract, true)
     window.addEventListener('keydown', onInteract, true)
 
-    const unsub = onScreenshotRequest(async () => {
+    const unsub = onScreenshotRequest(async (signal: any) => {
       const editor = editorRef.current
       if (!editor || !isSignalConnected()) return
       // Delay based on staleness: recently active viewers respond first (0-2s)
-      // This lets the most interactive viewer win the race
-      const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1) // 0..1 over 30s
+      const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1)
       const delay = Math.round(staleness * 2000)
       if (delay > 0) await new Promise(r => setTimeout(r, delay))
       try {
-        const viewportBounds = editor.getViewportPageBounds()
+        // Determine capture bounds: explicit bounds > page > viewport
+        let captureBounds: { x: number; y: number; w: number; h: number } | null = null
+        if (signal.bounds) {
+          captureBounds = { x: signal.bounds.x, y: signal.bounds.y, w: signal.bounds.w, h: signal.bounds.h }
+        } else if (signal.page) {
+          const pageShapes = editor.getCurrentPageShapes().filter((s: any) => s.type === 'svg-page')
+          const sorted = [...pageShapes].sort((a: any, b: any) => a.y - b.y)
+          const target = sorted[signal.page - 1]
+          if (target) {
+            const b = editor.getShapePageBounds(target.id)
+            if (b) captureBounds = { x: b.x, y: b.y, w: b.w, h: b.h }
+          }
+        }
+        if (!captureBounds) {
+          const vp = editor.getViewportPageBounds()
+          captureBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h }
+        }
+
+        if (signal.bounds || signal.page) {
+          // Targeted screenshot: render via CanvasClipPanel (handles off-screen content).
+          // The ScreenshotCapture component handles rendering, capturing, and sending
+          // the signal:screenshot response.
+          if (setScreenshotCapture) {
+            setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
+          }
+          return
+        }
+
+        // Viewport screenshot (no bounds/page specified): capture current view directly
+        const vp = editor.getViewportPageBounds()
         const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
+          bounds: vp,
           background: true,
           scale: 1,
           pixelRatio: 1,
@@ -163,7 +198,7 @@ export function useYjsSignals({
           reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
         })
         writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-        console.log(`[Screenshot] Captured ${Math.round(base64.length / 1024)}KB`)
+        console.log(`[Screenshot] Captured viewport (${Math.round(base64.length / 1024)}KB)`)
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)
       }
