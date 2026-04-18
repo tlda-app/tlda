@@ -478,7 +478,7 @@ export function renderActivityGroup(group, ctx) {
     </div>`
   }).join('')
 
-  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}">
+  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}" data-msg-id="${esc(String(m._dbId || ''))}">
     <div class="drag-handle" title="Drag"></div>
     <div class="activity-header">
       <span class="activity-agent ${fromCls}">${esc(nick)}</span>

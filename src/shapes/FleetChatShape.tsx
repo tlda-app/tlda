@@ -473,6 +473,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Build context and render messages
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
+  const ctxRef = useRef(ctx)
+  ctxRef.current = ctx
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -855,14 +857,173 @@ function FleetChatInner({ shape }: { shape: any }) {
       window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
     }
 
+    // Chip hover — show popover for msg/activity/tool reference chips
+    async function onChipOver(e: MouseEvent) {
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]') as HTMLElement | null
+      if (!chip) return
+      // Don't handle annotation chips here (they use AnnotationViewer)
+      if (chip.classList.contains('ref-chip-annotation')) return
+      const token = chip.getAttribute('data-token') || ''
+      const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
+      if (!refId) return
+      // Find matching event by timestamp embedded in the refId
+      // New format: msg:<dbId> or activity:<dbId> or activity:<dbId>:line<N>
+      // Legacy format: msg:fleet:skip:2026-04-18T... or activity:fleet:xxx:ISO
+      const chipType = refId.match(/^(msg|activity|tool)/)?.[1] || ''
+      const lineMatch = refId.match(/:line(\d+)$/)
+      const highlightLine = lineMatch ? lineMatch[1] : null
+      const refBody = refId.replace(/^(msg|activity|tool):/, '').replace(/:line\d+$/, '')
+      // Try local events first, then fetch from server
+      let matchEvent = liveEvents.find((ev: any) => {
+        const isActivity = !!ev._activity
+        if (chipType === 'activity' && !isActivity) return false
+        if (chipType === 'msg' && isActivity) return false
+        if (ev._dbId?.toString() === refBody) return true
+        const tsPart = refBody.replace(/^fleet:[^:]+:/, '')
+        if (ev.timestamp === tsPart) return true
+        return false
+      })
+      // If not found locally, fetch from server by DB ID and expand outward for activity grouping
+      let fetchedGroup: any[] | null = null
+      if (!matchEvent && /^\d+$/.test(refBody)) {
+        try {
+          const id = parseInt(refBody)
+          const { convertChatEvent } = await import('../fleet/fleet-data.mjs')
+
+          // Fetch the target event first
+          const res0 = await fetch(`/api/store/events?after=${id - 1}&limit=1`)
+          if (!res0.ok) throw new Error()
+          const d0 = await res0.json()
+          const targetRaw = (d0.events || [])[0]
+          if (!targetRaw) throw new Error()
+          const target = convertChatEvent(targetRaw)
+          matchEvent = target
+
+          // For activity events, expand outward to find the group boundaries
+          if (target._activity) {
+            const agentId = target.from
+            const group = [target]
+
+            // Expand backwards
+            let backId = id
+            let backDone = false
+            while (!backDone) {
+              const res = await fetch(`/api/store/events?before=${backId}&limit=10`)
+              if (!res.ok) break
+              const d = await res.json()
+              const evts = (d.events || []).map(convertChatEvent)
+              if (evts.length === 0) break
+              for (let i = evts.length - 1; i >= 0; i--) {
+                if (evts[i]._activity && evts[i].from === agentId) {
+                  group.unshift(evts[i])
+                  backId = evts[i]._dbId
+                } else {
+                  backDone = true
+                  break
+                }
+              }
+              if (evts.length < 10) break
+            }
+
+            // Expand forwards
+            let fwdId = id
+            let fwdDone = false
+            while (!fwdDone) {
+              const res = await fetch(`/api/store/events?after=${fwdId}&limit=10`)
+              if (!res.ok) break
+              const d = await res.json()
+              const evts = (d.events || []).map(convertChatEvent)
+              if (evts.length === 0) break
+              for (const ev of evts) {
+                if (ev._activity && ev.from === agentId) {
+                  group.push(ev)
+                  fwdId = ev._dbId
+                } else {
+                  fwdDone = true
+                  break
+                }
+              }
+              if (evts.length < 10) break
+            }
+
+            fetchedGroup = group
+          }
+        } catch {}
+      }
+      if (!matchEvent) return
+
+      // Remove any existing popover
+      document.querySelector('.chip-hover-popover')?.remove()
+
+      // Render the event as chat HTML
+      const popover = document.createElement('div')
+      popover.className = 'chip-hover-popover fleet-chat-shape'
+      let rendered: string
+      if (matchEvent._activity && ctxRef.current) {
+        // Use pre-fetched group or find from local events
+        let group: any[]
+        if (fetchedGroup && fetchedGroup.length > 0) {
+          group = fetchedGroup
+        } else {
+          const matchIdx = liveEvents.indexOf(matchEvent)
+          const agentId = matchEvent.from
+          let start = matchIdx
+          while (start > 0 && liveEvents[start - 1]._activity && liveEvents[start - 1].from === agentId) start--
+          let end = matchIdx
+          while (end < liveEvents.length - 1 && liveEvents[end + 1]._activity && liveEvents[end + 1].from === agentId) end++
+          group = liveEvents.slice(start, end + 1)
+        }
+        const { renderActivityGroup } = await import('../fleet/activity-render.mjs')
+        rendered = `<div class="chat-activity-inline-wrap">${renderActivityGroup(group.length > 0 ? group : [matchEvent], ctxRef.current)}</div>`
+      } else {
+        rendered = ctxRef.current ? renderChatLine(matchEvent, ctxRef.current) : `<div class="chat-line">${matchEvent.text || '(no content)'}</div>`
+      }
+      popover.innerHTML = rendered
+
+      const chipRect = chip.getBoundingClientRect()
+      popover.style.position = 'fixed'
+      popover.style.left = `${chipRect.left}px`
+      popover.style.bottom = `${window.innerHeight - chipRect.top + 4}px`
+      popover.style.zIndex = '10000'
+      popover.style.maxWidth = `${w}px`
+      document.body.appendChild(popover)
+
+      // Scroll to and highlight the specific tool line
+      if (highlightLine) {
+        const targetLine = popover.querySelector(`.tool-line[data-line="${highlightLine}"]`) as HTMLElement
+        if (targetLine) {
+          targetLine.style.background = 'rgba(147, 112, 219, 0.2)'
+          targetLine.style.borderRadius = '3px'
+          targetLine.scrollIntoView({ block: 'center' })
+        }
+      }
+    }
+
+    function onChipOut(e: MouseEvent) {
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]')
+      if (!chip) return
+      const related = e.relatedTarget as HTMLElement | null
+      if (related?.closest('.chip-hover-popover')) return
+      setTimeout(() => {
+        if (!document.querySelector('.chip-hover-popover:hover')) {
+          document.querySelector('.chip-hover-popover')?.remove()
+        }
+      }, 200)
+    }
+
     logEl.addEventListener('mouseover', onMouseOver)
+    logEl.addEventListener('mouseover', onChipOver)
     logEl.addEventListener('mouseout', onMouseOut)
+    logEl.addEventListener('mouseout', onChipOut)
     return () => {
       logEl.removeEventListener('mouseover', onMouseOver)
+      logEl.removeEventListener('mouseover', onChipOver)
       logEl.removeEventListener('mouseout', onMouseOut)
+      logEl.removeEventListener('mouseout', onChipOut)
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+      document.querySelector('.chip-hover-popover')?.remove()
     }
-  }, [doc, refResolver, w])
+  }, [doc, refResolver, w, liveEvents])
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
   // anywhere on the chat shape before tldraw can create a canvas image shape.
@@ -1407,6 +1568,28 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       let drag: typeof dragRef.current = null
 
+      // Lifecycle cards (delegate, task_done, bounced) — drag from their drag-handle
+      {
+        const lcCard = target.closest('.lifecycle-card') as HTMLElement
+        if (lcCard && target.closest('.drag-handle')) {
+          const chatLine = lcCard.closest('.chat-line') as HTMLElement
+          const lcDbId = chatLine?.dataset.msgId || ''
+          const lcFrom = chatLine?.dataset.msgFrom || ''
+          const lcTs = chatLine?.dataset.msgTs || ''
+          const lcType = lcCard.dataset.lcType || 'delegate'
+          const lcNick = names[lcFrom] || lcFrom.replace('fleet:', '')
+          const lcTime = lcTs ? new Date(lcTs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+          const lcTitle = lcCard.querySelector('.lc-title')?.textContent || lcType
+          drag = {
+            pillId: null, pillType: 'msg', value: lcDbId ? `msg:${lcDbId}` : `msg:${lcFrom}:${lcTs}`,
+            displayName: `${lcNick} ${lcTime} ${lcTitle}`.trim(),
+            color: '#c8b060', content: lcCard.textContent?.slice(0, 300)?.trim() || '',
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
       // Timestamp → message reference (works in main chat, search results, thread views)
       {
         const tsEl = target.closest('.chat-ts, .pretty-search-ts, .pretty-ts') as HTMLElement
@@ -1415,11 +1598,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (line) {
             const from = line.dataset.msgFrom || ''
             const ts = line.dataset.msgTs || tsEl.getAttribute('title') || tsEl.textContent || ''
+            const dbId = line.dataset.msgId || ''
             const text = line.textContent?.slice(0, 200)?.trim() || ''
             const nick = from ? (names[from] || from.replace('fleet:', '')) : ''
             drag = {
-              pillId: null, pillType: 'msg', value: `msg:${from}:${ts}`,
-              displayName: `${nick} ${tsEl.textContent || ''}`.trim(),
+              pillId: null, pillType: 'msg', value: dbId ? `msg:${dbId}` : `msg:${from}:${ts}`,
+              displayName: `${nick} ${tsEl.textContent || ''} chat`.trim(),
               color: '#8888a0', content: text,
               startX: e.clientX, startY: e.clientY,
               started: false, captureEl: logEl, pointerId: e.pointerId,
@@ -1435,9 +1619,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (toolLine) {
           const toolName = toolLine.dataset.toolName || toolLine.querySelector('.tool-name')?.textContent || 'tool'
           const toolArg = toolLine.dataset.toolArg || toolLine.querySelector('.tool-arg')?.textContent || ''
+          // Get DB ID from the parent activity card + line number for highlighting
+          const activityCard = toolLine.closest('.chat-activity-card') as HTMLElement
+          const toolDbId = activityCard?.dataset.msgId || ''
+          const lineNum = toolLine.dataset.line || ''
+          const toolTs = activityCard?.dataset.ts || ''
+          const toolNick = names[activityCard?.dataset.agent || ''] || ''
+          const toolTime = toolTs ? new Date(toolTs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
           drag = {
-            pillId: null, pillType: 'tool', value: 'tool',
-            displayName: toolName,
+            pillId: null, pillType: 'tool', value: toolDbId ? `activity:${toolDbId}:line${lineNum}` : `tool:unknown`,
+            displayName: `${toolNick} ${toolTime} ${toolName}`.trim(),
             color: '#c8b060', content: toolArg ? `${toolName}: ${toolArg}` : toolName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
@@ -1451,11 +1642,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (actCard) {
           const agentId = actCard.dataset.agent || ''
           const ts = actCard.dataset.ts || ''
+          const actDbId = actCard.dataset.msgId || ''
           const text = actCard.textContent?.slice(0, 300)?.trim() || ''
           const nick = names[agentId] || agentId.replace('fleet:', '')
+          const actTime = ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
           drag = {
-            pillId: null, pillType: 'activity', value: `activity:${agentId}:${ts}`,
-            displayName: `${nick} activity`,
+            pillId: null, pillType: 'activity', value: actDbId ? `activity:${actDbId}` : `activity:${agentId}:${ts}`,
+            displayName: `${nick} ${actTime} activity`.trim(),
             color: '#c8b060', content: text,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,

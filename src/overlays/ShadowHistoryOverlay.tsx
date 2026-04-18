@@ -8,7 +8,7 @@
  * toggleShadowOverlay() from the parent.
  */
 
-import { useCallback } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import type { ShadowVersion } from '../historyStore'
 import './ShadowHistoryOverlay.css'
 
@@ -36,7 +36,17 @@ interface Props {
 }
 
 export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  if (versions.length < 2) return null
+  // Listen for wheel-activated events
+  const [wheelActivated, setWheelActivated] = useState(false)
+  useEffect(() => {
+    const handler = () => setWheelActivated(true)
+    window.addEventListener('shadow-scrubber-activate', handler)
+    return () => window.removeEventListener('shadow-scrubber-activate', handler)
+  }, [])
+
+  // Only show when actively scrubbing or wheel-activated
+  const isActive = activeIdx >= 0 || wheelActivated
+  if (versions.length < 2 || !isActive) return null
 
   // Scrubber: left = oldest, right = newest/current
   // We map slider position to versions like this:
@@ -85,7 +95,7 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
 
   return (
     <div
-      className="shadow-scrubber"
+      className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
       onPointerDown={e => e.stopPropagation()}
       onPointerUp={e => e.stopPropagation()}
     >

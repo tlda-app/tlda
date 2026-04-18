@@ -311,6 +311,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
+    const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
 
     const docName = shape.props.docName as string | undefined
@@ -981,18 +982,25 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           id={shape.id}
           style={{
             overflow: 'visible',
-            pointerEvents: 'all',
+            pointerEvents: 'none',
             position: 'relative',
           }}
         >
           <div
-            onMouseEnter={() => setDotHovered(true)}
-            onMouseLeave={() => setDotHovered(false)}
-            style={{ position: 'relative' }}
+            onMouseEnter={() => {
+              if (dotHoverTimerRef.current) clearTimeout(dotHoverTimerRef.current)
+              dotHoverTimerRef.current = setTimeout(() => setDotHovered(true), 600)
+            }}
+            onMouseLeave={() => {
+              if (dotHoverTimerRef.current) clearTimeout(dotHoverTimerRef.current)
+              dotHoverTimerRef.current = null
+              setDotHovered(false)
+            }}
+            style={{ position: 'relative', pointerEvents: 'auto' }}
           >
-            {/* The dot */}
+            {/* The dot — double-click to expand, single click passes through to TLDraw for select/drag */}
             <div
-              onClick={(e) => {
+              onDoubleClick={(e) => {
                 e.stopPropagation()
                 editor.updateShape({
                   id: shape.id,

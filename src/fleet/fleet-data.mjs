@@ -57,10 +57,8 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  // Terminal attention events (permission prompts) bypass filters — they're urgent.
-  // Same for terminal_card (voluntary terminal pop from an agent).
-  if (event._evType === 'terminal_attention' || event.type === 'terminal_attention') return true
-  if (event._evType === 'terminal_card' || event.type === 'terminal_card') return true
+  // Terminal cards are filtered like regular chat — they show in chats
+  // whose filter matches the agent that triggered them.
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {
@@ -447,7 +445,7 @@ function updateTasks(tasks) {
 
 // --- Converters ---
 
-function convertChatEvent(e) {
+export function convertChatEvent(e) {
   // metadata may be a JSON string (from DB) or an object (from SSE)
   if (typeof e.metadata === 'string') {
     try { e.metadata = JSON.parse(e.metadata) } catch { e.metadata = null }

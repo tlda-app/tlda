@@ -876,14 +876,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     // ---- Fleet Operations ----
     {
-      name: 'cleanup',
-      description: 'Prune dead agents from registry and abandon their orphan tasks. Checks heartbeat (10min) and tmux session liveness. Returns what was removed.',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-    },
-    {
       name: 'roll_call',
       description: 'Show fleet status: who is alive, who is missing. Reads identity ledger + scans tmux sessions. Use before rehydrate to see what needs recovery.',
       inputSchema: {
@@ -2267,6 +2259,249 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     };
   }
 
+  // ---- image resolution ----
+  // Extract image URLs from markdown, resolve to local paths, return as
+  // { text, images } where images are { path, mimeType } objects.
+  async function resolveImages(text) {
+    if (!text) return { text, images: [] }
+    const imgPattern = /!\[([^\]]*)\]\(([^)]+)\)/g
+    const images = []
+    let cleaned = text
+
+    for (const match of [...text.matchAll(imgPattern)]) {
+      const [full, alt, url] = match
+      let localPath = null
+
+      // Direct local path in URL query param: /api/file?path=/tmp/...
+      const pathMatch = url.match(/[?&]path=([^&]+)/)
+      if (pathMatch) {
+        localPath = decodeURIComponent(pathMatch[1])
+      }
+
+      // If server is local, download remote images to temp
+      if (!localPath && url.startsWith('http')) {
+        try {
+          const fs = await import('fs')
+          const path = await import('path')
+          const resp = await fetch(url)
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer())
+            const ext = path.extname(new URL(url).pathname) || '.png'
+            localPath = `/tmp/fleet-img-${Date.now()}${ext}`
+            fs.writeFileSync(localPath, buf)
+          }
+        } catch {}
+      }
+
+      if (localPath) {
+        const ext = localPath.split('.').pop()?.toLowerCase() || 'png'
+        const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
+        images.push({ path: localPath, mimeType: mimeMap[ext] || 'image/png', alt: alt || '' })
+        // Replace markdown image with text reference
+        cleaned = cleaned.replace(full, `[image: ${localPath}]`)
+      }
+    }
+    return { text: cleaned, images }
+  }
+
+  // ---- chip token resolution ----
+  // Resolve «type:label#id» tokens in message text by looking up the referenced
+  // content. Currently handles msg: tokens (chat message references).
+  async function resolveChipTokens(text) {
+    if (!text || !text.includes('«')) return text
+    const chipPattern = /«(.+?)»/g
+    const chips = [...text.matchAll(chipPattern)]
+    if (chips.length === 0) return text
+
+    const dashPort = process.env.FLEET_DASH_PORT || 5176
+    let resolved = text
+    for (const match of chips) {
+      const inner = match[1]
+      const colonIdx = inner.indexOf(':')
+      if (colonIdx < 0) continue
+      const type = inner.slice(0, colonIdx)
+
+      if (type === 'msg') {
+        // Token format: «msg:displayLabel#msg:from:isoTimestamp»
+        // The # suffix contains the structured value: msg:agentId:timestamp
+        const hashIdx = inner.lastIndexOf('#')
+        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
+        const displayLabel = inner.slice(colonIdx + 1, hashIdx >= 0 ? hashIdx : undefined)
+
+        // Parse structured data — either "msg:eventId" or "msg:fleet:agentName:2026-04-18T..."
+        const valueParts = structuredData.startsWith('msg:') ? structuredData.slice(4) : structuredData
+        const evIdMatch = valueParts.match(/^(\d+)/)
+        let ev = null
+
+        if (evIdMatch) {
+          // Event ID path
+          try {
+            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
+            const res = await fetch(url)
+            const data = await res.json()
+            const events = (data.events || []).filter(e => e.type === 'chat')
+            const ev = events[0]
+            if (ev) {
+              // Resolve agent IDs to friendly names
+              let stateData = null
+              try {
+                const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+                stateData = await stateRes.json()
+              } catch {}
+              const agents = Array.isArray(stateData) ? stateData : []
+              const nameOf = (id) => {
+                if (!id) return '?'
+                const a = agents.find(a => a.id === id)
+                if (a) return a.friendly_name || a.name || id
+                // Strip fleet: prefix as last resort
+                return id.replace('fleet:', '')
+              }
+              const from = nameOf(ev.from)
+              const to = nameOf(ev.to)
+              const msgText = (ev.text || '').slice(0, 500)
+              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              resolved = resolved.replace(match[0], `\n[${from} → ${to}, ${ts}]:\n> ${msgText.split('\n').join('\n> ')}\n`)
+            }
+          } catch {}
+        }
+      }
+
+      if (type === 'activity') {
+        // Token format: «activity:displayLabel#activity:eventId» or «activity:displayLabel#activity:agentId:isoTimestamp»
+        const hashIdx = inner.lastIndexOf('#')
+        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
+        const valueParts = structuredData.startsWith('activity:') ? structuredData.slice(9) : structuredData
+
+        // Try event ID first (pure numeric), then fall back to agentId:timestamp
+        const evIdMatch = valueParts.match(/^(\d+)/)
+        let activities = []
+
+        if (evIdMatch) {
+          // Event ID — look up this event and surrounding activity events (±60s)
+          try {
+            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
+            const res = await fetch(url)
+            const data = await res.json()
+            const anchor = (data.events || [])[0]
+            if (anchor) {
+              const since = new Date(new Date(anchor.timestamp).getTime() - 60000).toISOString()
+              const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
+              const agentId = anchor.from
+              const url2 = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
+              const res2 = await fetch(url2)
+              const data2 = await res2.json()
+              activities = (data2.events || []).filter(e => e.type === 'activity')
+            }
+          } catch {}
+        } else {
+          const dateMatch = valueParts.match(/:(\d{4}-\d{2}-\d{2}T.+)$/)
+          let agentId = '', isoTs = ''
+          if (dateMatch) {
+            agentId = valueParts.slice(0, valueParts.length - dateMatch[0].length)
+            isoTs = dateMatch[1]
+          }
+          if (agentId && isoTs) {
+            try {
+              const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
+              const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
+              const url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
+              const res = await fetch(url)
+              const data = await res.json()
+              activities = (data.events || []).filter(e => e.type === 'activity')
+            } catch {}
+          }
+        }
+
+        // Parse metadata strings (events API returns raw DB rows)
+        for (const ev of activities) {
+          if (typeof ev.metadata === 'string') {
+            try { ev.metadata = JSON.parse(ev.metadata) } catch {}
+          }
+        }
+
+        if (activities.length > 0) {
+          const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
+          let agentName = resolvedAgentId.replace('fleet:', '')
+          try {
+            const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+            const agents = await stateRes.json()
+            const a = (Array.isArray(agents) ? agents : []).find(a => a.id === resolvedAgentId)
+            if (a) agentName = a.friendly_name || a.name || agentName
+          } catch {}
+
+          const toolLines = activities
+            .filter(e => {
+              const tool = e.metadata?.tool || e.text || ''
+              return tool && tool !== '_text' && !tool.includes('\n')
+            })
+            .map(e => {
+              const m = e.metadata || {}
+              const tool = m.tool || e.text || ''
+              let line = `  ${tool}${m.arg ? ': ' + m.arg : ''}`
+              if (m.prettyResult) {
+                const result = m.prettyResult.slice(0, 300)
+                line += `\n    ${result.split('\n').join('\n    ')}`
+              }
+              return line
+            })
+          const textBlocks = activities
+            .filter(e => (e.metadata?.tool === '_text' || (!e.metadata?.tool && e.text?.includes('\n'))) && e.text)
+            .map(e => e.text.slice(0, 300))
+
+          const firstTs = activities[0]?.timestamp || new Date().toISOString()
+          const ts = new Date(firstTs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          let replacement = `\n[${agentName} activity, ${ts}]:`
+          if (toolLines.length > 0) replacement += `\n${toolLines.join('\n')}`
+          if (textBlocks.length > 0) replacement += `\n> ${textBlocks.join('\n> ')}`
+          resolved = resolved.replace(match[0], replacement + '\n')
+        }
+      }
+
+      if (type === 'tool') {
+        // Token format: «tool:ToolName#activity:eventId»
+        const hashIdx = inner.lastIndexOf('#')
+        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
+        const displayLabel = inner.slice(colonIdx + 1, hashIdx >= 0 ? hashIdx : undefined)
+
+        // Parse: "activity:22663" or "activity:22683:line3" → event ID
+        const evIdMatch = structuredData.match(/activity:(\d+)/)
+        if (evIdMatch) {
+          const eventId = evIdMatch[1]
+          try {
+            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${eventId - 1}&limit=1`
+            const res = await fetch(url)
+            const data = await res.json()
+            const ev = (data.events || [])[0]
+            if (ev) {
+              let meta = ev.metadata
+              if (typeof meta === 'string') { try { meta = JSON.parse(meta) } catch {} }
+              meta = meta || {}
+              const tool = meta.tool || ev.text || displayLabel
+              const arg = meta.arg || ''
+              const prettyResult = meta.prettyResult || ''
+
+              // Resolve agent name
+              let agentName = (ev.from || '').replace('fleet:', '')
+              try {
+                const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+                const agents = await stateRes.json()
+                const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
+                if (a) agentName = a.friendly_name || a.name || agentName
+              } catch {}
+
+              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              let replacement = `\n[${agentName} → ${tool}, ${ts}]:`
+              if (arg) replacement += `\n  ${arg}`
+              if (prettyResult) replacement += `\n  ${prettyResult.slice(0, 500).split('\n').join('\n  ')}`
+              resolved = resolved.replace(match[0], replacement + '\n')
+            }
+          } catch {}
+        }
+      }
+    }
+    return resolved
+  }
+
   // ---- my_task ----
   if (name === 'my_task') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
@@ -2298,16 +2533,36 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     }
 
     if (unread.length > 0) {
-      const formatted = unread.map(m => {
+      const msgResults = (await Promise.all(unread.map(async m => {
         const fromLabel = m.metadata?.fromLabel || m.from;
         const replyHint = ` (reply with chat(to: "${m.from}"))`;
         const ctx = m.metadata?.context;
         const docHint = ctx?.doc
           ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
           : '';
-        return `[from ${fromLabel}${docHint}]${replyHint} ${m.text}`;
-      }).join('\n\n');
+        const resolvedText = await resolveChipTokens(m.text)
+        const { text: imgResolvedText, images } = await resolveImages(resolvedText)
+        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
+      })));
+      const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
+      // Collect all images from all messages
+      const allImages = msgResults.flatMap(r => r.images);
+      if (allImages.length > 0) {
+        const fs = await import('fs')
+        const contentBlocks = [{ type: 'text', text }]
+        for (const img of allImages) {
+          try {
+            const data = fs.readFileSync(img.path)
+            contentBlocks.push({
+              type: 'image',
+              data: data.toString('base64'),
+              mimeType: img.mimeType,
+            })
+          } catch {}
+        }
+        return { content: contentBlocks };
+      }
     }
 
     return { content: [{ type: 'text', text }] };
@@ -2831,7 +3086,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           : e.type === 'task_done'
           ? `[DONE] ${e.description || ''}`
           : e.text || e.message || '';
-        filtered.push({ from: e.from_id, to: e.to_id, text, timestamp: e.timestamp });
+        filtered.push({ from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp });
       }
     };
 
@@ -2973,36 +3228,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   }
 
   // ==== Fleet Operations ====
-
-  // ---- cleanup ----
-  if (name === 'cleanup') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
-    try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/cleanup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `Cleanup failed: ${data.error}` }], isError: true };
-
-      const removed = data.removed_agents || [];
-      const orphaned = data.abandoned_tasks || [];
-      const remaining = data.remaining_agents ?? '?';
-
-      const lines = [];
-      if (removed.length === 0 && orphaned.length === 0) {
-        lines.push('Nothing to clean up — all agents are alive or already gone.');
-      } else {
-        if (removed.length) lines.push(`Removed ${removed.length} dead agent(s): ${removed.map(r => r.name || r.id).join(', ')}`);
-        if (orphaned.length) lines.push(`Abandoned ${orphaned.length} orphan task(s): ${orphaned.map(o => o.description).join(', ')}`);
-        lines.push(`${remaining} agent(s) remaining.`);
-      }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Cleanup failed (server unreachable): ${e.message}` }], isError: true };
-    }
-  }
 
   // ---- roll_call ----
   if (name === 'roll_call') {
@@ -3580,6 +3805,18 @@ function startChannelWS() {
       _channelWS = ws;
       _channelRetryDelay = CHANNEL_RETRY_MS;
       resetHeartbeatTimeout();
+      // Re-register after reconnect — server may have restarted and lost our record
+      if (AGENT_ID) {
+        const regBody = {
+          id: AGENT_ID,
+          name: process.env.FLEET_NAME || undefined,
+          tmux_session: _tmuxSession || undefined,
+          cwd: process.cwd(),
+          machine_id: os.hostname().split('.')[0],
+        };
+        sendWS('register', regBody)?.catch(() => {});
+        process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
+      }
       // Flush any unread messages that arrived while WS was down (server restart, etc.)
       if (AGENT_ID) setTimeout(_flushUnread, 500); // slight delay so WS is fully ready
     });
@@ -3842,6 +4079,13 @@ setInterval(() => {
     }
   } catch {}
 }, 3000);
+
+// Prevent unhandled rejections from crashing the MCP process.
+// WS disconnects cause pending promises to reject; if a caller doesn't catch,
+// Node.js would terminate the process and Claude Code marks the MCP as failed.
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[fleet] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
+});
 
 // Orphan prevention: exit if parent process dies or stdin closes
 process.stdin.on('end', () => { process.exit(0); });

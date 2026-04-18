@@ -94,18 +94,8 @@ export function MarkdownDropHandler() {
 
         const reader = new FileReader()
         reader.onload = async () => {
-          const content = reader.result as string
-          try {
-            await createInlineDoc(name, title, content)
-            editor.createShape({
-              type: 'inline-doc',
-              x: dropPoint.x - 400,
-              y: dropPoint.y - 500,
-              props: { w: 800, h: 1000, url: `/docs/${name}/`, title },
-            } as any)
-          } catch (err) {
-            console.error('[MarkdownDropHandler] Failed to create inline doc:', err)
-          }
+          // inline-doc iframes are disabled — just log
+          console.log('[MarkdownDropHandler] Markdown drop ignored (inline-doc disabled):', name)
         }
         reader.readAsText(file)
       }

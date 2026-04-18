@@ -36,7 +36,7 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 - **Change review** — scrub a timeline of git history and builds, see old and new pages side by side, triage each change with status dots
 - **Build errors on the page** — LaTeX errors appear anchored to the source line where they occur, clickable to open in your editor
 - **Editor integration** — Cmd-click any rendered text to open the source at that line (Zed, VS Code, etc.)
-- **Voice input** — speak into fleet chat; messages are transcribed and sent
+- **Voice input** — speak into chat; Chrome transcribes and fills the textarea. Domain-specific vocabulary (Greek letters, math terms, author names) is auto-corrected
 - **Real-time sync** — everything syncs over WebSocket. Open on your laptop and iPad simultaneously
 
 ## Working with agents
@@ -107,6 +107,26 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 | `t` | Text select |
 | `r` | Toggle proof reader |
 | `n`/`p` | Next/previous change |
+
+## Voice input
+
+Voice lets you dictate into chat instead of typing. It uses Chrome's built-in Web Speech API — no external services, no API keys.
+
+**Right Shift** controls everything:
+
+| Taps | Action |
+|------|--------|
+| 1 | Toggle recording on/off |
+| 2 (quick) | Soft reset — restart the speech engine |
+| 3 (quick) | Nuclear reset — restart Chrome entirely |
+
+A small dot appears next to the HUD status text while recording: green means audio is flowing, amber means no audio is detected (the system is auto-recovering in the background).
+
+**Voice commands:** Say "send" at the end of a message to send it automatically. Say "right chat" or "left chat" to switch between visible chat panels.
+
+**Vocabulary:** Chrome's speech recognition doesn't know math terminology, so voice.mjs post-processes the transcript. Greek letters ("phi", "theta"), author names ("Donoho", "Sobolev", "Bregman"), and domain terms ("RKHS", "AMLE", "estimand") are auto-corrected from Chrome's guesses. You can add custom replacements with `addVocabReplacement(pattern, replacement)`.
+
+**Browser support:** Chrome is required — it's the only browser with a usable Web Speech API implementation. Safari's support exists but is unreliable.
 
 ## Figures
 

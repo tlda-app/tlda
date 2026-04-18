@@ -352,6 +352,50 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
+// Kill playwright Chromium processes that may be poisoning Chrome's speech service.
+// Called by voice.mjs watchdog when it detects unrecoverable mic failure.
+app.post('/api/voice/kill-playwright', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process')
+    // Kill any Chromium processes launched by playwright (identified by user-data-dir pattern)
+    try { execSync('pkill -9 -f playwright_chromiumdev_profile 2>/dev/null', { timeout: 5000 }) } catch {}
+    try { execSync('pkill -9 -f "remote-debugging-port.*no-startup-window" 2>/dev/null', { timeout: 5000 }) } catch {}
+    console.log('[voice] killed playwright Chromium processes')
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[voice] kill-playwright failed:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+// Full Chrome restart — kills Chrome, waits, reopens with saved tabs.
+// Called by voice.mjs triple-shift when the speech service is wedged.
+// Only works when the server runs on the same machine as the browser.
+app.post('/api/voice/restart-chrome', async (req, res) => {
+  const { tabs } = req.body || {}
+  res.json({ ok: true }) // respond immediately — Chrome is about to die
+  try {
+    const { execSync, exec } = await import('child_process')
+    // Kill playwright first
+    try { execSync('pkill -9 -f playwright_chromiumdev_profile 2>/dev/null', { timeout: 5000 }) } catch {}
+    // Force-kill Chrome (graceful quit doesn't always work)
+    try { execSync('pkill -9 -f "Google Chrome" 2>/dev/null', { timeout: 5000 }) } catch {}
+    // Wait for Chrome to fully die
+    for (let i = 0; i < 20; i++) {
+      try { execSync('pgrep -f "Google Chrome.app/Contents/MacOS/Google Chrome" > /dev/null 2>&1', { timeout: 2000 }); } catch { break }
+      execSync('sleep 0.5')
+    }
+    execSync('sleep 1')
+    // Reopen Chrome with debug flags
+    const tabUrls = (tabs && tabs.length > 0) ? tabs : ['http://localhost:5176/']
+    const urlArgs = tabUrls.map(u => `"${u}"`).join(' ')
+    exec(`open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=$HOME/.chrome-debug --remote-allow-origins='*' ${urlArgs}`)
+    console.log('[voice] Chrome restarted with', tabUrls.length, 'tabs')
+  } catch (err) {
+    console.error('[voice] restart-chrome failed:', err.message)
+  }
+})
+
 // Services health — checks tlda server (self), fleet server, Yjs sync
 app.get('/health/services', async (req, res) => {
   const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'

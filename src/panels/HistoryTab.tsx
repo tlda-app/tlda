@@ -71,31 +71,8 @@ export function HistoryTab() {
                   onClick={() => step(1)}
                   title="Newer"
                 >&rsaquo;</button>
-                {showCompare && (
-                  <button
-                    className={`history-compare-btn${ctx?.showHistoryPanel ? ' active' : ''}`}
-                    onClick={() => ctx?.onToggleHistoryPanel?.()}
-                    title="Show side-by-side comparison"
-                  >
-                    &#9703;
-                  </button>
-                )}
-                <button
-                  className={`history-compare-btn${ctx?.timelineActive ? ' active' : ''}`}
-                  onClick={() => ctx?.onToggleTimeline?.()}
-                  title="Spatial timeline overlay"
-                >
-                  &#9201;
-                </button>
-                {(ctx?.shadowHistoryVersionCount ?? 0) >= 2 && (
-                  <button
-                    className={`history-compare-btn${ctx?.shadowHistoryVisible ? ' active' : ''}`}
-                    onClick={() => ctx?.onToggleShadowHistory?.()}
-                    title="Shadow history scrubber"
-                  >
-                    &#8635;
-                  </button>
-                )}
+                {/* History panel, timeline, and shadow scrubber buttons removed —
+                     version wheel + bottom scrubber replaces all history UI */}
               </div>
               <span className="snapshot-label">
                 <span className="snapshot-position">{idx + 1}/{entries.length}</span>

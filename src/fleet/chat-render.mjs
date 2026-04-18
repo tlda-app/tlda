@@ -103,7 +103,7 @@ export function renderChatLine(m, ctx) {
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
       : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="${toCls}">${esc(toNick)}</span>:</span>`
-    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
+    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
   // --- Terminal attention card (permission prompt auto-pop) ---
@@ -149,8 +149,9 @@ export function renderChatLine(m, ctx) {
     const messageHtml = message && message !== (m._description || '')
       ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
       : ''
-    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
+    return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
+        <div class="drag-handle" title="Drag"></div>
         <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${fromCls}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="${toCls}">${esc(toLabel)}</span></span></div>
         ${messageHtml}
         ${criteriaHtml}
@@ -163,8 +164,9 @@ export function renderChatLine(m, ctx) {
     const agentCls = getNickClass(agentId)
     const desc = esc(m._description || '')
     const taskId = m._taskId || ''
-    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
+    return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-done" data-task-id="${esc(taskId)}" data-lc-type="done">
+        <div class="drag-handle" title="Drag"></div>
         <div class="lc-header"><span class="lc-icon">\u2713</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${esc(agentName)}</span></span></div>
       </div></div>`
   }
@@ -175,7 +177,7 @@ export function renderChatLine(m, ctx) {
     const fromCls = getNickClass(m.from)
     const toCls = getNickClass(m.to)
     const feedback = (m.text || '').replace(/^\*\*Task bounced back:\*\*\s*/, '')
-    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
+    return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-bounced" data-lc-type="bounced">
         <div class="lc-header"><span class="lc-icon">\u21A9</span> <span class="lc-title">${esc(feedback)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${fromCls}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="${toCls}">${esc(toLabel)}</span></span></div>
       </div></div>`
@@ -350,13 +352,13 @@ export function renderChatLine(m, ctx) {
   }
   // Failed local messages
   if (m._failed) {
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span></div>`
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span></div>`
   }
   // Voicemail
   if (m._voicemail) {
     const vmColor = m._voicemailReason === 'unreachable' ? 'var(--red, #e55)' : 'var(--orange)'
     const vmLabel = m._voicemailReason || 'queued'
-    return `<div class="chat-line from-user chat-queued chat-voicemail" data-vm-color="${vmColor}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-voicemail-label">${vmLabel}</span></div>`
+    return `<div class="chat-line from-user chat-queued chat-voicemail" data-vm-color="${vmColor}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-voicemail-label">${vmLabel}</span></div>`
   }
   // Retracted messages
   if (m._retracted) {
@@ -384,9 +386,9 @@ export function renderChatLine(m, ctx) {
   let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
   let line
   if (isAmbient) {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${attachHtml}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${attachHtml}</div>`
   } else {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${receipt}${attachHtml}${retractBtn}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${receipt}${attachHtml}${retractBtn}</div>`
   }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()

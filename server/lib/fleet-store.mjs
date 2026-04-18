@@ -520,6 +520,10 @@ export class FleetStore {
     return this._getAllAgents.all().map(r => this._hydrateAgent(r));
   }
 
+  getAliveAgents() {
+    return this.getAllAgents().filter(a => !a.dead);
+  }
+
   removeAgent(id) {
     this._deleteAgent.run(id);
   }

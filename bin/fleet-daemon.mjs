@@ -364,20 +364,31 @@ async function checkForApprovalPrompt(agentId) {
   let pane
   try {
     const { stdout } = await execFileP('tmux',
-      ['capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-50'],
+      ['capture-pane', '-t', agent.tmux_session, '-p', '-S', '-30'],
       { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
     pane = stripAnsi(stdout)
   } catch {
     return
   }
 
-  // Claude Code shows approval prompts with patterns like:
-  // "Allow <tool>?" or "Allow once" / "Allow always" / "Deny"
-  // Also catches user-prompt-submit hooks that block
-  const hasApproval = /Allow\s+(once|always)|Do you want to proceed|Yes.*No.*Always/i.test(pane)
-  if (!hasApproval) return
+  // Only check the LAST ~15 lines of the pane — the prompt area.
+  // This avoids matching tool output or chat text that contains "Allow".
+  const lastLines = pane.split('\n').slice(-15).join('\n')
 
-  const fingerprint = `${pane.length}:${pane.slice(-200)}`
+  // Detect stuck states in the Claude Code UI:
+  // 1. Rating prompt: "How is Claude doing this session?"
+  // 2. Interrupted state: "Interrupted · What should Claude do instead?"
+  // 3. Permission prompt: "Allow once" / "Allow always" as selectable options
+  //    (these appear as "○ Allow once" or "● Allow once" with box-drawing chars)
+  let reason = null
+  if (/Interrupted.*What should Claude do/i.test(lastLines)) {
+    reason = 'interrupted — needs input'
+  } else if (/[○●]\s*Allow once/i.test(lastLines)) {
+    reason = 'permission prompt'
+  }
+  if (!reason) return
+
+  const fingerprint = `${reason}:${lastLines.length}:${lastLines.slice(-100)}`
   if (approvalHashes.get(agentId) === fingerprint) return  // already sent
   approvalHashes.set(agentId, fingerprint)
 
@@ -386,16 +397,18 @@ async function checkForApprovalPrompt(agentId) {
     type: 'terminal_attention',
     agent_id: agentId,
     tmux_session: agent.tmux_session,
-    text: `${label}: waiting for approval`,
+    text: `${label}: ${reason}`,
   })
-  console.log(`[daemon] terminal_attention sent for agent ${agentId}`)
+  console.log(`[daemon] terminal_attention sent for ${label}: ${reason}`)
 }
 
-// Schedule approval checks after tool use events — that's when prompts appear
+// Disabled until dismiss is reliable
 function scheduleApprovalCheck(agentId) {
-  // Stagger slightly after plan-mode check
-  setTimeout(() => checkForApprovalPrompt(agentId), 2500)
+  return
 }
+
+// Periodic scan disabled — fires too aggressively, generates unkillable cards.
+// Terminal attention only triggers on tool_use events (scheduleApprovalCheck).
 
 // ---------- activity event buffer ----------
 
@@ -438,7 +451,10 @@ function syncSessionWatchers(agentList) {
   for (const agent of agentList) {
     if (agent.dead) continue
     const cwd = agent.cwd ?? ''
-    const projectHash = cwd.replace(/\//g, '-')
+    // Strip worktree suffixes so the project hash matches where Claude Code
+    // stores the JSONL (at the original project root, not the worktree).
+    const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
+    const projectHash = canonicalCwd.replace(/\//g, '-')
 
     // Pick the freshest JSONL across all session_ids for this agent.
     // We must skip any session_id that's claimed by *another* live agent's
@@ -940,6 +956,62 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
   }
 }
 
+// --- Agent death detection ---
+// Periodically check if agents' claude processes are still running.
+// If not, mark them dead on the server and kill orphan tmux sessions.
+let _deathCheckInterval = null
+const DEATH_CHECK_MS = 30_000  // check every 30s
+
+async function checkAgentLiveness() {
+  if (!agents.length) return
+  let sessions
+  try {
+    const r = await rpcListSessions()
+    sessions = new Set(r.sessions || [])
+  } catch { return }  // tmux not available
+
+  for (const agent of agents) {
+    if (agent.dead || agent.human) continue
+    if (!agent.tmux_session) continue
+
+    const tmuxExists = sessions.has(agent.tmux_session)
+    if (!tmuxExists) {
+      // Tmux session gone → agent is dead
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (tmux session ${agent.tmux_session} gone)`)
+      try {
+        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
+      } catch {}
+      agent.dead = true
+      continue
+    }
+
+    // Tmux exists — check if a claude process is running in it
+    try {
+      const { stdout } = await execFileP('tmux',
+        ['list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+        { timeout: 3000, encoding: 'utf8' })
+      const panePids = stdout.trim().split('\n').filter(Boolean)
+      let claudeAlive = false
+      for (const pid of panePids) {
+        try {
+          const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
+            { timeout: 2000, encoding: 'utf8' })
+          if (children.trim()) { claudeAlive = true; break }
+        } catch {}  // pgrep exits non-zero when no match
+      }
+      if (!claudeAlive) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
+        try {
+          await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
+        } catch {}
+        // Kill the orphan tmux session
+        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+        agent.dead = true
+      }
+    } catch {}
+  }
+}
+
 const RPC_HANDLERS = {
   'send-key': rpcSendKey,
   'send-text': rpcSendText,
@@ -1095,6 +1167,12 @@ function handleServerMessage(msg) {
       }
     }
     if (newBootId) writeLastServerBootId(newBootId)
+    // Start periodic death detection
+    if (!_deathCheckInterval) {
+      _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
+      // Run once immediately after welcome
+      setTimeout(checkAgentLiveness, 5000)
+    }
     return
   }
   if (msg.type === 'agents-updated') {

@@ -25,6 +25,17 @@
   color: rgba(226, 232, 240, 0.85);
   font-size: 11px;
   font-family: var(--tl-font-sans, system-ui, sans-serif);
+
+  /* Faint by default, visible on hover */
+  opacity: 0.15;
+  transition: opacity 0.3s ease;
+}
+.shadow-scrubber:hover {
+  opacity: 1;
+}
+/* When actively scrubbing (not at current version), stay visible */
+.shadow-scrubber.active {
+  opacity: 0.85;
 }
 
 /* Open button — attached to the bottom bar, activates the scrubber */

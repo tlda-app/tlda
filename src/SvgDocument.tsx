@@ -278,70 +278,26 @@ function ViewPinBadge({ docName }: { docName: string }) {
  */
 const MAX_VISIBLE_VERSIONS = 5
 
-function VersionStamp({ docName }: { docName: string }) {
-  const [versions, setVersions] = useState<Array<{ hash: string; timestamp: string | number }>>([])
-  const [activeIdx, setActiveIdx] = useState(0)
+function VersionStamp({ docName, shadowVersions, shadowActiveIdx, onShadowScrub }: {
+  docName: string
+  shadowVersions: Array<{ hash: string; timestamp: number }>
+  shadowActiveIdx: number
+  onShadowScrub: (idx: number) => void
+}) {
+  // Use shadow versions directly — one source of truth
+  const versions = shadowVersions.slice(0, MAX_VISIBLE_VERSIONS)
+  // Shadow uses -1 for current, 0 for newest snapshot. Wheel uses 0 for current.
+  const activeIdx = shadowActiveIdx < 0 ? 0 : shadowActiveIdx + 1
 
-  const fetchVersions = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/projects/${docName}/history/shadow`)
-      if (!res.ok) return
-      const raw = await res.json()
-      // API returns { versions: [...] } or bare array
-      const data: Array<{ hash: string; timestamp: string | number }> = raw.versions || raw
-      if (!data || data.length === 0) return
-      setVersions(data.slice(0, MAX_VISIBLE_VERSIONS))
-      setActiveIdx(0)
-      // Broadcast current version to the server so agents can query
-      // what version the viewer is showing via build_status
-      const latest = data[0]
-      if (latest?.hash) {
-        fetch(`/api/projects/${docName}/signal`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            key: 'signal:viewer-version',
-            data: { hash: latest.hash, timestamp: Date.now() },
-          }),
-        }).catch(() => {})
-      }
-    } catch {}
-  }, [docName])
-
-  useEffect(() => { fetchVersions() }, [fetchVersions])
-  useEffect(() => {
-    return onBuildStatusSignal(() => {
-      setTimeout(fetchVersions, 1000)
-    })
-  }, [fetchVersions])
-
-  const handleClick = useCallback(async (idx: number) => {
+  const handleClick = useCallback((idx: number) => {
     if (idx === 0) {
-      // Click current → rebuild from HEAD (unpin)
-      if (activeIdx !== 0) {
-        try {
-          await fetch(`/api/projects/${docName}/build`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}',
-          })
-        } catch {}
-        setActiveIdx(0)
-      }
+      // Click current → return to latest
+      onShadowScrub(-1)
       return
     }
-    // Click older version → doc_view
-    const v = versions[idx]
-    if (!v) return
-    try {
-      await fetch(`/api/projects/${docName}/history/shadow/${v.hash}/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      })
-      setActiveIdx(idx)
-    } catch {}
-  }, [docName, versions, activeIdx])
+    // Click older version → scrub to it (shadow overlay handles canvas changes)
+    onShadowScrub(idx - 1)
+  }, [onShadowScrub])
 
   if (versions.length === 0) return null
 
@@ -1095,7 +1051,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {shadowVisible && (
+      {shadowVersions.length >= 2 && (
         <ShadowHistoryOverlay
           versions={shadowVersions}
           activeIdx={shadowActiveIdx}
@@ -1127,7 +1083,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
-  const versionStampContent = <VersionStamp docName={document.name} />
+  const versionStampContent = <VersionStamp
+    docName={document.name}
+    shadowVersions={shadowVersions}
+    shadowActiveIdx={shadowActiveIdx}
+    onShadowScrub={handleShadowScrub}
+  />
 
   return (
     <>

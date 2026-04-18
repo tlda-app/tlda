@@ -227,11 +227,13 @@ export function dropPillOnTarget(
       const pill = editor.getShape(pillId) as any
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
-      // Use the source shape ID as the uid when available — embeds the tldraw shape ID
-      // in the token so chips can be resolved live via editor.getShape() after reload.
-      const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
-        ? pill.props.value : undefined
-      const uid = sourceShapeId || Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
+      // Embed structured data in the token's # suffix so agents can resolve it.
+      // For shape-backed pills, use the shape ID. For all others, use the pill's
+      // value field (e.g. "msg:fleet:release:2026-04-18T06:22:33.000Z").
+      const pillValue = pill?.props?.value || ''
+      const sourceShapeId: string | undefined = typeof pillValue === 'string' && pillValue.startsWith('shape:')
+        ? pillValue : undefined
+      const uid = sourceShapeId || pillValue || (Date.now().toString(36) + Math.random().toString(36).slice(2, 5))
       const token = `«${pillType}:${displayName}#${uid}»`
       if (content) chipContentStore.set(token, content)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
@@ -324,29 +326,8 @@ export function dropPillOnTarget(
     const displayName = pill?.props?.displayName || 'file'
 
     if (docValue.startsWith('tlda:')) {
-      // tlda-card URL is /?doc=name — use SPA URL directly in the inline-doc iframe
-      const fullUrl = docValue.slice(5)
-      let docName = displayName
-      let embedUrl = fullUrl
-      try {
-        const u = new URL(fullUrl)
-        docName = u.searchParams.get('doc') || displayName
-        if (!u.searchParams.has('embed')) u.searchParams.set('embed', '1')
-        embedUrl = u.toString()
-      } catch {}
-      createEditor.createShape({
-        id: createShapeId(),
-        type: 'inline-doc' as any,
-        x: pagePoint.x - 400,
-        y: pagePoint.y - 500,
-        isLocked: false,
-        props: {
-          w: 800,
-          h: 1000,
-          url: embedUrl,
-          title: docName,
-        },
-      })
+      // tlda links: no-op on canvas drop (inline-doc iframes are broken)
+      console.log('[fleet] tlda link drop ignored:', docValue)
     } else if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
@@ -388,21 +369,8 @@ export function dropPillOnTarget(
         }
       })()
     } else {
-      // doc: prefix — create inline-doc shape (renders the tlda document)
-      const docName = docValue.startsWith('doc:') ? docValue.slice(4) : docValue
-      createEditor.createShape({
-        id: createShapeId(),
-        type: 'inline-doc' as any,
-        x: pagePoint.x - 400,
-        y: pagePoint.y - 500,
-        isLocked: false,
-        props: {
-          w: 800,
-          h: 1000,
-          url: `${myTldaUrl()}/?doc=${encodeURIComponent(docName)}&embed=1`,
-          title: displayName || docName,
-        },
-      })
+      // doc: prefix — no-op on canvas drop (inline-doc iframes are broken)
+      console.log('[fleet] doc link drop ignored:', docValue)
     }
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'annotation') {

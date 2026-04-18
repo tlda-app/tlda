@@ -75,20 +75,46 @@ const VOCAB_REPLACEMENTS = [
   [/\bfee\b/gi, 'phi'],
   [/\bfi\b/gi, 'phi'],
 
-  // Notation modifiers
+  // App name: "tilde" (tlda) — Chrome almost never outputs "tilde",
+  // preferring common phrases like "till the", "kill the", etc.
+  [/\btill the\b/gi, 'tilde'],
+  [/\bkill the\b/gi, 'tilde'],
+  [/\bkilda\b/gi, 'tilde'],
+  [/\btilled? a\b/gi, 'tilde'],
+  [/\bkilled? a\b/gi, 'tilde'],
   [/\btilda\b/gi, 'tilde'],
+  [/\btill da\b/gi, 'tilde'],
+
+  // Notation modifiers
   [/\bsuper ?script star\b/gi, '*'],
 
   // Named methods / frameworks
   [/\bbreck ?man\b/gi, 'Bregman'],
   [/\bbreg ?man\b/gi, 'Bregman'],
   [/\bberkman\b/gi, 'Bregman'],
+  [/\bpregnant\b/gi, 'Bregman'],
   [/\breese\b/gi, 'Riesz'],
   [/\breeze\b/gi, 'Riesz'],
   [/\brees\b/gi, 'Riesz'],
   [/\bar ?k ?h ?s\b/gi, 'RKHS'],
+  [/\barchitis\b/gi, 'RKHS'],
+  [/\bark iss\b/gi, 'RKHS'],
+  [/\bdonohoe\b/gi, 'Donoho'],
+  [/\bemily\b/gi, 'AMLE'],
+  [/\bhershberg\b/gi, 'Hirshberg'],
+  [/\bvager\b/gi, 'Wager'],
   [/\bmatern\b/gi, 'Matérn'],
   [/\bsobo ?lev\b/gi, 'Sobolev'],
+  [/\bso will have\b/gi, 'Sobolev'],
+  [/\bsober of\b/gi, 'Sobolev'],
+  [/\bsobolef\b/gi, 'Sobolev'],
+  [/\bso bella?\b/gi, 'Sobolev'],
+  [/\bso below\b/gi, 'Sobolev'],
+
+  // Math terms
+  [/\blima\b/gi, 'lemma'],
+  [/\blemon\b/gi, 'lemma'],
+  [/\bdilemma\b/gi, 'the lemma'],
 
   // Statistical terms
   [/\bsemi ?norm\b/gi, 'seminorm'],
@@ -232,7 +258,7 @@ function ensureHud() {
 // Dot is hidden when not recording.
 const DOT_GREEN = '#7ab8a0'
 const DOT_AMBER = '#c8956a'
-const DOT_GREEN_OPACITY = '0.2'
+const DOT_GREEN_OPACITY = '0.4'
 const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
 let _healthDot = null
@@ -243,8 +269,8 @@ function ensureHealthDot() {
   _healthDot = document.createElement('span')
   Object.assign(_healthDot.style, {
     display: 'none',
-    width: '6px',
-    height: '6px',
+    width: '10px',
+    height: '10px',
     borderRadius: '50%',
     marginRight: '6px',
     flexShrink: '0',
@@ -677,10 +703,41 @@ function _setupRecognition() {
   }
 }
 
+// Auto-recovery: after consecutive watchdog failures, escalate
+const WATCHDOG_ESCALATE_AT = 4  // 4 × 8s = 32s of dead audio
+let _consecutiveWatchdogFails = 0
+let _escalating = false
+
+async function escalateRecovery() {
+  if (_escalating) return
+  _escalating = true
+  try {
+    // Step 1: kill playwright processes via server
+    await fetch('/api/voice/kill-playwright', { method: 'POST' }).catch(() => {})
+    // Step 2: hard reset voice (getUserMedia cycle)
+    await hardResetVoice()
+    // Step 3: restart recording
+    _consecutiveWatchdogFails = 0
+    startRecording()
+  } catch (err) {
+    console.warn('voice: escalation failed', err)
+  } finally {
+    _escalating = false
+  }
+}
+
 function watchdogRestart() {
   if (!_recording) return
-  // No give-up state — always retry. The health dot shows amber when
-  // audio isn't flowing; the user sees that and can double-shift if needed.
+  if (!_gotAudioThisSession) {
+    _consecutiveWatchdogFails++
+    if (_consecutiveWatchdogFails >= WATCHDOG_ESCALATE_AT) {
+      _consecutiveWatchdogFails = 0
+      escalateRecovery()
+      return
+    }
+  } else {
+    _consecutiveWatchdogFails = 0
+  }
   _gotAudioThisSession = false
   // Preserve text: commit interim to left, freeze current state
   if (_state === 'speech') {
@@ -807,6 +864,7 @@ function startRecording() {
 
   _audioCaptureRetries = 0
   _deadRestarts = 0
+  _consecutiveWatchdogFails = 0
   _gotAudioThisSession = false
 
   const doStart = () => {
@@ -888,6 +946,7 @@ async function hardResetVoice() {
   _filling = false
   _audioCaptureRetries = 0
   _deadRestarts = 0
+  _consecutiveWatchdogFails = 0
   _gotAudioThisSession = false
   _lastResultTime = 0
   _sleepDetectLast = 0
@@ -903,8 +962,6 @@ async function hardResetVoice() {
   } catch (err) {
     console.warn('voice: hard reset getUserMedia cycle failed', err)
   }
-  showHud('voice reset — tap shift to start', '#9370db')
-  fadeHud(3000)
 }
 
 function sendCurrentText() {
@@ -953,6 +1010,7 @@ let _initialized = false
 
 export async function initVoice() {
   if (_initialized) return true
+
   _initialized = true
 
   if (!SpeechRecognition) {
@@ -960,30 +1018,85 @@ export async function initVoice() {
     return false
   }
 
-  // Right Shift: single tap = toggle recording. Double tap (within 300ms)
-  // = hard voice reset — recovery pathway for when Chrome's SpeechRecognition
-  // pipeline gets poisoned and normal stop/start doesn't un-stick it.
-  let _lastShiftTapAt = 0
-  document.addEventListener('keydown', (e) => {
+  // Right Shift: tap counting within 300ms windows.
+  //   1 tap  → toggle recording
+  //   2 taps → soft reset (kill playwright, getUserMedia cycle, restart)
+  //   3 taps → kill Chrome and reopen (tlda://voice-reset)
+  //
+  // The handler is installed on document AND on any iframe contentDocuments
+  // (via MutationObserver) so shift works regardless of where focus is.
+  let _shiftTapCount = 0
+  let _shiftTapTimer = null
+  function shiftHandler(e) {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
 
-    const now = Date.now()
-    if (now - _lastShiftTapAt < 300) {
-      // Double tap: hard reset
-      _lastShiftTapAt = 0
-      hardResetVoice()
+    _shiftTapCount++
+    clearTimeout(_shiftTapTimer)
+
+    if (_shiftTapCount >= 3) {
+      // Triple tap: kill Chrome and reopen.
+      // Try iframe approach to trigger tlda:// URL scheme (bypasses Chrome's
+      // JS restrictions on custom protocols). Falls back to server endpoint.
+      _shiftTapCount = 0
+      showHud('restarting Chrome…', '#c87070')
+      const iframe = document.createElement('iframe')
+      iframe.style.display = 'none'
+      iframe.src = 'tlda://voice-reset'
+      document.body.appendChild(iframe)
+      setTimeout(() => iframe.remove(), 2000)
       return
     }
-    _lastShiftTapAt = now
 
-    if (_recording) {
-      stopRecording()
-    } else {
-      startRecording()
+    // Wait 300ms to see if more taps are coming
+    _shiftTapTimer = setTimeout(() => {
+      const taps = _shiftTapCount
+      _shiftTapCount = 0
+      if (taps === 1) {
+        // Single tap: toggle
+        if (_recording) {
+          stopRecording()
+        } else {
+          startRecording()
+        }
+      } else if (taps === 2) {
+        // Double tap: soft reset
+        showHud('voice reset', '#9370db')
+        escalateRecovery()
+      }
+    }, 300)
+  }
+  document.addEventListener('keydown', shiftHandler, true)
+
+  // Watch for iframes and inject shift handler into their documents.
+  // Without this, shift is invisible when an iframe has focus.
+  const _hookedIframes = new WeakSet()
+  function hookIframe(iframe) {
+    if (_hookedIframes.has(iframe)) return
+    _hookedIframes.add(iframe)
+    const tryHook = () => {
+      try {
+        const doc = iframe.contentDocument
+        if (doc) doc.addEventListener('keydown', shiftHandler, true)
+      } catch {} // cross-origin iframes — can't hook, that's fine
     }
-  }, true)
+    tryHook()
+    iframe.addEventListener('load', tryHook)
+  }
+  // Hook existing iframes
+  for (const iframe of document.querySelectorAll('iframe')) hookIframe(iframe)
+  // Hook future iframes via MutationObserver
+  new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeName === 'IFRAME') hookIframe(node)
+        if (node.querySelectorAll) {
+          for (const iframe of node.querySelectorAll('iframe')) hookIframe(iframe)
+        }
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true })
 
   if (_micChannel) {
     _micChannel.onmessage = (e) => {

@@ -104,7 +104,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
     if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agents = fleetStore ? fleetStore.getAllAgents() : []
+    const agents = fleetStore ? fleetStore.getAliveAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
@@ -129,6 +129,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     try {
       let events
       let total = null
+      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
         // Build WHERE clause with optional time filters
         let where = '(from_id = ? OR to_id = ?)'
@@ -142,10 +143,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         ).get(...baseParams)?.n ?? null
 
         const q = afterId
-          ? `SELECT * FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
           : beforeId
-          ? `SELECT * FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
-          : `SELECT * FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
         events = afterId
           ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
           : beforeId
@@ -154,11 +155,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         if (beforeId) events.reverse()
       } else if (type) {
         events = fleetStore.db.prepare(
-          'SELECT * FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?'
+          `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
         ).all(type, afterId, limit)
       } else if (beforeId) {
         events = fleetStore.db.prepare(
-          'SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT ?'
+          `SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`
         ).all(beforeId, limit)
         events.reverse()
       } else {
@@ -169,6 +170,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
+  })
+
+  // --- POST /api/agents/:id/mark-dead ---
+  // Called by the daemon when it detects an agent's process is gone.
+  router.post('/api/agents/:id/mark-dead', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    try {
+      fleetStore.markDead(req.params.id)
+      broadcastState()
+      res.json({ ok: true })
+    } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
   // --- GET /api/store/agents ---
@@ -907,58 +919,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
     })
     res.json({ ok: true, event_id: event?.id })
-  })
-
-  // --- POST /api/cleanup ---
-  // Same logic as roll-call: aggregate tmux session lists from every
-  // connected daemon, then mark agents dead if they're stale on both
-  // heartbeat AND tmux. An agent whose machine has no daemon connected
-  // is treated as having unknown tmux state — we don't kill it just
-  // because we can't see it.
-  router.post('/api/cleanup', async (req, res) => {
-    try {
-      const agents = fleetStore ? fleetStore.getAllAgents() : []
-      const tasks = fleetStore ? fleetStore.getActiveTasks() : []
-      const ALIVE_MS = 10 * 60 * 1000
-      const now = Date.now()
-
-      const tmuxByMachine = new Map()
-      const probes = []
-      for (const [mid] of daemonConnections) {
-        probes.push(
-          sendRpc(mid, 'list-sessions', {}).then(r => {
-            tmuxByMachine.set(mid, new Set((r?.sessions || []).filter(s => s.startsWith('fleet-'))))
-          }).catch(() => { tmuxByMachine.set(mid, null) })
-        )
-      }
-      await Promise.all(probes)
-
-      const removed = [], orphaned = [], deadAgentIds = new Set()
-      for (const a of agents) {
-        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
-        const heartbeatAlive = lastSeenMs < ALIVE_MS
-        let tmuxAlive = false
-        if (a.tmux_session && a.machine_id) {
-          const set = tmuxByMachine.get(a.machine_id)
-          // Unknown (set === null or undefined) → treat as alive to be safe.
-          tmuxAlive = set ? set.has(a.tmux_session) : true
-        }
-        if (!heartbeatAlive && !tmuxAlive && !a.human) {
-          deadAgentIds.add(a.id)
-          removed.push({ id: a.id, name: a.friendly_name || a.name })
-        }
-      }
-      for (const id of deadAgentIds) { if (fleetStore) fleetStore.markDead?.(id) }
-      for (const t of tasks) {
-        if (t.status !== 'done' && !t.synthetic && deadAgentIds.has(t.agent)) {
-          t.status = 'done'; t.completed_at = new Date().toISOString()
-          if (fleetStore) fleetStore.upsertTask(t)
-          orphaned.push({ id: t.id, agent: t.agent, description: t.description })
-        }
-      }
-      broadcastState()
-      res.json({ ok: true, removed_agents: removed, abandoned_tasks: orphaned, remaining_agents: agents.length - removed.length })
-    } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
   // --- POST /api/wiretap ---
