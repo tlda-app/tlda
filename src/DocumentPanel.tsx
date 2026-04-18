@@ -38,28 +38,7 @@ export function PingButton() {
         viewport: { x: pt.x, y: pt.y },
       })
 
-      // Capture viewport screenshot and write to Yjs
-      try {
-        const viewportBounds = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1]) // strip data:...;base64, prefix
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-      } catch (e) {
-        console.warn('[Ping] Screenshot capture failed:', e)
-      }
+      // Screenshot capture handled by ScreenshotCapture component (via signal:screenshot-request)
 
       setState('success')
       setTimeout(() => setState('idle'), 1500)
@@ -745,28 +724,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
         viewport: { x: pt.x, y: pt.y },
       })
 
-      // Capture viewport screenshot
-      try {
-        const viewportBounds = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1])
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-      } catch (e) {
-        console.warn('[Ping] Screenshot capture failed:', e)
-      }
+      // Screenshot capture handled by ScreenshotCapture component
 
       setTimeout(() => setPinging(false), 1500)
     } catch {
