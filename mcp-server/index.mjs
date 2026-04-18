@@ -1894,7 +1894,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'add_annotation',
+      name: 'add_note',
       description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
       inputSchema: {
         type: 'object',
@@ -1902,14 +1902,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
-          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$). Required unless `options_file` is given.' },
+          text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$). Required unless `options_file` or `file` is given.' },
+          text_anchor: { type: 'string', description: 'Specific text to anchor near (uses synctex to position near rendered text)' },
           color: { type: 'string', description: 'Note color: yellow, red, green, blue, violet, orange, grey (default: orange). Convention: orange=claude, green=todd, violet=user.' },
           size: { type: 'string', enum: ['sm', 'md', 'lg', 'a5'], description: 'Size preset: sm (250×100, one-line), md (450×200, default — paragraph + math), lg (650×400, multi-paragraph / derivations), a5 (559×794, A5 paper). options_file defaults to lg.' },
           width: { type: 'number', description: 'Explicit width in pixels (overrides size preset).' },
           height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
-          file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via list_annotations or get_feedback. Mutually exclusive with `options_file`.' },
+          file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations or get_feedback. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
         required: ['doc'],
@@ -1931,6 +1932,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           since: { type: 'number', description: 'Only return annotations created in the last N minutes' },
           startLine: { type: 'number', description: 'Only return annotations at or after this source line' },
           endLine: { type: 'number', description: 'Only return annotations at or before this source line' },
+          unaddressed_only: { type: 'boolean', description: 'Only return unaddressed annotations (where meta.addressed is not true). Default: false.' },
         },
         required: ['doc'],
       },
@@ -1997,44 +1999,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'fromLine', 'toLine'],
       },
     },
-    {
-      name: 'mark_highlight_addressed',
-      description: 'Mark a highlight shape as addressed (desaturated). Sets meta.addressed=true and reduces opacity to 0.3. The user can tap the highlight to re-saturate and signal the agent to retry.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          id: { type: 'string', description: 'Highlight shape ID (e.g. "shape:abc123")' },
-        },
-        required: ['doc', 'id'],
-      },
-    },
-    {
-      name: 'place_response_bar',
-      description: 'Place a reading-assist margin bar next to a highlight, indicating an agent response exists. The bar is a thin colored strip in the right margin spanning the highlight height. Tap the bar to see the response popover.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          highlightId: { type: 'string', description: 'ID of the highlight shape this bar responds to' },
-          responseId: { type: 'string', description: 'ID of the response math-note annotation' },
-        },
-        required: ['doc', 'highlightId', 'responseId'],
-      },
-    },
-    {
-      name: 'get_highlight_feedback',
-      description: 'Get structured feedback from highlight annotations on a document. Returns semantic feedback objects mapping highlight colors to intent: approve (green), reject (red), question (yellow), expand (violet), comment (orange), info (blue). Each entry includes the highlighted text, source line, and addressed status.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          unaddressed_only: { type: 'boolean', description: 'Only return unaddressed highlights (default: false)' },
-          since_minutes: { type: 'number', description: 'Only return feedback created in the last N minutes (default: all)' },
-        },
-        required: ['doc'],
-      },
-    },
+    // mark_highlight_addressed tool definition removed — replaced by reply_note auto-addressing
+    // place_response_bar tool definition removed
+    // get_highlight_feedback tool definition removed — merged into read_annotations (use unaddressed_only param)
     {
       name: 'set_understanding',
       description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
@@ -2117,7 +2084,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // doc_revert, doc_compare, doc_diff removed — use local git with mirror
     {
       name: 'build',
-      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. Returns immediately — use build_status to poll.',
+      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2126,17 +2093,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    {
-      name: 'build_status',
-      description: 'Check the current build status for a tlda document. Returns phase, status, and any errors.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Project/document name in tlda' },
-        },
-        required: ['doc'],
-      },
-    },
+    // build_status tool definition removed — merged into build
     {
       name: 'push',
       description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
@@ -2163,18 +2120,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     // scratch removed — no fleet workspace
-    {
-      name: 'create_shape',
-      description: 'Create a shape (annotation, highlight, arrow, etc.) on a tlda document canvas.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Project/document name in tlda' },
-          shape: { type: 'object', description: 'Shape object with at minimum { type, x, y, props }. See tlda shape schema.' },
-        },
-        required: ['doc', 'shape'],
-      },
-    },
+    // create_shape tool definition removed — too low-level
     {
       name: 'lookup_theorem',
       description: 'Look up a theorem, lemma, proposition, corollary, definition, or assumption in a tlda document by number or label. Returns label, type, number, page, source line, and title.',
@@ -2199,22 +2145,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['tex_file'],
       },
     },
-    {
-      name: 'suggest',
-      description: 'Post a suggestion card on a shared doc in response to feedback. The card appears as a sticky note anchored at specific lines, with optional Accept/Reject/Modify buttons for one-tap review.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Doc name' },
-          line: { type: 'number', description: 'Source line to anchor the suggestion at' },
-          text: { type: 'string', description: 'Suggestion text (supports $math$ and $$display math$$)' },
-          reply_to: { type: 'string', description: 'Shape ID of the feedback to reply to. Creates a threaded reply instead of a new note.' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Action buttons (default: ["Accept", "Reject", "Modify"])' },
-          color: { type: 'string', description: 'Note color (default: orange for agent notes)' },
-        },
-        required: ['doc', 'text'],
-      },
-    },
+    // suggest tool definition removed — functionality merged into add_note
     // update_shared_doc removed — use `tlda push` CLI instead
   ],
 }));
@@ -2371,11 +2302,9 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot', 'crop_screenshot', 'get_feedback',
-  'flash_location', 'add_annotation',
-  'scroll_to_line', 'read_annotations', 'list_annotations',
+  'flash_location', 'add_note',
+  'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
-  'mark_highlight_addressed', 'place_response_bar',
-  'get_highlight_feedback',
   'set_understanding', 'get_understanding',
   'lookup_theorem',
 ]);
@@ -2561,12 +2490,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Highlighted page ${result.page} at (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
   }
 
-  if (name === 'add_annotation') {
-    const { doc, line, page: pageNum, color, size, width, height, side, file, options_file: optionsFile } = args;
-    let { text, choices } = args;
+  if (name === 'add_note') {
+    const { doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
+    let { text, choices, file } = args;
     let effectiveSize = size;
     if (!doc || (!line && !pageNum)) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page)' }], isError: true };
+    }
+    // If file param points to a readable file, use its content as note text
+    if (file && !text && !optionsFile) {
+      const filePath = file.startsWith('~') ? file.replace('~', os.homedir()) : (path.isAbsolute(file) ? file : path.resolve(file));
+      try {
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+          text = fs.readFileSync(filePath, 'utf8');
+          // Don't pass file as source anchor since it was used for content
+          file = undefined;
+        }
+      } catch {}
     }
     if (optionsFile) {
       if (text || choices) {
@@ -2585,7 +2525,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
     if (!text) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: text (or options_file)' }], isError: true };
+      return { content: [{ type: 'text', text: 'Missing required parameter: text (or options_file or file)' }], isError: true };
     }
     try {
       const result = await addAnnotation(doc, line, text, { color, size: effectiveSize, width, height, side, file, choices, page: pageNum });
@@ -2597,13 +2537,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'read_annotations' || name === 'list_annotations') {
+  if (name === 'read_annotations') {
     const { doc } = args;
-    const typeFilter = args.type || null;
+    const typeFilter = name === 'get_highlight_feedback' ? ['highlight'] : (args.type || null);
     const sortOrder = args.sort || 'document';
-    const sinceMinutes = args.since || null;
+    const sinceMinutes = args.since || args.since_minutes || null;
     const startLine = args.startLine || null;
     const endLine = args.endLine || null;
+    const unaddressedOnly = args.unaddressed_only || false;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
       const items = [];
@@ -2613,6 +2554,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!typeFilter || typeFilter.includes('note')) {
         const result = await listAnnotations(doc);
         for (const a of result.annotations) {
+          if (unaddressedOnly && a.addressed) continue;
           if (sinceTs && a.createdAt && a.createdAt < sinceTs) continue;
           const noteLine = a.line || a.sourceLine || null;
           if (startLine && noteLine && noteLine < startLine) continue;
@@ -2629,6 +2571,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (s.shapeType === 'note') continue;
           const aType = s.shapeType || 'draw';
           if (typeFilter && !typeFilter.includes(aType)) continue;
+          if (unaddressedOnly && s.meta?.addressed) continue;
           if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;
           const shapeLine = s.lines?.[0]?.line || s.sourceLine || 0;
           if (startLine && shapeLine && shapeLine < startLine) continue;
@@ -2642,6 +2585,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             highlightText: s.highlightText || null,
             highlightedText: s.meta?.highlightedText || s.meta?.highlightText || null,
             text: s.text || null,
+            addressed: s.meta?.addressed || false,
             sortLine: shapeLine,
             sortTime: s.createdAt || 0,
           });
@@ -2713,8 +2657,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const existing = shape.props?.text || '';
       const agentName = process.env.FLEET_NAME || process.env.FLEET_ID || 'agent';
       const newText = existing + '\n\n---\n\n' + text + ` — *${agentName}*`;
-      await updateShapeRest(doc, fullId, { props: { text: newText } });
-      return { content: [{ type: 'text', text: `Reply appended to ${fullId}` }] };
+      await updateShapeRest(doc, fullId, {
+        props: { text: newText },
+        opacity: 0.3,
+        meta: { addressed: true },
+      });
+      return { content: [{ type: 'text', text: `Reply appended to ${fullId} (marked addressed)` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3491,31 +3439,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { doc } = args;
     if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
     try {
-      await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      // Background poll for build completion
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await serverFetch(`/api/projects/${doc}/build/status`);
-          if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
-            clearInterval(pollInterval);
-            process.stderr.write(`[tlda] build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
-          }
-        } catch (e) {
-          process.stderr.write(`[tlda] build poll failed: ${e.message}\n`);
-        }
-      }, 3000);
-      setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
-      return { content: [{ type: 'text', text: `Build triggered for "${doc}". Use build_status to check progress.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'build_status') {
-    const { doc } = args;
-    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
-    try {
+      // Check current status first
       const status = await serverFetch(`/api/projects/${doc}/build/status`);
+      const isBuilding = status.phase === 'building' || status.status === 'building';
+
+      // If not already building (and not just a status check), trigger a new build
+      if (!isBuilding && name !== 'build_status') {
+        await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      }
+
+      // Poll until build completes (or if already building, wait for it)
+      if (!isBuilding && name !== 'build_status') {
+        // Background poll for build completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const s = await serverFetch(`/api/projects/${doc}/build/status`);
+            if (s.phase === 'idle' || s.status === 'complete' || s.status === 'error') {
+              clearInterval(pollInterval);
+              process.stderr.write(`[tlda] build ${s.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+            }
+          } catch (e) {
+            process.stderr.write(`[tlda] build poll failed: ${e.message}\n`);
+          }
+        }, 3000);
+        setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000);
+      }
+
+      // Return current status with errors
       const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
       const errors = Array.isArray(errData) ? errData : [];
       // Check viewer version vs latest build
@@ -3533,11 +3483,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const viewerTs = viewerSig?.data?.timestamp;
             const latestTs = latestVersions[0]?.timestamp;
             const ageMins = (viewerTs && latestTs) ? Math.round((latestTs - viewerTs) / 60000) : '?';
-            viewerInfo = `**Viewer**: ⚠ STALE — showing ${viewerHash.slice(0, 7)}, latest is ${latestHash.slice(0, 7)} (${ageMins} min behind). User may need to reload.`;
+            viewerInfo = `**Viewer**: stale — showing ${viewerHash.slice(0, 7)}, latest is ${latestHash.slice(0, 7)} (${ageMins} min behind). User may need to reload.`;
           }
         }
       } catch {}
+      const triggered = (!isBuilding && name !== 'build_status') ? '**Build triggered.**\n' : (isBuilding ? '**Build already in progress.**\n' : '');
       const summary = [
+        triggered,
         `**Phase**: ${status.phase || 'unknown'}`,
         `**Status**: ${status.status || 'unknown'}`,
         errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
