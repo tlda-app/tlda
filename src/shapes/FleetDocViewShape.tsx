@@ -113,6 +113,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
 
+  // --- Return button: save camera before Go, restore on Return ---
+  const [savedCamera, setSavedCamera] = useState<{ x: number; y: number; z: number } | null>(null)
+
   // --- Filter overlay ---
   const [showSources, setShowSources] = useState(false)
 
@@ -435,6 +438,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
               onPointerUp={(e: any) => {
                 e.stopPropagation()
                 if (!mainEditor || !bounds) return
+                // Save current camera position for Return
+                const cam = mainEditor.getCamera()
+                setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
                 const vp = mainEditor.getViewportPageBounds()
                 mainEditor.centerOnPoint(
                   { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
@@ -443,6 +449,18 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
               }}
               title="Go to location"
             >↗</button>
+            {savedCamera && (
+              <button
+                className="fleet-layout-btn"
+                onPointerUp={(e: any) => {
+                  e.stopPropagation()
+                  if (!mainEditor || !savedCamera) return
+                  mainEditor.setCamera(savedCamera, { animation: { duration: 300 } })
+                  setSavedCamera(null)
+                }}
+                title="Return to previous position"
+              >↩</button>
+            )}
           </>
         )}
       </div>

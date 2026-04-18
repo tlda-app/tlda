@@ -27,6 +27,7 @@ jobs:
       - run: npx vite build
         env:
           VITE_BASE_PATH: /tlda/
+          # Sync server for the live demo at qtm285.github.io/tlda
           VITE_SYNC_SERVER: wss://tldraw-sync-skip.fly.dev
       - uses: actions/upload-pages-artifact@v3
         with:

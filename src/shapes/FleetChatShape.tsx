@@ -28,6 +28,8 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 // @ts-ignore — vanilla JS module
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
+// @ts-ignore — vanilla JS module
+import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -372,7 +374,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       fetch(`${FLEET_API}/api/mark-event-read`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: eid, agent: 'fleet:skip' }),
+        body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
       }).catch(() => {})
     }
     setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
@@ -1140,7 +1142,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
             .then(() => { if (card) card.classList.add('plan-card-approved') })
-            .catch(err => sendMessage('fleet:skip', `⚠️ plan approve failed: ${err.message}`, {}))
+            .catch(err => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
         }
         return
       }
@@ -1157,7 +1159,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
             .then(() => { if (card) card.classList.add('plan-card-rejected') })
-            .catch(err => sendMessage('fleet:skip', `⚠️ plan reject failed: ${err.message}`, {}))
+            .catch(err => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
         }
         return
       }
@@ -1240,7 +1242,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     for (const a of agents) {
       if (a.id) map[a.id] = a.friendly_name || (a.id || '').replace('fleet:', '')
     }
-    map['fleet:skip'] = 'skip'
+    if (getHumanId()) map[getHumanId()] = getHumanName() || 'user'
     return map
   }, [agents])
 
@@ -1303,7 +1305,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       return { id: a.id, labels }
     })
     // Also include human
-    allIds.push({ id: 'fleet:skip', labels: ['skip', 'fleet:skip'] })
+    if (getHumanId()) allIds.push({ id: getHumanId(), labels: [getHumanName() || 'user', getHumanId()] })
     // For each OR clause, check if there's any agent that matches ALL terms
     return !filter.some(clause =>
       allIds.some(agent =>
@@ -2177,13 +2179,13 @@ function FleetChatInner({ shape }: { shape: any }) {
                           .then(r => r.json().then(data => ({ ok: r.ok, data })))
                           .then(({ ok, data }) => {
                             if (!ok || data?.error) {
-                              sendMessage('fleet:skip', `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+                              sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
                             } else if (data?.mode) {
                               const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
-                              sendMessage('fleet:skip', `📋 ${agentName} → ${modeLabel}`, {})
+                              sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
                             }
                           })
-                          .catch(err => sendMessage('fleet:skip', `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
+                          .catch(err => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
                       }
                     }
 

@@ -13,6 +13,10 @@ import {
   getAgents,
   getTasks,
   getUnreadCountsForHuman,
+  getHumanId,
+  getHumanName,
+  needsIdentity as _needsIdentity,
+  identify as _identify,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
@@ -601,6 +605,32 @@ export function useFleetConnection(): boolean {
   }, [])
 
   return connected
+}
+
+// --- Identity hook ---
+
+export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, identify: (name: string) => Promise<any> } {
+  const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setIdentity({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+      unsub = subscribe('identity', null, (ev: any) => {
+        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), needsIdentity: !!ev.needsIdentity })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return { ...identity, identify: _identify }
 }
 
 // --- Write API (re-exported) ---

@@ -50,6 +50,7 @@ export interface PlaybackEvent {
 export interface PlaybackAgent {
   id: string
   friendly_name?: string
+  human?: boolean
 }
 
 type Listener = () => void
@@ -133,7 +134,7 @@ export function getPlaybackAgents(data: PlaybackData): any[] {
     id: a.id,
     friendly_name: a.friendly_name ?? null,
     dead: false,
-    human: a.id === 'fleet:skip' || a.id.includes('skip'),
+    human: !!a.human,
     // Use current time so FleetAgentsShape treats them as alive (not stale)
     last_seen: new Date().toISOString(),
     labels: [],

@@ -28,6 +28,8 @@ const MAX_EVENTS = 500    // keep only the most recent N events in memory; older
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
+let _humanName = null
+let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
 
 // --- Subscribers ---
@@ -79,7 +81,7 @@ function agentMatchesLabel(agentId, label) {
   const agent = _agents.find(a => a.id === agentId)
   if (!agent) {
     // Check human
-    if (_humanId && agentId === _humanId) return ['skip', _humanId].includes(label)
+    if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
     return false
   }
   const labels = [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean)
@@ -92,7 +94,7 @@ function resolveFilter(filter) {
   if (!filter) return new Set()
   const ids = new Set()
   const allAgents = [..._agents]
-  if (_humanId) allAgents.push({ id: _humanId, friendly_name: 'skip', labels: ['skip'] })
+  if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
   for (const a of allAgents) {
     const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
     const matches = filter.some(clause =>
@@ -114,6 +116,19 @@ export function getTasks() { return _tasks }
 export function getEvents() { return _events }
 export function getActivity(agentId) { return _events.filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
+export function getHumanName() { return _humanName }
+export function needsIdentity() { return !_humanId && _identifyPending }
+
+/** Claim a human identity. Called by the name picker UI. */
+export async function identify(name) {
+  const res = await wsSend({ type: 'identify', name })
+  _humanId = res.id
+  _humanName = res.name
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', res.name)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
 
 // Returns { agentId: count } for unread messages from agents to the human
 export function getUnreadCountsForHuman() {
@@ -134,6 +149,8 @@ export function getAgent(id) {
 
 export async function sendMessage(to, text, opts = {}) {
   const body = { message: text, to }
+  // Include sender identity so the server attributes the message correctly
+  if (_humanId) body.from = _humanId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
@@ -220,6 +237,20 @@ export function isConnected() { return _connected }
 /** Returns ms since disconnect, or 0 if connected */
 export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? Date.now() - _disconnectedAt : 0) }
 
+// WS request/response: pending callbacks keyed by message ID
+let _wsReqId = 0
+const _wsCallbacks = new Map()
+
+function wsSend(msg) {
+  if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
+  const id = ++_wsReqId
+  return new Promise((resolve, reject) => {
+    _wsCallbacks.set(id, { resolve, reject })
+    _ws.send(JSON.stringify({ ...msg, id }))
+    setTimeout(() => { _wsCallbacks.delete(id); reject(new Error('timeout')) }, 5000)
+  })
+}
+
 export function connect() {
   if (_ws) return
   const params = new URLSearchParams(location.search)
@@ -231,6 +262,19 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
+    // Send identity if we have one stored
+    const storedName = localStorage.getItem('tlda-identity')
+    if (storedName) {
+      wsSend({ type: 'identify', name: storedName }).then(res => {
+        _humanId = res.id
+        _humanName = res.name
+        _identifyPending = false
+        notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+      }).catch(() => { _identifyPending = false })
+    } else {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+    }
     // Always do a full state refresh on reconnect — not just catch-up.
     // This ensures agents/tasks are populated even if the initial load failed
     // or the server restarted and event IDs reset.
@@ -279,6 +323,17 @@ export function connect() {
   _ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data)
+
+      // Handle request/response messages (replies to wsSend)
+      if (msg.id && (msg.result !== undefined || msg.error !== undefined)) {
+        const cb = _wsCallbacks.get(msg.id)
+        if (cb) {
+          _wsCallbacks.delete(msg.id)
+          if (msg.error) cb.reject(new Error(msg.error))
+          else cb.resolve(msg.result)
+        }
+        return
+      }
 
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
@@ -347,14 +402,9 @@ export function connect() {
 
 // --- Initial load ---
 export async function init() {
-  // Fetch human identity
-  try {
-    const res = await fetch(`${FLEET}/api/human`)
-    if (res.ok) {
-      const data = await res.json()
-      _humanId = data.id || null
-    }
-  } catch {}
+  // Human identity is established via WS 'identify' message on connect.
+  // If localStorage has a stored name, it's sent automatically.
+  // If not, the UI shows a name picker (subscribe to 'identity' channel).
 
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([

@@ -13,9 +13,11 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-const HUMAN_FLEET_ID = 'fleet:skip'
-const HUMAN_NAME = 'skip'
-const HUMAN_HOST = os.hostname()
+// Server owner — the human running this server process. Browser users
+// identify themselves via the WS 'identify' message and get their own agent.
+const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
+const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
+const SERVER_OWNER_HOST = os.hostname()
 
 // All inline tmux operations were removed — they now route through the
 // fleet-daemon WS RPC layer (`sendRpc(machineId, op, params)` injected
@@ -101,15 +103,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
-    if (fleetStore) fleetStore.updateHeartbeat(HUMAN_FLEET_ID)
+    if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
     const agents = fleetStore ? fleetStore.getAllAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
 
   // --- GET /api/human ---
+  // Returns the server owner's identity. Used by MCP agents and CLI tools
+  // to know who the "local human" is. Browser users identify via WS 'identify'.
   router.get('/api/human', (req, res) => {
-    res.json({ id: HUMAN_FLEET_ID, host: HUMAN_HOST, name: HUMAN_NAME })
+    res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
   })
 
   // --- GET /api/store/events ---
@@ -219,7 +223,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const allAgents = fleetStore ? fleetStore.getAllAgents() : []
       const agentMap = {}
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
-      agentMap['web'] = agentMap[HUMAN_FLEET_ID] || HUMAN_NAME
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
       if (fleetStore) {
         try {
@@ -333,15 +337,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!message && (!attachments || !attachments.length)) { res.status(400).send('missing message'); return }
     if (!to || to === 'undefined' || to === 'null') { res.status(400).send('missing "to"'); return }
     const resolve = (id) => {
-      if (id === HUMAN_FLEET_ID || id === 'skip') return HUMAN_FLEET_ID
+      // Server owner shortcut (MCP agents send to SERVER_OWNER_NAME)
+      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
+      // Try DB lookup — finds agents and humans by ID or friendly_name
       const a = fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const sender = from ? (resolve(from) || from) : HUMAN_FLEET_ID
+    const sender = from ? (resolve(from) || from) : SERVER_OWNER_ID
     const recipient = resolve(to)
     if (!recipient) { res.status(404).send(`Recipient not found: "${to}"`); return }
     let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
     if (ccResolved && ccResolved.length === 0) ccResolved = null
-    if (recipient === HUMAN_FLEET_ID && sender !== HUMAN_FLEET_ID && fleetStore) {
+    // Auto-CC QA agents when a non-human sends to any human
+    const recipientAgent = fleetStore?.getAgent(recipient)
+    if (recipientAgent?.human && !fleetStore?.getAgent(sender)?.human && fleetStore) {
       const watchers = fleetStore.getAllAgents()
         .filter(a => a.labels?.includes('qa') && a.id !== sender && a.id !== recipient)
         .map(a => a.id)
@@ -360,7 +368,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       })
     }
     let text = message || ''
-    if (fleetStore) fleetStore.updateHeartbeat(HUMAN_FLEET_ID)
+    if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
     // Resolve wiretaps
     let wiretapRecipients = []
     if (fleetStore) {
@@ -487,7 +495,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
     if (result === null) return // rpcAgent already wrote the response
-    broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: HUMAN_FLEET_ID, text: 'manual kick' })
+    broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
     res.json(result)
   })
 
@@ -514,7 +522,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
       const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const usedNames = new Set(['skip', ...allAgents.filter(a => a.id !== agent.id).map(a => a.friendly_name).filter(Boolean)])
+      const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.filter(a => a.id !== agent.id).map(a => a.friendly_name).filter(Boolean)])
       if (usedNames.has(newName)) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
     }
     agent.friendly_name = newName || undefined
@@ -530,7 +538,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-    const usedNames = new Set(['skip', ...allAgents.map(a => a.friendly_name).filter(Boolean)])
+    const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.map(a => a.friendly_name).filter(Boolean)])
     const conflicts = labels.filter(l => usedNames.has(l) && l !== agent.friendly_name)
     if (conflicts.length) { res.status(400).json({ error: `Label(s) conflict with agent name(s): ${conflicts.join(', ')}` }); return }
     agent.labels = labels
@@ -617,7 +625,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (fleetStore) {
         fleetStore.share({
           type: 'chat',
-          from: HUMAN_FLEET_ID,
+          from: SERVER_OWNER_ID,
           to: agent.id,
           text: 'Fleet MCP restarted. Resume your task.',
         })
@@ -856,7 +864,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const event = fleetStore?.share({
       type: 'terminal_card',
       from: agent.id,
-      to: HUMAN_FLEET_ID,
+      to: SERVER_OWNER_ID,
       text,
       metadata: JSON.stringify({
         reason: reason || null,
@@ -867,7 +875,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     broadcastEvent('fleet-event', {
       type: 'terminal_card',
       from: agent.id,
-      to: HUMAN_FLEET_ID,
+      to: SERVER_OWNER_ID,
       id: event?.id,
       event_id: event?.id,
       text,

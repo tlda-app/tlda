@@ -34,7 +34,8 @@ blocked((ms, stack) => {
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
-import { homedir, hostname } from 'os'
+import os from 'os'
+const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { initProjectStore, listProjects } from './lib/project-store.mjs'
@@ -100,6 +101,11 @@ const daemonConnections = new Map()         // machine_id -> ws
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
+// Server owner — the human running this server process. Used as fallback
+// identity for MCP agents and CLI operations. Browser users identify
+// themselves via the WS 'identify' message and get their own human agent.
+const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
+const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
@@ -260,6 +266,19 @@ function broadcastState() {
 // Wire fleet store events → WS broadcast
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
+}
+
+// Ensure server owner exists as a human agent in the DB on startup
+if (fleetStore) {
+  fleetStore.upsertAgent({
+    id: SERVER_OWNER_ID,
+    friendly_name: SERVER_OWNER_NAME,
+    human: true,
+    dead: false,
+    labels: [],
+    registered_at: new Date().toISOString(),
+    last_seen: new Date().toISOString(),
+  })
 }
 
 // Full chat delivery pipeline used by tlda-feedback (push-channel
@@ -901,6 +920,32 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // Browser identity: a browser client sends { type: "identify", name: "alice" }
+  // to claim a human identity. Creates/updates a human agent in the DB.
+  if (type === 'identify') {
+    const { name } = msg
+    if (!name || typeof name !== 'string') { error('missing name'); return }
+    const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    if (!sanitized) { error('invalid name'); return }
+    const humanId = `fleet:${sanitized}`
+    const now = new Date().toISOString()
+    const existing = fleetStore.getAgent?.(humanId)
+    fleetStore.upsertAgent({
+      id: humanId,
+      friendly_name: sanitized,
+      human: true,
+      dead: false,
+      labels: existing?.labels || [],
+      registered_at: existing?.registered_at || now,
+      last_seen: now,
+    })
+    // Track this WS as belonging to this human (for heartbeat on /api/state)
+    ws._tldaHumanId = humanId
+    broadcastState()
+    reply({ id: humanId, name: sanitized })
+    return
+  }
+
   if (type === 'store-agents') {
     reply(fleetStore.getAllAgents())
     return
@@ -1292,11 +1337,11 @@ function handleDaemonWsMessage(ws, msg) {
     if (!agent_id || !rawText || !ts) return
     const text = rawText.length > 2000 ? rawText.slice(0, 2000) : rawText
     try {
-      const existing = _terminalDedupStmt.get(ts, from || 'fleet:skip', agent_id, text.slice(0, 500))
+      const existing = _terminalDedupStmt.get(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
       if (existing) return // duplicate, swallow silently
       fleetStore.share({
         type: 'chat',
-        from: from || 'fleet:skip',
+        from: from || SERVER_OWNER_ID,
         to: agent_id,
         text,
         metadata: { source: 'terminal', session_id: session_id || null },
@@ -1322,7 +1367,7 @@ function handleDaemonWsMessage(ws, msg) {
       fleetStore.share({
         type: 'chat',
         from: agent_id,
-        to: 'fleet:skip',
+        to: SERVER_OWNER_ID,
         text: plan_text,
         metadata: { type: 'plan_approval', tmux_session: tmux_session || null },
         unread: true,
@@ -1330,6 +1375,34 @@ function handleDaemonWsMessage(ws, msg) {
       })
     } catch (e) {
       console.error(`[fleet-daemon] plan-mode-prompt write: ${e.message}`)
+    }
+    return
+  }
+
+  if (type === 'terminal_attention') {
+    if (!fleetStore) return
+    const { agent_id, text, tmux_session } = msg
+    if (!agent_id) return
+    const agent = fleetStore.getAgent(agent_id)
+    const label = agent?.friendly_name || agent_id.slice(0, 12)
+    const event = fleetStore.share({
+      type: 'terminal_attention',
+      from: agent_id,
+      to: SERVER_OWNER_ID,
+      text: text || `${label}: needs attention`,
+      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null },
+    })
+    if (event) {
+      fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
+      broadcastEvent('fleet-event', {
+        type: 'terminal_attention',
+        from: agent_id,
+        to: SERVER_OWNER_ID,
+        id: event.id,
+        event_id: event.id,
+        text: text || `${label}: needs attention`,
+        metadata: { agentId: agent_id, agentLabel: label },
+      })
     }
     return
   }

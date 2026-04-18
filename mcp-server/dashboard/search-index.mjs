@@ -871,7 +871,7 @@ export class SearchIndex {
           if (!ts) continue;
 
           const eventType = 'terminal_user';
-          const fromId = 'fleet:skip';
+          const fromId = `fleet:${os.userInfo?.()?.username || process.env.TLDA_USER || 'user'}`;
           const toId = agentId;
 
           rows.push([ts, eventType, fromId, toId, agentId, text, JSON.stringify({ session_id: sessionId }), lineNum]);

@@ -55,6 +55,7 @@ import { WebSocket } from 'ws'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 const execFileP = promisify(execFile)
@@ -350,6 +351,52 @@ function scheduleCheckForPlanModePrompt(agentId) {
   pendingPlanChecks.set(agentId, handle)
 }
 
+// ---------- approval prompt detection ----------
+// Detect Claude Code permission prompts (tool approval dialogs) in the terminal.
+// When found, emit a terminal_attention event so the browser can surface a card.
+
+const approvalHashes = new Map()  // agentId -> last fingerprint
+
+async function checkForApprovalPrompt(agentId) {
+  const agent = agents.find(a => a.id === agentId)
+  if (!agent?.tmux_session) return
+
+  let pane
+  try {
+    const { stdout } = await execFileP('tmux',
+      ['capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-50'],
+      { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
+    pane = stripAnsi(stdout)
+  } catch {
+    return
+  }
+
+  // Claude Code shows approval prompts with patterns like:
+  // "Allow <tool>?" or "Allow once" / "Allow always" / "Deny"
+  // Also catches user-prompt-submit hooks that block
+  const hasApproval = /Allow\s+(once|always)|Do you want to proceed|Yes.*No.*Always/i.test(pane)
+  if (!hasApproval) return
+
+  const fingerprint = `${pane.length}:${pane.slice(-200)}`
+  if (approvalHashes.get(agentId) === fingerprint) return  // already sent
+  approvalHashes.set(agentId, fingerprint)
+
+  const label = agent.friendly_name || agentId.slice(0, 12)
+  sendMsg({
+    type: 'terminal_attention',
+    agent_id: agentId,
+    tmux_session: agent.tmux_session,
+    text: `${label}: waiting for approval`,
+  })
+  console.log(`[daemon] terminal_attention sent for agent ${agentId}`)
+}
+
+// Schedule approval checks after tool use events — that's when prompts appear
+function scheduleApprovalCheck(agentId) {
+  // Stagger slightly after plan-mode check
+  setTimeout(() => checkForApprovalPrompt(agentId), 2500)
+}
+
 // ---------- activity event buffer ----------
 
 // Activity event buffer — flush at bounded rate (max 1 push per 2s) to
@@ -513,7 +560,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     if (ev) parsedEvents.push(ev)
 
     // Terminal-chat extraction: user-typed text in the terminal. Same
-    // shape the inline server used: from='fleet:skip', to=agentId,
+    // shape the inline server used: from='fleet:<user>', to=agentId,
     // metadata.source='terminal'. Server dedups via (timestamp,
     // from, to, text) so duplicate JSONL lines don't double-fire.
     let parsed
@@ -532,7 +579,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     sendMsg({
       type: 'terminal-chat',
       agent_id: agentId,
-      from: 'fleet:skip',
+      from: `fleet:${os.userInfo?.()?.username || 'user'}`,
       text,
       ts,
       session_id: sessionId,
@@ -549,6 +596,13 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'text' && b.text?.length > 0)
     )
     if (hasAssistantText) scheduleCheckForPlanModePrompt(agentId)
+
+    // Check for tool approval prompts — these appear when Claude wants to
+    // use a tool that requires permission.
+    const hasToolUse = parsedEvents.some(ev =>
+      ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'tool_use')
+    )
+    if (hasToolUse) scheduleApprovalCheck(agentId)
   }
 }
 
@@ -799,7 +853,7 @@ async function rpcRestartMcp({ tmux_session, skipPreflight }) {
   // Delegate to fleet-mcp-restart, which navigates the /mcp interactive
   // menu (server list → fleet → Reconnect). Sending /mcp + Enter alone is
   // not enough — the menu requires cursor navigation.
-  const script = path.join(os.homedir(), 'work', 'tlda', 'bin', 'fleet-mcp-restart')
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-mcp-restart')
   const args = [script, tmux_session]
   if (skipPreflight) args.push('--skip-preflight')
   try {

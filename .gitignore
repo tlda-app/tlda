@@ -49,3 +49,26 @@ public/docs/*/
 
 # Built assets (KaTeX fonts, etc.) — don't commit
 public/assets/
+
+# Working directories
+.worktrees/
+.claude/
+.playwright-cli/
+.playwright-mcp/
+
+# Personal / development artifacts
+*.png
+*.jpeg
+*.jpg
+!public/**/*.png
+!public/**/*.jpg
+console-errors.txt
+TODO*.md
+.dev-url
+dist.broken/
+dist.rescue/
+docs/fleet/
+bin/merge-april.sh
+bin/fix-head.sh
+bin/finish-merge.sh
+bin/fleet-resume.sh

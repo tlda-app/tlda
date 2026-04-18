@@ -4,6 +4,7 @@ import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDo
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
+import { IdentityPicker } from './IdentityPicker'
 import type { BookMember } from './BookContext'
 import './App.css'
 
@@ -374,7 +375,7 @@ function App() {
   }
 
   if (!state) {
-    return <div className="App loading">Loading...</div>
+    return <><IdentityPicker /><div className="App loading">Loading...</div></>
   }
 
   switch (state.phase) {
@@ -406,6 +407,7 @@ function App() {
     case 'picker':
       return (
         <div className="App">
+          <IdentityPicker />
           <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
             const newUrl = new URL(window.location.href)
             newUrl.searchParams.set('doc', key)
@@ -427,6 +429,7 @@ function App() {
     case 'svg':
       return (
         <div className="App">
+          <IdentityPicker />
           <ErrorBoundary>
             <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>

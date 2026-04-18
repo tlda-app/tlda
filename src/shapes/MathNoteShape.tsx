@@ -190,8 +190,11 @@ const cmTheme = EditorView.theme({
  * In pen mode, finger touches should pass through to TLDraw (for palm rejection).
  * Only stop propagation for pen/mouse events or when not in pen mode.
  */
-function stopIfNotPenTouch(editor: any) {
+// Stop event propagation only when the note is being edited.
+// When not editing, let TLDraw handle pointer events so the shape is draggable.
+function stopIfNotPenTouch(editor: any, isEditing: boolean) {
   return (e: React.PointerEvent) => {
+    if (!isEditing) return // let TLDraw handle drag
     if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
     stopEventPropagation(e)
   }
@@ -732,7 +735,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             flexDirection: 'column',
           }}
           onKeyDown={handleKeyDown}
-          onPointerDown={stopIfNotPenTouch(editor)}
+          onPointerDown={stopIfNotPenTouch(editor, isEditing)}
         >
           {/* Reply context — read-only view of the tab being replied to */}
           {replyContextHtml && (
