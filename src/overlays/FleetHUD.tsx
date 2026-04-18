@@ -152,12 +152,8 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // Camera offsets: initialized on first expand, then frozen.
-  // panOffsetRef (X): accumulated screen-pixel offset from panning only.
-  //   Only updated when the user pans (cam.z unchanged). Zoom is ignored.
-  // cameraYRef (Y): set once from fleet bounds center. Never updated by
-  //   shape moves — prevents "drag one shape, all shapes shift" bug.
-  const panOffsetRef = useRef<number | null>(null)
+  // cameraYRef (Y): set once from fleet bounds top. Never updated by
+  // shape moves — prevents "drag one shape, all shapes shift" bug.
   const cameraYRef = useRef<number | null>(null)
 
   // Reactively update fleet bounds when shapes change.
@@ -256,14 +252,8 @@ export function FleetHUD({
     }
   }, [expanded, fleetBounds, mainEditor])
 
-  // Track camera so render recomputes canvas→screen projection for HUD x.
-  // We poll via rAF because tldraw camera changes don't fire store listeners
-  // on the same scope we care about.
-  //
-  // Pan-only tracking: panOffsetRef accumulates screen-pixel offsets from panning.
-  // When the user zooms (cam.z changes), we freeze panOffsetRef — fleet shapes stay
-  // at their current screen positions. When the user pans (cam.z unchanged), we
-  // update panOffsetRef by deltaCamX * cam.z (the screen-pixel pan amount).
+  // Poll main camera so the overlay re-renders when the user pans/zooms.
+  // Fleet X position is computed from mainEditor.pageToScreen each render.
   useEffect(() => {
     if (!expanded) return
     let rafId: number
@@ -272,13 +262,6 @@ export function FleetHUD({
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (cam.z === lastCamZ) {
-          // Pure pan: update offset by screen-pixel delta
-          if (panOffsetRef.current !== null) {
-            panOffsetRef.current += (cam.x - lastCamX) * cam.z
-          }
-        }
-        // Zoom: freeze panOffsetRef (don't update)
         lastCamX = cam.x
         lastCamZ = cam.z
         setCameraTick(t => t + 1)
@@ -337,7 +320,6 @@ export function FleetHUD({
   // Reset camera refs so the overlay re-centers on the new shapes.
   useEffect(() => {
     const onReset = () => {
-      panOffsetRef.current = null
       cameraYRef.current = null
       setFleetBounds(getFleetBounds(mainEditor))
     }
@@ -368,29 +350,40 @@ export function FleetHUD({
     )
   }
 
-  // Expanded: CanvasClipPanel with fleet region.
-  //
-  // Full-viewport overlay: fleet shapes render at z=1 (fixed size) with their
-  // Camera offsets are initialized once on first expand and then frozen.
-  // panOffsetRef (X): only updated by pan deltas, not by zoom or shape moves.
-  // cameraYRef (Y): set once from fleet bounds center, never updated by shape moves.
-  //
-  // This prevents the "drag one shape, all shapes move" bug: without freezing,
-  // moving a shape changes fleetBounds → changes camera → shifts all shapes.
+  // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
+  // from document's screen position each render. Y frozen on first expand.
   void cameraTick
-  const cam = mainEditor.getCamera()
 
-  if (panOffsetRef.current === null) {
-    // Position fleet shapes in the margins, not the center. With z=1,
-    // screen position = page position + camera offset.
-    // X: align fleet shapes' left edge with a small left margin (40px).
-    // Y: position fleet shapes near the top of the viewport (80px from top).
-    panOffsetRef.current = 40 - fleetBounds.x
-    cameraYRef.current = 80 - fleetBounds.y
+  // Position fleet shapes so their right edge sits ~140px (≈1.5in) left of
+  // the document's left margin on screen. This updates dynamically as the
+  // user pans/zooms the document.
+  const MARGIN_GAP = 20 // gap between fleet right edge and document left edge
+  const TOP_PAD = 80     // pixels from top of viewport
+
+  // Find document left edge on screen
+  const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
+    (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+  let docLeftScreen = 0
+  if (docShapes.length > 0) {
+    let minPageX = Infinity
+    for (const s of docShapes) {
+      const b = mainEditor.getShapePageBounds(s.id)
+      if (b && b.x < minPageX) minPageX = b.x
+    }
+    docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+  } else {
+    docLeftScreen = window.innerWidth / 2
   }
 
+  // Fleet shapes' right edge in page coords
+  const fleetRightPage = fleetBounds.x + fleetBounds.w
+  // We want: fleetRightPage + overlayCam.x = docLeftScreen - MARGIN_GAP
+  const camX = docLeftScreen - MARGIN_GAP - fleetRightPage
+  const camY = cameraYRef.current ?? (TOP_PAD - fleetBounds.y)
+  if (cameraYRef.current === null) cameraYRef.current = camY
+
   const overlayCam = {
-    x: panOffsetRef.current,
+    x: camX,
     y: cameraYRef.current!,
     z: 1,
   }
