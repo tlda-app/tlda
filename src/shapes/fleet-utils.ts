@@ -61,12 +61,9 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
 
   const leftW = 340
   const gap = 10
-  // 3-col: two chats at 410 each → rightW 830.
-  // 2-col: one chat at 1.5x width (615) → rightW 615. Narrower overall.
   const chatW3 = 410
-  const chatW2 = Math.round(chatW3 * 1.5)
-  const chatW = variant === '2col' ? chatW2 : chatW3
-  const rightW = variant === '2col' ? chatW2 : chatW3 * 2 + gap
+  // Both variants use 2 chats at 410 each; 3-col adds a docview under the right chat
+  const rightW = chatW3 * 2 + gap
   const totalH = 640
   const agentsH = 330
   const searchH = totalH - gap - agentsH
@@ -121,39 +118,40 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: totalH, filter: filter1 },
+        props: { w: chatW3, h: totalH, filter: filter1 },
       },
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
-        x: anchorX + leftW + gap + chatW + gap, y: anchorY,
+        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: rightChatH, filter: filter2 },
+        props: { w: chatW3, h: rightChatH, filter: filter2 },
       },
       {
         id: createShapeId(),
         type: 'fleet-docview' as any,
-        x: anchorX + leftW + gap + chatW + gap, y: anchorY + rightChatH + gap,
+        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
       },
     )
   } else {
-    // 2-col: single wider chat (75% height) + docview beneath it
+    // 2-col: two chats — one in the middle, one in the right margin.
+    // Both full-column height (same as left-side column).
     shapes.push(
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: rightChatH, filter: filter1 },
+        props: { w: chatW3, h: totalH, filter: filter1 },
       },
       {
         id: createShapeId(),
-        type: 'fleet-docview' as any,
-        x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatW3, h: totalH, filter: filter2 },
       },
     )
   }
