@@ -396,7 +396,7 @@ export function FleetHUD({
       }).sort((a, b) => a - b)
       // Find the right edge of the "left group" — shapes whose right edge
       // is within 1200px of the leftmost shape's left edge
-      const leftGroupShapes = rights.filter(r => r - fleetBounds.x < 1200)
+      const leftGroupShapes = rights.filter(r => r - fleetBounds.x < 1500)
       if (leftGroupShapes.length > 0) leftGroupRight = Math.max(...leftGroupShapes)
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
