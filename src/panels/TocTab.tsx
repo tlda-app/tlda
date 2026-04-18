@@ -688,12 +688,14 @@ export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()
 
-  // Click: toggle between 3-col (default) and 2-col. Detects current layout
-  // by counting fleet-chat shapes: 3-col has 2, 2-col has 1. No fleet shapes
-  // at all → create 3-col (the default).
+  // Click: cycle between 3-col and 2-col layouts. Detect current layout
+  // by checking for fleet-docview shapes (3-col has one, 2-col doesn't).
+  // No fleet shapes → create 3-col (the default).
   const handleClick = useCallback(() => {
-    const chats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat')
-    const next = chats.length >= 2 ? '2col' : '3col'
+    const fleet = editor.getCurrentPageShapes().filter(s =>
+      ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'].includes(s.type as string))
+    const hasDocview = fleet.some(s => (s.type as string) === 'fleet-docview')
+    const next = fleet.length === 0 ? '3col' : hasDocview ? '2col' : '3col'
     createFleetLayout(editor, allAgents, next)
   }, [editor, allAgents])
 

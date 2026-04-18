@@ -62,7 +62,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   const leftW = 340
   const gap = 10
   const chatW3 = 410
-  // Both variants use 2 chats at 410 each; 3-col adds a docview under the right chat
   const rightW = chatW3 * 2 + gap
   const totalH = 640
   const agentsH = 330
@@ -72,7 +71,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   const rightChatH = Math.round(totalH * 0.75)
   const docviewH = totalH - gap - rightChatH
 
-  // Anchor: just left of the doc's left margin
+  // Anchor: just left of the doc's left margin. All three columns sit
+  // together in the left margin as a contiguous block.
   const pageShapes = editor.getCurrentPageShapes().filter(s =>
     (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
   let anchorX = 0, anchorY = 0
