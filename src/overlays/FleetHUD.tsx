@@ -222,6 +222,8 @@ export function FleetHUD({
   // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
   // main canvas — avoids the "two copies" issue where both the HUD and main
   // canvas show the same shapes simultaneously.
+  // Body class + visibility ref (no shape updates here — that causes loops
+  // since updating shapes triggers fleetBounds recalc which re-runs this effect)
   useEffect(() => {
     const isOpen = !!(expanded && fleetBounds)
     fleetHudOpenRef.current = isOpen
@@ -230,8 +232,19 @@ export function FleetHUD({
     } else {
       document.body.classList.remove('fleet-hud-open')
     }
-    // Touch fleet shapes so tldraw's getShapeVisibility cache invalidates.
-    // The cache is keyed on shape records — bumping meta triggers recomputation.
+    return () => {
+      document.body.classList.remove('fleet-hud-open')
+      fleetHudOpenRef.current = false
+    }
+  }, [expanded, fleetBounds])
+
+  // Touch fleet shapes to invalidate getShapeVisibility cache — only when
+  // expanded state actually changes, not on every fleetBounds update.
+  const prevExpandedRef = useRef(false)
+  useEffect(() => {
+    const isOpen = !!(expanded && fleetBounds)
+    if (isOpen === prevExpandedRef.current) return
+    prevExpandedRef.current = isOpen
     const fleetShapes = mainEditor.getCurrentPageShapes()
       .filter(s => FLEET_SHAPE_TYPES_SET.has(s.type as string))
     if (fleetShapes.length > 0) {
@@ -239,18 +252,6 @@ export function FleetHUD({
       mainEditor.updateShapes(fleetShapes.map(s => ({
         id: s.id, type: s.type, meta: { ...s.meta, _visTick: tick },
       })))
-    }
-    return () => {
-      document.body.classList.remove('fleet-hud-open')
-      fleetHudOpenRef.current = false
-      // Touch again on close so shapes become visible in main editor
-      const shapes = mainEditor.getCurrentPageShapes()
-        .filter(s => FLEET_SHAPE_TYPES_SET.has(s.type as string))
-      if (shapes.length > 0) {
-        mainEditor.updateShapes(shapes.map(s => ({
-          id: s.id, type: s.type, meta: { ...s.meta, _visTick: Date.now() },
-        })))
-      }
     }
   }, [expanded, fleetBounds, mainEditor])
 
