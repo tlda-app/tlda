@@ -477,13 +477,38 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, task_id })
   })
 
-  // --- POST /api/spawn — REMOVED ---
-  // The previous inline implementation referenced a non-existent path
-  // (`'../../../fleet/index.mjs'`) and was unreachable from any caller.
-  // The real spawn path is the Python script `bin/fleet-spawn`, which the
-  // fleet MCP shells out to directly. When per-machine spawn lands in
-  // Phase 5+, it will be a daemon RPC keyed by machine_id, not an
-  // agent-scoped HTTP route.
+  // --- POST /api/spawn ---
+  // Spawn or respawn an agent via the fleet daemon RPC.
+  // Body: { model?, doc?, name?, agent?, respawn? }
+  // doc: project name — daemon resolves to sourceDir for the cwd
+  // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
+  router.post('/api/spawn', async (req, res) => {
+    const { name, model, doc, agent, respawn } = req.body || {}
+    // For respawn, resolve agent to a name
+    let spawnName = name
+    if (respawn && agent) {
+      const a = fleetStore?.findAgent(agent)
+      spawnName = a?.friendly_name || agent
+    }
+    // Find a daemon to route to — use the local machine
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) {
+      res.status(503).json({ error: 'No fleet daemon connected — cannot spawn agents' })
+      return
+    }
+    try {
+      const result = await sendRpc(machineIds[0], 'spawn', {
+        name: spawnName || undefined,
+        model: model || undefined,
+        doc: doc || undefined,
+        respawn: !!respawn,
+      })
+      broadcastState()
+      res.json(result)
+    } catch (e) {
+      res.status(502).json({ error: e.message })
+    }
+  })
 
   // --- POST /api/kick ---
   // Kick = touch a signal file inside the agent's machine's ~/.fleet/signals.

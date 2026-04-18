@@ -1507,6 +1507,20 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
 }
+.fleet-agents-shape .fleet-agents-spawn-search {
+  background: rgba(30,30,40,0.9);
+  color: #ccc;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  font-size: 8px;
+  padding: 2px 4px;
+  width: 80px;
+  font-family: inherit;
+  outline: none;
+}
+.fleet-agents-shape .fleet-agents-spawn-search:focus {
+  border-color: rgba(128,128,128,0.5);
+}
 
 /* --- Search shape enhancements --- */
 
