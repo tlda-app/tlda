@@ -382,8 +382,23 @@ export function FleetHUD({
       }
       docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
     }
-    const fleetRightPage = fleetBounds.x + fleetBounds.w
-    panOffsetRef.current = docLeftScreen - MARGIN_GAP - fleetRightPage
+    // Use the left group's right edge for camera positioning — not the full
+    // fleet bounds, which may include a right-margin chat far to the right.
+    // "Left group" = shapes within 1200px of the leftmost fleet shape.
+    const fleetShapes = mainEditor.getCurrentPageShapes()
+      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+    let leftGroupRight = fleetBounds.x + fleetBounds.w
+    if (fleetShapes.length > 0) {
+      const rights = fleetShapes.map(s => {
+        const b = mainEditor.getShapePageBounds(s.id)
+        return b ? b.x + b.w : 0
+      }).sort((a, b) => a - b)
+      // Find the right edge of the "left group" — shapes whose right edge
+      // is within 1200px of the leftmost shape's left edge
+      const leftGroupShapes = rights.filter(r => r - fleetBounds.x < 1200)
+      if (leftGroupShapes.length > 0) leftGroupRight = Math.max(...leftGroupShapes)
+    }
+    panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
   }
 

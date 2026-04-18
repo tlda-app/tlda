@@ -139,26 +139,32 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     // Split L/R: left margin has agents+search + wide chat (3/4) + docview (1/4).
     // Right margin has a wide chat (full height). Chats are 1.5x wider than 3-col.
     const chatWide = Math.round(chatW3 * 1.5) // 615
-    // Right-margin chat: placed far right in page coords. The overlay camera
-    // positions by document margin, so we compute a page-coord offset that
-    // maps the right chat to the right margin on screen. We place it past the
-    // document's right edge, and the overlay camera handles positioning.
-    let docWidth = 800 // fallback
+    // The left group right edge (in page coords) is what the overlay camera
+    // uses to compute its X offset. We need to place the right-margin chat
+    // at a page X such that, under the overlay camera, it appears at the
+    // right edge of the screen.
+    //
+    // Overlay camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRightEdge
+    // where leftGroupRightEdge = anchorX + leftW + gap + chatWide
+    // Screen position of right chat = rightChatPageX + camX
+    // We want it at: screenW - chatWide - MARGIN_GAP
+    //
+    // So: rightChatPageX = (screenW - chatWide - MARGIN_GAP) - camX
+    //   = (screenW - chatWide - MARGIN_GAP) - (docLeftScreen - MARGIN_GAP - leftGroupRight)
+    //   = screenW - chatWide - docLeftScreen + leftGroupRight
+    const leftGroupRight = anchorX + leftW + gap + chatWide
+    const MARGIN_GAP = 20
+    let docLeftScreen = window.innerWidth / 2
     if (pageShapes.length > 0) {
-      let maxRight = -Infinity
+      let minPageX = Infinity
       for (const ps of pageShapes) {
         const b = editor.getShapePageBounds(ps.id)
-        if (b) { const right = b.x + b.w; if (right > maxRight) maxRight = right }
+        if (b && b.x < minPageX) minPageX = b.x
       }
-      let minLeft = Infinity
-      for (const ps of pageShapes) {
-        const b = editor.getShapePageBounds(ps.id)
-        if (b && b.x < minLeft) minLeft = b.x
-      }
-      docWidth = maxRight - minLeft
+      docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
     }
-    // Right chat X: past the document right edge + gap
-    const rightChatX = anchorX + totalW + docWidth + 80
+    const rightChatX = window.innerWidth - chatWide - MARGIN_GAP -
+      (docLeftScreen - MARGIN_GAP - leftGroupRight)
 
     shapes.push(
       // Left margin: wide chat (3/4 height) + docview (1/4 height)
