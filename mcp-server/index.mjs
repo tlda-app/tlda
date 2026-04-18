@@ -24,7 +24,7 @@ import { connectSSE } from '../shared/sse-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
-import { initDataSource, readJsonSync, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
+import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
@@ -370,16 +370,28 @@ function loadLookup(docName) {
   return readJsonSync(docName, 'lookup.json');
 }
 
+async function loadLookupAsync(docName) {
+  return await readJson(docName, 'lookup.json');
+}
+
 function lookupLine(docName, lineNum, file) {
   const lookup = loadLookup(docName);
   if (!lookup?.lines) return null;
-  // If file is given, try "filename.tex:lineNum" key first (multi-file project)
+  return _lookupLineInData(lookup, lineNum, file);
+}
+
+async function lookupLineAsync(docName, lineNum, file) {
+  const lookup = await loadLookupAsync(docName);
+  if (!lookup?.lines) return null;
+  return _lookupLineInData(lookup, lineNum, file);
+}
+
+function _lookupLineInData(lookup, lineNum, file) {
   let entry = null;
   if (file) {
     const fname = path.basename(file);
     entry = lookup.lines[`${fname}:${lineNum}`];
   }
-  // Fall back to plain line number (main file)
   if (!entry) entry = lookup.lines[lineNum.toString()];
   if (!entry) return null;
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
@@ -645,22 +657,18 @@ async function collectDrawnShapes(docName) {
       if (!bbox) continue;
       const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
       const gesture = classifyGesture(bbox);
-      // Use sourceLines from meta if available (unified resolution from viewer),
-      // otherwise fall back to bbox lookup (for old highlights or pen strokes)
-      const metaSourceLines = record.meta?.sourceLines;
-      const nearbyLines = (metaSourceLines && metaSourceLines.length > 0)
-        ? metaSourceLines.map(sl => ({ line: sl.line, content: sl.content, x: 0, y: 0 }))
-        : findNearbyLines(docName, bbox);
+      const nearbyLines = findNearbyLines(docName, bbox);
       const pos = describePagePosition(docName, bbox);
       const rendered = getRenderedText(docName, bbox);
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
+      const sourceLine = record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
       shapes.push({ id, shapeType: tool, color, gesture, page: pos.page, position: pos.description,
-        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines,
+        bbox, lines: nearbyLines, rendered, createdAt, highlightText, highlightLines, sourceLine,
         transcription, transcriptionVerified });
       continue;
     }
@@ -2312,11 +2320,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
     if (pos) text += ` ${pos.description}`;
-    if (r.meta.sourceLines?.length > 0) {
-      const sl = r.meta.sourceLines;
-      const range = sl.length === 1 ? `line ${sl[0].line}` : `lines ${sl[0].line}–${sl[sl.length-1].line}`;
-      text += `, ${range}`;
-    }
+    if (r.meta.sourceLine) text += `, near line ${r.meta.sourceLine}`;
     if (lines.length === 1) {
       text += `\n  text: "${lines[0]}"`;
     } else {
@@ -2784,17 +2788,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let hlLeft = Infinity, hlRight = -Infinity;
         let hlTop = Infinity, hlBottom = -Infinity;
 
+        // Use synctex x-records for precise positioning
+        let synctexData = null;
+        try {
+          // Load synctex data from disk — parse the .synctex.gz directly
+          const { createReadStream, readdirSync } = await import('fs');
+          const { createGunzip } = await import('zlib');
+          const { createInterface } = await import('readline');
+          const srcDir = localDocDir(doc)?.replace(/\/output$/, '/source') || '';
+          const synctexFiles = srcDir ? readdirSync(srcDir).filter(f => f.endsWith('.synctex.gz')) : [];
+          if (synctexFiles.length > 0) {
+            const synctexPath = path.join(srcDir, synctexFiles[0]);
+            const inputMap = new Map();
+            let sUnit = 1, sMag = 1000, curPage = 0;
+            const records = [];
+            const rl = createInterface({ input: createReadStream(synctexPath).pipe(createGunzip()), crlfDelay: Infinity });
+            for await (const line of rl) {
+              if (line.startsWith('Input:')) { const m = line.match(/^Input:(\d+):(.+)$/); if (m) inputMap.set(parseInt(m[1]), m[2]); continue; }
+              if (line.startsWith('Unit:')) { sUnit = parseInt(line.slice(5)) || 1; continue; }
+              if (line.startsWith('Magnification:')) { sMag = parseInt(line.slice(14)) || 1000; continue; }
+              if (line.startsWith('{')) { curPage = parseInt(line.slice(1)) || 0; continue; }
+              if (line[0] !== 'x' || curPage === 0) continue;
+              const ci = line.indexOf(':'), cm = line.indexOf(',');
+              if (ci === -1 || cm === -1 || cm > ci) continue;
+              const iid = parseInt(line.slice(1, cm)), ln2 = parseInt(line.slice(cm + 1, ci));
+              if (isNaN(iid) || isNaN(ln2) || ln2 <= 0) continue;
+              const fp = inputMap.get(iid);
+              if (!fp || !fp.endsWith('.tex')) continue;
+              const coords = line.slice(ci + 1).split(',');
+              const scale = sUnit * sMag / 1000 / 65536;
+              records.push({ line: ln2, page: curPage, x: parseInt(coords[0]) * scale, y: parseInt(coords[1]) * scale });
+            }
+            synctexData = { records };
+          }
+        } catch (e) {
+          console.error('[draw_highlight] synctex load failed:', e.message);
+        }
+
         for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
-          const pos = lookupLine(doc, ln, file);
+          const pos = await lookupLineAsync(doc, ln, file);
           if (!pos) continue;
           const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
           const lineText = sourceLines[ln - 1] || '';
           const lineLen = lineText.length || 1;
-
-          // Full-line highlight width (text start to near-right edge)
-          const fullLeft = canvas.x;
-          const fullRight = pageW * 0.9;
-          const fullWidth = fullRight - fullLeft;
 
           // Determine column range for this line within the match
           let colStart = 0;
@@ -2802,9 +2838,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (ln === matchStartLine) colStart = matchStartCol;
           if (ln === matchEndLine) colEnd = matchEndCol;
 
-          // Proportional x mapping: column fraction → x position
-          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
-          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+          let xStart, xEnd;
+
+          if (synctexData) {
+            // Use synctex x-records: find all records for this line on this page,
+            // sort by x, map column fraction to actual PDF x-positions
+            const lineRecs = synctexData.records.filter(r => r.line === ln && r.page === pos.page);
+            if (lineRecs.length >= 2) {
+              const sorted = [...lineRecs].sort((a, b) => a.x - b.x);
+              const lineXMin = sorted[0].x;
+              const lineXMax = sorted[sorted.length - 1].x;
+              const lineXRange = lineXMax - lineXMin;
+              if (lineXRange > 0) {
+                const pdfXStart = lineXMin + (colStart / lineLen) * lineXRange;
+                const pdfXEnd = lineXMin + (colEnd / lineLen) * lineXRange;
+                const csStart = pdfToCanvas(pos.page, pdfXStart, pos.y);
+                const csEnd = pdfToCanvas(pos.page, pdfXEnd, pos.y);
+                xStart = csStart.x;
+                xEnd = csEnd.x;
+              }
+            }
+          }
+
+          if (xStart === undefined) {
+            // Fallback: proportional mapping
+            const fullLeft = canvas.x;
+            const fullRight = pageW * 0.9;
+            const fullWidth = fullRight - fullLeft;
+            xStart = fullLeft + (colStart / lineLen) * fullWidth;
+            xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+          }
 
           hlLeft = Math.min(hlLeft, xStart);
           hlRight = Math.max(hlRight, xEnd);
@@ -2823,7 +2886,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         for (let i = 0; i < numLines; i++) {
           const ln = matchStartLine + i;
-          const pos = lookupLine(doc, ln, file);
+          const pos = await lookupLineAsync(doc, ln, file);
           if (!pos) continue;
           const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
           const lineText = sourceLines[ln - 1] || '';
@@ -2853,7 +2916,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const shapeId = generateShapeId();
         const shapeIndex = await getNextShapeIndex(doc);
-        const firstPos = lookupLine(doc, matchStartLine, file);
+        const firstPos = await lookupLineAsync(doc, matchStartLine, file);
         const shape = {
           id: shapeId,
           type: 'highlight',
@@ -2891,8 +2954,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // --- Full-line highlighting (original behavior) ---
       // Look up canvas positions for start and end lines
-      const startPos = lookupLine(doc, startLine, file);
-      const endPos = lookupLine(doc, endLine, file);
+      const startPos = await lookupLineAsync(doc, startLine, file);
+      const endPos = await lookupLineAsync(doc, endLine, file);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
 
@@ -3200,7 +3263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
       const lines = feedback.map(f => {
         const icon = ICONS[f.type] || '📌';
-        const loc = f.lines ? ` (lines ${f.lines[0]}–${f.lines[1]})` : '';
+        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
         const status = f.addressed ? ' [addressed]' : '';
         const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
         return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;

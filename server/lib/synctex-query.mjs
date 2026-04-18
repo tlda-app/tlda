@@ -30,7 +30,7 @@ function makeSynctexRecord(inputId, lineNum, page, x, y, w, h, d) {
  */
 const cache = new Map()
 
-async function loadSynctex(projectName) {
+export async function loadSynctex(projectName) {
   if (cache.has(projectName)) return cache.get(projectName)
 
   const srcDir = sourceDir(projectName)

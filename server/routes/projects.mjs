@@ -25,6 +25,7 @@ import {
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
+import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
@@ -197,45 +198,6 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
     res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
   } catch (e) {
     res.status(400).json({ error: e.message })
-  }
-})
-
-// Synctex reverse lookup: PDF position → source context
-router.get('/:name/synctex', requireRead, async (req, res) => {
-  const { getSourceContext } = await import('../lib/synctex-query.mjs')
-  const { page, startX, startY, endX, endY, context, text } = req.query
-  if (!page || !startX || !startY) {
-    return res.status(400).json({ error: 'Required: page, startX, startY' })
-  }
-  try {
-    const result = await getSourceContext(
-      req.params.name,
-      parseInt(page),
-      parseFloat(startX), parseFloat(startY),
-      parseFloat(endX || startX), parseFloat(endY || startY),
-      parseInt(context) || 2,
-      text || ''
-    )
-    if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
-    res.json(result)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// Synctex path-based lookup: trace highlight path through synctex records
-router.post('/:name/synctex-path', requireRead, async (req, res) => {
-  const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
-  const { page, points, text } = req.body
-  if (!page || !points?.length) {
-    return res.status(400).json({ error: 'Required: page, points[]' })
-  }
-  try {
-    const result = await getSourceFromPath(req.params.name, page, points, text || '')
-    if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
-    res.json(result)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
   }
 })
 
@@ -720,6 +682,352 @@ router.get('/:name/shapes/:id', requireRead, (req, res) => {
   const record = getRecord(syncRoomName(req.params.name), shapeId)
   if (!record) return res.status(404).json({ error: 'Shape not found' })
   res.json(record)
+})
+
+// --- Coordinate constants (shared/layout-constants.json) ---
+const _lc = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
+const PDF_WIDTH = _lc.PDF_WIDTH        // 612
+const PDF_HEIGHT = _lc.PDF_HEIGHT      // 792
+const TARGET_WIDTH = _lc.TARGET_WIDTH  // 800
+const PAGE_GAP = _lc.PAGE_GAP          // 32
+const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+const VIEWBOX_OFFSET = 72
+
+function pdfToCanvasLocal(page, pdfX, pdfY) {
+  const pageY = (page - 1) * (PAGE_HEIGHT + PAGE_GAP)
+  const scaleX = TARGET_WIDTH / PDF_WIDTH
+  const scaleY = PAGE_HEIGHT / PDF_HEIGHT
+  return {
+    x: (pdfX + VIEWBOX_OFFSET) * scaleX,
+    y: pageY + (pdfY + VIEWBOX_OFFSET) * scaleY,
+  }
+}
+
+/** Strip tex commands to get approximate rendered text. */
+function stripTex(tex) {
+  return tex
+    .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')
+    .replace(/\\[a-zA-Z]+/g, '')
+    .replace(/[{}$^_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// --- Float16 encode/decode for TLDraw base64 path segments ---
+function toFloat16(value) {
+  if (value === 0) return 0
+  if (!isFinite(value)) return value > 0 ? 0x7c00 : 0xfc00
+  const sign = value < 0 ? 1 : 0
+  value = Math.abs(value)
+  if (value > 65504) return sign ? 0xfc00 : 0x7c00
+  if (value < 5.96e-8) return sign << 15
+  const log2 = Math.log2(value)
+  let exp = Math.floor(log2)
+  let frac = value / Math.pow(2, exp) - 1
+  if (exp < -14) {
+    frac = value / Math.pow(2, -14)
+    return (sign << 15) | Math.round(frac * 1024)
+  }
+  exp += 15
+  if (exp >= 31) return sign ? 0xfc00 : 0x7c00
+  return (sign << 15) | (exp << 10) | Math.round(frac * 1024)
+}
+function float16(bits) {
+  const sign = bits >> 15
+  const exp = (bits >> 10) & 0x1f
+  const frac = bits & 0x3ff
+  if (exp === 0) { const val = frac * (Math.pow(2, -14) / 1024); return sign ? -val : val }
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity)
+  const val = Math.pow(2, exp - 15) * (1 + frac / 1024)
+  return sign ? -val : val
+}
+
+function encodeB64Path(points) {
+  if (points.length === 0) return ''
+  const firstBytes = 12
+  const deltaBytes = (points.length - 1) * 6
+  const buf = Buffer.alloc(firstBytes + deltaBytes)
+  buf.writeFloatLE(points[0].x, 0)
+  buf.writeFloatLE(points[0].y, 4)
+  buf.writeFloatLE(points[0].z ?? 0.5, 8)
+  let prevX = points[0].x, prevY = points[0].y, prevZ = points[0].z ?? 0.5
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - prevX
+    const dy = points[i].y - prevY
+    const dz = (points[i].z ?? 0.5) - prevZ
+    const off = 12 + (i - 1) * 6
+    buf.writeUInt16LE(toFloat16(dx), off)
+    buf.writeUInt16LE(toFloat16(dy), off + 2)
+    buf.writeUInt16LE(toFloat16(dz), off + 4)
+    prevX += float16(toFloat16(dx))
+    prevY += float16(toFloat16(dy))
+    prevZ += float16(toFloat16(dz))
+  }
+  return buf.toString('base64')
+}
+
+// POST /:name/highlight — text-based highlight using synctex data
+router.post('/:name/highlight', requireRead, async (req, res) => {
+  const name = req.params.name
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  const { text, startLine, color = 'orange', file } = req.body
+  if (!text || startLine == null) {
+    return res.status(400).json({ error: 'Missing required parameters: text, startLine' })
+  }
+
+  try {
+    // 1. Read the source file
+    const mainFile = file || project.mainFile || project.main
+    if (!mainFile) return res.status(400).json({ error: 'No main file configured for project' })
+    const sourceContent = readSourceFile(name, mainFile)
+    if (!sourceContent) return res.status(404).json({ error: `Source file not found: ${mainFile}` })
+
+    const sourceLines = sourceContent.split('\n')
+
+    // 2. Search for text near startLine (±10 lines)
+    const searchStart = Math.max(0, startLine - 11) // 0-indexed
+    const searchEnd = Math.min(sourceLines.length, startLine + 10)
+    const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n')
+
+    const matchIdx = searchRegion.indexOf(text)
+    if (matchIdx === -1) {
+      return res.status(404).json({ error: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` })
+    }
+
+    // Convert matchIdx back to line number and column
+    const beforeMatch = searchRegion.slice(0, matchIdx)
+    const matchStartLine = searchStart + beforeMatch.split('\n').length // 1-indexed
+    const matchStartCol = beforeMatch.split('\n').pop().length // 0-indexed column
+
+    const matchEndOffset = matchIdx + text.length
+    const beforeEnd = searchRegion.slice(0, matchEndOffset)
+    const matchEndLine = searchStart + beforeEnd.split('\n').length // 1-indexed
+    const matchEndCol = beforeEnd.split('\n').pop().length
+
+    // 3. Load synctex data for precise x-positions
+    const synctex = await loadSynctex(name)
+    if (!synctex) {
+      return res.status(500).json({ error: 'Synctex data not available (build may be needed)' })
+    }
+
+    // Filter to source .tex files
+    const sourceFileIds = new Set()
+    for (const [id, filePath] of synctex.inputMap) {
+      if (filePath.endsWith('.tex')) sourceFileIds.add(id)
+    }
+
+    // Find the target input file ID (match by basename)
+    const targetBasename = basename(mainFile)
+    let targetFileId = null
+    for (const [id, filePath] of synctex.inputMap) {
+      if (basename(filePath) === targetBasename) { targetFileId = id; break }
+    }
+
+    // Get synctex records for matched lines, grouped by line
+    const recordsByLine = new Map()
+    for (const r of synctex.records) {
+      if (r.line < matchStartLine || r.line > matchEndLine) continue
+      if (targetFileId != null && r.inputId !== targetFileId) continue
+      if (!sourceFileIds.has(r.inputId)) continue
+      if (!recordsByLine.has(r.line)) recordsByLine.set(r.line, [])
+      recordsByLine.get(r.line).push(r)
+    }
+
+    if (recordsByLine.size === 0) {
+      return res.status(404).json({ error: `No synctex records found for lines ${matchStartLine}–${matchEndLine}` })
+    }
+
+    // Determine page from first record
+    const firstLineRecs = recordsByLine.values().next().value
+    const page = firstLineRecs[0].page
+
+    // 4. For each matched line, use x-records to find precise PDF x-range
+    const segments = []
+    let hlLeft = Infinity, hlRight = -Infinity
+    let hlTop = Infinity, hlBottom = -Infinity
+
+    // Group ALL synctex records for the matched lines by rendered line (y-position),
+    // since a single source line can wrap across multiple rendered PDF lines.
+    const renderedLines = new Map() // y → { records: [], srcLine, colStart, colEnd }
+    for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+      const lineRecs = recordsByLine.get(ln)
+      if (!lineRecs || lineRecs.length === 0) continue
+
+      const srcLine = sourceLines[ln - 1] || ''
+      let colStart = 0, colEnd = srcLine.length
+      if (ln === matchStartLine) colStart = matchStartCol
+      if (ln === matchEndLine) colEnd = matchEndCol
+
+      // Group records by y (rendered line) — records with same y are on the same rendered line
+      for (const r of lineRecs) {
+        const yKey = Math.round(r.y) // round to avoid float precision issues
+        if (!renderedLines.has(yKey)) {
+          renderedLines.set(yKey, { y: r.y, records: [], srcLine, ln, colStart, colEnd })
+        }
+        renderedLines.get(yKey).records.push(r)
+      }
+    }
+
+    // For each source line in the match, find the synctex records that
+    // correspond to the matched text and use their x-positions directly.
+    // Records are in source order — we pick the ones at index positions
+    // matching the start and end of the target text.
+    for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+      const lineRecs = recordsByLine.get(ln)
+      if (!lineRecs || lineRecs.length === 0) continue
+
+      // All records for this source line, in source order (y asc, x asc)
+      const allInOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+      const N = allInOrder.length
+      if (N === 0) continue
+
+      const srcLine = sourceLines[ln - 1] || ''
+      const strippedLine = stripTex(srcLine)
+      const strippedLen = strippedLine.length || 1
+
+      let colStart = 0, colEnd = srcLine.length
+      if (ln === matchStartLine) colStart = matchStartCol
+      if (ln === matchEndLine) colEnd = matchEndCol
+
+      const strippedPre = stripTex(srcLine.slice(0, colStart)).length
+      const strippedMatch = stripTex(srcLine.slice(colStart, colEnd)).length
+      if (strippedMatch === 0) continue
+
+      // Find the record at the start and end of the matched text
+      const startRecIdx = Math.max(0, Math.round((strippedPre / strippedLen) * (N - 1)))
+      const endRecIdx = Math.min(N - 1, Math.round(((strippedPre + strippedMatch) / strippedLen) * (N - 1)))
+
+      const startRec = allInOrder[startRecIdx]
+      const endRec = allInOrder[endRecIdx]
+
+      // Group by rendered line (y) — if start and end are on different rendered lines, create segments for each
+      const yValues = new Set(allInOrder.slice(startRecIdx, endRecIdx + 1).map(r => Math.round(r.y)))
+
+      for (const yKey of yValues) {
+        const recsOnLine = allInOrder.slice(startRecIdx, endRecIdx + 1).filter(r => Math.round(r.y) === yKey)
+        if (recsOnLine.length === 0) continue
+        const xStart = Math.min(...recsOnLine.map(r => r.x))
+        const xEnd = Math.max(...recsOnLine.map(r => r.x))
+        const matchY = recsOnLine[0].y
+
+        const canvasStart = pdfToCanvasLocal(page, xStart, matchY)
+        const canvasEnd = pdfToCanvasLocal(page, xEnd, matchY)
+
+        hlLeft = Math.min(hlLeft, canvasStart.x)
+        hlRight = Math.max(hlRight, canvasEnd.x)
+        hlTop = Math.min(hlTop, canvasStart.y - 3)
+        hlBottom = Math.max(hlBottom, canvasStart.y + 3)
+      }
+    }
+
+    if (hlLeft === Infinity) {
+      return res.status(404).json({ error: `Could not compute highlight position for lines ${matchStartLine}–${matchEndLine}` })
+    }
+
+    // 5. Build highlight segments using same record-based approach
+    for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+      const lineRecs = recordsByLine.get(ln)
+      if (!lineRecs || lineRecs.length === 0) continue
+
+      const allInOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+      const N = allInOrder.length
+      const srcLine = sourceLines[ln - 1] || ''
+      const strippedLen = stripTex(srcLine).length || 1
+
+      let colStart = 0, colEnd = srcLine.length
+      if (ln === matchStartLine) colStart = matchStartCol
+      if (ln === matchEndLine) colEnd = matchEndCol
+
+      const strippedPre = stripTex(srcLine.slice(0, colStart)).length
+      const strippedMatch = stripTex(srcLine.slice(colStart, colEnd)).length
+      if (strippedMatch === 0) continue
+
+      const startRecIdx = Math.max(0, Math.round((strippedPre / strippedLen) * (N - 1)))
+      const endRecIdx = Math.min(N - 1, Math.round(((strippedPre + strippedMatch) / strippedLen) * (N - 1)))
+
+      const yValues = new Set(allInOrder.slice(startRecIdx, endRecIdx + 1).map(r => Math.round(r.y)))
+      for (const yKey of yValues) {
+        const recsOnLine = allInOrder.slice(startRecIdx, endRecIdx + 1).filter(r => Math.round(r.y) === yKey)
+        if (recsOnLine.length === 0) continue
+        const xStart = Math.min(...recsOnLine.map(r => r.x))
+        const xEnd = Math.max(...recsOnLine.map(r => r.x))
+        const matchY = recsOnLine[0].y
+
+        const canvasStart = pdfToCanvasLocal(page, xStart, matchY)
+        const canvasEnd = pdfToCanvasLocal(page, xEnd, matchY)
+        const segLeft = canvasStart.x - hlLeft
+        const segRight = canvasEnd.x - hlLeft
+        const segY = canvasStart.y - 3 - hlTop
+
+        segments.push({ type: 'free', path: encodeB64Path([
+          { x: segLeft, y: segY, z: 0.5 },
+          { x: segRight, y: segY, z: 0.5 },
+        ])})
+      }
+    }
+
+    // 6. Create highlight shape via putShape (on top of all existing shapes)
+    const shapeId = `shape:hl-${Date.now().toString(36)}`
+    const allRecords = getRoomRecords(syncRoomName(req.params.name), null)
+    const maxIndex = allRecords
+      .map(r => r.index || 'a0')
+      .sort()
+      .pop() || 'a0'
+    // Append 'V' to put it after the highest existing index
+    const topIndex = maxIndex + 'V'
+    const shape = {
+      id: shapeId,
+      type: 'highlight',
+      x: hlLeft,
+      y: hlTop,
+      index: topIndex,
+      rotation: 0,
+      isLocked: false,
+      opacity: 0.7,
+      props: {
+        segments,
+        color,
+        size: 's',
+        isComplete: true,
+        isPen: false,
+        scale: 1,
+        scaleX: 1,
+        scaleY: 1,
+      },
+      meta: {
+        createdAt: Date.now(),
+        highlightedText: text,
+        highlightText: (() => {
+          // Build context + ⟦highlight⟧ markers from the matched source
+          const ctxStart = Math.max(0, matchStartLine - 2)
+          const ctxEnd = Math.min(sourceLines.length, matchEndLine + 1)
+          const passage = sourceLines.slice(ctxStart, ctxEnd).join(' ')
+          const matchInPassage = passage.indexOf(text)
+          if (matchInPassage >= 0) {
+            const before = passage.slice(Math.max(0, matchInPassage - 40), matchInPassage)
+            const after = passage.slice(matchInPassage + text.length, matchInPassage + text.length + 40)
+            return (matchInPassage > 40 ? '...' : '') + before + '⟦' + text + '⟧' + after + (matchInPassage + text.length + 40 < passage.length ? '...' : '')
+          }
+          return '⟦' + text + '⟧'
+        })(),
+        sourceLines: sourceLines.slice(Math.max(0, matchStartLine - 2), matchEndLine + 1).map((content, i) => {
+          const line = matchStartLine - 1 + i
+          const isMatch = line >= matchStartLine && line <= matchEndLine
+          return { line, content, highlighted: isMatch }
+        }),
+        sourceAnchor: { file: file || mainFile, line: matchStartLine },
+      },
+      parentId: 'page:page',
+      typeName: 'shape',
+    }
+
+    await putShape(syncRoomName(name), shape)
+    res.json({ ok: true, shapeId, page, startLine: matchStartLine, endLine: matchEndLine })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 export default router
