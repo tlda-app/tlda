@@ -1909,18 +1909,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'list_annotations',
-      description: 'List all math-note annotations (sticky notes) in a document. Does NOT include pen strokes, highlights, or drawn shapes — use read_pen_annotations for those.',
+      description: 'List all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses, text labels. Each annotation includes its type, color, position, and source line mapping. Use the type parameter to filter to specific annotation types.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          type: {
+            type: 'array',
+            items: { type: 'string', enum: ['note', 'highlight', 'draw', 'arrow', 'geo', 'text', 'line'] },
+            description: 'Filter by annotation type(s). Omit to list all types.',
+          },
         },
         required: ['doc'],
       },
     },
+    // mark_annotation_done removed — done state removed
     {
-      name: 'reply_annotation',
-      description: 'Reply to an annotation by creating a new note in its thread. The reply appears as a new tab on the note. The target can be any note in a thread (root or reply) — the reply always joins the same thread.',
+      name: 'reply_note',
+      description: 'Reply to a note by appending text to it. Adds a separator and the reply text below the existing content.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1929,19 +1935,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string', description: 'Reply text (supports $math$)' },
         },
         required: ['doc', 'id', 'text'],
-      },
-    },
-    {
-      name: 'mark_annotation_done',
-      description: 'Mark an annotation as done. Collapses and dims the note. By default, also moves it to the page margin (like the viewer\'s done button). Set margin=false to keep it in place.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          id: { type: 'string', description: 'Shape ID (e.g. "shape:abc123")' },
-          margin: { type: 'boolean', description: 'Move note to the page margin (default: true)', default: true },
-        },
-        required: ['doc', 'id'],
       },
     },
     {
@@ -1956,33 +1949,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'id'],
       },
     },
-    {
-      name: 'read_pen_annotations',
-      description: 'Read drawn annotations from the TLDraw canvas: pen strokes, highlighter strokes, arrows, rectangles/ellipses, text labels, and lines. Returns each shape with its type, color, position, and the document lines it covers. Arrows include start/end source lines and direction. Geo shapes (rectangles, ellipses) report the region they enclose. Use this to interpret the user\'s visual annotations without needing a screenshot.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'signal_reload',
-      description: 'Signal the viewer to reload SVG pages. Use after rebuilding SVGs from DVI. Partial reload refreshes specific pages (~0.5s), full reload refreshes everything and remaps annotations.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          pages: {
-            type: 'array',
-            items: { type: 'number' },
-            description: 'Page numbers to reload (1-indexed). Omit for full reload.',
-          },
-        },
-        required: ['doc'],
-      },
-    },
+    // read_pen_annotations removed — merged into list_annotations
+    // signal_reload removed — folded into push
     {
       name: 'draw_highlight',
       description: 'Draw a highlighter stroke over source lines on the canvas. Creates a visible highlight mark (like a physical highlighter) spanning the given line range.',
@@ -1991,11 +1959,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           startLine: { type: 'number', description: 'First source line to highlight' },
-          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line)' },
+          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line). Optional when text is provided.' },
           color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
+          text: { type: 'string', description: 'Specific text to highlight (substring from the source). When provided, highlights just this text instead of full lines. startLine is used as a hint for where to search.' },
         },
-        required: ['doc', 'startLine', 'endLine'],
+        required: ['doc', 'startLine'],
       },
     },
     {
@@ -2123,7 +2092,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'doc_view',
-      description: 'View an old version of a document in the tlda viewer without touching the author\'s working copy. Temporary: the viewer shows the old version until the next edit from the author\'s working copy overwrites it. Use this to scrub through history, compare, or investigate. For a permanent restore, use doc_revert. Accepts a version hash or a time string (ISO, unix ms, or relative like "20 minutes ago").',
+      description: 'View an old version of a document in the tlda viewer without touching the author\'s working copy. Temporary: the viewer shows the old version until the next edit from the author\'s working copy overwrites it. Use this to scrub through history or investigate. Accepts a version hash or a time string (ISO, unix ms, or relative like "20 minutes ago").',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2133,43 +2102,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'ref'],
       },
     },
-    {
-      name: 'doc_revert',
-      description: 'Permanently restore a document to an old version. Writes the old version to the author\'s working copy (project.sourceDir) AND the server, so the watcher picks up the restored files and the viewer updates. This is DESTRUCTIVE: it overwrites any uncommitted changes in the author\'s working copy. Use doc_view first to verify the target version is correct. Accepts a version hash or a time string.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref: { type: 'string', description: 'Version hash, or a time string (ISO, "20 minutes ago", etc.)' },
-        },
-        required: ['doc', 'ref'],
-      },
-    },
-    {
-      name: 'doc_compare',
-      description: 'Show two versions of a document side by side in the viewer. Places a second column of SVG pages from the specified shadow-repo version next to the live document. The user can drag the comparison column to align proofs. Call with ref=null to remove the comparison.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref: { type: ['string', 'null'], description: 'Shadow-repo version hash to compare against, or null to clear' },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'doc_diff',
-      description: 'Show the source diff between two versions of a document. ref2 defaults to the latest version.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref1: { type: 'string', description: 'Base version hash to diff from' },
-          ref2: { type: 'string', description: 'Target version hash (default: latest)' },
-        },
-        required: ['doc', 'ref1'],
-      },
-    },
+    // doc_revert, doc_compare, doc_diff removed — use local git with mirror
     {
       name: 'build',
       description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. Returns immediately — use build_status to poll.',
@@ -2217,19 +2150,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'files'],
       },
     },
-    {
-      name: 'scratch',
-      description: 'Publish a scratch markdown file as a page in the fleet-workspace book. Creates a markdown project, pushes the file, and auto-joins the book. Subsequent edits are auto-pushed by watch-all.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          file: { type: 'string', description: 'Absolute path to the .md file' },
-          title: { type: 'string', description: 'Display title (default: first heading or filename)' },
-          book: { type: 'string', description: 'Book to join (default: fleet-workspace)' },
-        },
-        required: ['file'],
-      },
-    },
+    // scratch removed — no fleet workspace
     {
       name: 'create_shape',
       description: 'Create a shape (annotation, highlight, arrow, etc.) on a tlda document canvas.',
@@ -2443,7 +2364,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot', 'crop_screenshot', 'get_feedback',
   'flash_location', 'add_annotation',
-  'scroll_to_line', 'read_pen_annotations',
+  'scroll_to_line', 'list_annotations',
   'draw_highlight', 'draw_arrow',
   'mark_highlight_addressed', 'place_response_bar',
   'get_highlight_feedback',
@@ -2631,22 +2552,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'list_annotations') {
     const { doc } = args;
+    const typeFilter = args.type || null; // optional array of types to filter
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
-      const result = await listAnnotations(doc);
-      const { annotations } = result;
-      if (annotations.length === 0) return { content: [{ type: 'text', text: 'No annotations found.' }] };
-      let summary = `${annotations.length} annotation(s):\n\n`;
-      annotations.forEach((a, i) => {
-        summary += `${i + 1}. ${a.id}`;
-        if (a.tabCount > 1) summary += ` (${a.tabCount} tabs, showing tab ${(a.activeTab || 0) + 1})`;
+      const items = [];
+
+      // Notes (math-note shapes)
+      if (!typeFilter || typeFilter.includes('note')) {
+        const result = await listAnnotations(doc);
+        for (const a of result.annotations) {
+          items.push({ ...a, annotationType: 'note' });
+        }
+      }
+
+      // Drawn shapes (highlights, pen strokes, arrows, geo, text, lines)
+      const drawTypes = ['highlight', 'draw', 'arrow', 'geo', 'text', 'line'];
+      if (!typeFilter || typeFilter.some(t => drawTypes.includes(t))) {
+        const drawnShapes = await collectDrawnShapes(doc);
+        for (const s of drawnShapes) {
+          if (s.shapeType === 'note') continue; // already handled above
+          const aType = s.shapeType || 'draw';
+          if (typeFilter && !typeFilter.includes(aType)) continue;
+          items.push({
+            id: s.id,
+            annotationType: aType,
+            color: s.color,
+            page: s.page,
+            lines: s.lines,
+            text: s.text || null,
+            anchor: s.sourceLine ? `${s.sourceFile || 'main'}:${s.sourceLine}` : null,
+          });
+        }
+      }
+
+      if (items.length === 0) return { content: [{ type: 'text', text: 'No annotations found.' }] };
+
+      let summary = `${items.length} annotation(s):\n\n`;
+      items.forEach((a, i) => {
+        summary += `${i + 1}. [${a.annotationType}] ${a.id}`;
         summary += '\n';
-        summary += `   pos: (${a.x}, ${a.y}) color: ${a.color}\n`;
+        if (a.color) summary += `   color: ${a.color}\n`;
         if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
-        summary += `   text: "${a.text}"\n`;
+        if (a.page) summary += `   page: ${a.page}\n`;
+        if (a.text) summary += `   text: "${a.text.substring(0, 200)}"\n`;
         if (a.choices) {
           summary += `   choices: ${a.choices.map((c, j) => (j === a.selectedChoice ? `[${c}]` : c)).join(' | ')}\n`;
-          summary += `   selected: ${a.selectedChoice >= 0 ? `${a.selectedChoice} ("${a.choices[a.selectedChoice]}")` : 'none'}\n`;
         }
         summary += '\n';
       });
@@ -2656,58 +2606,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'reply_annotation') {
+  if (name === 'reply_note') {
     const { doc, id, text } = args;
     if (!doc || !id || !text) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
     try {
-      const result = await replyAnnotation(doc, id, text);
-      if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
-      return { content: [{ type: 'text', text: `Added tab ${result.tabIndex + 1}/${result.tabCount} to ${result.id}:\n"${text}"` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'mark_annotation_done') {
-    const { doc, id, margin } = args;
-    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
-    const moveToMargin = margin !== false; // default true
-    try {
-      // Fetch the note shape to get its position
-      const shape = await fetchShape(doc, id);
+      const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
+      const shape = await fetchShape(doc, fullId);
       if (!shape || shape.type !== 'math-note') {
-        return { content: [{ type: 'text', text: `Shape ${id} not found or not a math-note` }], isError: true };
+        return { content: [{ type: 'text', text: `Note not found: ${fullId}` }], isError: true };
       }
-
-      const updates = { props: { done: true } };
-
-      if (moveToMargin) {
-        // Find the nearest svg-page to compute margin position
-        const pages = await fetchShapes(doc, 'svg-page');
-        let bestPage = null;
-        let bestDist = Infinity;
-        const noteH = shape.props?.h || 150;
-        const noteCy = shape.y + noteH / 2;
-        for (const p of pages) {
-          if (p.typeName !== 'shape') continue;
-          const ph = p.props?.h || 0;
-          const pMinY = p.y;
-          const pMaxY = p.y + ph;
-          const dist = noteCy < pMinY ? pMinY - noteCy : noteCy > pMaxY ? noteCy - pMaxY : 0;
-          if (dist < bestDist) { bestDist = dist; bestPage = p; }
-        }
-        if (bestPage) {
-          const pageRight = bestPage.x + (bestPage.props?.w || 0);
-          updates.x = pageRight + 20;
-        }
-      }
-
-      await updateShapeRest(doc, id, updates);
-      return { content: [{ type: 'text', text: `Marked done: ${id}${moveToMargin ? ' (moved to margin)' : ''}` }] };
+      const existing = shape.props?.text || '';
+      const agentName = process.env.FLEET_NAME || process.env.FLEET_ID || 'agent';
+      const newText = existing + '\n\n---\n\n' + text + ` — *${agentName}*`;
+      await updateShapeRest(doc, fullId, { props: { text: newText } });
+      return { content: [{ type: 'text', text: `Reply appended to ${fullId}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
+
+  // mark_annotation_done handler removed — done state removed
 
   if (name === 'delete_annotation') {
     const { doc, id } = args;
@@ -2721,56 +2639,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'read_pen_annotations') {
-    const { doc } = args;
-    if (!doc) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    }
-
-    try {
-      const allShapes = await collectDrawnShapes(doc);
-      // Filter to drawn shapes only (not notes) for this tool's output
-      const shapes = allShapes.filter(s => s.shapeType !== 'note');
-
-      // Check for text selection signal
-      let textSel = null;
-      try {
-        textSel = await readSignalRest(doc, 'signal:text-selection');
-      } catch {}
-      const hasTextSel = textSel?.text && (Date.now() - (textSel.timestamp || 0)) < 300000; // within 5 min
-
-      if (shapes.length === 0 && !hasTextSel) {
-        return { content: [{ type: 'text', text: 'No drawn annotations found.' }] };
-      }
-
-      let summary = '';
-
-      // Page summary header
-      const pageSummary = buildPageSummary(allShapes);
-      if (pageSummary) summary += pageSummary + '\n\n';
-
-      if (hasTextSel) {
-        summary += `Text selection (page ${textSel.page}):\n  "${textSel.text}"\n\n`;
-      }
-      // Cluster shapes temporally + spatially and output grouped
-      const clusters = clusterShapes(shapes);
-      summary += `${shapes.length} drawn annotation(s) in ${clusters.length} group(s):\n\n`;
-      for (const cluster of clusters) {
-        const age = describeClusterAge(cluster);
-        const pages = [...cluster.pages].filter(Boolean).sort((a, b) => a - b);
-        const pageStr = pages.length === 0 ? '' : pages.length === 1 ? `page ${pages[0]}` : `pages ${pages[0]}–${pages[pages.length - 1]}`;
-        summary += `--- ${age}${pageStr ? ', ' + pageStr : ''} (${cluster.shapes.length} mark${cluster.shapes.length === 1 ? '' : 's'}) ---\n`;
-        for (const s of cluster.shapes) {
-          summary += formatShapeDetail(s);
-          summary += '\n';
-        }
-      }
-
-      return { content: [{ type: 'text', text: summary }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
+  // read_pen_annotations handler removed — merged into list_annotations
 
   if (name === 'set_chat_target') {
     const { doc, agent, panel, chatShapeId } = args;
@@ -2805,36 +2674,183 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 
-  if (name === 'signal_reload') {
-    const { doc, pages } = args;
-    if (!doc) {
-      return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    }
-
-    try {
-      const timestamp = Date.now();
-      const signal = pages && pages.length > 0
-        ? { type: 'partial', pages, timestamp }
-        : { type: 'full', timestamp };
-
-      await broadcastSignalRest(doc, 'signal:reload', signal);
-
-      const desc = signal.type === 'partial'
-        ? `Partial reload signaled for pages ${pages.join(', ')}`
-        : 'Full reload signaled';
-      return { content: [{ type: 'text', text: `${desc} (doc: ${doc}, t=${timestamp})` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Signal error: ${e.message}` }], isError: true };
-    }
-  }
+  // signal_reload handler removed — folded into push
 
   if (name === 'draw_highlight') {
-    const { doc, startLine, endLine, color = 'orange', file } = args;
-    if (!doc || startLine == null || endLine == null) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine' }], isError: true };
+    const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
+    if (!doc || startLine == null) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine' }], isError: true };
     }
+    // endLine is required unless text is provided
+    const endLine = endLineArg ?? startLine;
 
     try {
+      // --- Text-based highlighting: find exact text position and narrow the highlight ---
+      if (text) {
+        // Read source file from the server
+        const sourceFile = file || null;
+        const sourceFileName = sourceFile ? path.basename(sourceFile) : null;
+        let sourceContent;
+        try {
+          const srcUrl = sourceFileName
+            ? `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(sourceFileName)}`
+            : `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/main`;
+          const srcRes = await fetch(srcUrl, { headers: TLDA_AUTH_HEADERS });
+          if (!srcRes.ok) {
+            // If 'main' didn't work, try getting project info for the actual main file name
+            if (!sourceFileName) {
+              const projRes = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}`, { headers: TLDA_AUTH_HEADERS });
+              if (projRes.ok) {
+                const projData = await projRes.json();
+                const mainFile = projData.mainFile || projData.main;
+                if (mainFile) {
+                  const srcRes2 = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(mainFile)}`, { headers: TLDA_AUTH_HEADERS });
+                  if (srcRes2.ok) sourceContent = await srcRes2.text();
+                }
+              }
+            }
+            if (!sourceContent) {
+              return { content: [{ type: 'text', text: `Could not read source file for ${doc}` }], isError: true };
+            }
+          } else {
+            sourceContent = await srcRes.text();
+          }
+        } catch (e) {
+          return { content: [{ type: 'text', text: `Error reading source: ${e.message}` }], isError: true };
+        }
+
+        const sourceLines = sourceContent.split('\n');
+        // Search for text near startLine (±10 lines)
+        const searchStart = Math.max(0, startLine - 11); // 0-indexed
+        const searchEnd = Math.min(sourceLines.length, startLine + 10);
+        const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n');
+
+        const matchIdx = searchRegion.indexOf(text);
+        if (matchIdx === -1) {
+          return { content: [{ type: 'text', text: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` }], isError: true };
+        }
+
+        // Convert matchIdx back to line number and column
+        const beforeMatch = searchRegion.slice(0, matchIdx);
+        const matchStartLine = searchStart + beforeMatch.split('\n').length; // 1-indexed
+        const matchStartCol = beforeMatch.split('\n').pop().length; // 0-indexed column in that line
+
+        const matchEndOffset = matchIdx + text.length;
+        const beforeEnd = searchRegion.slice(0, matchEndOffset);
+        const matchEndLine = searchStart + beforeEnd.split('\n').length; // 1-indexed
+        const matchEndCol = beforeEnd.split('\n').pop().length; // 0-indexed column past end
+
+        const pageW = getPageWidth(doc);
+        const segments = [];
+        let hlLeft = Infinity, hlRight = -Infinity;
+        let hlTop = Infinity, hlBottom = -Infinity;
+
+        for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          // Full-line highlight width (text start to near-right edge)
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          // Determine column range for this line within the match
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          // Proportional x mapping: column fraction → x position
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          hlLeft = Math.min(hlLeft, xStart);
+          hlRight = Math.max(hlRight, xEnd);
+          hlTop = Math.min(hlTop, canvas.y - 3);
+          hlBottom = Math.max(hlBottom, canvas.y + 3);
+        }
+
+        if (hlLeft === Infinity) {
+          return { content: [{ type: 'text', text: `No lookup entries found for matched lines ${matchStartLine}–${matchEndLine}` }], isError: true };
+        }
+
+        const width = hlRight - hlLeft;
+        const height = hlBottom - hlTop;
+        const numLines = matchEndLine - matchStartLine + 1;
+        const lineH = numLines > 1 ? height / numLines : 0;
+
+        for (let i = 0; i < numLines; i++) {
+          const ln = matchStartLine + i;
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          // Segment coordinates are relative to the shape's (hlLeft, hlTop)
+          const segLeft = xStart - hlLeft;
+          const segRight = xEnd - hlLeft;
+          const y = (canvas.y - 3) - hlTop + (numLines <= 1 ? 0 : 0);
+          segments.push({ type: 'free', path: encodeB64Path([
+            { x: segLeft, y, z: 0.5 },
+            { x: segRight, y, z: 0.5 },
+          ])});
+        }
+
+        const shapeId = generateShapeId();
+        const shapeIndex = await getNextShapeIndex(doc);
+        const firstPos = lookupLine(doc, matchStartLine, file);
+        const shape = {
+          id: shapeId,
+          type: 'highlight',
+          x: hlLeft,
+          y: hlTop,
+          index: shapeIndex,
+          rotation: 0,
+          isLocked: false,
+          opacity: 0.7,
+          props: {
+            segments,
+            color,
+            size: 's',
+            isComplete: true,
+            isPen: false,
+            scale: 1,
+            scaleX: 1,
+            scaleY: 1,
+          },
+          meta: {
+            createdAt: Date.now(),
+            createdBy: 'claude',
+            sourceAnchor: { file: file || './' + (firstPos?.texFile || 'main.tex'), line: matchStartLine },
+            highlightedText: text,
+            ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+            ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
+          },
+          parentId: 'page:page',
+          typeName: 'shape',
+        };
+
+        await createShapeRest(doc, shape);
+        return { content: [{ type: 'text', text: `Highlight drawn: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" at lines ${matchStartLine}–${matchEndLine}, page ${firstPos?.page}, ${color} (${shapeId})` }] };
+      }
+
+      // --- Full-line highlighting (original behavior) ---
       // Look up canvas positions for start and end lines
       const startPos = lookupLine(doc, startLine, file);
       const endPos = lookupLine(doc, endLine, file);
@@ -3315,150 +3331,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'doc_compare') {
-    const doc = args?.doc;
-    const ref = args?.ref ?? null;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    try {
-      if (!ref) {
-        // Clear comparison — delete all compare-page shapes via server API
-        const shapes = await serverFetch(`/api/projects/${doc}/shapes`);
-        const compareShapes = (shapes || []).filter(s => (s.id || '').includes('compare-page'));
-        for (const s of compareShapes) {
-          await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
-        }
-        return { content: [{ type: 'text', text: `Comparison cleared for ${doc}. Removed ${compareShapes.length} shapes.` }] };
-      }
-      const resolved = await resolveDocRef(doc, ref);
-      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
-      const hash7 = resolved.hash.slice(0, 7);
-      const project = await serverFetch(`/api/projects/${doc}`);
-      if (!project) return { content: [{ type: 'text', text: `Project ${doc} not found.` }], isError: true };
-
-      // Delete any existing compare shapes first
-      const existingShapes = await serverFetch(`/api/projects/${doc}/shapes`);
-      const oldCompare = (existingShapes || []).filter(s => (s.id || '').includes('compare-page'));
-      for (const s of oldCompare) {
-        await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
-      }
-
-      // Get the live doc's page shapes to find the right edge
-      const livePages = (existingShapes || []).filter(s => s.type === 'svg-page' && !(s.id || '').includes('compare'));
-      let rightEdge = 0;
-      for (const p of livePages) {
-        const r = (p.x || 0) + (p.props?.w || 800);
-        if (r > rightEdge) rightEdge = r;
-      }
-      const compareX = rightEdge + 80;
-      const pageCount = project.pages || livePages.length;
-
-      // Layout constants
-      const TARGET_WIDTH = 800;
-      const PDF_HEIGHT = 792;
-      const PDF_WIDTH = 612;
-      const PAGE_GAP = 32;
-      const width = TARGET_WIDTH;
-      const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH);
-
-      // Create compare page shapes server-side
-      let top = 0;
-      const prefix = `compare-page-${Date.now().toString(36)}-`;
-      let created = 0;
-      for (let i = 0; i < pageCount; i++) {
-        await serverFetch(`/api/projects/${doc}/shapes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: `shape:${prefix}${i}`,
-            type: 'svg-page',
-            typeName: 'shape',
-            x: compareX,
-            y: top,
-            rotation: 0,
-            isLocked: true,
-            opacity: 0.85,
-            parentId: 'page:page',
-            props: { w: width, h: height, pageIndex: i },
-          }),
-        });
-        top += height + PAGE_GAP;
-        created++;
-      }
-
-      // Create the drag handle
-      await serverFetch(`/api/projects/${doc}/shapes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: `shape:${prefix}handle`,
-          type: 'geo',
-          typeName: 'shape',
-          x: compareX - 48,
-          y: 0,
-          rotation: 0,
-          isLocked: false,
-          opacity: 0.15,
-          parentId: 'page:page',
-          props: { w: 16, h: Math.min(top, 2000), geo: 'rectangle', fill: 'solid', color: 'grey', dash: 'solid' },
-        }),
-      });
-
-      // Broadcast signal so viewers know which shadow hash to fetch SVGs from
-      await serverFetch(`/api/projects/${doc}/signal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'signal:compare', data: { ref: resolved.hash, hash7, prefix, timestamp: Date.now() } }),
-      });
-
-      return { content: [{ type: 'text', text: `Comparison created: ${doc} at ${hash7} vs live. ${created} pages placed at x=${compareX}. Pan right to see both columns.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'doc_revert') {
-    const doc = args?.doc;
-    let ref = args?.ref;
-    if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
-    try {
-      const resolved = await resolveDocRef(doc, ref);
-      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
-
-      // Revert: restores source AND writes to the author's working copy (project.sourceDir)
-      await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/revert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      });
-
-      const buildDone = await waitForBuild(doc);
-      const result = resolved.isTimeRef
-        ? `Reverted ${doc} to ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy updated.`
-        : `Reverted ${doc} to version ${resolved.hash.slice(0, 7)}. Author's working copy updated.`;
-      return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'doc_diff') {
-    const doc = args?.doc;
-    const ref1 = args?.ref1;
-    const ref2 = args?.ref2 || 'HEAD';
-    if (!doc || !ref1) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref1' }], isError: true };
-    try {
-      const { diff } = await serverFetch(`/api/projects/${doc}/history/shadow/diff?ref1=${encodeURIComponent(ref1)}&ref2=${encodeURIComponent(ref2)}`);
-      if (!diff || diff.trim() === '') {
-        return { content: [{ type: 'text', text: `No source changes between ${ref1.slice(0, 7)} and ${ref2 === 'HEAD' ? 'HEAD' : ref2.slice(0, 7)}` }] };
-      }
-      // Truncate very long diffs
-      const lines = diff.split('\n');
-      const truncated = lines.length > 200 ? lines.slice(0, 200).join('\n') + `\n\n[... ${lines.length - 200} more lines truncated]` : diff;
-      return { content: [{ type: 'text', text: truncated }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
+  // doc_compare, doc_revert, doc_diff handlers removed — use local git with mirror
 
   if (name === 'build') {
     const { doc } = args;
@@ -3597,47 +3470,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'scratch') {
-    const filePath = args.file;
-    const bookName = args.book || 'fleet-workspace';
-    if (!filePath) return { content: [{ type: 'text', text: 'file is required.' }], isError: true };
-    if (!fs.existsSync(filePath)) return { content: [{ type: 'text', text: `File not found: ${filePath}` }], isError: true };
-    const fileName = path.basename(filePath);
-    if (!fileName.endsWith('.md')) return { content: [{ type: 'text', text: 'File must be a .md markdown file.' }], isError: true };
-    const dir = path.dirname(filePath);
-    const stem = fileName.replace(/\.md$/, '');
-    const projectName = `scratch-${stem}`;
-    let title = args.title;
-    if (!title) {
-      const content = fs.readFileSync(filePath, 'utf8');
-      const headingMatch = content.match(/^#\s+(.+)$/m);
-      title = headingMatch ? headingMatch[1].trim() : stem;
-    }
-    try {
-      await serverFetch(`/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: projectName, title, mainFile: fileName, format: 'markdown', sourceDir: dir }),
-      }).catch(e => { if (!e.message.includes('409')) throw e; });
-
-      const content = fs.readFileSync(filePath);
-      await serverFetch(`/api/projects/${projectName}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }], sourceDir: dir }),
-      });
-
-      await serverFetch(`/api/projects/${bookName}/members`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ add: projectName }),
-      }).catch(() => {});
-
-      return { content: [{ type: 'text', text: `Published "${title}" as ${projectName} in ${bookName}. watch-all will auto-push edits.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `scratch failed: ${e.message}` }], isError: true };
-    }
-  }
+  // scratch handler removed — no fleet workspace
 
   if (name === 'create_shape') {
     const { doc, shape } = args;

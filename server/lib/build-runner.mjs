@@ -15,10 +15,13 @@
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
-// Ensure TeX binaries are available (launchd doesn't inherit full shell PATH)
-const texbin = '/Library/TeX/texbin'
-if (!process.env.PATH?.includes(texbin)) {
-  process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
+// Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
+// Check common TeX locations across platforms.
+for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64-linux', '/usr/local/texlive/2025/bin/x86_64-linux']) {
+  if (!process.env.PATH?.includes(texbin)) {
+    try { if (statSync(texbin).isDirectory()) process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}` }
+    catch {}
+  }
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
@@ -27,7 +30,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
 import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
@@ -906,6 +909,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         cacheSvgSnapshot(name, result.hash).catch(e => {
           ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
         })
+        emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)

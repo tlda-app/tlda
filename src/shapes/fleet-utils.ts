@@ -1,5 +1,7 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
+// @ts-ignore — vanilla JS module
+import { getHumanId } from '../fleet/fleet-data.mjs'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
@@ -44,7 +46,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
 
   // Fall back to most-recently-active agents only if no existing filter to restore
-  const nonHuman = agents.filter((a: any) => a.id !== 'fleet:skip' && a.friendly_name !== 'skip')
+  const humanId = getHumanId()
+  const nonHuman = agents.filter((a: any) => a.id !== humanId && !a.human)
   const sorted = [...nonHuman].sort((a: any, b: any) => {
     const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
     const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0

@@ -382,7 +382,7 @@ export function TocTab() {
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
-        <HideDefsToggle ctx={ctx} />
+        {/* HideDefsToggle removed */}
       </div>
     )
   }
@@ -410,7 +410,7 @@ export function TocTab() {
         <DarkModeToggle />
         <VimModeToggle />
         <CameraLinkToggle />
-        <HideDefsToggle ctx={ctx} />
+        {/* HideDefsToggle removed */}
       </div>
     )
   }
@@ -571,7 +571,7 @@ export function TocTab() {
       <DarkModeToggle />
       <VimModeToggle />
       <CameraLinkToggle />
-      <HideDefsToggle ctx={ctx} />
+      {/* HideDefsToggle removed */}
     </div>
     </>
   )
@@ -586,14 +586,7 @@ export function CameraLinkToggle() {
   )
 }
 
-export function HideDefsToggle({ ctx }: { ctx: PanelContextValue | null }) {
-  if (!ctx?.onTogglePanelsLocal) return null
-  return (
-    <div className="toc-diff-hint toc-toggle-indented" onClick={() => ctx.onTogglePanelsLocal?.()}>
-      {ctx.panelsLocal ? 'Hide defs' : 'Show defs'}
-    </div>
-  )
-}
+// HideDefsToggle removed — vestigial
 
 export function VimModeToggle() {
   const enabled = useSyncExternalStore(subscribeVimMode, getVimMode)

@@ -12,8 +12,6 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "watch": "node scripts/watch.mjs",
-    "collab": "node scripts/collab.mjs",
     "publish-snapshot": "node scripts/publish-snapshot.mjs",
     "start": "tlda server start && npm run dev",
     "smoke": "node scripts/smoke-test.mjs",
@@ -23,7 +21,6 @@
     "test:annotations": "node --test test/annotations.test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@codemirror/commands": "^6.10.1",
     "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
@@ -42,8 +39,6 @@
     "katex": "^0.16.28",
     "markdown-it": "^14.1.1",
     "markdown-it-anchor": "^9.2.0",
-    "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.4.624",
     "playwright": "^1.58.2",
     "qrcode-terminal": "^0.12.0",
     "react": "^19.2.0",
@@ -62,7 +57,6 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
-    "gh-pages": "^6.3.0",
     "globals": "^16.5.0",
     "puppeteer": "^24.36.1",
     "typescript": "~5.9.3",
