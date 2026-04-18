@@ -1916,8 +1916,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'list_annotations',
-      description: 'List all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses, text labels. Each annotation includes its type, color, position, and source line mapping. Use the type parameter to filter to specific annotation types.',
+      name: 'read_annotations',
+      description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1927,6 +1927,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: { type: 'string', enum: ['note', 'highlight', 'draw', 'arrow', 'geo', 'text', 'line'] },
             description: 'Filter by annotation type(s). Omit to list all types.',
           },
+          sort: { type: 'string', enum: ['document', 'time'], description: 'Sort order: "document" (by page/line, default) or "time" (newest first)' },
+          since: { type: 'number', description: 'Only return annotations created in the last N minutes' },
+          startLine: { type: 'number', description: 'Only return annotations at or after this source line' },
+          endLine: { type: 'number', description: 'Only return annotations at or before this source line' },
         },
         required: ['doc'],
       },
@@ -2368,7 +2372,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot', 'crop_screenshot', 'get_feedback',
   'flash_location', 'add_annotation',
-  'scroll_to_line', 'list_annotations',
+  'scroll_to_line', 'read_annotations', 'list_annotations',
   'draw_highlight', 'draw_arrow',
   'mark_highlight_addressed', 'place_response_bar',
   'get_highlight_feedback',
@@ -2593,18 +2597,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'list_annotations') {
+  if (name === 'read_annotations' || name === 'list_annotations') {
     const { doc } = args;
-    const typeFilter = args.type || null; // optional array of types to filter
+    const typeFilter = args.type || null;
+    const sortOrder = args.sort || 'document';
+    const sinceMinutes = args.since || null;
+    const startLine = args.startLine || null;
+    const endLine = args.endLine || null;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
       const items = [];
+      const sinceTs = sinceMinutes ? Date.now() - sinceMinutes * 60 * 1000 : null;
 
       // Notes (math-note shapes)
       if (!typeFilter || typeFilter.includes('note')) {
         const result = await listAnnotations(doc);
         for (const a of result.annotations) {
-          items.push({ ...a, annotationType: 'note' });
+          if (sinceTs && a.createdAt && a.createdAt < sinceTs) continue;
+          const noteLine = a.line || a.sourceLine || null;
+          if (startLine && noteLine && noteLine < startLine) continue;
+          if (endLine && noteLine && noteLine > endLine) continue;
+          items.push({ ...a, annotationType: 'note', sortLine: noteLine || 0, sortTime: a.createdAt || 0 });
         }
       }
 
@@ -2613,37 +2626,76 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!typeFilter || typeFilter.some(t => drawTypes.includes(t))) {
         const drawnShapes = await collectDrawnShapes(doc);
         for (const s of drawnShapes) {
-          if (s.shapeType === 'note') continue; // already handled above
+          if (s.shapeType === 'note') continue;
           const aType = s.shapeType || 'draw';
           if (typeFilter && !typeFilter.includes(aType)) continue;
+          if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;
+          const shapeLine = s.lines?.[0]?.line || s.sourceLine || 0;
+          if (startLine && shapeLine && shapeLine < startLine) continue;
+          if (endLine && shapeLine && shapeLine > endLine) continue;
           items.push({
             id: s.id,
             annotationType: aType,
             color: s.color,
             page: s.page,
             lines: s.lines,
+            highlightText: s.highlightText || null,
+            highlightedText: s.meta?.highlightedText || s.meta?.highlightText || null,
             text: s.text || null,
-            anchor: s.sourceLine ? `${s.sourceFile || 'main'}:${s.sourceLine}` : null,
+            sortLine: shapeLine,
+            sortTime: s.createdAt || 0,
           });
         }
       }
 
+      // Sort
+      if (sortOrder === 'time') {
+        items.sort((a, b) => (b.sortTime || 0) - (a.sortTime || 0));
+      } else {
+        items.sort((a, b) => (a.page || 0) - (b.page || 0) || (a.sortLine || 0) - (b.sortLine || 0));
+      }
+
       if (items.length === 0) return { content: [{ type: 'text', text: 'No annotations found.' }] };
 
-      let summary = `${items.length} annotation(s):\n\n`;
-      items.forEach((a, i) => {
-        summary += `${i + 1}. [${a.annotationType}] ${a.id}`;
-        summary += '\n';
-        if (a.color) summary += `   color: ${a.color}\n`;
-        if (a.anchor) summary += `   anchor: ${a.anchor}\n`;
-        if (a.page) summary += `   page: ${a.page}\n`;
-        if (a.text) summary += `   text: "${a.text.substring(0, 200)}"\n`;
-        if (a.choices) {
-          summary += `   choices: ${a.choices.map((c, j) => (j === a.selectedChoice ? `[${c}]` : c)).join(' | ')}\n`;
+      // Format output
+      let out = `${doc} — ${items.length} annotation(s)\n\n`;
+      for (const a of items) {
+        const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
+
+        if (a.annotationType === 'highlight' || a.annotationType === 'highlighter') {
+          // Highlight with ⟦⟧ markers
+          const hlText = a.highlightedText || a.highlightText || '';
+          if (hlText) {
+            out += `${lineRef} highlight (${a.color}) ${a.id}:\n`;
+            // Use the highlightText if it already has ⟦⟧, otherwise wrap it
+            if (hlText.includes('⟦')) {
+              out += `  ${hlText}\n`;
+            } else {
+              out += `  ⟦${hlText}⟧\n`;
+            }
+          } else {
+            out += `${lineRef} highlight (${a.color}) ${a.id}\n`;
+            if (a.lines?.length > 0) {
+              out += `  covers lines ${a.lines[0].line}–${a.lines[a.lines.length - 1].line}\n`;
+            }
+          }
+        } else if (a.annotationType === 'note') {
+          out += `${lineRef} note (${a.color || 'yellow'}) ${a.id}:\n`;
+          const noteText = (a.text || '').substring(0, 200);
+          out += `  "${noteText}"\n`;
+        } else if (a.annotationType === 'draw' || a.annotationType === 'pen') {
+          out += `${lineRef} pen (${a.color}) ${a.id}\n`;
+          if (a.lines?.length > 0) out += `  near: "${a.lines[0].content?.substring(0, 60)}"\n`;
+        } else if (a.annotationType === 'arrow') {
+          out += `${lineRef} arrow (${a.color}) ${a.id}\n`;
+        } else {
+          out += `${lineRef} ${a.annotationType} (${a.color}) ${a.id}\n`;
+          if (a.text) out += `  "${a.text.substring(0, 100)}"\n`;
         }
-        summary += '\n';
-      });
-      return { content: [{ type: 'text', text: summary }] };
+        out += '\n';
+      }
+
+      return { content: [{ type: 'text', text: out }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
