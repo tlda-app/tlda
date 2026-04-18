@@ -1991,11 +1991,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
           startLine: { type: 'number', description: 'First source line to highlight' },
-          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line)' },
+          endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line). Optional when text is provided.' },
           color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
+          text: { type: 'string', description: 'Specific text to highlight (substring from the source). When provided, highlights just this text instead of full lines. startLine is used as a hint for where to search.' },
         },
-        required: ['doc', 'startLine', 'endLine'],
+        required: ['doc', 'startLine'],
       },
     },
     {
@@ -2829,12 +2830,180 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'draw_highlight') {
-    const { doc, startLine, endLine, color = 'orange', file } = args;
-    if (!doc || startLine == null || endLine == null) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine' }], isError: true };
+    const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
+    if (!doc || startLine == null) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine' }], isError: true };
     }
+    // endLine is required unless text is provided
+    const endLine = endLineArg ?? startLine;
 
     try {
+      // --- Text-based highlighting: find exact text position and narrow the highlight ---
+      if (text) {
+        // Read source file from the server
+        const sourceFile = file || null;
+        const sourceFileName = sourceFile ? path.basename(sourceFile) : null;
+        let sourceContent;
+        try {
+          const srcUrl = sourceFileName
+            ? `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(sourceFileName)}`
+            : `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/main`;
+          const srcRes = await fetch(srcUrl, { headers: TLDA_AUTH_HEADERS });
+          if (!srcRes.ok) {
+            // If 'main' didn't work, try getting project info for the actual main file name
+            if (!sourceFileName) {
+              const projRes = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}`, { headers: TLDA_AUTH_HEADERS });
+              if (projRes.ok) {
+                const projData = await projRes.json();
+                const mainFile = projData.mainFile || projData.main;
+                if (mainFile) {
+                  const srcRes2 = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(mainFile)}`, { headers: TLDA_AUTH_HEADERS });
+                  if (srcRes2.ok) sourceContent = await srcRes2.text();
+                }
+              }
+            }
+            if (!sourceContent) {
+              return { content: [{ type: 'text', text: `Could not read source file for ${doc}` }], isError: true };
+            }
+          } else {
+            sourceContent = await srcRes.text();
+          }
+        } catch (e) {
+          return { content: [{ type: 'text', text: `Error reading source: ${e.message}` }], isError: true };
+        }
+
+        const sourceLines = sourceContent.split('\n');
+        // Search for text near startLine (±10 lines)
+        const searchStart = Math.max(0, startLine - 11); // 0-indexed
+        const searchEnd = Math.min(sourceLines.length, startLine + 10);
+        const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n');
+
+        const matchIdx = searchRegion.indexOf(text);
+        if (matchIdx === -1) {
+          return { content: [{ type: 'text', text: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` }], isError: true };
+        }
+
+        // Convert matchIdx back to line number and column
+        const beforeMatch = searchRegion.slice(0, matchIdx);
+        const matchStartLine = searchStart + beforeMatch.split('\n').length; // 1-indexed
+        const matchStartCol = beforeMatch.split('\n').pop().length; // 0-indexed column in that line
+
+        const matchEndOffset = matchIdx + text.length;
+        const beforeEnd = searchRegion.slice(0, matchEndOffset);
+        const matchEndLine = searchStart + beforeEnd.split('\n').length; // 1-indexed
+        const matchEndCol = beforeEnd.split('\n').pop().length; // 0-indexed column past end
+
+        const pageW = getPageWidth(doc);
+        const segments = [];
+        let hlLeft = Infinity, hlRight = -Infinity;
+        let hlTop = Infinity, hlBottom = -Infinity;
+
+        for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          // Full-line highlight width (text start to near-right edge)
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          // Determine column range for this line within the match
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          // Proportional x mapping: column fraction → x position
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          hlLeft = Math.min(hlLeft, xStart);
+          hlRight = Math.max(hlRight, xEnd);
+          hlTop = Math.min(hlTop, canvas.y - 3);
+          hlBottom = Math.max(hlBottom, canvas.y + 3);
+        }
+
+        if (hlLeft === Infinity) {
+          return { content: [{ type: 'text', text: `No lookup entries found for matched lines ${matchStartLine}–${matchEndLine}` }], isError: true };
+        }
+
+        const width = hlRight - hlLeft;
+        const height = hlBottom - hlTop;
+        const numLines = matchEndLine - matchStartLine + 1;
+        const lineH = numLines > 1 ? height / numLines : 0;
+
+        for (let i = 0; i < numLines; i++) {
+          const ln = matchStartLine + i;
+          const pos = lookupLine(doc, ln, file);
+          if (!pos) continue;
+          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
+          const lineText = sourceLines[ln - 1] || '';
+          const lineLen = lineText.length || 1;
+
+          const fullLeft = canvas.x;
+          const fullRight = pageW * 0.9;
+          const fullWidth = fullRight - fullLeft;
+
+          let colStart = 0;
+          let colEnd = lineLen;
+          if (ln === matchStartLine) colStart = matchStartCol;
+          if (ln === matchEndLine) colEnd = matchEndCol;
+
+          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
+          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
+
+          // Segment coordinates are relative to the shape's (hlLeft, hlTop)
+          const segLeft = xStart - hlLeft;
+          const segRight = xEnd - hlLeft;
+          const y = (canvas.y - 3) - hlTop + (numLines <= 1 ? 0 : 0);
+          segments.push({ type: 'free', path: encodeB64Path([
+            { x: segLeft, y, z: 0.5 },
+            { x: segRight, y, z: 0.5 },
+          ])});
+        }
+
+        const shapeId = generateShapeId();
+        const shapeIndex = await getNextShapeIndex(doc);
+        const firstPos = lookupLine(doc, matchStartLine, file);
+        const shape = {
+          id: shapeId,
+          type: 'highlight',
+          x: hlLeft,
+          y: hlTop,
+          index: shapeIndex,
+          rotation: 0,
+          isLocked: false,
+          opacity: 0.7,
+          props: {
+            segments,
+            color,
+            size: 's',
+            isComplete: true,
+            isPen: false,
+            scale: 1,
+            scaleX: 1,
+            scaleY: 1,
+          },
+          meta: {
+            createdAt: Date.now(),
+            createdBy: 'claude',
+            sourceAnchor: { file: file || './' + (firstPos?.texFile || 'main.tex'), line: matchStartLine },
+            highlightedText: text,
+            ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
+            ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
+          },
+          parentId: 'page:page',
+          typeName: 'shape',
+        };
+
+        await createShapeRest(doc, shape);
+        return { content: [{ type: 'text', text: `Highlight drawn: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" at lines ${matchStartLine}–${matchEndLine}, page ${firstPos?.page}, ${color} (${shapeId})` }] };
+      }
+
+      // --- Full-line highlighting (original behavior) ---
       // Look up canvas positions for start and end lines
       const startPos = lookupLine(doc, startLine, file);
       const endPos = lookupLine(doc, endLine, file);
