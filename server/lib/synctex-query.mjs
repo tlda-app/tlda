@@ -197,30 +197,39 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation for hit lines
+    // Column estimation for hit lines — use record indices, not x fractions
     if (isHit) {
       const hitRange = hitLines.get(lineNum)
       const lineRecs = allRecordsByLine.get(lineNum) || []
       if (lineRecs.length >= 2) {
-        const sorted = [...lineRecs].sort((a, b) => a.x - b.x)
-        const lineXMin = sorted[0].x
-        const lineXMax = sorted[sorted.length - 1].x
-        const lineXRange = lineXMax - lineXMin
-        if (lineXRange > 0) {
-          let fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
-          let fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
-          // If only one record was hit, expand to cover neighboring records
-          if (fracEnd - fracStart < 0.05 && sorted.length > 1) {
-            const hitIdx = sorted.findIndex(r => r.x >= hitRange.minX)
-            const lo = Math.max(0, hitIdx - 1)
-            const hi = Math.min(sorted.length - 1, hitIdx + 1)
-            fracStart = Math.max(0, (sorted[lo].x - lineXMin) / lineXRange)
-            fracEnd = Math.min(1, (sorted[hi].x - lineXMin) / lineXRange)
-          }
-          const srcLen = allLines[i].length
-          entry.hlStart = Math.max(0, Math.round(fracStart * srcLen))
-          entry.hlEnd = Math.min(srcLen, Math.round(fracEnd * srcLen))
+        // Sort records in source order (y asc, x asc) — NOT just by x
+        const inOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+        const N = inOrder.length
+
+        // Find the record indices closest to the hit x-range
+        let startIdx = 0, endIdx = N - 1
+        let bestStartDist = Infinity, bestEndDist = Infinity
+        for (let j = 0; j < N; j++) {
+          const dStart = Math.abs(inOrder[j].x - hitRange.minX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.minX) < 20)?.y || inOrder[j].y)) * 0.5
+          const dEnd = Math.abs(inOrder[j].x - hitRange.maxX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.maxX) < 20)?.y || inOrder[j].y)) * 0.5
+          if (dStart < bestStartDist) { bestStartDist = dStart; startIdx = j }
+          if (dEnd < bestEndDist) { bestEndDist = dEnd; endIdx = j }
         }
+
+        // Ensure endIdx >= startIdx
+        if (endIdx < startIdx) [startIdx, endIdx] = [endIdx, startIdx]
+        // Expand by 1 record on each side if single record hit
+        if (endIdx === startIdx && N > 1) {
+          startIdx = Math.max(0, startIdx - 1)
+          endIdx = Math.min(N - 1, endIdx + 1)
+        }
+
+        // Map record indices to character positions (records are in source order)
+        const srcLine = allLines[i]
+        const stripped = srcLine.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1').replace(/\\[a-zA-Z]+/g, '').replace(/[{}$^_~]/g, '').replace(/\s+/g, ' ').trim()
+        const strippedLen = stripped.length || 1
+        entry.hlStart = Math.max(0, Math.round((startIdx / (N - 1)) * srcLine.length))
+        entry.hlEnd = Math.min(srcLine.length, Math.round((endIdx / (N - 1)) * srcLine.length))
       }
     }
 
