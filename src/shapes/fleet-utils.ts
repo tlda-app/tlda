@@ -136,22 +136,53 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       },
     )
   } else {
-    // 2-col: two chats — one in the middle, one in the right margin.
-    // Both full-column height (same as left-side column).
+    // Split L/R: left margin has agents+search + wide chat (3/4) + docview (1/4).
+    // Right margin has a wide chat (full height). Chats are 1.5x wider than 3-col.
+    const chatWide = Math.round(chatW3 * 1.5) // 615
+    // Right-margin chat: placed far right in page coords. The overlay camera
+    // positions by document margin, so we compute a page-coord offset that
+    // maps the right chat to the right margin on screen. We place it past the
+    // document's right edge, and the overlay camera handles positioning.
+    let docWidth = 800 // fallback
+    if (pageShapes.length > 0) {
+      let maxRight = -Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b) { const right = b.x + b.w; if (right > maxRight) maxRight = right }
+      }
+      let minLeft = Infinity
+      for (const ps of pageShapes) {
+        const b = editor.getShapePageBounds(ps.id)
+        if (b && b.x < minLeft) minLeft = b.x
+      }
+      docWidth = maxRight - minLeft
+    }
+    // Right chat X: past the document right edge + gap
+    const rightChatX = anchorX + totalW + docWidth + 80
+
     shapes.push(
+      // Left margin: wide chat (3/4 height) + docview (1/4 height)
       {
         id: createShapeId(),
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: chatW3, h: totalH, filter: filter1 },
+        props: { w: chatWide, h: rightChatH, filter: filter1 },
       },
       {
         id: createShapeId(),
-        type: 'fleet-chat' as any,
-        x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
+        type: 'fleet-docview' as any,
+        x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW3, h: totalH, filter: filter2 },
+        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+      },
+      // Right margin: wide chat (full height)
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: rightChatX, y: anchorY,
+        isLocked: false,
+        props: { w: chatWide, h: totalH, filter: filter2 },
       },
     )
   }

@@ -152,8 +152,10 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // cameraYRef (Y): set once from fleet bounds top. Never updated by
-  // shape moves — prevents "drag one shape, all shapes shift" bug.
+  // Camera offsets: initialized once on first expand, then frozen.
+  // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
+  // cameraYRef (Y): set once, never updated by shape moves.
+  const panOffsetRef = useRef<number | null>(null)
   const cameraYRef = useRef<number | null>(null)
 
   // Reactively update fleet bounds when shapes change.
@@ -252,8 +254,9 @@ export function FleetHUD({
     }
   }, [expanded, fleetBounds, mainEditor])
 
-  // Poll main camera so the overlay re-renders when the user pans/zooms.
-  // Fleet X position is computed from mainEditor.pageToScreen each render.
+  // Track main camera for pan: update panOffsetRef by screen-pixel deltas
+  // when the user pans (cam.z unchanged). Zoom changes are ignored (fleet
+  // shapes stay at their current screen positions).
   useEffect(() => {
     if (!expanded) return
     let rafId: number
@@ -262,6 +265,10 @@ export function FleetHUD({
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
+        if (cam.z === lastCamZ && panOffsetRef.current !== null) {
+          // Pure pan: update offset by screen-pixel delta
+          panOffsetRef.current += (cam.x - lastCamX) * cam.z
+        }
         lastCamX = cam.x
         lastCamZ = cam.z
         setCameraTick(t => t + 1)
@@ -320,6 +327,7 @@ export function FleetHUD({
   // Reset camera refs so the overlay re-centers on the new shapes.
   useEffect(() => {
     const onReset = () => {
+      panOffsetRef.current = null
       cameraYRef.current = null
       setFleetBounds(getFleetBounds(mainEditor))
     }
@@ -354,36 +362,33 @@ export function FleetHUD({
   // from document's screen position each render. Y frozen on first expand.
   void cameraTick
 
-  // Position fleet shapes so their right edge sits ~140px (≈1.5in) left of
-  // the document's left margin on screen. This updates dynamically as the
-  // user pans/zooms the document.
-  const MARGIN_GAP = 20 // gap between fleet right edge and document left edge
-  const TOP_PAD = 80     // pixels from top of viewport
+  // Camera offsets: computed once on first expand from the document's
+  // current screen position, then frozen. X tracks pan only (no zoom).
+  // Y is fixed after initial layout.
+  const MARGIN_GAP = 20
+  const TOP_PAD = 80
 
-  // Find document left edge on screen
-  const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
-    (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-  let docLeftScreen = 0
-  if (docShapes.length > 0) {
-    let minPageX = Infinity
-    for (const s of docShapes) {
-      const b = mainEditor.getShapePageBounds(s.id)
-      if (b && b.x < minPageX) minPageX = b.x
+  if (panOffsetRef.current === null) {
+    // Compute initial X: fleet right edge sits MARGIN_GAP px left of
+    // the document's left margin at the current camera position.
+    const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
+      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+    let docLeftScreen = window.innerWidth / 2
+    if (docShapes.length > 0) {
+      let minPageX = Infinity
+      for (const s of docShapes) {
+        const b = mainEditor.getShapePageBounds(s.id)
+        if (b && b.x < minPageX) minPageX = b.x
+      }
+      docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
     }
-    docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-  } else {
-    docLeftScreen = window.innerWidth / 2
+    const fleetRightPage = fleetBounds.x + fleetBounds.w
+    panOffsetRef.current = docLeftScreen - MARGIN_GAP - fleetRightPage
+    cameraYRef.current = TOP_PAD - fleetBounds.y
   }
 
-  // Fleet shapes' right edge in page coords
-  const fleetRightPage = fleetBounds.x + fleetBounds.w
-  // We want: fleetRightPage + overlayCam.x = docLeftScreen - MARGIN_GAP
-  const camX = docLeftScreen - MARGIN_GAP - fleetRightPage
-  const camY = cameraYRef.current ?? (TOP_PAD - fleetBounds.y)
-  if (cameraYRef.current === null) cameraYRef.current = camY
-
   const overlayCam = {
-    x: camX,
+    x: panOffsetRef.current,
     y: cameraYRef.current!,
     z: 1,
   }
