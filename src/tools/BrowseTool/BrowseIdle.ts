@@ -164,6 +164,12 @@ export class BrowseIdle extends StateNode {
       if (selected.length === 0) return
       if (!target) return
 
+      // In HUD layout mode, don't deselect on empty-area clicks — let TLDraw
+      // handle it via pointing_canvas (BrowsePointingCanvas skips selectNone).
+      // Without this, _deselHandler fires at capture phase before TLDraw,
+      // calls selectNone, removes hud-layout-active, kills pointer-events.
+      if (target.closest('.fleet-hud-wrap.hud-layout-active .tl-canvas')) return
+
       // If clicking on a tldraw selection/resize handle, don't interfere
       if (target.closest('.tl-corner-handle, .tl-resize-handle, .tl-selection__fg')) return
 
