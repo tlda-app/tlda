@@ -261,15 +261,20 @@ function suppressEchoFor(connId) {
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
   for (const ws of wsFleetClients) {
-    if (ws._suppressNextBroadcast) {
-      ws._suppressNextBroadcast = false
-      continue
-    }
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
 function broadcastEvent(type, data) {
-  broadcastFleet({ event: type, data })
+  const msg = JSON.stringify({ event: type, data })
+  for (const ws of wsFleetClients) {
+    // Suppress echo: skip the sender's WS for this event broadcast only.
+    // Per-connection flag set by the WS chat handler before share().
+    if (ws._suppressNextBroadcast) {
+      ws._suppressNextBroadcast = false
+      continue
+    }
+    try { if (ws.readyState === 1) ws.send(msg) } catch { wsFleetClients.delete(ws) }
+  }
 }
 function broadcastState() {
   if (!fleetStore) return
