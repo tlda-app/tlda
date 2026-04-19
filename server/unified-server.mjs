@@ -103,7 +103,7 @@ const daemonConnections = new Map()         // machine_id -> ws
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
-// themselves via the WS 'identify' message and get their own human agent.
+// themselves via WS 'login' (returning) or 'register' (new) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
@@ -970,7 +970,7 @@ function handleFleetWsMessage(ws, msg) {
       registered_at: existing?.registered_at || now,
       last_seen: now,
       dead: false,
-      human: false,
+      human: !!msg.human,
       is_manager: !!manager,
       metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
       // machine_id: optional. The fleet MCP doesn't send it yet — once it
@@ -991,29 +991,24 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Browser identity: a browser client sends { type: "identify", name: "alice" }
-  // to claim a human identity. Creates/updates a human agent in the DB.
-  if (type === 'identify') {
+  // Login: browser sends { type: "login", name: "skip" } to log in as an
+  // existing agent. Never creates — just attaches this WS to the agent.
+  if (type === 'login') {
     const { name } = msg
     if (!name || typeof name !== 'string') { error('missing name'); return }
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
-    const humanId = `fleet:${sanitized}`
-    const now = new Date().toISOString()
-    const existing = fleetStore.getAgent?.(humanId)
-    fleetStore.upsertAgent({
-      id: humanId,
-      friendly_name: sanitized,
-      human: true,
-      dead: false,
-      labels: existing?.labels || [],
-      registered_at: existing?.registered_at || now,
-      last_seen: now,
-    })
-    // Track this WS as belonging to this human (for heartbeat on /api/state)
-    ws._tldaHumanId = humanId
+    // Find existing agent by friendly_name
+    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(sanitized)
+    if (nameRows.length === 0) {
+      error(`No agent named "${sanitized}". Register first.`)
+      return
+    }
+    const agent = fleetStore._hydrateAgent(nameRows[0])
+    fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
+    ws._tldaHumanId = agent.id
     broadcastState()
-    reply({ id: humanId, name: sanitized })
+    reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
     return
   }
 
