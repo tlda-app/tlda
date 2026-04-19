@@ -7,7 +7,7 @@
  * See fleet-identity.md for the full identity system design.
  *
  * Tools:
- *   - register(manager?, session_id?)    register this agent (all agents call this)
+ *   - register(session_id?, name?)       register this agent (all agents call this)
  *   - delegate(agent, description, message)  assign task (manager only)
  *   - chat(message, to?)                 send message + kick recipient
  *   - task_list()                        show active tasks + registered agents
@@ -588,12 +588,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Registration & Identity ----
     {
       name: 'register',
-      description: 'Register this agent. All agents call this at session start. Pass manager=true to register as manager.',
+      description: 'Register this agent. All agents call this at session start.',
       inputSchema: {
         type: 'object',
         properties: {
-          manager: { type: 'boolean', description: 'Register as manager (default false)' },
-          testing: { type: 'boolean', description: 'Deprecated, ignored. Any manager can register alongside others now.' },
           session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
           name: { type: 'string', description: 'Agent name' },
         },
@@ -714,20 +712,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'monitor_list',
       description: 'List tlda documents this agent is currently subscribed to for feedback notifications.',
       inputSchema: { type: 'object', properties: {} },
-    },
-    // Keep register_manager as alias for backward compat (keepalive watcher calls it)
-    {
-      name: 'register_manager',
-      description: 'Register as manager. Alias for register(manager=true).',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
-      name: 'unregister_manager',
-      description: 'Step down as manager. ',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
     },
     // ---- Agent Lifecycle ----
     {
@@ -1097,8 +1081,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ==== Registration & Identity ====
 
   // ---- register ----
-  if (name === 'register' || name === 'register_manager') {
-    const isManager = name === 'register_manager' || args.manager === true;
+  if (name === 'register') {
     const agentName = args.name || null;
 
     // The MCP process is preserved across compactions (it's a stdio child of
@@ -1331,7 +1314,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       tmux_session: entry.tmux_session,
       cwd: entry.cwd,
       labels: entry.labels,
-      manager: entry.is_manager,
       machine_id: machineId,
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
@@ -1350,8 +1332,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const agentCount = state.agents.length;
-    const role = isManager ? 'manager' : 'agent';
-    let msg = `Registered ${entry.id} as ${role}. ${agentCount} agent(s) registered.`;
+    let msg = `Registered ${entry.id}. ${agentCount} agent(s) registered.`;
     if (identitySource) {
       msg += `\nIdentity: ${identitySource}`;
     }
@@ -1359,26 +1340,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
     }
 
-    const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
-    const repoRefPath = path.join(__dirname, 'managing-agents.md');
-    const refExists = fs.existsSync(refPath);
-
-    if (isManager) {
-      msg += '\n\nWhen you see 📬 as input, call my_task() — it means an agent sent you a message or a task changed.';
-      if (refExists) {
-        msg += '\nRead ~/.claude/reference/managing-agents.md before proceeding.';
-      } else {
-        msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
-      }
-    } else {
-      msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
-      msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
-      if (refExists) {
-        msg += '\nSee ~/.claude/reference/managing-agents.md for how to work with the manager.';
-      } else {
-        msg += `\nSee ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
-      }
-    }
+    msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
+    msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
     msg += '\nChat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.';
 
     // Health check: report what's up/down so agent knows communication channels
@@ -1402,14 +1365,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return { content: [{ type: 'text', text: msg }] };
-  }
-
-  // ---- unregister_manager ----
-  if (name === 'unregister_manager') {
-    const guard = requireManager();
-    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-    // No state write needed — manager flag is handled server-side
-    return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
   }
 
   // reclaim_identity removed — tmux-based identity detection handles this automatically
@@ -1681,9 +1636,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text }] };
     }
 
-    // Check if there are multiple managers (show delegated_by if so)
-    const managerCount = agents.filter(a => a.is_manager).length;
-    const showOwner = managerCount > 1;
+    const showOwner = false;
 
     const agentMap = new Map(agents.map(a => [a.id, a]));
     const lines = active.map(t => {
