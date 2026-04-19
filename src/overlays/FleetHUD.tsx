@@ -117,10 +117,6 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // True while a pointer is held down inside the HUD. Set at capture-phase
-  // pointerdown on the outer wrap (before _deselHandler on the inner tl-container)
-  // so checkSelection never removes hud-layout-active mid-interaction.
-  const hudPointerDownRef = useRef(false)
   // Track whether any fleet shapes are selected in the HUD editor (layout mode).
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
   // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
@@ -306,34 +302,18 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // Never toggle while a pointer is held down inside the HUD.
-      // hudPointerDownRef is set at capture-phase pointerdown on the outer wrap,
-      // which fires before _deselHandler and TLDraw's own handlers — so any
-      // selectNone() called during the interaction can't kill hud-layout-active.
-      if (hudPointerDownRef.current) return
+      // If TLDraw's brush rectangle is active we're mid-drag-select — the brush
+      // sweeps through empty areas and temporarily clears selection, but we must
+      // not remove hud-layout-active or pointer-events goes to none and pointerup
+      // never reaches TLDraw (brush rect gets stuck permanently).
+      // Note: TLDraw stores brush as undefined (not null) when inactive, so use != null.
+      if (editor.getCurrentPageState().brush != null) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
       el.classList.toggle('hud-layout-active', hasFleetSelected)
     }
-
-    // Set hudPointerDownRef at capture phase on the outer wrap — this fires
-    // before _deselHandler (registered on the inner tl-container) and before
-    // TLDraw's own handlers, so checkSelection is blocked for the full interaction.
-    const onHudPointerDown = () => { hudPointerDownRef.current = true }
-    el.addEventListener('pointerdown', onHudPointerDown, { capture: true })
-
-    // On pointerup: clear the flag, then defer checkSelection so TLDraw finishes
-    // processing the event first (sets isPointing=false, updates selection).
-    // Without the defer, isPointing is still true at capture-phase pointerup.
-    // Without the explicit call, selectNone() on a no-op (empty→empty) emits
-    // no store update, leaving hud-layout-active stuck on.
-    const onPointerUp = () => {
-      hudPointerDownRef.current = false
-      setTimeout(() => checkSelection(), 0)
-    }
-    window.addEventListener('pointerup', onPointerUp, { capture: true })
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
@@ -358,10 +338,7 @@ export function FleetHUD({
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
-      el.removeEventListener('pointerdown', onHudPointerDown, { capture: true })
-      window.removeEventListener('pointerup', onPointerUp, { capture: true })
       el.classList.remove('hud-layout-active')
-      hudPointerDownRef.current = false
     }
   }, [expanded])
 
