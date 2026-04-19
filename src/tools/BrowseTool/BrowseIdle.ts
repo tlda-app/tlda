@@ -167,6 +167,14 @@ export class BrowseIdle extends StateNode {
       // If clicking on a tldraw selection/resize handle, don't interfere
       if (target.closest('.tl-corner-handle, .tl-resize-handle, .tl-selection__fg')) return
 
+      // When clicking on the HUD canvas in layout mode, let TLDraw handle
+      // deselection natively via its click/brush flow. _deselHandler fires at
+      // capture-phase pointerdown before TLDraw processes the event; if we
+      // call selectNone() here, hud-layout-active gets removed before brushing
+      // can start, killing pointer-events on the canvas — causing the brush
+      // to get stuck and pointerup to never reach TLDraw.
+      if (target.closest('.fleet-hud-wrap.hud-layout-active .tl-canvas')) return
+
       // Check if the click is inside the selected shape's DOM element
       // Scope to main editor container — document.querySelector would find
       // the HUD editor's copy of the shape first (same shape IDs, synced store).
