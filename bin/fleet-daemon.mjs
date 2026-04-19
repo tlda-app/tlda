@@ -64,7 +64,6 @@ const VERSION = '0.1.0'
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
-const LAST_BOOT_FILE = path.join(CONFIG_DIR, 'daemon-last-server-boot.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
@@ -268,16 +267,6 @@ let ws = null
 let backoff = 1000
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-// Persist the last-seen server boot_id so we can detect server restarts
-// even when the daemon itself was also restarted (by the daemon-supervisor).
-function readLastServerBootId() {
-  try { return JSON.parse(fs.readFileSync(LAST_BOOT_FILE, 'utf8'))?.server_boot_id ?? null }
-  catch { return null }
-}
-function writeLastServerBootId(id) {
-  try { fs.writeFileSync(LAST_BOOT_FILE, JSON.stringify({ server_boot_id: id })) }
-  catch (e) { console.error(`[daemon] failed to write last boot id: ${e.message}`) }
-}
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
@@ -1120,6 +1109,7 @@ function connect() {
 }
 
 let reconnectScheduled = false
+let _connectedBootId = null  // boot_id of the server we are currently connected to; null on fresh daemon start
 function scheduleReconnect() {
   if (reconnectScheduled) return
   reconnectScheduled = true
@@ -1140,18 +1130,33 @@ function handleServerMessage(msg) {
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
 
-    // Detect server restarts: compare server_boot_id to the last persisted value.
-    // If it changed, the server restarted and all agent MCPs are disconnected.
-    // (Daemon crash without server restart leaves the same boot_id — no restart needed.)
+    // Detect server restarts: compare server_boot_id to the boot_id we saw when we
+    // last connected. Use an in-memory variable (_connectedBootId) so that when the
+    // DAEMON itself restarts and makes its first connection, we don't falsely trigger
+    // MCP restarts (the file-persisted value would differ if the server also restarted,
+    // but in that case the MCPs have already been reconnecting on their own for seconds).
+    // Only trigger restarts when the daemon is continuously running and sees the server
+    // come back with a new boot_id — i.e., a genuine server restart under our feet.
     const newBootId = msg.server_boot_id ?? null
-    const lastBootId = readLastServerBootId()
-    if (newBootId && lastBootId && newBootId !== lastBootId) {
+    if (newBootId && _connectedBootId && newBootId !== _connectedBootId) {
       const toRestart = agents.filter(a => a.tmux_session && !a.dead)
+      const serverBootTime = parseInt(newBootId)
       if (toRestart.length > 0) {
-        console.log(`[daemon] server restarted (boot_id ${lastBootId} → ${newBootId}): scheduling MCP restart for ${toRestart.length} agent(s)`)
+        console.log(`[daemon] server restarted (boot_id ${_connectedBootId} → ${newBootId}): will check ${toRestart.length} agent(s) for self-reconnect in 8s`)
         toRestart.forEach((agent, i) => {
           setTimeout(async () => {
-            console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id}`)
+            // Check if the MCP reconnected on its own since the server restart.
+            // Re-registration via WS sets last_seen — if it's after serverBootTime, skip restart.
+            try {
+              const allAgents = await fetch(`${SERVER}/api/store/agents`).then(r => r.json()).catch(() => [])
+              const current = Array.isArray(allAgents) ? allAgents.find(a => a.id === agent.id) : null
+              const lastSeen = current?.last_seen ? new Date(current.last_seen).getTime() : 0
+              if (lastSeen > serverBootTime) {
+                console.log(`[daemon] ${agent.friendly_name || agent.id} already reconnected (last_seen=${current.last_seen}), skipping MCP restart`)
+                return
+              }
+            } catch {}
+            console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id} (did not self-reconnect within 8s)`)
             try {
               await rpcRestartMcp({ tmux_session: agent.tmux_session, skipPreflight: true })
               await fetch(`${SERVER}/api/chat`, {
@@ -1162,11 +1167,11 @@ function handleServerMessage(msg) {
             } catch (e) {
               console.error(`[daemon] auto-restart failed for ${agent.friendly_name || agent.id}: ${e.message}`)
             }
-          }, i * 500)
+          }, 8000 + i * 500)
         })
       }
     }
-    if (newBootId) writeLastServerBootId(newBootId)
+    if (newBootId) _connectedBootId = newBootId
     // Start periodic death detection
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)

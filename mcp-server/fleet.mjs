@@ -3696,7 +3696,7 @@ const ORIGINATED_TTL_MS = 30000;
 
 let _channelWS = null;
 let _channelRetryTimer = null;
-const CHANNEL_RETRY_MS = 3000;
+const CHANNEL_RETRY_MS = 1000; // reconnect fast so daemon's 8s check sees us already connected
 const CHANNEL_MAX_RETRY_MS = 30000;
 let _channelRetryDelay = CHANNEL_RETRY_MS;
 let _channelHeartbeatTimer = null;
@@ -4062,15 +4062,45 @@ process.on('unhandledRejection', (reason) => {
   process.stderr.write(`[fleet] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
 });
 
-// Orphan prevention: exit if parent process dies or stdin closes
-process.stdin.on('end', () => { process.exit(0); });
-process.stdin.on('close', () => { process.exit(0); });
+// Also catch synchronous throws that escape all try-catch blocks.
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: uncaught exception: ${err?.message || err}\n${err?.stack || ''}\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+
+// Orphan prevention: exit if parent process dies or stdin closes.
+// Log before exiting so we can diagnose unexpected stdin closes (e.g. during server restart).
+process.stdin.on('end', () => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: stdin end — parent closed pipe, exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
+process.stdin.on('close', () => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: stdin close — exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
 const _parentPid = process.ppid;
 setInterval(() => {
   try {
     process.kill(_parentPid, 0); // signal 0 = check existence
   } catch {
-    // Parent is dead — we're an orphan, exit
+    const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: parent ${_parentPid} dead, exiting as orphan\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
     process.exit(0);
   }
 }, 30000); // check every 30s
+
+// Also log signal-based exits (SIGTERM, SIGHUP) for diagnostics.
+for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+  process.on(sig, () => {
+    const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: received ${sig}, exiting\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+    process.exit(0);
+  });
+}
