@@ -1416,6 +1416,28 @@ function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'qualification-warning') {
+    if (!fleetStore) return
+    const { agent_id, file, required, message: warnMsg } = msg
+    if (!agent_id || !warnMsg) return
+    try {
+      const event = fleetStore.share({
+        type: 'chat',
+        from: agent_id,
+        to: SERVER_OWNER_ID,
+        text: warnMsg,
+        metadata: { type: 'qualification_warning', file, required },
+      })
+      if (event) {
+        fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
+        broadcastEvent('fleet-event', { ...event, type: 'chat' })
+      }
+    } catch (e) {
+      console.error(`[fleet-daemon] qualification-warning write: ${e.message}`)
+    }
+    return
+  }
+
   if (type === 'terminal-chat') {
     if (!fleetStore || !_terminalDedupStmt) return
     const { agent_id, from, text: rawText, ts, session_id } = msg
