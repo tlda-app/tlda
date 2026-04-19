@@ -11,7 +11,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
@@ -104,40 +103,6 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   }
 }
 
-/** Ghost rect shown over the empty slot when dragging a pill over bare canvas */
-function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
-  const [ghost, setGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-
-  useEffect(() => {
-    const handler = () => {
-      const slot = dropGhostState.slot
-      if (!slot) { setGhost(null); return }
-      // Prefer screenRect set by the HUD editor — it used the HUD camera to
-      // convert page→screen, so the ghost lands in the HUD's viewport rather
-      // than wherever the main canvas would render the same page coordinates.
-      if (dropGhostState.screenRect) {
-        setGhost(dropGhostState.screenRect)
-        return
-      }
-      // Fallback: convert via main editor (correct when drag originates on
-      // the main canvas, not inside the HUD panel).
-      const tl = mainEditor.pageToScreen({ x: slot.x, y: slot.y })
-      const br = mainEditor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
-      setGhost({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
-    }
-    dropGhostBus.addEventListener('change', handler)
-    return () => { dropGhostBus.removeEventListener('change', handler); setGhost(null) }
-  }, [mainEditor])
-
-  if (!ghost) return null
-  return (
-    <div
-      className="fleet-drop-ghost"
-      style={{ left: ghost.x, top: ghost.y, width: ghost.w, height: ghost.h }}
-    />
-  )
-}
-
 export function FleetHUD({
   mainEditor,
   shapeUtils,
@@ -152,6 +117,11 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+  // Track whether any fleet shapes are selected in the HUD editor (layout mode).
+  // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
+  // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
+  const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
   // cameraYRef (Y): set once, never updated by shape moves.
@@ -319,6 +289,57 @@ export function FleetHUD({
     }
   }, [expanded])
 
+  // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
+  // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box
+  // select works — but ONLY when the user has already clicked ⊞ to enter layout
+  // mode. Normal browsing (nothing selected) keeps the canvas pointer-events: none
+  // so empty-area clicks pass through to the main canvas as always.
+  useEffect(() => {
+    if (!expanded) return
+    const el = hudRef.current
+    if (!el) return
+
+    const checkSelection = () => {
+      const editor = overlayEditorRef.current
+      if (!editor) return
+      // During drag-box select, TLDraw's brush sweeps empty areas and temporarily
+      // clears selection. Don't remove hud-layout-active mid-brush or
+      // pointer-events goes none and pointerup never reaches TLDraw (brush stuck).
+      if (editor.isIn('select.brushing')) return
+      const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
+        const s = editor.getShape(id as any)
+        return s && FLEET_TYPES_HUD.has(s.type as string)
+      })
+      el.classList.toggle('hud-layout-active', hasFleetSelected)
+    }
+
+    // Poll via RAF until overlayEditorRef is set, then switch to store listener
+    let rafId: number
+    let unsub: (() => void) | null = null
+    const trySubscribe = () => {
+      if (overlayEditorRef.current) {
+        checkSelection()
+        unsub = overlayEditorRef.current.store.listen(({ changes }) => {
+          for (const [, to] of Object.values(changes.updated)) {
+            if ((to as any).typeName === 'instance_page_state') {
+              checkSelection()
+              return
+            }
+          }
+        }, { scope: 'session', source: 'all' })
+      } else {
+        rafId = requestAnimationFrame(trySubscribe)
+      }
+    }
+    trySubscribe()
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      unsub?.()
+      el.classList.remove('hud-layout-active')
+    }
+  }, [expanded])
+
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
@@ -339,13 +360,10 @@ export function FleetHUD({
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
-  const ghost = <FleetDropGhost mainEditor={mainEditor} />
-
   // Collapsed: just the pill
   if (!expanded) {
     return (
       <>
-        {ghost}
         <div className="fleet-pill-container">
           <span
             className="fleet-pill"
@@ -411,7 +429,6 @@ export function FleetHUD({
 
   return (
     <>
-      {ghost}
       <div
         className="fleet-hud-wrap"
         ref={hudRef}
