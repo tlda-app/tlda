@@ -434,6 +434,9 @@ export function clearVoiceTarget(textarea) {
 // onStop()       called when recording stops, so caller can reset cursor anchor (optional).
 // label          shown in HUD, e.g. 'note'.
 export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
+  // If same accumulator is already registered, no-op — avoids interrupting an
+  // active recording session when focus re-fires (e.g. clicking within CodeMirror).
+  if (_accumulator && _accumulator.onUpdate === onUpdate) return
   const wasRecording = _recording
   // Sync teardown — no getUserMedia cycle needed (accumulator switch is cheap)
   if (_recognition) {
