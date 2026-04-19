@@ -70,7 +70,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -345,7 +345,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/chat ---
   router.post('/api/chat', (req, res) => {
-    const { message, to, from, cc, attachments, inline_attachments, context } = req.body || {}
+    const { message, to, from, cc, attachments, inline_attachments, context, suppress_echo } = req.body || {}
     if (!message && (!attachments || !attachments.length)) { res.status(400).send('missing message'); return }
     if (!to || to === 'undefined' || to === 'null') { res.status(400).send('missing "to"'); return }
     const resolve = (id) => {
@@ -401,6 +401,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     const allRecipients = [...new Set([recipient, ...(ccResolved || []), ...wiretapRecipients])]
     if (fleetStore) {
+      // Suppress SSE echo to the sending browser connection (optimistic send dedup)
+      if (suppress_echo && suppressEchoFor) suppressEchoFor(suppress_echo)
       const event = fleetStore.share({
         type: 'chat',
         from: sender,
@@ -414,6 +416,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           context: context || undefined,
         },
       })
+      // _suppressEchoWs is cleared by broadcastFleet having run synchronously above
       // No manual broadcast — share() already fires the listener that
       // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
       // The previous manual broadcast on top of that produced duplicate

@@ -31,6 +31,7 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
+let _connId = null             // per-WS-connection ID assigned by server, sent in POST for echo suppression
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -149,6 +150,8 @@ export async function sendMessage(to, text, opts = {}) {
   const body = { message: text, to }
   // Include sender identity so the server attributes the message correctly
   if (_humanId) body.from = _humanId
+  // Tell server to suppress SSE echo to this connection (optimistic send dedup)
+  if (_connId) body.suppress_echo = _connId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
@@ -357,6 +360,7 @@ export function connect() {
 
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
+        if (msg.connId) _connId = msg.connId  // store per-connection ID for echo suppression
         updateAgents(msg.agents || [])
         updateTasks(msg.tasks || [])
         // Sync thinking/compacting state from server (authoritative)
@@ -390,22 +394,6 @@ export function connect() {
         if (data.type === 'preamble' && data.macros) {
           setActiveMacros(data.macros)
           return
-        }
-        // Reconcile SSE echo with a pending optimistic event.
-        // The SSE arrives before sendMessage's r.json() resolves, so we can't
-        // rely on _reconciledIds. Instead match by text + sender.
-        if (data.type === 'chat' && data.id && (data.from_id || data.from) === _humanId) {
-          const optimistic = _events.find(e =>
-            e._tempId && e.text === data.text && e.from === _humanId &&
-            Math.abs(new Date(e.timestamp).getTime() - new Date(data.timestamp || Date.now()).getTime()) < 10000
-          )
-          if (optimistic) {
-            optimistic._dbId = data.id
-            delete optimistic._tempId
-            if (data.id > _lastEventId) _lastEventId = data.id
-            notify('messages', null)
-            return
-          }
         }
         const event = convertChatEvent(data)
         _events.push(event)

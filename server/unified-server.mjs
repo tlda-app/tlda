@@ -246,9 +246,23 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
+// Set before a share() call to suppress the SSE echo on the originating WS connection.
+// Cleared immediately after share() returns (listeners fire synchronously inside share()).
+let _suppressEchoWs = null
+
+function suppressEchoFor(connId) {
+  if (!connId) return
+  for (const ws of wsFleetClients) {
+    if (ws._connId === connId) { _suppressEchoWs = ws; return }
+  }
+}
+
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
+  const suppress = _suppressEchoWs
+  _suppressEchoWs = null  // reset after one use (share() fires listeners synchronously)
   for (const ws of wsFleetClients) {
+    if (ws === suppress) continue  // don't echo back to the sender
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
@@ -674,7 +688,7 @@ app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState,
+  fleetStore, broadcastEvent, broadcastState, suppressEchoFor,
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -882,13 +896,15 @@ server.on('upgrade', (req, socket, head) => {
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
+      ws._connId = Math.random().toString(36).slice(2)  // unique per-connection ID
       wsFleetClients.add(ws)
 
-      // Send initial state
+      // Send initial state (includes connId so the client can suppress its own echoes)
       if (fleetStore) {
         const initState = {
           agents: fleetStore.getAllAgents().filter(a => !a.dead),
           tasks: fleetStore.getActiveTasks(),
+          connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
       }
@@ -1025,6 +1041,7 @@ function handleFleetWsMessage(ws, msg) {
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(context ? { context } : {}),
     }
+    _suppressEchoWs = ws  // suppress echo back to the originating WS connection (reset by broadcastFleet)
     const event = fleetStore.share?.({
       type: 'chat',
       from,
