@@ -118,13 +118,26 @@ export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
 export function needsIdentity() { return !_humanId && _identifyPending }
 
-/** Claim a human identity. Called by the name picker UI. */
-export async function identify(name) {
-  const res = await wsSend({ type: 'identify', name })
+/** Log in as an existing agent. Used by returning users and ?name= auto-login. */
+export async function login(name) {
+  const res = await wsSend({ type: 'login', name })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
   localStorage.setItem('tlda-identity', res.name)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
+
+/** Register a new human agent. Used by the IdentityPicker for new users. */
+export async function registerHuman(name) {
+  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const humanId = `fleet:${sanitized}`
+  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  _humanId = res.agent?.id || humanId
+  _humanName = sanitized
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', sanitized)
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   return res
 }
@@ -285,15 +298,20 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Send identity if we have one stored
+    // Log in if we have a stored identity
     const storedName = localStorage.getItem('tlda-identity')
     if (storedName) {
-      wsSend({ type: 'identify', name: storedName }).then(res => {
+      wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
-      }).catch(() => { _identifyPending = false })
+      }).catch(() => {
+        // Login failed — agent may have been removed. Show picker.
+        _identifyPending = true
+        localStorage.removeItem('tlda-identity')
+        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      })
     } else {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
@@ -431,9 +449,9 @@ export function connect() {
 
 // --- Initial load ---
 export async function init() {
-  // Human identity is established via WS 'identify' message on connect.
-  // If localStorage has a stored name, it's sent automatically.
-  // If not, the UI shows a name picker (subscribe to 'identity' channel).
+  // Human identity is established via WS 'login' on connect.
+  // If localStorage has a stored name, login is sent automatically.
+  // If not, the UI shows a picker with login/register options.
 
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([

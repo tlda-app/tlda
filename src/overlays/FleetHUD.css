@@ -77,6 +77,14 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg * {
   pointer-events: auto !important;
 }
+/* Layout mode: when a fleet shape is selected via the ⊞ button, the wrap gets
+   .hud-layout-active. This enables pointer-events on the TLDraw canvas so the
+   user can drag-box select multiple fleet shapes. Without a selection, the canvas
+   stays pointer-events: none and empty-area clicks pass through to the main canvas. */
+.fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
+  pointer-events: auto !important;
+}
+
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
    fleet shapes. iframes capture pointer events regardless of any pe:none on
@@ -131,30 +139,6 @@ body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   pointer-events: all;
 }
 
-/* FleetIconPill: hide fleet shapes on main canvas when toggled off.
-   The HUD overlay (fleet-hud-wrap) restores them so the HUD still works. */
-body.fleet-shapes-hidden .tl-canvas .fleet-shape {
-  visibility: hidden;
-  pointer-events: none;
-}
-body.fleet-shapes-hidden .fleet-hud-wrap .tl-canvas .fleet-shape {
-  visibility: visible;
-  pointer-events: all;
-}
-
-/* Ghost rect shown when dragging a pill over an empty grid slot */
-.fleet-drop-ghost {
-  position: fixed;
-  pointer-events: none;
-  z-index: 298;
-  border: 2px dashed rgba(120, 120, 200, 0.5);
-  border-radius: 6px;
-  background: rgba(100, 100, 200, 0.06);
-}
-html[data-theme="dark"] .fleet-drop-ghost {
-  border-color: rgba(160, 140, 255, 0.45);
-  background: rgba(120, 100, 220, 0.08);
-}
 
 /* Dark mode */
 html[data-theme="dark"] .fleet-pill {

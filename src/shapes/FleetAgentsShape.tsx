@@ -17,7 +17,7 @@ import {
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
-import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
+import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -218,20 +218,6 @@ function usePillDrag() {
               y: pagePos.y - ph / 2,
             })
           }, { history: 'ignore' })
-          const mainEditor = (window as any).__tldraw_editor__
-          const targetEditor = mainEditor || editor
-          const slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
-          dropGhostState.slot = slot
-          // Pre-compute screen coords using the HUD editor's camera so
-          // FleetDropGhost doesn't use the main editor's camera (wrong viewport).
-          if (slot) {
-            const tl = editor.pageToScreen({ x: slot.x, y: slot.y })
-            const br = editor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
-            dropGhostState.screenRect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
-          } else {
-            dropGhostState.screenRect = null
-          }
-          dropGhostBus.dispatchEvent(new CustomEvent('change'))
         }
       },
       // onUp
@@ -239,10 +225,6 @@ function usePillDrag() {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
-
-        dropGhostState.slot = null
-        dropGhostState.screenRect = null
-        dropGhostBus.dispatchEvent(new CustomEvent('change'))
 
         const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
