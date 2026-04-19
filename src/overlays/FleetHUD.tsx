@@ -302,12 +302,13 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // Never remove hud-layout-active while the pointer is down or a brush
-      // is active. Removing it kills pointer-events on the overlay canvas,
-      // which means TLDraw never receives pointerup — the state machine
-      // gets permanently stuck thinking the button is pressed.
-      if (editor.getInstanceState().brush != null) return
-      if (editor.inputs.isPointing) return
+      // Only allow removing hud-layout-active when the state machine is in
+      // idle. Any other state (brushing, translating, pointing_canvas, etc.)
+      // means an interaction is in progress. Removing pointer-events during
+      // an active interaction kills the pointerup delivery and permanently
+      // sticks the state machine.
+      const currentState = editor.root.getCurrent()?.getCurrent()?.id
+      if (currentState && currentState !== 'idle') return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
