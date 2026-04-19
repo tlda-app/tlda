@@ -3696,7 +3696,7 @@ const ORIGINATED_TTL_MS = 30000;
 
 let _channelWS = null;
 let _channelRetryTimer = null;
-const CHANNEL_RETRY_MS = 3000;
+const CHANNEL_RETRY_MS = 1000; // reconnect fast so daemon's 8s check sees us already connected
 const CHANNEL_MAX_RETRY_MS = 30000;
 let _channelRetryDelay = CHANNEL_RETRY_MS;
 let _channelHeartbeatTimer = null;
@@ -4062,9 +4062,21 @@ process.on('unhandledRejection', (reason) => {
   process.stderr.write(`[fleet] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
 });
 
-// Orphan prevention: exit if parent process dies or stdin closes
-process.stdin.on('end', () => { process.exit(0); });
-process.stdin.on('close', () => { process.exit(0); });
+// Also catch synchronous throws that escape all try-catch blocks.
+process.on('uncaughtException', (err) => {
+  process.stderr.write(`[fleet] uncaught exception (suppressed): ${err?.message || err}\n${err?.stack || ''}\n`);
+});
+
+// Orphan prevention: exit if parent process dies or stdin closes.
+// Log before exiting so we can diagnose unexpected stdin closes (e.g. during server restart).
+process.stdin.on('end', () => {
+  process.stderr.write('[fleet] stdin end — parent closed pipe, exiting\n');
+  process.exit(0);
+});
+process.stdin.on('close', () => {
+  process.stderr.write('[fleet] stdin close — exiting\n');
+  process.exit(0);
+});
 const _parentPid = process.ppid;
 setInterval(() => {
   try {

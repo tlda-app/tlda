@@ -1141,17 +1141,31 @@ function handleServerMessage(msg) {
     syncSourceWatchers(projects)
 
     // Detect server restarts: compare server_boot_id to the last persisted value.
-    // If it changed, the server restarted and all agent MCPs are disconnected.
-    // (Daemon crash without server restart leaves the same boot_id — no restart needed.)
+    // If it changed, the server restarted. The fleet MCP has a built-in WS reconnect
+    // (1s initial delay, exponential backoff). We wait 8s before checking — if the MCP
+    // reconnected on its own (last_seen > serverBootTime), skip the forced restart.
+    // Only restart MCPs that failed to reconnect within that window.
     const newBootId = msg.server_boot_id ?? null
     const lastBootId = readLastServerBootId()
     if (newBootId && lastBootId && newBootId !== lastBootId) {
       const toRestart = agents.filter(a => a.tmux_session && !a.dead)
+      const serverBootTime = parseInt(newBootId)
       if (toRestart.length > 0) {
-        console.log(`[daemon] server restarted (boot_id ${lastBootId} → ${newBootId}): scheduling MCP restart for ${toRestart.length} agent(s)`)
+        console.log(`[daemon] server restarted (boot_id ${lastBootId} → ${newBootId}): will check ${toRestart.length} agent(s) for self-reconnect in 8s`)
         toRestart.forEach((agent, i) => {
           setTimeout(async () => {
-            console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id}`)
+            // Check if the MCP reconnected on its own since the server restart.
+            // Re-registration via WS sets last_seen — if it's after serverBootTime, skip restart.
+            try {
+              const allAgents = await fetch(`${SERVER}/api/store/agents`).then(r => r.json()).catch(() => [])
+              const current = Array.isArray(allAgents) ? allAgents.find(a => a.id === agent.id) : null
+              const lastSeen = current?.last_seen ? new Date(current.last_seen).getTime() : 0
+              if (lastSeen > serverBootTime) {
+                console.log(`[daemon] ${agent.friendly_name || agent.id} already reconnected (last_seen=${current.last_seen}), skipping MCP restart`)
+                return
+              }
+            } catch {}
+            console.log(`[daemon] auto-restarting MCP for ${agent.friendly_name || agent.id} (did not self-reconnect within 8s)`)
             try {
               await rpcRestartMcp({ tmux_session: agent.tmux_session, skipPreflight: true })
               await fetch(`${SERVER}/api/chat`, {
@@ -1162,7 +1176,7 @@ function handleServerMessage(msg) {
             } catch (e) {
               console.error(`[daemon] auto-restart failed for ${agent.friendly_name || agent.id}: ${e.message}`)
             }
-          }, i * 500)
+          }, 8000 + i * 500)
         })
       }
     }
