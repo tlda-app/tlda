@@ -299,21 +299,28 @@ export function FleetHUD({
     const el = hudRef.current
     if (!el) return
 
+    // While any pointer button is held, freeze hud-layout-active changes.
+    // During a brush-select, the brush sweeps through empty areas and
+    // temporarily clears selection — we must not remove hud-layout-active
+    // mid-drag or pointer-events goes to none and pointerup never reaches
+    // TLDraw (brush rect gets stuck). Re-evaluate when pointer is released.
+    let pointerIsDown = false
+
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // Don't touch hud-layout-active while brushing or dragging — if pointer-events
-      // goes to none mid-drag, pointerup never reaches TLDraw and the brush rect gets
-      // stuck. Only update when back in idle.
-      const path = editor.getPath()
-      const isIdle = path.endsWith('.idle')
-      if (!isIdle) return
+      if (pointerIsDown) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
       el.classList.toggle('hud-layout-active', hasFleetSelected)
     }
+
+    const onPointerDown = () => { pointerIsDown = true }
+    const onPointerUp = () => { pointerIsDown = false; checkSelection() }
+    document.addEventListener('pointerdown', onPointerDown, { capture: true })
+    document.addEventListener('pointerup', onPointerUp, { capture: true })
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
@@ -323,11 +330,7 @@ export function FleetHUD({
         checkSelection()
         unsub = overlayEditorRef.current.store.listen(({ changes }) => {
           for (const [, to] of Object.values(changes.updated)) {
-            // Listen to both selection changes (instance_page_state) and path
-            // changes (instance) so we re-evaluate when brushing ends and the
-            // editor returns to idle.
-            if ((to as any).typeName === 'instance_page_state' ||
-                (to as any).typeName === 'instance') {
+            if ((to as any).typeName === 'instance_page_state') {
               checkSelection()
               return
             }
@@ -342,6 +345,8 @@ export function FleetHUD({
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      document.removeEventListener('pointerup', onPointerUp, { capture: true })
       el.classList.remove('hud-layout-active')
     }
   }, [expanded])
