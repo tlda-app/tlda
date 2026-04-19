@@ -302,12 +302,10 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // TLDraw's brush rect is active during drag-box select. The brush sweeps
-      // empty areas and temporarily clears selection — don't remove
-      // hud-layout-active mid-brush or pointer-events goes none and pointerup
-      // never reaches TLDraw (brush rect gets stuck).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((editor.getCurrentPageState() as any).brush != null) return
+      // During drag-box select, TLDraw's brush sweeps empty areas and temporarily
+      // clears selection. Don't remove hud-layout-active mid-brush or
+      // pointer-events goes none and pointerup never reaches TLDraw (brush stuck).
+      if (editor.isIn('select.brushing')) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
