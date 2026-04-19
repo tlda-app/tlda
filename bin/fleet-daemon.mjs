@@ -130,6 +130,87 @@ function scheduleCursorSave() {
   _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
 }
 
+// ---------- Qualification checking ----------
+// Detects agents editing files without having read required reference docs.
+// Config: ~/.claude/qualifications.json — array of { edit: glob, requires: [paths] }
+
+const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
+let _qualRules = []
+// Per-agent read tracking: agentId → Set of resolved file paths they've Read
+const _agentReads = new Map()
+// Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
+const _agentWarned = new Map()
+
+function loadQualifications() {
+  try {
+    if (!fs.existsSync(QUALIFICATIONS_FILE)) return
+    const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
+    _qualRules = (data.rules || []).map(r => ({
+      editPattern: r.edit,
+      editRe: globToRegex(r.edit),
+      requires: r.requires || [],
+    }))
+    console.log(`[daemon] loaded ${_qualRules.length} qualification rules`)
+  } catch (e) {
+    console.error(`[daemon] failed to load qualifications: ${e.message}`)
+  }
+}
+
+function globToRegex(glob) {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
+    .replace(/\*/g, '[^/]*')
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/\?/g, '[^/]')
+  // Handle {a,b} alternation
+  const withAlts = escaped.replace(/\\\{([^}]+)\\\}/g, (_, inner) =>
+    '(' + inner.split(',').join('|') + ')')
+  return new RegExp('^' + withAlts + '$')
+}
+
+function checkQualification(agentId, toolName, filePath) {
+  if (!filePath || _qualRules.length === 0) return
+  if (toolName !== 'Edit' && toolName !== 'Write') return
+
+  // Normalize path for matching — strip leading home dir for glob matching
+  const home = os.homedir()
+  const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
+  // Also try matching against the full path
+  const reads = _agentReads.get(agentId) || new Set()
+  const warned = _agentWarned.get(agentId) || new Set()
+
+  for (const rule of _qualRules) {
+    if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
+    for (const req of rule.requires) {
+      const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
+      if (reads.has(resolvedReq)) continue
+      const warnKey = `${filePath}:${resolvedReq}`
+      if (warned.has(warnKey)) continue
+      warned.add(warnKey)
+      if (!_agentWarned.has(agentId)) _agentWarned.set(agentId, warned)
+      // Fire warning
+      const reqShort = req.startsWith('~/') ? req : path.basename(req)
+      const fileShort = path.basename(filePath)
+      sendMsg({
+        type: 'qualification-warning',
+        agent_id: agentId,
+        file: filePath,
+        required: resolvedReq,
+        message: `⚠ ${agentId} edited ${fileShort} without reading ${reqShort}`,
+      })
+    }
+  }
+}
+
+function trackRead(agentId, filePath) {
+  if (!filePath) return
+  if (!_agentReads.has(agentId)) _agentReads.set(agentId, new Set())
+  _agentReads.get(agentId).add(filePath)
+}
+
+loadQualifications()
+
 // ---------- JSONL parsing (mirrors fleet/dashboard/search-index.mjs) ----------
 
 function parseSessionLine(jsonStr) {
@@ -594,6 +675,20 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
   if (parsedEvents.length > 0) {
     const activity = extractActivityEvents(parsedEvents)
     if (activity.length > 0) bufferActivity(agentId, activity)
+
+    // Qualification checking: track reads, check edits/writes
+    for (const ev of parsedEvents) {
+      if (!ev.blocks) continue
+      for (const block of ev.blocks) {
+        if (block.type !== 'tool_use') continue
+        const input = block.input || {}
+        const filePath = input.file_path || input.path || ''
+        if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+        if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
+          checkQualification(agentId, block.name, filePath)
+        }
+      }
+    }
 
     // If Claude just emitted an assistant text block, schedule a terminal
     // capture to check for a plan-mode approval prompt.

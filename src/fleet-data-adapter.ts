@@ -16,7 +16,8 @@ import {
   getHumanId,
   getHumanName,
   needsIdentity as _needsIdentity,
-  identify as _identify,
+  login as _login,
+  registerHuman as _registerHuman,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
@@ -278,6 +279,11 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
         const rawUnsub = subscribe('messages', filter, (event: any) => {
           if (!_tabVisible) return  // skip render; refreshEvents will run on tab restore
           if (!event) {
+            // Full refresh from _events — clear pending batch since refreshEvents
+            // already includes everything. Without this, flushBatch appends events
+            // that refreshEvents already loaded, causing duplicates.
+            pendingBatch.length = 0
+            if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
             refreshEvents()
           } else {
             pendingBatch.push(event)
@@ -612,7 +618,7 @@ export function useFleetConnection(): boolean {
 
 // --- Identity hook ---
 
-export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, identify: (name: string) => Promise<any> } {
+export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string) => Promise<any> } {
   const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
 
   useEffect(() => {
@@ -633,7 +639,7 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
     }
   }, [])
 
-  return { ...identity, identify: _identify }
+  return { ...identity, login: _login, register: _registerHuman }
 }
 
 // --- Write API (re-exported) ---

@@ -325,16 +325,28 @@ export function FleetHUD({
     let rafId: number
     let unsub: (() => void) | null = null
     const onPointerUp = () => checkSelection()
-    // Safety valve: if the HUD editor is stuck in brushing/pointing_canvas
-    // when a pointerup arrives ANYWHERE on the window, cancel the state.
-    // We should never be brushing with pointer up.
-    const onWindowPointerUp = () => {
-      const ed = overlayEditorRef.current
-      if (!ed) return
-      const childState = ed.root.getCurrent()?.getCurrent()
-      if (childState?.id === 'brushing' || childState?.id === 'pointing_canvas') {
-        childState.cancel()
-      }
+    // HACK: Safety valve — if pointer-events:none was restored mid-drag
+    // (e.g. class removed by a React re-render), TLDraw never sees pointerup
+    // and stays stuck in brushing/pointing_canvas with isPointing=true.
+    // On any window pointerup, if the overlay editor is still "pointing",
+    // force-dispatch pointer_up through TLDraw so it cleans up its state.
+    const onWindowPointerUp = (e: PointerEvent) => {
+      const editor = overlayEditorRef.current
+      if (!editor) return
+      if (!editor.inputs.isPointing) return
+      editor.dispatch({
+        type: 'pointer',
+        name: 'pointer_up',
+        target: 'canvas',
+        pointerId: e.pointerId,
+        point: { x: e.clientX, y: e.clientY, z: 0.5 },
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        button: e.button,
+        buttons: e.buttons,
+      })
     }
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
@@ -386,28 +398,28 @@ export function FleetHUD({
       cameraYRef.current = null
       setFleetBounds(getFleetBounds(mainEditor))
     }
+    // Toggle: FleetIconPill click dispatches fleet-hud-toggle
+    const onToggle = () => {
+      setExpanded(prev => {
+        const next = !prev
+        localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
+        return next
+      })
+    }
     window.addEventListener('fleet-hud-reset', onReset)
-    return () => window.removeEventListener('fleet-hud-reset', onReset)
+    window.addEventListener('fleet-hud-toggle', onToggle)
+    return () => {
+      window.removeEventListener('fleet-hud-reset', onReset)
+      window.removeEventListener('fleet-hud-toggle', onToggle)
+    }
   }, [mainEditor])
 
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
-  // Collapsed: just the pill
+  // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
   if (!expanded) {
-    return (
-      <>
-        <div className="fleet-pill-container">
-          <span
-            className="fleet-pill"
-            onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
-            onPointerDown={e => e.stopPropagation()}
-          >
-            {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
-          </span>
-        </div>
-      </>
-    )
+    return null
   }
 
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically

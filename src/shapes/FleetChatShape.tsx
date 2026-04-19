@@ -403,9 +403,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
     if (olderEvents.length === 0) return liveEvents
-    // Deduplicate by _dbId or timestamp+from
-    const seen = new Set(liveEvents.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
-    const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
+    // Deduplicate by _dbId AND timestamp+from (covers pre-reconciliation optimistic events)
+    const seen = new Set<string>()
+    for (const e of liveEvents) {
+      if (e._dbId) seen.add(String(e._dbId))
+      seen.add(`${e.timestamp}:${e.from}`)
+    }
+    const unique = olderEvents.filter((e: any) => {
+      if (e._dbId && seen.has(String(e._dbId))) return false
+      if (seen.has(`${e.timestamp}:${e.from}`)) return false
+      return true
+    })
     return [...unique, ...liveEvents]
   }, [liveEvents, olderEvents])
 
@@ -547,7 +555,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         const html = renderChatLine(m, ctx)
         if (html) {
-          items.push({ key: m._dbId || `${m.timestamp}:${m.from}`, html })
+          items.push({ key: `${m.timestamp}:${m.from}`, html })
         }
       }
     }
@@ -2409,10 +2417,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
-                        sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
+                        sendTargets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
                       ).then((results: {ok: boolean, event_id: number}[]) => {
                         if (!results.every(r => r.ok)) throw new Error('send failed')
-                        reconcileOptimistic(tempId, results[0]?.event_id)
+                        // reconcileOptimistic already called synchronously in the WS reply handler
                       }).catch(() => {
                         if (attempt < 3) {
                           setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
@@ -2448,15 +2456,70 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
+                  // Same optimistic send path as Enter key — one send path for everything
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
+                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                  injectOptimisticEvent({
+                    _tempId: tempId,
+                    type: 'chat',
+                    event_type: 'chat',
+                    from: getHumanId(),
+                    to: targets[0],
+                    text,
+                    timestamp: new Date().toISOString(),
+                    read: true,
+                  })
+                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const sendWithRetry = (attempt: number) => {
+                    Promise.all(
+                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
+                    ).then((results: {ok: boolean, event_id: number}[]) => {
+                      if (!results.every(r => r.ok)) throw new Error('send failed')
+                      // reconcileOptimistic already called synchronously in the WS reply handler
+                    }).catch(() => {
+                      if (attempt < 3) {
+                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                      } else {
+                        updateOptimisticEvent(tempId, { _failed: true })
+                      }
+                    })
+                  }
+                  sendWithRetry(1)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
+                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                  injectOptimisticEvent({
+                    _tempId: tempId,
+                    type: 'chat',
+                    event_type: 'chat',
+                    from: getHumanId(),
+                    to: targets[0],
+                    text,
+                    timestamp: new Date().toISOString(),
+                    read: true,
+                  })
+                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const sendWithRetry = (attempt: number) => {
+                    Promise.all(
+                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
+                    ).then((results: {ok: boolean, event_id: number}[]) => {
+                      if (!results.every(r => r.ok)) throw new Error('send failed')
+                      // reconcileOptimistic already called synchronously in the WS reply handler
+                    }).catch(() => {
+                      if (attempt < 3) {
+                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                      } else {
+                        updateOptimisticEvent(tempId, { _failed: true })
+                      }
+                    })
+                  }
+                  sendWithRetry(1)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{

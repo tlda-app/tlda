@@ -103,7 +103,7 @@ const daemonConnections = new Map()         // machine_id -> ws
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
-// themselves via the WS 'identify' message and get their own human agent.
+// themselves via WS 'login' (returning) or 'register' (new) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
@@ -246,23 +246,13 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
-// Set before a share() call to suppress the SSE echo on the originating WS connection.
-// Cleared immediately after share() returns (listeners fire synchronously inside share()).
-let _suppressEchoWs = null
-
-function suppressEchoFor(connId) {
-  if (!connId) return
-  for (const ws of wsFleetClients) {
-    if (ws._connId === connId) { _suppressEchoWs = ws; return }
-  }
-}
+// No server-side echo suppression. Dedup is client-side: the WS reply
+// includes the event ID, which the client maps to its optimistic event
+// before the echo arrives (WS message ordering guarantees this).
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
-  const suppress = _suppressEchoWs
-  _suppressEchoWs = null  // reset after one use (share() fires listeners synchronously)
   for (const ws of wsFleetClients) {
-    if (ws === suppress) continue  // don't echo back to the sender
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
@@ -688,7 +678,7 @@ app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, suppressEchoFor,
+  fleetStore, broadcastEvent, broadcastState, suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -702,9 +692,16 @@ if (existsSync(katexDir)) {
 
 // ---------- Viewer SPA ----------
 // Serve built SPA from dist/ (Vite build output)
+// Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
-  app.use(express.static(distDir))
+  app.use(express.static(distDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.set('Cache-Control', 'no-cache')
+      }
+    }
+  }))
 }
 
 // SPA catch-all: serve index.html for client-side routing
@@ -716,6 +713,7 @@ app.get('/{*path}', (req, res) => {
 
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
+    res.set('Cache-Control', 'no-cache')
     return res.sendFile(indexPath)
   }
 
@@ -970,7 +968,7 @@ function handleFleetWsMessage(ws, msg) {
       registered_at: existing?.registered_at || now,
       last_seen: now,
       dead: false,
-      human: false,
+      human: !!msg.human,
       is_manager: !!manager,
       metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
       // machine_id: optional. The fleet MCP doesn't send it yet — once it
@@ -991,29 +989,24 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Browser identity: a browser client sends { type: "identify", name: "alice" }
-  // to claim a human identity. Creates/updates a human agent in the DB.
-  if (type === 'identify') {
+  // Login: browser sends { type: "login", name: "skip" } to log in as an
+  // existing agent. Never creates — just attaches this WS to the agent.
+  if (type === 'login') {
     const { name } = msg
     if (!name || typeof name !== 'string') { error('missing name'); return }
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
-    const humanId = `fleet:${sanitized}`
-    const now = new Date().toISOString()
-    const existing = fleetStore.getAgent?.(humanId)
-    fleetStore.upsertAgent({
-      id: humanId,
-      friendly_name: sanitized,
-      human: true,
-      dead: false,
-      labels: existing?.labels || [],
-      registered_at: existing?.registered_at || now,
-      last_seen: now,
-    })
-    // Track this WS as belonging to this human (for heartbeat on /api/state)
-    ws._tldaHumanId = humanId
+    // Find existing agent by friendly_name
+    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(sanitized)
+    if (nameRows.length === 0) {
+      error(`No agent named "${sanitized}". Register first.`)
+      return
+    }
+    const agent = fleetStore._hydrateAgent(nameRows[0])
+    fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
+    ws._tldaHumanId = agent.id
     broadcastState()
-    reply({ id: humanId, name: sanitized })
+    reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
     return
   }
 
@@ -1029,8 +1022,16 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to, from, metadata, inline_attachments, attachments, cc, context } = msg
-    if (!to || !text) { error('missing to or message'); return }
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
+    if (!rawTo || !text) { error('missing to or message'); return }
+    // Resolve names to IDs (same as HTTP POST handler)
+    const resolve = (id) => {
+      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
+      const a = fleetStore?.findAgent(id); return a ? a.id : null
+    }
+    const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
+    const to = resolve(rawTo)
+    if (!to) { error(`Recipient not found: "${rawTo}"`); return }
     // Fleet MCP sends inline_attachments / attachments / cc / context at the
     // top level of the msg. Fold them into the metadata JSON so the receiver
     // pipeline (fleet-data.mjs → chat-render.mjs / my_task) can find them.
@@ -1041,21 +1042,26 @@ function handleFleetWsMessage(ws, msg) {
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(context ? { context } : {}),
     }
-    _suppressEchoWs = ws  // suppress echo back to the originating WS connection (reset by broadcastFleet)
-    const event = fleetStore.share?.({
-      type: 'chat',
-      from,
-      to,
-      text,
+    // Write to DB WITHOUT broadcasting (insert + unread only).
+    // Reply with event_id FIRST so the client can reconcile the optimistic
+    // event before the echo arrives on the same socket.
+    const eventData = {
+      type: 'chat', from, to, text,
       metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-    })
-    if (!event) { error('store error'); return }
-    // No manual broadcast — share() already fires the listener that
-    // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
-    // A second manual broadcast here used to produce duplicate messages
-    // in receivers (one with the trimmed metadata shape, one with the full
-    // store record).
-    reply({ ok: true, event_id: event.id })
+    }
+    const ts = new Date().toISOString()
+    const meta = eventData.metadata ? JSON.stringify(eventData.metadata) : null
+    const result = fleetStore.db.prepare(
+      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('chat', ts, from, to, text, meta)
+    const eventId = Number(result.lastInsertRowid)
+    // Track unread
+    fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+    // Reply FIRST — client reconciles _tempId → _dbId synchronously
+    reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
+    // THEN broadcast to all clients
+    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: eventData.metadata }
+    broadcastEvent('fleet-event', inserted)
     return
   }
 
@@ -1417,6 +1423,28 @@ function handleDaemonWsMessage(ws, msg) {
       })
     } catch (e) {
       console.error(`[fleet-daemon] activity write: ${e.message}`)
+    }
+    return
+  }
+
+  if (type === 'qualification-warning') {
+    if (!fleetStore) return
+    const { agent_id, file, required, message: warnMsg } = msg
+    if (!agent_id || !warnMsg) return
+    try {
+      const event = fleetStore.share({
+        type: 'chat',
+        from: agent_id,
+        to: SERVER_OWNER_ID,
+        text: warnMsg,
+        metadata: { type: 'qualification_warning', file, required },
+      })
+      if (event) {
+        fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
+        broadcastEvent('fleet-event', { ...event, type: 'chat' })
+      }
+    } catch (e) {
+      console.error(`[fleet-daemon] qualification-warning write: ${e.message}`)
     }
     return
   }

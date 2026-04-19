@@ -14,7 +14,7 @@ import path from 'path'
 import os from 'os'
 
 // Server owner — the human running this server process. Browser users
-// identify themselves via the WS 'identify' message and get their own agent.
+// log in via the WS 'login' message or register via 'register'.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
@@ -104,14 +104,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
     if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agents = fleetStore ? fleetStore.getAliveAgents() : []
+    const agents = fleetStore ? fleetStore.getAllAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
 
   // --- GET /api/human ---
   // Returns the server owner's identity. Used by MCP agents and CLI tools
-  // to know who the "local human" is. Browser users identify via WS 'identify'.
+  // to know who the "local human" is. Browser users log in via WS 'login'.
   router.get('/api/human', (req, res) => {
     res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
   })

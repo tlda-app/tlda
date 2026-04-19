@@ -1802,17 +1802,8 @@ ${tokenEnvLines.join('\n')}
 
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
-    } else {
-      // Fallback: kill by port (catches zombies that don't respond to /health)
-      try {
-        const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
-        if (pids) {
-          for (const pid of pids.split('\n')) {
-            try { process.kill(parseInt(pid), 'SIGTERM') } catch {}
-          }
-        }
-      } catch {}
     }
+    // No fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
     for (let i = 0; i < 20; i++) {

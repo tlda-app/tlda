@@ -31,7 +31,6 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
-let _connId = null             // per-WS-connection ID assigned by server, sent in POST for echo suppression
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -118,13 +117,26 @@ export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
 export function needsIdentity() { return !_humanId && _identifyPending }
 
-/** Claim a human identity. Called by the name picker UI. */
-export async function identify(name) {
-  const res = await wsSend({ type: 'identify', name })
+/** Log in as an existing agent. Used by returning users and ?name= auto-login. */
+export async function login(name) {
+  const res = await wsSend({ type: 'login', name })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
   localStorage.setItem('tlda-identity', res.name)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
+
+/** Register a new human agent. Used by the IdentityPicker for new users. */
+export async function registerHuman(name) {
+  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const humanId = `fleet:${sanitized}`
+  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  _humanId = res.agent?.id || humanId
+  _humanName = sanitized
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', sanitized)
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   return res
 }
@@ -147,27 +159,20 @@ export function getAgent(id) {
 // --- Write API (all go through server) ---
 
 export async function sendMessage(to, text, opts = {}) {
-  const body = { message: text, to }
-  // Include sender identity so the server attributes the message correctly
+  const body = { type: 'chat', message: text, to }
   if (_humanId) body.from = _humanId
-  // Tell server to suppress SSE echo to this connection (optimistic send dedup)
-  if (_connId) body.suppress_echo = _connId
+  if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
   try {
-    const r = await fetch(`${FLEET}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const d = await r.json().catch(() => ({}))
-    console.log(`[chat-send] to=${to} id=${d.event_id} ok=${r.ok} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: r.ok, event_id: d.event_id, error: d.error }
+    const d = await wsSend(body)
+    console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+    return { ok: true, event_id: d.event_id }
   } catch (e) {
-    console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
+    console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
   }
 }
@@ -285,15 +290,20 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Send identity if we have one stored
+    // Log in if we have a stored identity
     const storedName = localStorage.getItem('tlda-identity')
     if (storedName) {
-      wsSend({ type: 'identify', name: storedName }).then(res => {
+      wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
-      }).catch(() => { _identifyPending = false })
+      }).catch(() => {
+        // Login failed — agent may have been removed. Show picker.
+        _identifyPending = true
+        localStorage.removeItem('tlda-identity')
+        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      })
     } else {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
@@ -352,6 +362,12 @@ export function connect() {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
           _wsCallbacks.delete(msg.id)
+          // Reconcile optimistic events SYNCHRONOUSLY before resolving —
+          // the next WS message may be the echo, and _dbId must be set
+          // before the echo's dedup check runs.
+          if (msg.result && msg.result._tempId && msg.result.event_id) {
+            reconcileOptimistic(msg.result._tempId, msg.result.event_id)
+          }
           if (msg.error) cb.reject(new Error(msg.error))
           else cb.resolve(msg.result)
         }
@@ -360,7 +376,6 @@ export function connect() {
 
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
-        if (msg.connId) _connId = msg.connId  // store per-connection ID for echo suppression
         updateAgents(msg.agents || [])
         updateTasks(msg.tasks || [])
         // Sync thinking/compacting state from server (authoritative)
@@ -431,9 +446,9 @@ export function connect() {
 
 // --- Initial load ---
 export async function init() {
-  // Human identity is established via WS 'identify' message on connect.
-  // If localStorage has a stored name, it's sent automatically.
-  // If not, the UI shows a name picker (subscribe to 'identity' channel).
+  // Human identity is established via WS 'login' on connect.
+  // If localStorage has a stored name, login is sent automatically.
+  // If not, the UI shows a picker with login/register options.
 
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([
