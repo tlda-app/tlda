@@ -64,7 +64,6 @@ const VERSION = '0.1.0'
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
-const LAST_BOOT_FILE = path.join(CONFIG_DIR, 'daemon-last-server-boot.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
@@ -268,16 +267,6 @@ let ws = null
 let backoff = 1000
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-// Persist the last-seen server boot_id so we can detect server restarts
-// even when the daemon itself was also restarted (by the daemon-supervisor).
-function readLastServerBootId() {
-  try { return JSON.parse(fs.readFileSync(LAST_BOOT_FILE, 'utf8'))?.server_boot_id ?? null }
-  catch { return null }
-}
-function writeLastServerBootId(id) {
-  try { fs.writeFileSync(LAST_BOOT_FILE, JSON.stringify({ server_boot_id: id })) }
-  catch (e) { console.error(`[daemon] failed to write last boot id: ${e.message}`) }
-}
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
