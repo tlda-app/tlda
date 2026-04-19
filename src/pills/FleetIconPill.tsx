@@ -3,11 +3,15 @@
  *
  * Click  → toggle fleet shapes visible/hidden (body.fleet-shapes-hidden CSS class)
  * Drag   → horizontal preset fan; drag right to slide between 3-col / 2-col;
- *          release to apply. Items appear at fixed position near cursor — same
- *          pattern as HighlighterSlider (position computed by math, not elementFromPoint).
+ *          release to apply.
  *
- * Uses window-level pointermove/pointerup listeners to avoid pointer-capture
- * issues inside TLDraw's InFrontOfTheCanvas layer.
+ * Matches BuildWarningPill's interaction pattern exactly:
+ *   - onClick for click (with drag suppression via justDraggedRef)
+ *   - onPointerDown={e => e.stopPropagation()} to prevent TLDraw from intercepting
+ *   - Window-level pointermove/pointerup for drag tracking
+ *
+ * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
+ * matching the single-color approach of .build-warning-badge.
  */
 import { useState, useCallback, useRef } from 'react'
 import type { Editor } from 'tldraw'
@@ -44,24 +48,28 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const aliveCount = agents.filter((a: any) => !a.dead && !a.human).length
 
   // Refs for closure-stable drag state (used inside window listeners)
+  const justDraggedRef = useRef(false)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const isDragRef = useRef(false)
   const selectedIdxRef = useRef<number | null>(null)
   const agentsRef = useRef(agents)
   agentsRef.current = agents
 
-  /** Compute which preset index is active for a given cursor X. */
-  const getIdxFromX = useCallback((cursorX: number, startX: number): number => {
-    // Items are displayed starting at startX.
-    // Item i occupies [startX + i*(ITEM_W+ITEM_GAP), startX + i*(ITEM_W+ITEM_GAP) + ITEM_W]
-    const step = ITEM_W + ITEM_GAP
-    const rel = cursorX - startX
-    const idx = Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor(rel / step)))
-    return idx
+  /** Click handler — toggle visibility (suppressed after a drag). */
+  const handleClick = useCallback(() => {
+    if (justDraggedRef.current) {
+      justDraggedRef.current = false
+      return
+    }
+    const next = !isFleetHidden()
+    document.body.classList.toggle(FLEET_HIDDEN_CLASS, next)
+    setHidden(next)
   }, [])
 
+  /** Pointer down — stop propagation (prevents TLDraw interference) and set up drag listeners. */
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation()
+
     const start = { x: e.clientX, y: e.clientY }
     dragStartRef.current = start
     isDragRef.current = false
@@ -79,70 +87,69 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         setDragAnchor({ x: s.x, y: s.y })
       }
       if (isDragRef.current) {
-        const idx = Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((ev.clientX - s.x) / (ITEM_W + ITEM_GAP))))
-        // If cursor is left of start, keep idx 0
-        const safeIdx = ev.clientX < s.x ? 0 : idx
-        selectedIdxRef.current = safeIdx
-        setSelectedIdx(safeIdx)
+        const idx = ev.clientX < s.x
+          ? 0
+          : Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((ev.clientX - s.x) / (ITEM_W + ITEM_GAP))))
+        selectedIdxRef.current = idx
+        setSelectedIdx(idx)
       }
+    }
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      isDragRef.current = false
+      dragStartRef.current = null
+      selectedIdxRef.current = null
+      setDragging(false)
+      setSelectedIdx(null)
+      setDragAnchor(null)
     }
 
     const onUp = (_ev: PointerEvent) => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onCancel)
-
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
-          const preset = LAYOUT_PRESETS[idx]
-          createFleetLayout(mainEditor, agentsRef.current, preset.id)
+          createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id)
         }
-      } else {
-        // Click: toggle visibility
-        const next = !isFleetHidden()
-        document.body.classList.toggle(FLEET_HIDDEN_CLASS, next)
-        setHidden(next)
+        justDraggedRef.current = true  // suppress the upcoming onClick
       }
-
-      isDragRef.current = false
-      dragStartRef.current = null
-      selectedIdxRef.current = null
-      setDragging(false)
-      setSelectedIdx(null)
-      setDragAnchor(null)
+      cleanup()
     }
 
-    const onCancel = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onCancel)
-      isDragRef.current = false
-      dragStartRef.current = null
-      selectedIdxRef.current = null
-      setDragging(false)
-      setSelectedIdx(null)
-      setDragAnchor(null)
-    }
+    const onCancel = () => { cleanup() }
 
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onCancel)
-  }, [mainEditor, getIdxFromX])
+  }, [mainEditor])
 
   return (
     <div
       className={'fleet-icon-pill-container' + (hidden ? ' fleet-icon-pill--hidden' : '')}
-      onPointerDown={handlePointerDown}
       title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
-      role="button"
-      aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
-      style={{ touchAction: 'none' }}
     >
-      <img src="/basestar.svg" width={10} height={10} alt="" className="fleet-icon-pill-logo" />
-      {aliveCount > 0 && (
-        <span className="fleet-icon-pill-count">{aliveCount}</span>
-      )}
+      <span
+        className="fleet-icon-pill-badge"
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        role="button"
+        aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
+        style={{ touchAction: 'none' }}
+      >
+        {/* Inline basestar SVG — fill="currentColor" inherits span color for opacity control */}
+        <svg viewBox="0 0 960 960" width={9} height={9} aria-hidden="true"
+          style={{ display: 'inline', verticalAlign: 'middle', fill: 'currentColor' }}>
+          <g transform="translate(0,960) scale(1,-1)">
+            <path d="M130 865 c0 -15 45 -94 111 -197 60 -94 116 -183 124 -197 14 -28 34 -131 60 -306 23 -161 21 -155 55 -155 35 0 29 -21 69 238 17 106 38 206 46 222 8 16 64 105 125 199 116 179 132 221 84 221 -18 0 -63 -33 -162 -120 -84 -74 -145 -120 -159 -120 -23 0 -36 9 -194 147 -76 66 -115 93 -133 93 -21 0 -26 -5 -26 -25z"/>
+            <path d="M467 883 c-3 -5 -11 -45 -18 -91 -11 -73 -11 -85 3 -99 11 -10 25 -13 42 -9 30 7 33 31 13 135 -11 59 -27 85 -40 64z"/>
+            <path d="M268 260 c-43 -76 -78 -144 -78 -149 0 -29 43 -3 114 68 l78 79 -12 71 c-6 39 -15 71 -18 71 -4 0 -42 -63 -84 -140z"/>
+            <path d="M591 337 c-6 -35 -11 -68 -11 -73 0 -16 180 -175 191 -169 5 4 9 13 9 21 0 17 -161 284 -171 284 -4 0 -12 -28 -18 -63z"/>
+          </g>
+        </svg>
+        {aliveCount > 0 && aliveCount}
+      </span>
 
       {/* Layout preset fan — fixed position at drag anchor */}
       {dragging && dragAnchor && (
