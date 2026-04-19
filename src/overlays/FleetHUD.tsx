@@ -304,7 +304,6 @@ export function FleetHUD({
     const el = hudRef.current
     if (!el) return
 
-    let removeRaf: number | null = null
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
@@ -314,35 +313,12 @@ export function FleetHUD({
       })
       if (hasFleetSelected) {
         // ADD immediately — user selected a fleet shape, enable interaction
-        if (removeRaf !== null) { cancelAnimationFrame(removeRaf); removeRaf = null }
         fleetLayoutActiveRef.current = true
         el.classList.add('hud-layout-active')
-      } else if (fleetLayoutActiveRef.current) {
-        // REMOVE deferred — wait until next frame so all pointer events and
-        // state transitions have settled. If the state machine isn't in idle
-        // at that point, something is still in progress; defer again.
-        if (removeRaf !== null) return // already scheduled
-        removeRaf = requestAnimationFrame(() => {
-          removeRaf = null
-          const ed = overlayEditorRef.current
-          if (!ed) return
-          const state = ed.root.getCurrent()?.getCurrent()?.id
-          if (state && state !== 'idle') {
-            // Still busy — try again next frame
-            checkSelection()
-            return
-          }
-          // Confirm nothing selected (might have changed since schedule)
-          const stillSelected = ed.getSelectedShapeIds().some(id => {
-            const s = ed.getShape(id as any)
-            return s && FLEET_TYPES_HUD.has(s.type as string)
-          })
-          if (!stillSelected) {
-            fleetLayoutActiveRef.current = false
-            el.classList.remove('hud-layout-active')
-          }
-        })
       }
+      // REMOVAL is handled by BrowseIdle.onEnter — never from here.
+      // Removing from a store listener races with TLDraw's state machine
+      // and kills pointer-events mid-interaction.
     }
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
@@ -378,7 +354,6 @@ export function FleetHUD({
 
     return () => {
       cancelAnimationFrame(rafId)
-      if (removeRaf !== null) cancelAnimationFrame(removeRaf)
       unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
       fleetLayoutActiveRef.current = false

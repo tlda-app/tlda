@@ -149,6 +149,23 @@ export class BrowseIdle extends StateNode {
     this.selectedShapesOnKeyDown = []
     this.editor.setCursor({ type: 'default', rotation: 0 })
 
+    // Layout mode exit: when returning to idle in the HUD overlay editor,
+    // check if fleet shapes are still selected. If not, turn off layout mode.
+    // This is the ONLY place layout mode is turned off — never from store
+    // listeners, which race with TLDraw's state machine.
+    if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
+      const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+      const hasFleetSelected = this.editor.getSelectedShapeIds().some(id => {
+        const s = this.editor.getShape(id)
+        return s && FLEET_TYPES.has(s.type)
+      })
+      if (!hasFleetSelected) {
+        fleetLayoutActiveRef.current = false
+        const wrap = this.editor.getContainer().closest('.fleet-hud-wrap') as HTMLElement
+        wrap?.classList.remove('hud-layout-active')
+      }
+    }
+
     // Capture-phase listener: clears selection when clicking outside the
     // selected shape.  Runs before fleet shapes' stopEventPropagation can
     // swallow the event, so the state machine always sees the click.
