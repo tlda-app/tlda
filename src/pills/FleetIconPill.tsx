@@ -14,6 +14,7 @@
  * matching the single-color approach of .build-warning-badge.
  */
 import { useState, useCallback, useRef } from 'react'
+import { stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
@@ -167,11 +168,10 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         </svg>
       </span>
 
-      {/* Layout preset fan — fixed position at drag anchor */}
-      {dragging && dragAnchor && (
+      {/* Layout preset fan — positioned above the icon */}
+      {dragging && (
         <div
           className="fleet-icon-pill-fan"
-          style={{ left: dragAnchor.x, top: dragAnchor.y - ITEM_H / 2 }}
           onPointerDown={e => e.stopPropagation()}
         >
           {LAYOUT_PRESETS.map((preset, i) => (

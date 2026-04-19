@@ -32,35 +32,31 @@
   opacity: 0.35;
 }
 
-/* Layout preset fan — fixed position at cursor, appears during drag */
+/* Layout preset fan — appears to the right of the icon during drag */
 .fleet-icon-pill-fan {
-  position: fixed;
+  position: absolute;
+  left: 100%;
+  bottom: 0;
+  margin-left: 6px;
   display: flex;
   gap: 4px;
   pointer-events: none;
-  z-index: 1100;
+  z-index: 10002;
 }
 
 .fleet-icon-pill-fan-item {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 5px;
-  background: rgba(50, 50, 50, 0.82);
-  border: 1px solid rgba(0, 0, 0, 0.25);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(240, 240, 240, 0.9);
+  color: rgba(0, 0, 0, 0.35);
   white-space: nowrap;
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
   pointer-events: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {
-  background: rgba(60, 130, 220, 0.85);
-  border-color: rgba(80, 150, 240, 0.6);
-  color: rgba(255, 255, 255, 0.98);
+  color: rgba(0, 0, 0, 0.8);
 }
 
 /* ── Dark mode ─────────────────────────────────────────────────────────────── */
@@ -70,13 +66,9 @@ html[data-theme="dark"] .fleet-icon-pill-badge {
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item {
-  background: rgba(20, 20, 30, 0.9);
-  border-color: rgba(255, 255, 255, 0.15);
-  color: rgba(200, 200, 200, 0.9);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item.hovered {
-  background: rgba(80, 140, 240, 0.75);
-  border-color: rgba(100, 160, 255, 0.5);
-  color: rgba(255, 255, 255, 0.98);
+  color: rgba(255, 255, 255, 1);
 }
