@@ -1,173 +1,161 @@
 /**
- * FleetIconPill — small fleet icon in the build-pills-row.
- * Same visual weight as BuildWarningPill.
+ * FleetIconPill — basestar logo in the build-pills-row.
  *
- * Click  → toggle fleet shapes visible/hidden on the main canvas
- * Drag   → fan out horizontal strip of layout preset options; release to apply
+ * Click  → toggle fleet shapes visible/hidden (body.fleet-shapes-hidden CSS class)
+ * Drag   → horizontal preset fan; drag right to slide between 3-col / 2-col;
+ *          release to apply. Items appear at fixed position near cursor — same
+ *          pattern as HighlighterSlider (position computed by math, not elementFromPoint).
+ *
+ * Uses window-level pointermove/pointerup listeners to avoid pointer-capture
+ * issues inside TLDraw's InFrontOfTheCanvas layer.
  */
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import './FleetIconPill.css'
 
-const DRAG_THRESHOLD = 6 // px before drag mode activates
+const DRAG_THRESHOLD = 6   // px before drag activates
+const ITEM_W = 40          // px width of each preset tile
+const ITEM_H = 22          // px height
+const ITEM_GAP = 4         // px between tiles
 
 const LAYOUT_PRESETS = [
-  { id: '3col' as const, label: '3-col', title: 'Three-column layout: agents + search | chat | chat + docview' },
-  { id: '2col' as const, label: '2-col', title: 'Two-column layout: agents + search + chat | right chat' },
+  { id: '3col' as const, label: 'Fleet|',  title: 'Three-column: agents + search | chat | chat + docview' },
+  { id: '2col' as const, label: 'Flee|t',  title: 'Two-column: left margin + right margin chat' },
 ]
 
-/** Body class used to hide fleet shapes on the main canvas (same pattern as fleet-hud-open). */
-export const FLEET_HIDDEN_CLASS = 'fleet-shapes-hidden'
+/** Body class used to hide fleet shapes on the main canvas. */
+const FLEET_HIDDEN_CLASS = 'fleet-shapes-hidden'
 
-/** Read current visibility state from DOM. */
-export function isFleetHidden(): boolean {
-  return document.body.classList.contains(FLEET_HIDDEN_CLASS)
-}
-
-/** Toggle fleet shapes hidden/visible without editor invalidation. CSS handles it. */
-export function setFleetHidden(hidden: boolean) {
-  document.body.classList.toggle(FLEET_HIDDEN_CLASS, hidden)
-}
-
-// ── Small grid SVG icon ─────────────────────────────────────────────────────
-
-function FleetGridIcon({ size = 12 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-      <rect x="1" y="1" width="4" height="4" rx="0.5"/>
-      <rect x="7" y="1" width="4" height="4" rx="0.5"/>
-      <rect x="1" y="7" width="4" height="4" rx="0.5"/>
-      <rect x="7" y="7" width="4" height="4" rx="0.5"/>
-    </svg>
-  )
-}
+function isFleetHidden() { return document.body.classList.contains(FLEET_HIDDEN_CLASS) }
 
 // ── FleetIconPill ────────────────────────────────────────────────────────────
 
-interface FleetIconPillProps {
-  mainEditor: Editor
-}
+interface FleetIconPillProps { mainEditor: Editor }
 
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const agents = useFleetAgents()
-  const [hidden, setHiddenState] = useState(() => isFleetHidden())
+  const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
-  const [hoveredPreset, setHoveredPreset] = useState<string | null>(null)
-  const pillRef = useRef<HTMLDivElement>(null)
-  const fanRef = useRef<HTMLDivElement>(null)
-  const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
-  const isDragRef = useRef(false)
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [dragAnchor, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const aliveCount = agents.filter((a: any) => !a.dead && !a.human).length
 
-  // Sync hidden state when body class changes externally
-  useEffect(() => {
-    const obs = new MutationObserver(() => {
-      setHiddenState(isFleetHidden())
-    })
-    obs.observe(document.body, { attributes: true, attributeFilter: ['class'] })
-    return () => obs.disconnect()
-  }, [])
+  // Refs for closure-stable drag state (used inside window listeners)
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
+  const isDragRef = useRef(false)
+  const selectedIdxRef = useRef<number | null>(null)
+  const agentsRef = useRef(agents)
+  agentsRef.current = agents
 
-  // Detect which preset the pointer is over during drag
-  const updateHoveredPreset = useCallback((clientX: number, clientY: number) => {
-    if (!fanRef.current) return
-    const items = fanRef.current.querySelectorAll<HTMLElement>('[data-preset-id]')
-    let found: string | null = null
-    for (const item of items) {
-      const r = item.getBoundingClientRect()
-      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-        found = item.dataset.presetId ?? null
-        break
-      }
-    }
-    setHoveredPreset(found)
+  /** Compute which preset index is active for a given cursor X. */
+  const getIdxFromX = useCallback((cursorX: number, startX: number): number => {
+    // Items are displayed starting at startX.
+    // Item i occupies [startX + i*(ITEM_W+ITEM_GAP), startX + i*(ITEM_W+ITEM_GAP) + ITEM_W]
+    const step = ITEM_W + ITEM_GAP
+    const rel = cursorX - startX
+    const idx = Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor(rel / step)))
+    return idx
   }, [])
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation()
-    pointerStartRef.current = { x: e.clientX, y: e.clientY }
+    const start = { x: e.clientX, y: e.clientY }
+    dragStartRef.current = start
     isDragRef.current = false
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-  }, [])
+    selectedIdxRef.current = null
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!pointerStartRef.current) return
-    const dx = e.clientX - pointerStartRef.current.x
-    const dy = e.clientY - pointerStartRef.current.y
-    const dist = Math.sqrt(dx * dx + dy * dy)
-    if (dist > DRAG_THRESHOLD) {
-      if (!isDragRef.current) {
+    const onMove = (ev: PointerEvent) => {
+      const s = dragStartRef.current
+      if (!s) return
+      const dx = ev.clientX - s.x
+      const dy = ev.clientY - s.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      if (!isDragRef.current && dist > DRAG_THRESHOLD) {
         isDragRef.current = true
         setDragging(true)
+        setDragAnchor({ x: s.x, y: s.y })
+      }
+      if (isDragRef.current) {
+        const idx = Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((ev.clientX - s.x) / (ITEM_W + ITEM_GAP))))
+        // If cursor is left of start, keep idx 0
+        const safeIdx = ev.clientX < s.x ? 0 : idx
+        selectedIdxRef.current = safeIdx
+        setSelectedIdx(safeIdx)
       }
     }
-    if (isDragRef.current) {
-      updateHoveredPreset(e.clientX, e.clientY)
-    }
-  }, [updateHoveredPreset])
 
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    e.stopPropagation()
-    const wasDrag = isDragRef.current
+    const onUp = (_ev: PointerEvent) => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
 
-    if (wasDrag && hoveredPreset) {
-      // Apply layout preset
-      const preset = LAYOUT_PRESETS.find(p => p.id === hoveredPreset)
-      if (preset) {
-        createFleetLayout(mainEditor, agents, preset.id)
+      if (isDragRef.current) {
+        const idx = selectedIdxRef.current
+        if (idx !== null) {
+          const preset = LAYOUT_PRESETS[idx]
+          createFleetLayout(mainEditor, agentsRef.current, preset.id)
+        }
+      } else {
+        // Click: toggle visibility
+        const next = !isFleetHidden()
+        document.body.classList.toggle(FLEET_HIDDEN_CLASS, next)
+        setHidden(next)
       }
-    } else if (!wasDrag) {
-      // Toggle visibility
-      const next = !isFleetHidden()
-      setFleetHidden(next)
-      setHiddenState(next)
+
+      isDragRef.current = false
+      dragStartRef.current = null
+      selectedIdxRef.current = null
+      setDragging(false)
+      setSelectedIdx(null)
+      setDragAnchor(null)
     }
 
-    // Reset drag state
-    pointerStartRef.current = null
-    isDragRef.current = false
-    setDragging(false)
-    setHoveredPreset(null)
-  }, [hoveredPreset, mainEditor, agents])
+    const onCancel = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      isDragRef.current = false
+      dragStartRef.current = null
+      selectedIdxRef.current = null
+      setDragging(false)
+      setSelectedIdx(null)
+      setDragAnchor(null)
+    }
 
-  const handlePointerCancel = useCallback(() => {
-    pointerStartRef.current = null
-    isDragRef.current = false
-    setDragging(false)
-    setHoveredPreset(null)
-  }, [])
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+  }, [mainEditor, getIdxFromX])
 
   return (
     <div
-      ref={pillRef}
       className={'fleet-icon-pill-container' + (hidden ? ' fleet-icon-pill--hidden' : '')}
+      onPointerDown={handlePointerDown}
+      title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
+      role="button"
+      aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
+      style={{ touchAction: 'none' }}
     >
-      <div
-        className="fleet-icon-pill"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
-        role="button"
-        aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
-      >
-        <FleetGridIcon size={10} />
-        {aliveCount > 0 && (
-          <span className="fleet-icon-pill-count">{aliveCount}</span>
-        )}
-      </div>
+      <img src="/basestar.svg" width={10} height={10} alt="" className="fleet-icon-pill-logo" />
+      {aliveCount > 0 && (
+        <span className="fleet-icon-pill-count">{aliveCount}</span>
+      )}
 
-      {dragging && (
-        <div ref={fanRef} className="fleet-icon-pill-fan">
-          {LAYOUT_PRESETS.map(preset => (
+      {/* Layout preset fan — fixed position at drag anchor */}
+      {dragging && dragAnchor && (
+        <div
+          className="fleet-icon-pill-fan"
+          style={{ left: dragAnchor.x, top: dragAnchor.y - ITEM_H / 2 }}
+          onPointerDown={e => e.stopPropagation()}
+        >
+          {LAYOUT_PRESETS.map((preset, i) => (
             <div
               key={preset.id}
-              data-preset-id={preset.id}
-              className={'fleet-icon-pill-fan-item' + (hoveredPreset === preset.id ? ' hovered' : '')}
+              className={'fleet-icon-pill-fan-item' + (selectedIdx === i ? ' hovered' : '')}
+              style={{ width: ITEM_W, height: ITEM_H }}
               title={preset.title}
             >
               {preset.label}

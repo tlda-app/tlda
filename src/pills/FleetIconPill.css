@@ -1,33 +1,33 @@
-/* FleetIconPill — tiny fleet icon in the build-pills-row */
+/* FleetIconPill — basestar logo in the build-pills-row */
 
 .fleet-icon-pill-container {
   position: relative;
-  pointer-events: all;
-}
-
-/* The icon itself — same visual weight as build-warning-badge */
-.fleet-icon-pill {
   display: flex;
   align-items: center;
   gap: 2px;
+  pointer-events: all;
   cursor: pointer;
-  color: rgba(0, 0, 0, 0.1);
-  transition: color 0.3s;
   user-select: none;
-  touch-action: none; /* prevent browser scroll-cancel during drag */
 }
 
-.fleet-icon-pill:hover {
-  color: rgba(0, 0, 0, 0.5);
+/* Logo — low opacity, same weight as build-warning-badge */
+.fleet-icon-pill-logo {
+  opacity: 0.12;
+  transition: opacity 0.3s;
+  display: block;
 }
 
-/* Dimmed further when fleet shapes are hidden */
-.fleet-icon-pill--hidden .fleet-icon-pill {
-  color: rgba(0, 0, 0, 0.05);
+.fleet-icon-pill-container:hover .fleet-icon-pill-logo {
+  opacity: 0.55;
 }
 
-.fleet-icon-pill--hidden .fleet-icon-pill:hover {
-  color: rgba(0, 0, 0, 0.35);
+/* Dimmer when fleet shapes are hidden */
+.fleet-icon-pill--hidden .fleet-icon-pill-logo {
+  opacity: 0.05;
+}
+
+.fleet-icon-pill--hidden:hover .fleet-icon-pill-logo {
+  opacity: 0.35;
 }
 
 /* Agent count badge */
@@ -35,62 +35,73 @@
   font-size: 9px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1;
+  opacity: 0.12;
+  transition: opacity 0.3s;
 }
 
-/* Layout preset fan — appears above the pill during drag */
+.fleet-icon-pill-container:hover .fleet-icon-pill-count {
+  opacity: 0.55;
+}
+
+/* Layout preset fan — fixed position at cursor, appears during drag */
 .fleet-icon-pill-fan {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   display: flex;
   gap: 4px;
-  pointer-events: all;
-  z-index: 20;
+  pointer-events: none;
+  z-index: 1100;
 }
 
 .fleet-icon-pill-fan-item {
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.88);
   border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  font-size: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  font-size: 9px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(80, 80, 80, 0.6);
-  cursor: default;
+  color: rgba(80, 80, 80, 0.5);
   white-space: nowrap;
-  transition: background 0.1s, color 0.1s;
-  pointer-events: all;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  pointer-events: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {
   background: rgba(60, 130, 220, 0.15);
-  border-color: rgba(60, 130, 220, 0.3);
-  color: rgba(40, 90, 180, 0.9);
+  border-color: rgba(60, 130, 220, 0.35);
+  color: rgba(40, 90, 180, 0.95);
 }
 
 /* ── Dark mode ─────────────────────────────────────────────────────────────── */
 
-html[data-theme="dark"] .fleet-icon-pill {
-  color: rgba(255, 255, 255, 0.12);
+html[data-theme="dark"] .fleet-icon-pill-logo {
+  opacity: 0.15;
+  filter: invert(1);
 }
 
-html[data-theme="dark"] .fleet-icon-pill:hover {
-  color: rgba(255, 255, 255, 0.55);
+html[data-theme="dark"] .fleet-icon-pill-container:hover .fleet-icon-pill-logo {
+  opacity: 0.6;
 }
 
-html[data-theme="dark"] .fleet-icon-pill--hidden .fleet-icon-pill {
-  color: rgba(255, 255, 255, 0.05);
+html[data-theme="dark"] .fleet-icon-pill--hidden .fleet-icon-pill-logo {
+  opacity: 0.06;
 }
 
-html[data-theme="dark"] .fleet-icon-pill--hidden .fleet-icon-pill:hover {
-  color: rgba(255, 255, 255, 0.3);
+html[data-theme="dark"] .fleet-icon-pill-count {
+  color: rgba(255, 255, 255, 0.5);
+  opacity: 0.15;
+}
+
+html[data-theme="dark"] .fleet-icon-pill-container:hover .fleet-icon-pill-count {
+  opacity: 0.6;
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item {
-  background: rgba(30, 30, 40, 0.9);
+  background: rgba(30, 30, 40, 0.92);
   border-color: rgba(255, 255, 255, 0.1);
-  color: rgba(180, 180, 180, 0.7);
+  color: rgba(180, 180, 180, 0.6);
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item.hovered {
