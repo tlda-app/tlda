@@ -246,23 +246,25 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
-// Set before a share() call to suppress the SSE echo on the originating WS connection.
-// Cleared immediately after share() returns (listeners fire synchronously inside share()).
-let _suppressEchoWs = null
+// Echo suppression. Two mechanisms:
+// 1. Per-connection flag: ws._suppressNextBroadcast (set by WS chat handler)
+// 2. Legacy connId: suppressEchoFor(connId) for HTTP POST callers
+// Both are per-connection so concurrent sends don't interfere.
 
 function suppressEchoFor(connId) {
   if (!connId) return
   for (const ws of wsFleetClients) {
-    if (ws._connId === connId) { _suppressEchoWs = ws; return }
+    if (ws._connId === connId) { ws._suppressNextBroadcast = true; return }
   }
 }
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
-  const suppress = _suppressEchoWs
-  _suppressEchoWs = null  // reset after one use (share() fires listeners synchronously)
   for (const ws of wsFleetClients) {
-    if (ws === suppress) continue  // don't echo back to the sender
+    if (ws._suppressNextBroadcast) {
+      ws._suppressNextBroadcast = false
+      continue
+    }
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
@@ -1036,7 +1038,9 @@ function handleFleetWsMessage(ws, msg) {
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(context ? { context } : {}),
     }
-    _suppressEchoWs = ws  // suppress echo back to the originating WS connection (reset by broadcastFleet)
+    // Tag this WS to suppress the next broadcast. Per-connection flag
+    // (not global) so concurrent sends on different connections don't interfere.
+    ws._suppressNextBroadcast = true
     const event = fleetStore.share?.({
       type: 'chat',
       from,
@@ -1044,7 +1048,7 @@ function handleFleetWsMessage(ws, msg) {
       text,
       metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
     })
-    if (!event) { error('store error'); return }
+    if (!event) { ws._suppressNextBroadcast = false; error('store error'); return }
     // No manual broadcast — share() already fires the listener that
     // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
     // A second manual broadcast here used to produce duplicate messages

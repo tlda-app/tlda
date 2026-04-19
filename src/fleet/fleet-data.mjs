@@ -409,22 +409,6 @@ export function connect() {
           if (data.id > _lastEventId) _lastEventId = data.id
           return
         }
-        // Reconcile: if this is a server echo of an optimistic event we sent,
-        // link it instead of adding a duplicate. Matches by from+to+text on
-        // events that still have _tempId (not yet reconciled).
-        if (data.id && data.type === 'chat') {
-          const optimistic = _events.find(e =>
-            e._tempId && e.from === (data.from_id || data.from) &&
-            e.to === (data.to_id || data.to) && e.text === data.text
-          )
-          if (optimistic) {
-            optimistic._dbId = data.id
-            delete optimistic._tempId
-            if (data.id > _lastEventId) _lastEventId = data.id
-            notify('messages', null)
-            return
-          }
-        }
         _events.push(event)
         if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
