@@ -57,6 +57,7 @@ export interface PanelContextValue {
   // user has scrubbed back to an older snapshot.
   shadowVersions?: Array<{ hash: string; timestamp: number; message?: string }>
   shadowActiveIdx?: number
+  onShadowScrub?: (idx: number) => void
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

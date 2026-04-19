@@ -300,20 +300,13 @@ function VersionStamp({ docName }: { docName: string }) {
   }, [fetchVersions])
 
   const handleClick = useCallback(async (idx: number) => {
-    if (idx === 0) {
-      if (activeIdx !== 0) {
-        try { await fetch(`/api/projects/${docName}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }) } catch {}
-        setActiveIdx(0)
-      }
-      return
-    }
+    if (idx === 0) return // dismiss via scrubber, not version wheel
     const v = versions[idx]
     if (!v) return
-    try {
-      await fetch(`/api/projects/${docName}/history/shadow/${v.hash}/checkout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      setActiveIdx(idx)
-    } catch {}
-  }, [docName, versions, activeIdx])
+    // Activate shadow column for this version
+    ;(window as any).__shadowScrub?.(idx)
+    setActiveIdx(idx)
+  }, [versions])
 
   if (versions.length === 0) return null
 
@@ -804,6 +797,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVersionCount: shadowVersions.length,
     shadowVersions,
     shadowActiveIdx,
+    onShadowScrub: handleShadowScrub,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions])
   // Note: shadowActiveIdx intentionally excluded from deps — changes to it
   // should NOT cascade re-renders through PanelContext (causes hooks errors)
@@ -1069,7 +1063,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {false && (
+      {shadowVisible && (
         <ShadowHistoryOverlay
           versions={shadowVersions}
           activeIdx={shadowActiveIdx}
