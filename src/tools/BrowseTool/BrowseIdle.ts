@@ -277,7 +277,7 @@ export class BrowseIdle extends StateNode {
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
           // treat as empty canvas so drag-box select works over document backgrounds.
           // In the main canvas, keep passing through to DOM.
-          if (this.editor.getContainer().closest('.fleet-hud-wrap')) {
+          if (this.editor.getContainer().closest('.fleet-hud-wrap.hud-layout-active')) {
             this.parent.transition('pointing_canvas', info)
             return
           }
