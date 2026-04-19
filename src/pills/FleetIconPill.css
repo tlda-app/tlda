@@ -5,27 +5,31 @@
   pointer-events: all;
 }
 
-/* Badge: matches .build-warning-badge exactly — color-based opacity, 10px font */
+/* Badge: opacity-based visibility, same pattern as .build-warning-badge */
 .fleet-icon-pill-badge {
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(0, 0, 0, 0.1);
+  color: black;
   cursor: pointer;
-  transition: color 0.3s;
+  opacity: 0.1;
+  transition: opacity 0.3s;
   user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 
-.fleet-icon-pill-badge:hover {
-  color: rgba(0, 0, 0, 0.6);
+.fleet-icon-pill-container:hover .fleet-icon-pill-badge {
+  opacity: 0.6;
 }
 
 /* Dimmer when fleet shapes are hidden */
 .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  color: rgba(0, 0, 0, 0.05);
+  opacity: 0.05;
 }
 
-.fleet-icon-pill--hidden .fleet-icon-pill-badge:hover {
-  color: rgba(0, 0, 0, 0.35);
+.fleet-icon-pill--hidden:hover .fleet-icon-pill-badge {
+  opacity: 0.35;
 }
 
 /* Layout preset fan — fixed position at cursor, appears during drag */
@@ -62,15 +66,7 @@
 /* ── Dark mode ─────────────────────────────────────────────────────────────── */
 
 html[data-theme="dark"] .fleet-icon-pill-badge {
-  color: rgba(255, 255, 255, 0.1);
-}
-
-html[data-theme="dark"] .fleet-icon-pill-badge:hover {
-  color: rgba(255, 255, 255, 0.6);
-}
-
-html[data-theme="dark"] .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  color: rgba(255, 255, 255, 0.05);
+  color: white;
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item {
