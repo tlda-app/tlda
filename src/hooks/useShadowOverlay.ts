@@ -30,7 +30,8 @@ export function useShadowOverlay(
   _updateCameraBoundsRef: React.MutableRefObject<((bounds: any) => void) | null>,
 ) {
   const [versions, setVersions] = useState<ShadowVersion[]>([])
-  const [activeIdx, setActiveIdx] = useState(-1)
+  const [activeIdx, setActiveIdx] = useState(-1)       // scrubber UI position (updates instantly)
+  const [committedIdx, setCommittedIdx] = useState(-1)  // column version (debounced)
   const [loading, setLoading] = useState(false)
   const [visible, setVisible] = useState(false)
   const versionsRef = useRef(versions)
@@ -59,9 +60,10 @@ export function useShadowOverlay(
       : firstPage.bounds.x - TARGET_WIDTH - OLD_PAGE_GAP
   }, [document.pages, placeSide])
 
-  // Build PageColumn options — null when no shadow is active
-  const activeVersion = activeIdx >= 0 && activeIdx < versions.length
-    ? versions[activeIdx]
+  // Build PageColumn options — null when no shadow is active.
+  // Uses committedIdx (debounced) so rapid scrubbing doesn't churn columns.
+  const activeVersion = committedIdx >= 0 && committedIdx < versions.length
+    ? versions[committedIdx]
     : null
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
@@ -105,19 +107,30 @@ export function useShadowOverlay(
 
   // Scrub handler — uses a ref so the window-exposed function always has
   // live state setters (survives component remounts from TLDraw/sync).
-  const settersRef = useRef({ setVisible, setActiveIdx, setLoading })
-  settersRef.current = { setVisible, setActiveIdx, setLoading }
+  // Debounces column creation to avoid destroy/create churn while dragging.
+  const settersRef = useRef({ setVisible, setActiveIdx, setCommittedIdx, setLoading })
+  settersRef.current = { setVisible, setActiveIdx, setCommittedIdx, setLoading }
+  const scrubTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleScrub = useCallback((idx: number) => {
-    const { setVisible: sv, setActiveIdx: sa, setLoading: sl } = settersRef.current
+    const s = settersRef.current
+    if (scrubTimerRef.current) { clearTimeout(scrubTimerRef.current); scrubTimerRef.current = null }
+
     if (idx < 0) {
-      sv(false)
-      sa(-1)
+      // Dismiss immediately
+      s.setVisible(false)
+      s.setActiveIdx(-1)
+      s.setCommittedIdx(-1)
     } else {
-      sv(true)
-      sa(idx)
-      sl(true)
-      setTimeout(() => sl(false), 500)
+      // Update scrubber UI immediately, debounce the column swap
+      s.setVisible(true)
+      s.setActiveIdx(idx)
+      s.setLoading(true)
+      scrubTimerRef.current = setTimeout(() => {
+        scrubTimerRef.current = null
+        settersRef.current.setCommittedIdx(idx)
+        settersRef.current.setLoading(false)
+      }, 300)
     }
   }, [])
 
