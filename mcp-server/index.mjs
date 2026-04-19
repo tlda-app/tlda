@@ -26,6 +26,7 @@ import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
+import { formatHighlight, formatNote } from './format-annotation.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -2604,36 +2605,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Format output
       let out = `${doc} — ${items.length} annotation(s)\n\n`;
       for (const a of items) {
-        const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
-
         if (a.annotationType === 'highlight' || a.annotationType === 'highlighter') {
-          // Highlight with ⟦⟧ markers
-          const hlText = a.highlightedText || a.highlightText || '';
-          if (hlText) {
-            out += `${lineRef} highlight (${a.color}) ${a.id}:\n`;
-            // Use the highlightText if it already has ⟦⟧, otherwise wrap it
-            if (hlText.includes('⟦')) {
-              out += `  ${hlText}\n`;
-            } else {
-              out += `  ⟦${hlText}⟧\n`;
-            }
-          } else {
-            out += `${lineRef} highlight (${a.color}) ${a.id}\n`;
-            if (a.lines?.length > 0) {
-              out += `  covers lines ${a.lines[0].line}–${a.lines[a.lines.length - 1].line}\n`;
-            }
-          }
+          out += formatHighlight(a) + `\n  id: ${a.id}\n`;
         } else if (a.annotationType === 'note') {
-          out += `${lineRef} note (${a.color || 'yellow'}) ${a.id}:\n`;
-          const noteText = (a.text || '').substring(0, 200);
-          out += `  "${noteText}"\n`;
+          out += formatNote(a) + `\n  id: ${a.id}\n`;
         } else if (a.annotationType === 'draw' || a.annotationType === 'pen') {
-          out += `${lineRef} pen (${a.color}) ${a.id}\n`;
+          const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
+          out += `[pen] ${a.color} ${lineRef}\n  id: ${a.id}\n`;
           if (a.lines?.length > 0) out += `  near: "${a.lines[0].content?.substring(0, 60)}"\n`;
         } else if (a.annotationType === 'arrow') {
-          out += `${lineRef} arrow (${a.color}) ${a.id}\n`;
+          const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
+          out += `[arrow] ${a.color} ${lineRef}\n  id: ${a.id}\n`;
         } else {
-          out += `${lineRef} ${a.annotationType} (${a.color}) ${a.id}\n`;
+          const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
+          out += `[${a.annotationType}] ${a.color} ${lineRef}\n  id: ${a.id}\n`;
           if (a.text) out += `  "${a.text.substring(0, 100)}"\n`;
         }
         out += '\n';

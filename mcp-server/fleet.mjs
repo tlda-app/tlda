@@ -34,6 +34,7 @@ import { SearchIndex } from './dashboard/search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
+import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2306,8 +2307,9 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
 
   // ---- chip token resolution ----
   // Resolve «type:label#id» tokens in message text by looking up the referenced
-  // content. Currently handles msg: tokens (chat message references).
-  async function resolveChipTokens(text) {
+  // content. Handles: msg, activity, tool, annotation, highlight chip types.
+  // metadata: optional message metadata (for annotation/highlight ref lookup via attachments)
+  async function resolveChipTokens(text, metadata) {
     if (!text || !text.includes('«')) return text
     const chipPattern = /«(.+?)»/g
     const chips = [...text.matchAll(chipPattern)]
@@ -2321,17 +2323,28 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
       if (colonIdx < 0) continue
       const type = inner.slice(0, colonIdx)
 
+      if (type === 'annotation' || type === 'highlight') {
+        // Token format: «annotation:label#shape:shapeId» or «highlight:label#shape:shapeId»
+        // Ref data is embedded in message metadata.attachments by the sender's chat() call.
+        const token = match[0]
+        const attachments = metadata?.attachments || []
+        const refData = attachments.find(a => a.token === token)
+        if (refData) {
+          const formatted = formatAnnotationRef(refData)
+          if (formatted) resolved = resolved.replace(token, '\n' + formatted + '\n')
+        }
+        // No API fallback — ref data must be in attachments (embedded by sender)
+      }
+
       if (type === 'msg') {
         // Token format: «msg:displayLabel#msg:from:isoTimestamp»
         // The # suffix contains the structured value: msg:agentId:timestamp
         const hashIdx = inner.lastIndexOf('#')
         const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
-        const displayLabel = inner.slice(colonIdx + 1, hashIdx >= 0 ? hashIdx : undefined)
 
         // Parse structured data — either "msg:eventId" or "msg:fleet:agentName:2026-04-18T..."
         const valueParts = structuredData.startsWith('msg:') ? structuredData.slice(4) : structuredData
         const evIdMatch = valueParts.match(/^(\d+)/)
-        let ev = null
 
         if (evIdMatch) {
           // Event ID path
@@ -2342,25 +2355,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
-              // Resolve agent IDs to friendly names
-              let stateData = null
+              let agents = []
               try {
                 const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-                stateData = await stateRes.json()
+                const stateData = await stateRes.json()
+                agents = Array.isArray(stateData) ? stateData : []
               } catch {}
-              const agents = Array.isArray(stateData) ? stateData : []
-              const nameOf = (id) => {
-                if (!id) return '?'
-                const a = agents.find(a => a.id === id)
-                if (a) return a.friendly_name || a.name || id
-                // Strip fleet: prefix as last resort
-                return id.replace('fleet:', '')
-              }
-              const from = nameOf(ev.from)
-              const to = nameOf(ev.to)
-              const msgText = (ev.text || '').slice(0, 500)
-              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-              resolved = resolved.replace(match[0], `\n[${from} → ${to}, ${ts}]:\n> ${msgText.split('\n').join('\n> ')}\n`)
+              resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
             }
           } catch {}
         }
@@ -2421,39 +2422,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
 
         if (activities.length > 0) {
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
-          let agentName = resolvedAgentId.replace('fleet:', '')
+          let agents = []
           try {
             const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-            const agents = await stateRes.json()
-            const a = (Array.isArray(agents) ? agents : []).find(a => a.id === resolvedAgentId)
-            if (a) agentName = a.friendly_name || a.name || agentName
+            const stateData = await stateRes.json()
+            agents = Array.isArray(stateData) ? stateData : []
           } catch {}
-
-          const toolLines = activities
-            .filter(e => {
-              const tool = e.metadata?.tool || e.text || ''
-              return tool && tool !== '_text' && !tool.includes('\n')
-            })
-            .map(e => {
-              const m = e.metadata || {}
-              const tool = m.tool || e.text || ''
-              let line = `  ${tool}${m.arg ? ': ' + m.arg : ''}`
-              if (m.prettyResult) {
-                const result = m.prettyResult.slice(0, 300)
-                line += `\n    ${result.split('\n').join('\n    ')}`
-              }
-              return line
-            })
-          const textBlocks = activities
-            .filter(e => (e.metadata?.tool === '_text' || (!e.metadata?.tool && e.text?.includes('\n'))) && e.text)
-            .map(e => e.text.slice(0, 300))
-
-          const firstTs = activities[0]?.timestamp || new Date().toISOString()
-          const ts = new Date(firstTs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-          let replacement = `\n[${agentName} activity, ${ts}]:`
-          if (toolLines.length > 0) replacement += `\n${toolLines.join('\n')}`
-          if (textBlocks.length > 0) replacement += `\n> ${textBlocks.join('\n> ')}`
-          resolved = resolved.replace(match[0], replacement + '\n')
+          resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
         }
       }
 
@@ -2540,7 +2515,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const docHint = ctx?.doc
           ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
           : '';
-        const resolvedText = await resolveChipTokens(m.text)
+        const resolvedText = await resolveChipTokens(m.text, m.metadata)
         const { text: imgResolvedText, images } = await resolveImages(resolvedText)
         return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
       })));
