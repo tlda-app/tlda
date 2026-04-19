@@ -302,6 +302,12 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
+      // Don't touch hud-layout-active while brushing or dragging — if pointer-events
+      // goes to none mid-drag, pointerup never reaches TLDraw and the brush rect gets
+      // stuck. Only update when back in idle.
+      const path = editor.getPath()
+      const isIdle = path.endsWith('.idle')
+      if (!isIdle) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
@@ -317,7 +323,14 @@ export function FleetHUD({
         checkSelection()
         unsub = overlayEditorRef.current.store.listen(({ changes }) => {
           for (const [, to] of Object.values(changes.updated)) {
-            if ((to as any).typeName === 'instance_page_state') { checkSelection(); return }
+            // Listen to both selection changes (instance_page_state) and path
+            // changes (instance) so we re-evaluate when brushing ends and the
+            // editor returns to idle.
+            if ((to as any).typeName === 'instance_page_state' ||
+                (to as any).typeName === 'instance') {
+              checkSelection()
+              return
+            }
           }
         }, { scope: 'session', source: 'all' })
       } else {
