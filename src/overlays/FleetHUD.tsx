@@ -302,14 +302,12 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // If TLDraw's brush rectangle is active we're mid-drag-select — the brush
-      // sweeps through empty areas and temporarily clears selection, but we must
-      // not remove hud-layout-active or pointer-events goes to none and pointerup
-      // never reaches TLDraw (brush rect gets stuck permanently).
-      // Note: brush lives on TLInstance (getInstanceState), NOT TLInstancePageState
-      // (getCurrentPageState). The old getCurrentPageState().brush check was always
-      // undefined → the guard never fired.
+      // Never remove hud-layout-active while the pointer is down or a brush
+      // is active. Removing it kills pointer-events on the overlay canvas,
+      // which means TLDraw never receives pointerup — the state machine
+      // gets permanently stuck thinking the button is pressed.
       if (editor.getInstanceState().brush != null) return
+      if (editor.inputs.isPointing) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
@@ -320,6 +318,9 @@ export function FleetHUD({
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
     let unsub: (() => void) | null = null
+    // Re-check on pointerup: the isPointing guard blocks removal during
+    // active interactions. After release, we need to re-evaluate.
+    const onPointerUp = () => checkSelection()
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
         checkSelection()
@@ -327,18 +328,18 @@ export function FleetHUD({
           for (const [, to] of Object.values(changes.updated)) {
             const typeName = (to as any).typeName
             if (typeName === 'instance_page_state') {
-              // Selection changed — re-check (guard will block if brush is active)
               checkSelection()
               return
             }
             if (typeName === 'instance' && (to as any).brush == null) {
-              // Brush just ended — guard would have blocked during-brush; now it's safe
-              // to re-evaluate selection and update the class.
               checkSelection()
               return
             }
           }
         }, { scope: 'session', source: 'all' })
+        // Listen for pointerup on the HUD canvas so checkSelection runs
+        // after isPointing goes false.
+        el.addEventListener('pointerup', onPointerUp, true)
       } else {
         rafId = requestAnimationFrame(trySubscribe)
       }
@@ -348,6 +349,7 @@ export function FleetHUD({
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
+      el.removeEventListener('pointerup', onPointerUp, true)
       el.classList.remove('hud-layout-active')
     }
   }, [expanded])
