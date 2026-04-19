@@ -42,6 +42,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 import { chatInsertBus } from './FleetPillShape'
+import { setVoiceAccumulator, clearVoiceAccumulator } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -647,6 +648,34 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       // Focus the editor
       view.focus()
 
+      // Wire voice accumulator: Right Shift → dictate into this note.
+      // Track anchor position per recording session so we only replace voice-filled text.
+      let voiceAnchorPos: number | null = null
+      let lastVoiceLen = 0
+      const onVoiceUpdate = (text: string) => {
+        const v = cmViewRef.current
+        if (!v) return
+        if (voiceAnchorPos === null) {
+          // First update of this recording session: snapshot cursor position
+          voiceAnchorPos = v.state.selection.main.head
+          lastVoiceLen = 0
+        }
+        const from = voiceAnchorPos
+        const to = voiceAnchorPos + lastVoiceLen
+        v.dispatch({
+          changes: { from, to, insert: text },
+          selection: { anchor: from + text.length },
+        })
+        lastVoiceLen = text.length
+        // EditorView.updateListener fires automatically and saves to shape props
+      }
+      const onVoiceStop = () => {
+        // Recording stopped — next session starts a fresh anchor
+        voiceAnchorPos = null
+        lastVoiceLen = 0
+      }
+      setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+
       // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
       if (useVim && pendingEntryMode && cm) {
         const mode = pendingEntryMode
@@ -660,6 +689,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       return () => {
         container.removeEventListener('keydown', captureTab, true)
+        clearVoiceAccumulator(onVoiceUpdate)
         view.destroy()
         cmViewRef.current = null
         setIsVimInsert(false)

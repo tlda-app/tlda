@@ -211,6 +211,11 @@ let _activeAgentNames = {}
 let _activeAgentColor = null
 let _activeSendFn = null
 
+// Accumulator target — alternative to _activeTextarea for code editors etc.
+// When set, fillTextarea() calls onUpdate instead of writing to a DOM element.
+// { onUpdate(text), onSend(text)|null, onStop()|null, label } | null
+let _accumulator = null
+
 const DOUBLE_TAP_MS = 350
 
 const _micChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('fleet-voice-mic') : null
@@ -422,7 +427,54 @@ export function clearVoiceTarget(textarea) {
   }
 }
 
+// --- Accumulator target ---
+// An alternative to setVoiceTarget for non-textarea editors (CodeMirror etc).
+// onUpdate(text) receives the post-processed spoken text so far.
+// onSend(text)   called when the "send" voice keyword is detected (optional).
+// onStop()       called when recording stops, so caller can reset cursor anchor (optional).
+// label          shown in HUD, e.g. 'note'.
+export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
+  const wasRecording = _recording
+  // Sync teardown — no getUserMedia cycle needed (accumulator switch is cheap)
+  if (_recognition) {
+    try {
+      _recognition.onresult = null
+      _recognition.onend = null
+      _recognition.onerror = null
+      _recognition.onsoundstart = null
+      _recognition.abort()
+    } catch {}
+    _recognition = null
+  }
+  clearTimeout(_watchdogTimer); _watchdogTimer = null
+  clearTimeout(_sessionTimer); _sessionTimer = null
+  clearInterval(_sleepDetectInterval); _sleepDetectInterval = null
+  _recording = false
+  // Clear textarea target if one is set
+  if (_inputListeners && _activeTextarea) {
+    _activeTextarea.removeEventListener('input', _inputListeners.input)
+    _activeTextarea.removeEventListener('click', _inputListeners.click)
+    _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
+    _inputListeners = null
+  }
+  _activeTextarea = null
+  _state = 'edit'
+  _generation++
+  _lastFinals = []
+  _left = _interim = _right = ''
+  _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
+  if (wasRecording) startRecording()
+}
+
+export function clearVoiceAccumulator(onUpdate) {
+  if (_accumulator && _accumulator.onUpdate === onUpdate) {
+    _accumulator = null
+    if (_recording) stopRecording()
+  }
+}
+
 function targetLabel() {
+  if (_accumulator) return _accumulator.label || 'note'
   if (_activeSendTargets.length === 0) return null
   return _activeSendTargets
     .map(id => _activeAgentNames[id] || id.replace('fleet:', ''))
@@ -432,6 +484,12 @@ function targetLabel() {
 // --- Fill textarea with transcription ---
 
 function fillTextarea(text) {
+  if (_accumulator) {
+    // Accumulator mode: deliver post-processed spoken text to the callback.
+    // The caller (CodeMirror, etc.) manages cursor/insertion itself.
+    _accumulator.onUpdate(postProcessTranscript(_left + _interim))
+    return
+  }
   const ta = _activeTextarea
   if (!ta) return
   _filling = true
@@ -521,6 +579,8 @@ function _setupRecognition() {
             _activeTextarea.style.height = 'auto'
             _activeTextarea.dispatchEvent(new Event('input', { bubbles: true }))
             _filling = false
+          } else if (_accumulator) {
+            _accumulator.onUpdate('')
           }
           showHud('voice reset — recognition was stuck', '#c8956a')
           fadeHud(3000)
@@ -569,6 +629,22 @@ function _setupRecognition() {
       const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
       if (sendMatch) {
         const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
+        if (cleanText && _accumulator && _accumulator.onSend) {
+          // Accumulator send — deliver committed text to onSend callback
+          _state = 'edit'
+          _generation++
+          _lastFinals = []
+          _left = _interim = _right = ''
+          _accumulator.onSend(cleanText)
+          showHud('sent', '#7ab8a0')
+          fadeHud(2500)
+          if (_recording && _recognition) {
+            _editStopped = true
+            try { _recognition.stop() } catch {}
+          }
+          setTimeout(() => { if (_recording) showRecordingHud() }, 2600)
+          return
+        }
         if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
@@ -844,7 +920,7 @@ function startRecording() {
   if (_recording) return
   if (!SpeechRecognition) return
 
-  if (!_activeTextarea) {
+  if (!_activeTextarea && !_accumulator) {
     showHud('no chat focused', '#c8956a')
     fadeHud(2000)
     return
@@ -910,6 +986,9 @@ function stopRecording() {
     _recognition = null
   }
 
+  // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
+  if (_accumulator?.onStop) _accumulator.onStop()
+
   const who = targetLabel()
   showHud(who ? `paused → ${who}` : 'paused', '#9370db')
   fadeHud(4000)
@@ -941,6 +1020,7 @@ async function hardResetVoice() {
   // Reset every bit of state the speech state machine cares about.
   _recording = false
   _state = 'edit'
+  _accumulator = null
   _left = _interim = _right = ''
   _editStopped = false
   _filling = false
@@ -1149,7 +1229,10 @@ export { sendCurrentText, stopRecording }
 // --- State queries ---
 
 export function isRecording() { return _recording }
-export function getTranscript() { return _activeTextarea ? _activeTextarea.value : '' }
+export function getTranscript() {
+  if (_accumulator) return postProcessTranscript(_left + _interim)
+  return _activeTextarea ? _activeTextarea.value : ''
+}
 export function addVocabReplacement(pattern, replacement) {
   VOCAB_REPLACEMENTS.push([pattern, replacement])
 }
