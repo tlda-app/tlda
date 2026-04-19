@@ -302,16 +302,23 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // During drag-box select, TLDraw's brush sweeps empty areas and temporarily
-      // clears selection. Don't remove hud-layout-active mid-brush or
-      // pointer-events goes none and pointerup never reaches TLDraw (brush stuck).
-      if (editor.isIn('select.brushing')) return
+      // Never toggle the class while a pointer is held down. TLDraw's own state
+      // machine calls selectNone() during pointing_canvas.onEnter, which would
+      // remove hud-layout-active and kill pointer-events on the canvas before
+      // the brush can start (or mid-drag). Re-evaluate on pointerup instead.
+      if (editor.inputs.isPointing) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
       el.classList.toggle('hud-layout-active', hasFleetSelected)
     }
+
+    // After any pointer interaction, re-evaluate selection state.
+    // The store listener may not fire on pointerup if selection didn't change
+    // (e.g. brush selected nothing → selectNone() was already empty).
+    const onPointerUp = () => checkSelection()
+    window.addEventListener('pointerup', onPointerUp, { capture: true })
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
@@ -336,6 +343,7 @@ export function FleetHUD({
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
+      window.removeEventListener('pointerup', onPointerUp, { capture: true })
       el.classList.remove('hud-layout-active')
     }
   }, [expanded])
