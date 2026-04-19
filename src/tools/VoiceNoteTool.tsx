@@ -14,6 +14,9 @@ import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAncho
 let _pendingTranscript = ''
 let _stopRecording: (() => void) | null = null
 let _pendingPlacement: { point: { x: number; y: number }; editor: any } | null = null
+// Set when rec.onend fires before the user has tapped to place.
+// Signals onPointerUp to commit immediately rather than waiting for onend.
+let _recordingEnded = false
 
 export function setPendingVoiceTranscript(text: string) {
   _pendingTranscript = text
@@ -29,6 +32,11 @@ export function appendVoiceTranscript(text: string) {
 
 export function clearVoiceTranscript() {
   _pendingTranscript = ''
+  _recordingEnded = false
+}
+
+export function markRecordingEnded() {
+  _recordingEnded = true
 }
 
 export function setPendingPlacement(point: { x: number; y: number }, editor: any) {
@@ -37,6 +45,10 @@ export function setPendingPlacement(point: { x: number; y: number }, editor: any
 
 export function clearPendingPlacement() {
   _pendingPlacement = null
+}
+
+export function hasPendingPlacement() {
+  return _pendingPlacement !== null
 }
 
 export function commitVoiceNote() {
@@ -123,7 +135,14 @@ export class VoiceNoteTool extends StateNode {
     if (_stopRecording) { _stopRecording(); _stopRecording = null }
 
     editor.setCurrentTool('select')
-    // Shape creation happens in commitVoiceNote(), called from rec.onend in DocumentPanel
+
+    // If rec.onend already fired before this tap (e.g. silence timeout caused
+    // recognition to stop early), onend won't fire again — commit immediately.
+    if (_recordingEnded) {
+      _recordingEnded = false
+      commitVoiceNote()
+    }
+    // Otherwise, shape creation happens in commitVoiceNote(), called from rec.onend
   }
 
   override onKeyDown = (info: any) => {

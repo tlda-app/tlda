@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
-import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote } from './tools/VoiceNoteTool'
+import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote, markRecordingEnded, hasPendingPlacement } from './tools/VoiceNoteTool'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
@@ -804,7 +804,14 @@ function VoiceNoteButtonInner() {
       }
     }
     rec.onend = () => {
-      commitVoiceNote()
+      // If user has already tapped to place, commit now. Otherwise the recording
+      // ended before placement (e.g. silence timeout) — mark the flag so
+      // onPointerUp can commit when the user eventually taps.
+      if (hasPendingPlacement()) {
+        commitVoiceNote()
+      } else {
+        markRecordingEnded()
+      }
       if (recRef.current === rec) recRef.current = null
     }
     rec.start()
