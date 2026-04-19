@@ -24,6 +24,9 @@ import {
   respawnAgent as _respawnAgent,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
+  injectOptimisticEvent as _injectOptimisticEvent,
+  updateOptimisticEvent as _updateOptimisticEvent,
+  reconcileOptimistic as _reconcileOptimistic,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -638,4 +641,7 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
 export const sendMessage = _sendMessage
 export const respawnAgent = _respawnAgent
 export const spawnAgent = _spawnAgent
+export const injectOptimisticEvent = _injectOptimisticEvent
+export const updateOptimisticEvent = _updateOptimisticEvent
+export const reconcileOptimistic = _reconcileOptimistic
 export { loadBefore, fetchHistory }

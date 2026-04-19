@@ -10,9 +10,10 @@
  * The stroke itself is unchanged — it stays as a freehand highlight.
  */
 
-import type { Editor } from 'tldraw'
+import { createShapeId, type Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
-import { chatInsertBus } from './shapes/FleetPillShape'
+import { dropPillOnTarget } from './shapes/FleetPillShape'
+import { dragCoordinator } from './shapes/dragCoordinator'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -666,14 +667,55 @@ function showSourceContextCard(
     const displayText = (first?.content?.slice(0, 40) || 'highlight').replace(/[«»]/g, '')
     const token = `«highlight:${displayText}#${shapeId}»`
 
+    let dragState: { pillId: string | null; startX: number; startY: number; started: boolean } | null = null
+
     card.addEventListener('pointerdown', (e) => {
       e.stopPropagation()
       e.preventDefault()
-      // Insert token into chat via chatInsertBus (broadcast to all chats)
-      chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token } }))
-      card.style.opacity = '0.5'
-      setTimeout(() => { card.style.opacity = '1' }, 300)
+      dragState = { pillId: null, startX: e.clientX, startY: e.clientY, started: false }
+
+      dragCoordinator.claim(
+        // onMove
+        (ev: PointerEvent) => {
+          if (!dragState) return
+          const dx = ev.clientX - dragState.startX
+          const dy = ev.clientY - dragState.startY
+          if (!dragState.started) {
+            if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return
+            dragState.started = true
+            const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            const pillId = createShapeId()
+            editor.run(() => {
+              editor.createShape({
+                id: pillId,
+                type: 'fleet-pill' as any,
+                x: pagePos.x,
+                y: pagePos.y,
+                props: { w: 80, h: 18, pillType: 'highlight', value: shapeId, displayName: displayText, color: '#e8a030' },
+              })
+            }, { history: 'ignore' })
+            dragState.pillId = pillId as unknown as string
+            editor.cancel()
+            return
+          }
+          if (dragState.pillId) {
+            const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            editor.run(() => {
+              editor.updateShape({ id: dragState!.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 40, y: pagePos.y - 9 })
+            }, { history: 'ignore' })
+          }
+        },
+        // onUp
+        (ev: PointerEvent) => {
+          if (!dragState?.pillId) { dragState = null; return }
+          const pillId = dragState.pillId
+          dropPillOnTarget(editor, pillId as any, 'highlight', shapeId!, displayText, token)
+          try { editor.run(() => { editor.deleteShapes([pillId as any]) }, { history: 'ignore' }) } catch {}
+          dragState = null
+        },
+      )
     })
+    document.body.appendChild(card)
     return card // skip the click-to-dismiss below
   }
 

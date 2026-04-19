@@ -30,7 +30,7 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent, reconcileOptimistic } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -1966,7 +1966,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const handler = (e: Event) => {
       const { chatId, text } = (e as CustomEvent).detail
-      if (chatId !== shape.id) return
+      if (chatId && chatId !== shape.id) return // skip if targeted to a different chat; accept broadcasts (no chatId)
       const ta = inputRef.current as HTMLTextAreaElement | null
       if (!ta) return
       const pos = ta.selectionStart ?? ta.value.length
@@ -2387,7 +2387,18 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
-                    // Optimistic send: clear immediately, retry on failure
+                    // Inject optimistic event immediately so the message appears in history
+                    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                    injectOptimisticEvent({
+                      _tempId: tempId,
+                      type: 'chat',
+                      event_type: 'chat',
+                      from: getHumanId(),
+                      to: sendTargets[0],
+                      text,
+                      timestamp: new Date().toISOString(),
+                      read: true,
+                    })
                     ta.value = ''
                     ta.style.height = 'auto'
                     resetTranscript()
@@ -2399,10 +2410,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
                         sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
-                      ).then((responses: Response[]) => {
-                        if (!responses.every(r => r.ok)) throw new Error('send failed')
+                      ).then((results: {ok: boolean, event_id: number}[]) => {
+                        if (!results.every(r => r.ok)) throw new Error('send failed')
+                        reconcileOptimistic(tempId, results[0]?.event_id)
                       }).catch(() => {
-                        if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                        if (attempt < 3) {
+                          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                        } else {
+                          updateOptimisticEvent(tempId, { _failed: true })
+                        }
                       })
                     }
                     sendWithRetry(1)

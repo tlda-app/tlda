@@ -558,14 +558,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
-      const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.filter(a => a.id !== agent.id).map(a => a.friendly_name).filter(Boolean)])
-      if (usedNames.has(newName)) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
+      const conflict = fleetStore?.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      if (conflict || newName === SERVER_OWNER_NAME) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
     }
-    agent.friendly_name = newName || undefined
-    if (fleetStore) fleetStore.upsertAgent(agent)
+    // Use direct SQL so clearing a name (newName = "") actually sets NULL
+    // rather than being COALESCE'd back to the old value in upsertAgent.
+    fleetStore?.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
     broadcastState()
-    res.json({ ok: true, agent: agent.id, name: newName })
+    res.json({ ok: true, agent: agent.id, name: newName || null })
   })
 
   // --- POST /api/label ---

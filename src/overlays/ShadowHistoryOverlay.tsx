@@ -36,28 +36,10 @@ interface Props {
 }
 
 export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  // Listen for wheel-activated events
-  const [wheelActivated, setWheelActivated] = useState(false)
-  useEffect(() => {
-    const handler = () => setWheelActivated(true)
-    window.addEventListener('shadow-scrubber-activate', handler)
-    return () => window.removeEventListener('shadow-scrubber-activate', handler)
-  }, [])
-
-  // Only show when actively scrubbing or wheel-activated
-  const isActive = activeIdx >= 0 || wheelActivated
-  if (versions.length < 2 || !isActive) return null
-
-  // Scrubber: left = oldest, right = newest/current
-  // We map slider position to versions like this:
-  //   slider 0         = current (activeIdx -1)
-  //   slider 1         = versions[0] (newest snapshot)
-  //   slider 2         = versions[1]
-  //   ...
-  //   slider versions.length = versions[versions.length-1] (oldest)
-  // So slider max = versions.length, slider value = activeIdx + 1 (or 0 for current)
-
-  const sliderMax = versions.length  // 0 = current, 1..N = snapshot N-1
+  const [side, setSide] = useState<'left' | 'right'>(() =>
+    (localStorage.getItem('tlda-shadow-side') as 'left' | 'right') || 'left'
+  )
+  const sliderMax = versions.length
   const sliderVal = activeIdx < 0 ? 0 : activeIdx + 1
 
   const handleRange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -70,6 +52,9 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     const newSlider = Math.max(0, Math.min(sliderMax, sliderVal + dir))
     onScrub(newSlider <= 0 ? -1 : newSlider - 1)
   }, [sliderVal, sliderMax, onScrub])
+
+  // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
+  const isHidden = versions.length < 2 || activeIdx < 0
 
   const isCurrent = activeIdx < 0
   const activeVersion = activeIdx >= 0 && activeIdx < versions.length ? versions[activeIdx] : null
@@ -96,6 +81,7 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
   return (
     <div
       className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
+      style={isHidden ? { display: 'none' } : undefined}
       onPointerDown={e => e.stopPropagation()}
       onPointerUp={e => e.stopPropagation()}
     >
@@ -128,6 +114,17 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
       <span className="shadow-scrubber-pos">{pos}</span>
       <span className="shadow-scrubber-label">{labelText}</span>
 
+      <button
+        className="shadow-scrubber-side"
+        onClick={() => {
+          const next = side === 'left' ? 'right' : 'left'
+          setSide(next)
+          localStorage.setItem('tlda-shadow-side', next)
+          // Re-scrub to reposition shapes
+          if (activeIdx >= 0) onScrub(activeIdx)
+        }}
+        title={`Old version on ${side} — click to switch`}
+      >{side === 'left' ? '◁' : '▷'}</button>
       <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
         ×
       </button>

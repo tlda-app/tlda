@@ -154,17 +154,39 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
-  const resp = fetch(`${FLEET}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  resp.then(r => r.json()).then(d => {
-    console.log(`[chat-send] to=${to} id=${d.event_id} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-  }).catch(() => {
+  try {
+    const r = await fetch(`${FLEET}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const d = await r.json().catch(() => ({}))
+    console.log(`[chat-send] to=${to} id=${d.event_id} ok=${r.ok} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+    return { ok: r.ok, event_id: d.event_id, error: d.error }
+  } catch (e) {
     console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
-  })
-  return resp
+    return { ok: false, event_id: null }
+  }
+}
+
+/** Inject an optimistic (locally-authored) event into the event list immediately. */
+export function injectOptimisticEvent(event) {
+  _events.push(event)
+  if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
+  notify('messages', event)
+}
+
+/** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
+export function updateOptimisticEvent(tempId, updates) {
+  const ev = _events.find(e => e._tempId === tempId)
+  if (ev) { Object.assign(ev, updates); notify('messages', null) }
+}
+
+/** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
+export function reconcileOptimistic(tempId, serverEventId) {
+  const ev = _events.find(e => e._tempId === tempId)
+  // SSE handler may have already reconciled — only act if _tempId still present
+  if (ev) { ev._dbId = serverEventId; delete ev._tempId; notify('messages', null) }
 }
 
 export async function respawnAgent(id) {
@@ -368,6 +390,22 @@ export function connect() {
         if (data.type === 'preamble' && data.macros) {
           setActiveMacros(data.macros)
           return
+        }
+        // Reconcile SSE echo with a pending optimistic event.
+        // The SSE arrives before sendMessage's r.json() resolves, so we can't
+        // rely on _reconciledIds. Instead match by text + sender.
+        if (data.type === 'chat' && data.id && (data.from_id || data.from) === _humanId) {
+          const optimistic = _events.find(e =>
+            e._tempId && e.text === data.text && e.from === _humanId &&
+            Math.abs(new Date(e.timestamp).getTime() - new Date(data.timestamp || Date.now()).getTime()) < 10000
+          )
+          if (optimistic) {
+            optimistic._dbId = data.id
+            delete optimistic._tempId
+            if (data.id > _lastEventId) _lastEventId = data.id
+            notify('messages', null)
+            return
+          }
         }
         const event = convertChatEvent(data)
         _events.push(event)

@@ -935,6 +935,14 @@ function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
+    // Reject if another live agent already holds this name
+    if (name) {
+      const nameRows = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').all(name, agentId)
+      if (nameRows.length > 0) {
+        error(`Name "${name}" already in use by ${nameRows[0].id}`)
+        return
+      }
+    }
     const agent = {
       id: agentId,
       friendly_name: name || existing?.friendly_name || null,

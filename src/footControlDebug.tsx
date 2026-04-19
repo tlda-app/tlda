@@ -91,7 +91,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   if (collapsed) {
     return (
       <div style={{
-        position: 'fixed', top: 16, left: 16, zIndex: 9999,
+        position: 'fixed', top: 6, left: 120, zIndex: 9999,
         background: 'rgba(0,0,0,0.82)', color: '#e5e7eb',
         padding: '6px 12px', borderRadius: 20, fontSize: 12,
         fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 8,
@@ -113,7 +113,7 @@ export function FootControlDebug({ footController, clickDetector, visible = true
   // ── Expanded panel ────────────────────────────────────────────────────────
   return (
     <div style={{
-      position: 'fixed', top: 16, left: 16, zIndex: 9999,
+      position: 'fixed', top: 6, left: 120, zIndex: 9999,
       background: 'rgba(0,0,0,0.88)', color: '#e5e7eb',
       padding: '10px 14px', borderRadius: 10, fontSize: 12,
       fontFamily: 'monospace', width: 272,

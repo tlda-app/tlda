@@ -158,17 +158,13 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
           TOC
         </button>
-        {!isHtml && (
-          <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-            History
-          </button>
-        )}
+        {/* History tab removed — version wheel + bottom scrubber replaces it */}
         <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           Notes
         </button>
       </div>
       {tab === 'toc' && <TocTab />}
-      {tab === 'history' && !isHtml && <HistoryTab />}
+      {/* HistoryTab removed */}
       {tab === 'notes' && <NotesTab />}
       <ZoneWidthSlider />
     </div>

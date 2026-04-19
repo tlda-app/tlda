@@ -42,8 +42,8 @@ body {
 
 .version-stamp {
   position: fixed;
-  top: 52px;
-  left: 16px;
+  top: 6px;
+  left: 6px;
   z-index: 999;
   display: flex;
   flex-direction: column;

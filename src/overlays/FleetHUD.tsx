@@ -417,15 +417,6 @@ export function FleetHUD({
         ref={hudRef}
         style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
       >
-        <div className="fleet-hud-controls" style={{ position: 'fixed', top: 4, left: 4 }}>
-          <button
-            className="fleet-hud-close"
-            onClick={() => { setExpanded(false); localStorage.setItem('fleet-hud-expanded', '0') }}
-            title="Collapse"
-          >
-            ×
-          </button>
-        </div>
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={fleetBounds}

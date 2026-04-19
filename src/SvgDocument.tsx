@@ -278,26 +278,42 @@ function ViewPinBadge({ docName }: { docName: string }) {
  */
 const MAX_VISIBLE_VERSIONS = 5
 
-function VersionStamp({ docName, shadowVersions, shadowActiveIdx, onShadowScrub }: {
-  docName: string
-  shadowVersions: Array<{ hash: string; timestamp: number }>
-  shadowActiveIdx: number
-  onShadowScrub: (idx: number) => void
-}) {
-  // Use shadow versions directly — one source of truth
-  const versions = shadowVersions.slice(0, MAX_VISIBLE_VERSIONS)
-  // Shadow uses -1 for current, 0 for newest snapshot. Wheel uses 0 for current.
-  const activeIdx = shadowActiveIdx < 0 ? 0 : shadowActiveIdx + 1
+function VersionStamp({ docName }: { docName: string }) {
+  const [versions, setVersions] = useState<Array<{ hash: string; timestamp: string | number }>>([])
+  const [activeIdx, setActiveIdx] = useState(0)
 
-  const handleClick = useCallback((idx: number) => {
+  const fetchVersions = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${docName}/history/shadow`)
+      if (!res.ok) return
+      const raw = await res.json()
+      const data: Array<{ hash: string; timestamp: number }> = raw.versions || raw
+      if (!data || data.length === 0) return
+      setVersions(data.slice(0, MAX_VISIBLE_VERSIONS))
+      setActiveIdx(0)
+    } catch {}
+  }, [docName])
+
+  useEffect(() => { fetchVersions() }, [fetchVersions])
+  useEffect(() => {
+    return onBuildStatusSignal(() => { setTimeout(fetchVersions, 1000) })
+  }, [fetchVersions])
+
+  const handleClick = useCallback(async (idx: number) => {
     if (idx === 0) {
-      // Click current → return to latest
-      onShadowScrub(-1)
+      if (activeIdx !== 0) {
+        try { await fetch(`/api/projects/${docName}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }) } catch {}
+        setActiveIdx(0)
+      }
       return
     }
-    // Click older version → scrub to it (shadow overlay handles canvas changes)
-    onShadowScrub(idx - 1)
-  }, [onShadowScrub])
+    const v = versions[idx]
+    if (!v) return
+    try {
+      await fetch(`/api/projects/${docName}/history/shadow/${v.hash}/checkout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      setActiveIdx(idx)
+    } catch {}
+  }, [docName, versions, activeIdx])
 
   if (versions.length === 0) return null
 
@@ -788,7 +804,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVersionCount: shadowVersions.length,
     shadowVersions,
     shadowActiveIdx,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions, shadowActiveIdx])
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions])
+  // Note: shadowActiveIdx intentionally excluded from deps — changes to it
+  // should NOT cascade re-renders through PanelContext (causes hooks errors)
 
   // When the fleet HUD overlay is open, hide fleet shapes in the main editor
   // from both rendering AND hit-testing. The overlay renders its own copies.
@@ -1051,7 +1069,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {shadowVersions.length >= 2 && (
+      {false && (
         <ShadowHistoryOverlay
           versions={shadowVersions}
           activeIdx={shadowActiveIdx}
@@ -1083,12 +1101,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
 
-  const versionStampContent = <VersionStamp
-    docName={document.name}
-    shadowVersions={shadowVersions}
-    shadowActiveIdx={shadowActiveIdx}
-    onShadowScrub={handleShadowScrub}
-  />
+  const versionStampContent = <VersionStamp docName={document.name} />
 
   return (
     <>
@@ -1469,7 +1482,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
+    {new URLSearchParams(window.location.search).has('input') && (
+      <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
+    )}
     </>
   )
 }

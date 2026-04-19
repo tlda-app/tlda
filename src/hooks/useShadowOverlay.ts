@@ -84,6 +84,114 @@ export function useShadowOverlay(
     else show()
   }, [visible, hide, show])
 
+  // Track which shadow pages currently exist on the canvas
+  const shadowPagesRef = useRef<Set<number>>(new Set())
+  const activeHashRef = useRef<string | null>(null)
+
+  // Place/remove shadow pages for a visible range. Called on scrub and on scroll.
+  const syncVisibleShadowPages = useCallback(async (hash: string) => {
+    const editor = editorRef.current
+    if (!editor || !hash) return
+
+    const viewport = editor.getViewportPageBounds()
+    const PREFETCH = 1 // extra pages above/below viewport
+
+    // Find which pages are visible
+    const visiblePages: number[] = []
+    for (let i = 0; i < document.pages.length; i++) {
+      const page = document.pages[i]
+      if (page.bounds.y + page.bounds.height < viewport.y - 500) continue
+      if (page.bounds.y > viewport.y + viewport.h + 500) continue
+      visiblePages.push(i + 1) // 1-indexed
+    }
+
+    // Expand by PREFETCH
+    const minPage = Math.max(1, (visiblePages[0] || 1) - PREFETCH)
+    const maxPage = Math.min(document.pages.length, (visiblePages[visiblePages.length - 1] || 1) + PREFETCH)
+    const targetPages = new Set<number>()
+    for (let p = minPage; p <= maxPage; p++) targetPages.add(p)
+
+    // Remove pages no longer needed
+    const toRemove: number[] = []
+    for (const p of shadowPagesRef.current) {
+      if (!targetPages.has(p)) toRemove.push(p)
+    }
+    if (toRemove.length > 0) {
+      try {
+        editor.run(() => {
+          for (const p of toRemove) {
+            const shapeId = `${SHADOW_SHAPE_PREFIX}${p}` as TLShapeId
+            const labelId = `${SHADOW_SHAPE_PREFIX}label-${p}` as TLShapeId
+            deleteSvgText(shapeId as string)
+            try { editor.deleteShapes([shapeId, labelId]) } catch {}
+            shapeIdSetRef.current.delete(shapeId)
+            shapeIdSetRef.current.delete(labelId)
+            shadowPagesRef.current.delete(p)
+          }
+        }, { history: 'ignore' })
+      } catch {}
+    }
+
+    // Add pages that need to appear
+    const toAdd: number[] = []
+    for (const p of targetPages) {
+      if (!shadowPagesRef.current.has(p)) toAdd.push(p)
+    }
+    if (toAdd.length === 0) return
+
+    const placeSide = typeof localStorage !== 'undefined' ? localStorage.getItem('tlda-shadow-side') || 'left' : 'left'
+
+    // Fetch and place one at a time to avoid overwhelming React
+    for (const pageNum of toAdd) {
+      const url = shadowSnapshotPageUrl(docName, hash, pageNum)
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) continue
+        const svgText = await resp.text()
+        const dims = parseSvgDimensions(svgText)
+        const currentPage = document.pages[pageNum - 1]
+        if (!currentPage) continue
+
+        const scale = TARGET_WIDTH / dims.width
+        const displayW = TARGET_WIDTH
+        const displayH = dims.height * scale
+        const oldX = placeSide === 'right'
+          ? currentPage.bounds.x + currentPage.bounds.width + OLD_PAGE_GAP
+          : currentPage.bounds.x - displayW - OLD_PAGE_GAP
+        const oldY = currentPage.bounds.y
+
+        const shapeId = `${SHADOW_SHAPE_PREFIX}${pageNum}` as TLShapeId
+        setSvgText(shapeId, svgText)
+        svgViewBoxStore.set(shapeId, dims.viewBox)
+
+        editor.run(() => {
+          editor.createShape({
+            id: shapeId,
+            type: 'svg-page' as any,
+            x: oldX, y: oldY,
+            isLocked: true, opacity: 0.9,
+            props: { w: displayW, h: displayH, version: 0 },
+          })
+          const labelId = `${SHADOW_SHAPE_PREFIX}label-${pageNum}` as TLShapeId
+          editor.createShape({
+            id: labelId,
+            type: 'text',
+            x: oldX, y: oldY - 26,
+            isLocked: true, opacity: 0.35,
+            props: {
+              richText: toRichText(formatLabelDate(hash)),
+              font: 'sans', size: 's', color: 'grey', scale: 0.8,
+            },
+          })
+          shapeIdSetRef.current.add(shapeId)
+          shapeIdSetRef.current.add(labelId)
+        }, { history: 'ignore' })
+
+        shadowPagesRef.current.add(pageNum)
+      } catch {}
+    }
+  }, [docName, document, editorRef, shapeIdSetRef])
+
   // When activeIdx changes, update the canvas
   const handleScrub = useCallback(async (idx: number) => {
     const v = versionsRef.current
@@ -92,7 +200,8 @@ export function useShadowOverlay(
     // -1 = current (no overlay)
     if (idx < 0) {
       removeOldShapes(editorRef.current, overlayRef, shapeIdSetRef, shapeIdsArrayRef, document)
-      // Restore camera bounds
+      shadowPagesRef.current.clear()
+      activeHashRef.current = null
       if (updateCameraBoundsRef.current && document.pages.length > 0) {
         const bounds = document.pages.reduce(
           (acc, page) => acc.union(page.bounds),
@@ -109,16 +218,36 @@ export function useShadowOverlay(
     const editor = editorRef.current
     if (!editor) return
 
-    setLoading(true)
-    try {
-      await placeOldPages(
-        editor, docName, version.hash, document,
-        overlayRef, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef,
-      )
-    } finally {
-      setLoading(false)
+    // Clear old pages if switching versions
+    if (activeHashRef.current && activeHashRef.current !== version.hash) {
+      removeOldShapes(editor, overlayRef, shapeIdSetRef, shapeIdsArrayRef, document)
+      shadowPagesRef.current.clear()
     }
-  }, [docName, document, editorRef, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef])
+    activeHashRef.current = version.hash
+
+    // Defer shape creation to avoid React hooks error —
+    // setActiveIdx above triggers a re-render; creating shapes during
+    // that render cascade causes "fewer hooks" errors in TLDraw internals
+    setTimeout(async () => {
+      setLoading(true)
+      try {
+        await syncVisibleShadowPages(version.hash)
+      } finally {
+        setLoading(false)
+      }
+    }, 50)
+  }, [docName, document, editorRef, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef, syncVisibleShadowPages])
+
+  // Sync shadow pages on camera scroll
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor || !activeHashRef.current) return
+    const hash = activeHashRef.current
+    const unsub = editor.store.listen(() => {
+      if (activeHashRef.current) syncVisibleShadowPages(activeHashRef.current)
+    }, { source: 'user', scope: 'session' })
+    return unsub
+  })
 
   // Cleanup on unmount
   useEffect(() => {
@@ -192,56 +321,68 @@ async function placeOldPages(
 
   const createdIds: TLShapeId[] = []
 
-  editor.store.mergeRemoteChanges(() => {
-    for (const op of fetchResults) {
-      const currentPage = document.pages[op.pageNum - 1]
-      if (!currentPage) continue
+  try {
+    editor.run(() => {
+      for (const op of fetchResults) {
+        const currentPage = document.pages[op.pageNum - 1]
+        if (!currentPage) continue
 
-      const shapeId = `${SHADOW_SHAPE_PREFIX}${op.pageNum}` as TLShapeId
+        const shapeId = `${SHADOW_SHAPE_PREFIX}${op.pageNum}` as TLShapeId
 
-      // Scale old page to match current page width
-      const scale = TARGET_WIDTH / op.width
-      const displayW = TARGET_WIDTH
-      const displayH = op.height * scale
+        // Scale old page to match current page width
+        const scale = TARGET_WIDTH / op.width
+        const displayW = TARGET_WIDTH
+        const displayH = op.height * scale
 
-      // Position to the left of current page
-      const oldX = currentPage.bounds.x - displayW - OLD_PAGE_GAP
-      const oldY = currentPage.bounds.y
+        // Position to the left or right of current page based on preference
+        const placeSide = typeof localStorage !== 'undefined' ? localStorage.getItem('tlda-shadow-side') || 'left' : 'left'
+        const oldX = placeSide === 'right'
+          ? currentPage.bounds.x + currentPage.bounds.width + OLD_PAGE_GAP
+          : currentPage.bounds.x - displayW - OLD_PAGE_GAP
+        const oldY = currentPage.bounds.y
 
-      setSvgText(shapeId, op.svgText)
-      svgViewBoxStore.set(shapeId, op.viewBox)
+        setSvgText(shapeId, op.svgText)
+        svgViewBoxStore.set(shapeId, op.viewBox)
 
-      editor.createShapes([{
-        id: shapeId,
-        type: 'svg-page' as any,
-        x: oldX,
-        y: oldY,
-        isLocked: true,
-        opacity: 0.9,
-        props: { w: displayW, h: displayH, version: 0 },
-      }])
-      createdIds.push(shapeId)
+        editor.createShape({
+          id: shapeId,
+          type: 'svg-page' as any,
+          x: oldX,
+          y: oldY,
+          isLocked: true,
+          opacity: 0.9,
+          props: { w: displayW, h: displayH, version: 0 },
+        })
+        createdIds.push(shapeId)
 
-      // "Earlier" label above old page
-      const labelId = `${SHADOW_SHAPE_PREFIX}label-${op.pageNum}` as TLShapeId
-      editor.createShapes([{
-        id: labelId,
-        type: 'text',
-        x: oldX,
-        y: oldY - 26,
-        isLocked: true,
-        opacity: 0.35,
-        props: {
-          richText: toRichText(formatLabelDate(hash)),
-          font: 'sans',
-          size: 's',
-          color: 'grey',
-          scale: 0.8,
-        },
-      }])
-      createdIds.push(labelId)
+        // "Earlier" label above old page
+        const labelId = `${SHADOW_SHAPE_PREFIX}label-${op.pageNum}` as TLShapeId
+        editor.createShape({
+          id: labelId,
+          type: 'text',
+          x: oldX,
+          y: oldY - 26,
+          isLocked: true,
+          opacity: 0.35,
+          props: {
+            richText: toRichText(formatLabelDate(hash)),
+            font: 'sans',
+            size: 's',
+            color: 'grey',
+            scale: 0.8,
+          },
+        })
+        createdIds.push(labelId)
+      }
+    }, { history: 'ignore' })
+  } catch (e) {
+    console.error('[shadow-overlay] placeOldPages failed:', e)
+    // Clean up any shapes that were created before the error
+    for (const id of createdIds) {
+      try { deleteSvgText(id as string); editor.deleteShapes([id]) } catch {}
     }
-  })
+    return
+  }
 
   // Track overlay state
   overlayRef.current = { shapeIds: createdIds, hash }
