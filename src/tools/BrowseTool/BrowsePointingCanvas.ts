@@ -1,9 +1,12 @@
 import { SelectTool } from 'tldraw'
 import type { TLPointerEventInfo } from 'tldraw'
 
-// PointingCanvas is not in tldraw's public API — retrieve it at runtime from
-// SelectTool's own children list rather than a fragile deep import.
-const PointingCanvasBase = SelectTool.children().find(c => c.id === 'pointing_canvas')!
+// PointingCanvas is not in tldraw's public exports map — retrieve it at runtime
+// from SelectTool's own children list. This is safer than a deep path import:
+// we get exactly the class SelectTool uses (no version mismatch), with no
+// dependency on internal file structure. Throws loudly at module load if missing.
+const PointingCanvasBase = SelectTool.children().find(c => c.id === 'pointing_canvas')
+  ?? (() => { throw new Error('BrowsePointingCanvas: pointing_canvas state not found in SelectTool.children()') })()
 
 /**
  * BrowsePointingCanvas — overrides PointingCanvas.onEnter to skip the immediate
