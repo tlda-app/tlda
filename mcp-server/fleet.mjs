@@ -114,7 +114,14 @@ function getSearchIndex() {
 }
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
-// getFleetStore() is gone. Use fetch() to the dashboard server instead.
+// All server fetches go through fleetFetch — adds a timeout so tool handlers
+// never hang when the server is down. Without this, Claude Code kills the
+// MCP process (SIGKILL) after its own internal timeout.
+const FETCH_TIMEOUT_MS = 10000;
+function fleetFetch(url, opts = {}) {
+  if (!opts.signal) opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  return fetch(url, opts);
+}
 
 // Append-only message log (backup). Fleet store writes are handled by
 // individual handlers (chat, delegate, task_done, register) to avoid
@@ -171,7 +178,7 @@ async function fetchCurrentDocVersion(doc) {
   try {
     const tldaPort = process.env.TLDA_PORT || 5176;
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=1`, {
+    const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=1`, {
       headers,
       signal: AbortSignal.timeout(1500),
     });
@@ -1085,6 +1092,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // Report tool_call status to dashboard (replaces pane scraping for idle detection)
   reportStatus('tool_call', name);
 
+  try {
+
   // ==== Registration & Identity ====
 
   // ---- register ----
@@ -1376,7 +1385,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const health = [];
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
       health.push('tlda: ✘ (unreachable)');
@@ -1545,7 +1554,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (att.path && fs.existsSync(att.path)) {
         try {
           const buf = fs.readFileSync(att.path);
-          const res = await fetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
+          const res = await fleetFetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
             method: 'POST',
             headers: { 'x-filename': encodeURIComponent(att.name) },
             body: buf,
@@ -1598,7 +1607,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let tldaDown = false;
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
       // 401 means tlda is up but auth is required — that's fine, server is running
       if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
     } catch {
@@ -1623,7 +1632,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { reason } = args || {};
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const res = await fetch(`http://127.0.0.1:${tldaPort}/api/terminal-card`, {
+      const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -1763,11 +1772,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // QA gate (own task only — check for QA signatures)
     if (agent === AGENT_ID) {
       try {
-        const qaRes = await fetch(`http://127.0.0.1:${dashPort}/api/qa/status?task_id=${encodeURIComponent(task.id)}`);
+        const qaRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/status?task_id=${encodeURIComponent(task.id)}`);
         const qaStatus = await qaRes.json();
         // Only enforce if QA is configured (has agent IDs) and a report exists
         let qaConfigRes;
-        try { qaConfigRes = await (await fetch(`http://127.0.0.1:${dashPort}/api/qa/config`)).json(); } catch { qaConfigRes = { qa_agent_ids: [] }; }
+        try { qaConfigRes = await (await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`)).json(); } catch { qaConfigRes = { qa_agent_ids: [] }; }
         if (qaConfigRes.qa_agent_ids?.length > 0) {
           if (qaStatus.status === 'no_report') {
             return { content: [{ type: 'text', text: 'Submit a report() first' }], isError: true };
@@ -1845,7 +1854,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Check if QA system is configured
     let qaConfig;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/qa/config`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`);
       qaConfig = await res.json();
     } catch { qaConfig = { qa_agent_ids: [] }; }
     const qaEnabled = qaConfig.qa_agent_ids?.length > 0;
@@ -1917,7 +1926,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Submit report to server
       try {
-        const res = await fetch(`http://127.0.0.1:${dashPort}/api/qa/report`, {
+        const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/report`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ task_id: task.id, agent_id: AGENT_ID, task_type: taskType, fields }),
@@ -1997,7 +2006,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
-        await fetch(`http://127.0.0.1:${dashPort}/api/tasks/done`, {
+        await fleetFetch(`http://127.0.0.1:${dashPort}/api/tasks/done`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agent: AGENT_ID, task_id: task.id, skip_qa: true }),
@@ -2099,7 +2108,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
 
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/qa/sign`, {
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/sign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_id, agent_id: AGENT_ID, verdict, notes }),
@@ -2132,7 +2141,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     let agents;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
       agents = await res.json();
       if (agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents.error}` }], isError: true };
     } catch (e) {
@@ -2165,7 +2174,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     // Fetch tasks to find active task for this agent
     let tasks;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/tasks?active=true`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/tasks?active=true`);
       tasks = await res.json();
     } catch {
       tasks = [];
@@ -2217,7 +2226,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         try {
           const fs = await import('fs')
           const path = await import('path')
-          const resp = await fetch(url)
+          const resp = await fleetFetch(url)
           if (resp.ok) {
             const buf = Buffer.from(await resp.arrayBuffer())
             const ext = path.extname(new URL(url).pathname) || '.png'
@@ -2283,14 +2292,14 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           // Event ID path
           try {
             const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fetch(url)
+            const res = await fleetFetch(url)
             const data = await res.json()
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
               let agents = []
               try {
-                const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
                 const stateData = await stateRes.json()
                 agents = Array.isArray(stateData) ? stateData : []
               } catch {}
@@ -2314,7 +2323,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           // Event ID — look up this event and surrounding activity events (±60s)
           try {
             const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fetch(url)
+            const res = await fleetFetch(url)
             const data = await res.json()
             const anchor = (data.events || [])[0]
             if (anchor) {
@@ -2322,7 +2331,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
               const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
               const agentId = anchor.from
               const url2 = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res2 = await fetch(url2)
+              const res2 = await fleetFetch(url2)
               const data2 = await res2.json()
               activities = (data2.events || []).filter(e => e.type === 'activity')
             }
@@ -2339,7 +2348,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
               const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
               const url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res = await fetch(url)
+              const res = await fleetFetch(url)
               const data = await res.json()
               activities = (data.events || []).filter(e => e.type === 'activity')
             } catch {}
@@ -2357,7 +2366,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
           let agents = []
           try {
-            const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+            const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
             const stateData = await stateRes.json()
             agents = Array.isArray(stateData) ? stateData : []
           } catch {}
@@ -2377,7 +2386,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           const eventId = evIdMatch[1]
           try {
             const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${eventId - 1}&limit=1`
-            const res = await fetch(url)
+            const res = await fleetFetch(url)
             const data = await res.json()
             const ev = (data.events || [])[0]
             if (ev) {
@@ -2391,7 +2400,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
               try {
-                const stateRes = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
+                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
                 const agents = await stateRes.json()
                 const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
                 if (a) agentName = a.friendly_name || a.name || agentName
@@ -2753,7 +2762,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
       let allAgents = [];
       try {
-        const res = await fetch(`http://127.0.0.1:${dashPort_}/api/store/agents`);
+        const res = await fleetFetch(`http://127.0.0.1:${dashPort_}/api/store/agents`);
         if (res.ok) allAgents = await res.json();
       } catch {}
       // Collect all matching agent IDs (friendly_name, session_id)
@@ -2923,7 +2932,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       let url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${pageSize}`;
       if (args.since) url += `&since=${encodeURIComponent(args.since)}`;
       if (args.until) url += `&until=${encodeURIComponent(args.until)}`;
-      const res = await fetch(url);
+      const res = await fleetFetch(url);
       if (!res.ok) return;
       const data = await res.json();
       serverTotal = data.total ?? null;
@@ -3005,7 +3014,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'label_agent') {
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/label`, {
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/label`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: args.agent, labels: args.labels || [] }),
@@ -3025,7 +3034,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/interrupt`, {
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/interrupt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent }),
@@ -3053,7 +3062,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/restart-mcp`, {
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/restart-mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: args.agent }),
@@ -3080,7 +3089,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'roll_call') {
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/roll-call`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/roll-call`);
       const data = await res.json();
       if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
 
@@ -3376,28 +3385,28 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
         // Remove specific wiretap by ID
-        await fetch(`http://127.0.0.1:${dashPort}/api/wiretap/${args.remove}`, { method: 'DELETE' });
+        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${args.remove}`, { method: 'DELETE' });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
       const existing = await res.json();
       for (const tap of existing) {
-        await fetch(`http://127.0.0.1:${dashPort}/api/wiretap/${tap.id}`, { method: 'DELETE' });
+        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${tap.id}`, { method: 'DELETE' });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
 
     // List existing wiretaps if no filter specified
     if (!args.filter) {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
       const taps = await res.json();
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
       const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
     }
 
-    const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
+    const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent: myId, filter: args.filter }),
@@ -3552,6 +3561,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+
+  } catch (err) {
+    process.stderr.write(`[fleet] tool ${name} threw: ${err?.message || err}\n${err?.stack || ''}\n`);
+    return { content: [{ type: 'text', text: `Fleet MCP error (${name}): ${err?.message || err}` }], isError: true };
+  }
 });
 
 const transport = new StdioServerTransport();
@@ -3967,8 +3981,8 @@ setInterval(() => {
   }
 }, 30000); // check every 30s
 
-// Also log signal-based exits (SIGTERM, SIGHUP) for diagnostics.
-for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+// SIGTERM/SIGHUP: exit gracefully (parent wants us dead).
+for (const sig of ['SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: received ${sig}, exiting\n`;
     process.stderr.write(msg);
@@ -3976,3 +3990,20 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
     process.exit(0);
   });
 }
+// SIGINT: log but ignore. Claude Code propagates SIGINT from terminal interrupts
+// (Ctrl+C, Escape). Exiting on SIGINT kills the MCP every time the agent gets
+// interrupted, which is the main cause of "MCP disconnected" errors.
+process.on('SIGINT', () => {
+  process.stderr.write(`[${new Date().toISOString()}] fleet PID ${process.pid}: received SIGINT, ignoring\n`);
+});
+
+// Catch-all exit diagnostics: log every exit with code and reason.
+process.on('exit', (code) => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: process.exit(${code}) — catch-all\n`;
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+process.on('beforeExit', (code) => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: beforeExit(${code}) — event loop drained\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
