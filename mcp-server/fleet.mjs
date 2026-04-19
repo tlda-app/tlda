@@ -592,17 +592,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-    {
-      name: 'reclaim_identity',
-      description: 'Reclaim a fleet identity for the current agent. Use when identity detection got it wrong (e.g. after MCP restart in a shared cwd). Sets this agent\'s fleet ID to the specified one.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          fleet_id: { type: 'string', description: 'The fleet ID to claim (e.g. "fleet:868edc45")' },
-        },
-        required: ['fleet_id'],
-      },
-    },
     // ---- Task Management ----
     {
       name: 'delegate',
@@ -744,18 +733,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           friendly_name: { type: 'string', description: 'Friendly name (e.g. "sims guy", "survival paper")' },
         },
         required: ['agent', 'friendly_name'],
-      },
-    },
-    {
-      name: 'reassign_identity',
-      description: 'Reassign a fleet identity to a different agent. The new agent inherits the old fleet ID, friendly name, tasks, and message history. Use when an agent dies and is replaced by a fresh session. ',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'The new agent to receive the identity (session UUID, name, or friendly name)' },
-          identity: { type: 'string', description: 'The old fleet ID (or friendly name) to reassign' },
-        },
-        required: ['agent', 'identity'],
       },
     },
     {
@@ -1166,7 +1143,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // --- Identity resolution (see fleet-identity.md) ---
-    // Two-tier: AGENT_ID (already known or from $FLEET_ID) → session/name lookup
+    // $FLEET_ID (set by fleet-spawn) is the primary identity signal.
+    // Fallbacks: session ID → agent name → generate new.
     let resolvedFleetId = AGENT_ID || null;
     let identitySource = AGENT_ID ? (process.env.FLEET_ID ? '$FLEET_ID' : 'startup detection') : null;
 
@@ -1425,52 +1403,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
   }
 
-  // ---- reclaim_identity ----
-  if (name === 'reclaim_identity') {
-    const targetFleetId = args.fleet_id;
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
-    let agents = [];
-    try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
-      if (res.ok) agents = await res.json();
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
-    }
-    const state = { agents };
-
-    // Check if a different LIVE agent holds this identity
-    const holder = getAgent(state, targetFleetId);
-    if (holder && agentAlive(holder) && holder.id !== AGENT_ID) {
-      return { content: [{ type: 'text', text: `Cannot inhabit ${targetFleetId} — it's held by a live agent. Kill or cleanup that agent first.` }], isError: true };
-    }
-
-    const oldId = AGENT_ID;
-    const myEntry = getAgent(state, oldId);
-
-    AGENT_ID = targetFleetId;
-
-    // Update ledger
-    ledger.upsertAgent(targetFleetId, CLAUDE_SESSION, myEntry?.cwd || process.env.PWD, myEntry?.friendly_name);
-
-    // Re-register with the new identity via server
-    const inhabRegBody = {
-      id: targetFleetId,
-      name: myEntry?.friendly_name || holder?.friendly_name,
-      session_id: myEntry?.session_id || CLAUDE_SESSION,
-      tmux_session: myEntry?.tmux_session,
-      cwd: myEntry?.cwd || process.env.PWD,
-      labels: myEntry?.labels,
-    };
-    await sendWS('register', inhabRegBody)?.catch(e => process.stderr.write(`[fleet] inhabit register failed: ${e.message}\n`));
-
-    // TODO: Need server endpoint to transfer tasks/messages from oldId to targetFleetId
-    // For now, log the event and let the server handle identity merging
-
-    logEvent({ type: 'inhabit', from: oldId, to: targetFleetId });
-
-    const name_ = myEntry?.friendly_name || holder?.friendly_name || targetFleetId;
-    return { content: [{ type: 'text', text: `Identity changed: ${oldId} → ${targetFleetId} ("${name_}"). Tasks and messages transferred.` }] };
-  }
+  // reclaim_identity removed — tmux-based identity detection handles this automatically
 
   // ==== Task Templates ====
   const TASK_TEMPLATES = {
@@ -2598,67 +2531,6 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     } catch (e) {
       return { content: [{ type: 'text', text: `Rename failed: ${e.message}` }], isError: true };
     }
-  }
-
-  // ---- reassign_identity ----
-  if (name === 'reassign_identity') {
-    const guard = requireManager();
-    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
-    let agents = [];
-    try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
-      if (res.ok) agents = await res.json();
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
-    }
-    const state = { agents };
-
-    const newAgent = getAgent(state, args.agent);
-    if (!newAgent) return { content: [{ type: 'text', text: `Agent ${args.agent} not registered.` }], isError: true };
-    const oldAgent = getAgent(state, args.identity);
-    if (!oldAgent) return { content: [{ type: 'text', text: `Identity ${args.identity} not found.` }], isError: true };
-    if (oldAgent.id === newAgent.id) return { content: [{ type: 'text', text: `Agent already has that identity.` }], isError: true };
-
-    const oldId = oldAgent.id;
-    const newId = newAgent.id;
-
-    // Update this process's identity if we adopted ourselves
-    if (AGENT_ID === newId) { AGENT_ID = oldId; }
-
-    // Update ledger: transfer sessions from newId to oldId
-    ledger.transferSessions(newId, oldId);
-    ledger.upsertAgent(oldId, newAgent.session_id, newAgent.cwd, newAgent.friendly_name || oldAgent.friendly_name);
-
-    // Re-register the merged agent via WS
-    const adoptRegWS = sendWS('register', {
-      id: oldId,
-      name: oldAgent.friendly_name || newAgent.friendly_name,
-      session_id: newAgent.session_id,
-      tmux_session: newAgent.tmux_session,
-      cwd: newAgent.cwd,
-      labels: newAgent.labels,
-    });
-    if (adoptRegWS) await adoptRegWS.catch(e => process.stderr.write(`[fleet] adopt register failed: ${e.message}\n`));
-
-    // Transfer tasks and unread messages from the new agent entry to the old identity
-    await fetch(`http://127.0.0.1:${dashPort}/api/agents/transfer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: newId, to: oldId }),
-    }).catch(e => process.stderr.write(`[fleet] adopt transfer failed: ${e.message}\n`));
-
-    logEvent({ type: 'adopt', agent: oldId, from: newId, reason: `${newId} adopted identity ${oldId}` });
-
-    // Send orientation message to the adopted agent
-    if (args.orient !== false) {
-      const name_ = newAgent.friendly_name || oldAgent.friendly_name || oldId;
-      const orientMsg = `You have been assigned the identity "${name_}" (fleet ID: ${oldId}). You are a continuation of a previous agent. Use a subagent to read your old session logs via search_logs(agent: "${oldId}") and orient yourself — figure out what you were working on, what tasks are active, and what the current state is. Report back via chat when oriented.`;
-      postMessage(oldId, AGENT_ID, orientMsg);
-    }
-
-    return { content: [{ type: 'text', text: `${newId} adopted identity "${oldId}" (name: "${newAgent.friendly_name || oldAgent.friendly_name || '?'}"). Old entry removed. Tasks and messages transferred. Agent notified to orient.` }] };
   }
 
   // ---- spawn (respawn or fresh) ----
