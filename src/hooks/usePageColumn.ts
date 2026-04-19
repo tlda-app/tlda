@@ -360,7 +360,10 @@ export function usePageColumn(
     if (prevCol) {
       columnRef.current = null
       prevCol.destroyed = true  // stop in-flight fetches immediately
-      setTimeout(() => prevCol.destroy(), 0)
+      // Defer shape deletion — must happen after React finishes rendering.
+      // Use requestAnimationFrame (not setTimeout/queueMicrotask) because
+      // React may still be in its commit phase during setTimeout(0).
+      requestAnimationFrame(() => { if (prevCol.destroyed) prevCol.destroy() })
     }
     if (syncTimerRef.current) {
       clearTimeout(syncTimerRef.current)
