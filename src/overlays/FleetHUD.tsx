@@ -306,8 +306,10 @@ export function FleetHUD({
       // sweeps through empty areas and temporarily clears selection, but we must
       // not remove hud-layout-active or pointer-events goes to none and pointerup
       // never reaches TLDraw (brush rect gets stuck permanently).
-      // Note: TLDraw stores brush as undefined (not null) when inactive, so use != null.
-      if (editor.getCurrentPageState().brush != null) return
+      // Note: brush lives on TLInstance (getInstanceState), NOT TLInstancePageState
+      // (getCurrentPageState). The old getCurrentPageState().brush check was always
+      // undefined → the guard never fired.
+      if (editor.getInstanceState().brush != null) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
@@ -323,7 +325,15 @@ export function FleetHUD({
         checkSelection()
         unsub = overlayEditorRef.current.store.listen(({ changes }) => {
           for (const [, to] of Object.values(changes.updated)) {
-            if ((to as any).typeName === 'instance_page_state') {
+            const typeName = (to as any).typeName
+            if (typeName === 'instance_page_state') {
+              // Selection changed — re-check (guard will block if brush is active)
+              checkSelection()
+              return
+            }
+            if (typeName === 'instance' && (to as any).brush == null) {
+              // Brush just ended — guard would have blocked during-brush; now it's safe
+              // to re-evaluate selection and update the class.
               checkSelection()
               return
             }
