@@ -77,6 +77,12 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg * {
   pointer-events: auto !important;
 }
+/* Layout mode: make the entire canvas interactive so brush-select and
+   click-to-deselect work on empty areas. Without this, clicks on empty
+   canvas pass through to the main editor. */
+.fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
+  pointer-events: auto !important;
+}
 /* Layout mode: when a fleet shape is selected via the ⊞ button, the wrap gets
    .hud-layout-active. This enables pointer-events on the TLDraw canvas so the
    user can drag-box select multiple fleet shapes. Without a selection, the canvas

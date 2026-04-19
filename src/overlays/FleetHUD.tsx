@@ -356,8 +356,13 @@ export function FleetHUD({
       cancelAnimationFrame(rafId)
       unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
-      fleetLayoutActiveRef.current = false
-      el.classList.remove('hud-layout-active')
+      // Only clear layout mode when the HUD is actually closing (expanded going false).
+      // Do NOT remove the class here unconditionally — React re-renders fire cleanup
+      // during active interactions, which kills pointer-events mid-brush/drag.
+      if (!expanded) {
+        fleetLayoutActiveRef.current = false
+        el.classList.remove('hud-layout-active')
+      }
     }
   }, [expanded])
 
