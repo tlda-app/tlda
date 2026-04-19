@@ -476,6 +476,14 @@ export function clearVoiceAccumulator(onUpdate) {
   }
 }
 
+// Called when the cursor is moved by the user while an accumulator is active.
+// Mirrors enterEdit() — interrupts the current speech session so the next
+// session will snapshot the new cursor position on first result.
+export function notifyAccumulatorCursorMoved() {
+  if (!_accumulator) return
+  enterEdit()
+}
+
 function targetLabel() {
   if (_accumulator) return _accumulator.label || 'note'
   if (_activeSendTargets.length === 0) return null

@@ -42,7 +42,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 import { chatInsertBus } from './FleetPillShape'
-import { setVoiceAccumulator, clearVoiceAccumulator } from '../voice.mjs'
+import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -548,6 +548,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         editor.setEditingShape(null)
       }
 
+      // Voice accumulator state — declared here so the updateListener can
+      // reference them by closure even though they're mutated later.
+      let voiceAnchorPos: number | null = null
+      let lastVoiceLen = 0
+      let voiceFilling = false  // true while onVoiceUpdate is dispatching
+
       const startState = EditorState.create({
         doc: shape.props.text || '',
         extensions: [
@@ -580,6 +586,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 type: 'math-note' as any,
                 props: { text },
               })
+            }
+            // Cursor moved or text typed by the user (not voice) — interrupt the
+            // current speech session so the next one starts from the new position.
+            // Mirrors the textarea onEdit → enterEdit() path in voice.mjs.
+            if (!voiceFilling && (update.selectionSet || update.docChanged)) {
+              voiceAnchorPos = null
+              lastVoiceLen = 0
+              notifyAccumulatorCursorMoved()
             }
             // Track cursor position for preview scroll
             if (update.selectionSet || update.docChanged) {
@@ -649,9 +663,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       view.focus()
 
       // Wire voice accumulator: Right Shift → dictate into this note.
-      // Track anchor position per recording session so we only replace voice-filled text.
-      let voiceAnchorPos: number | null = null
-      let lastVoiceLen = 0
+      // voiceAnchorPos/lastVoiceLen/voiceFilling are declared above (before EditorState.create)
+      // so the updateListener closure can reference them.
       const onVoiceUpdate = (text: string) => {
         const v = cmViewRef.current
         if (!v) return
@@ -662,12 +675,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }
         const from = voiceAnchorPos
         const to = voiceAnchorPos + lastVoiceLen
+        voiceFilling = true
         v.dispatch({
           changes: { from, to, insert: text },
           selection: { anchor: from + text.length },
         })
+        voiceFilling = false
         lastVoiceLen = text.length
-        // EditorView.updateListener fires automatically and saves to shape props
+        // EditorView.updateListener fires and saves to shape props
       }
       const onVoiceStop = () => {
         // Recording stopped — next session starts a fresh anchor
