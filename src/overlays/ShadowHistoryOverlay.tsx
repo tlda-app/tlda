@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useState, useEffect } from 'react'
+import { stopEventPropagation } from 'tldraw'
 import type { ShadowVersion } from '../historyStore'
 import './ShadowHistoryOverlay.css'
 
@@ -82,8 +83,8 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     <div
       className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
       style={isHidden ? { display: 'none' } : undefined}
-      onPointerDown={e => e.stopPropagation()}
-      onPointerUp={e => e.stopPropagation()}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
     >
       {/* Older */}
       <button
