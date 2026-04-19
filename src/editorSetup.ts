@@ -846,10 +846,11 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         if (id === glowShapeId) return
         // Bridge zone: delay cleanup so cursor can move to the card
         if (!id && glowCleanup) {
+          glowShapeId = null // prevent subsequent fires from resetting the timer
           if (cleanupTimer) clearTimeout(cleanupTimer)
           cleanupTimer = setTimeout(() => {
-            // Check if cursor is over the card
-            const card = document.querySelector('.hl-source-card:hover')
+            // Check if cursor is over the card (use globalThis.document — `document` is the SvgDocument parameter)
+            const card = globalThis.document.querySelector('.hl-source-card:hover')
             if (card) {
               // Card is hovered — keep it alive, listen for card mouseleave
               const onLeave = () => {
