@@ -131,6 +131,17 @@ body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   pointer-events: all;
 }
 
+/* FleetIconPill: hide fleet shapes on main canvas when toggled off.
+   The HUD overlay (fleet-hud-wrap) restores them so the HUD still works. */
+body.fleet-shapes-hidden .tl-canvas .fleet-shape {
+  visibility: hidden;
+  pointer-events: none;
+}
+body.fleet-shapes-hidden .fleet-hud-wrap .tl-canvas .fleet-shape {
+  visibility: visible;
+  pointer-events: all;
+}
+
 /* Ghost rect shown when dragging a pill over an empty grid slot */
 .fleet-drop-ghost {
   position: fixed;

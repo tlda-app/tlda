@@ -71,6 +71,7 @@ import { BuildWarningPill } from './pills/BuildWarningPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
 import { FollowingBadge } from './pills/FollowingBadge'
+import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
@@ -1080,6 +1081,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
         <BuildWarningPill warnings={buildWarnings} />
+        {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>
       {editorRef.current && (
@@ -1093,7 +1095,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </div>
   )
 
-  const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
+  // AgentPill replaced by FleetIconPill in build-pills-row
+  const agentPillContent = null
 
   const versionStampContent = <VersionStamp docName={document.name} />
 
