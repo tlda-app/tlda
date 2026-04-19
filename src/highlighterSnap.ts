@@ -274,8 +274,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
 
   const hlColor = (shape.props as any).color || 'yellow'
 
-  // Flash-tint the matched text elements (before updateShape, which can trigger re-renders)
-  flashTint(matchedFragments, hlColor)
+  // Flash-tint removed — the source context card tells the story now
 
   // Resolve source lines via lookup.json (same data agents see)
   // This is async but we fire-and-forget — meta gets updated when lookup resolves
@@ -672,6 +671,9 @@ function showSourceContextCard(
     card.addEventListener('pointerdown', (e) => {
       e.stopPropagation()
       e.preventDefault()
+      // Use HUD editor for pill creation (chat shapes live in HUD coordinate system)
+      const hudEditor = (window as any).__tldraw_hud_editor__ as Editor | undefined
+      const pillEditor = hudEditor || editor
       dragState = { pillId: null, startX: e.clientX, startY: e.clientY, started: false }
 
       dragCoordinator.claim(
@@ -683,10 +685,10 @@ function showSourceContextCard(
           if (!dragState.started) {
             if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return
             dragState.started = true
-            const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            const pagePos = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
             const pillId = createShapeId()
-            editor.run(() => {
-              editor.createShape({
+            pillEditor.run(() => {
+              pillEditor.createShape({
                 id: pillId,
                 type: 'fleet-pill' as any,
                 x: pagePos.x,
@@ -695,23 +697,33 @@ function showSourceContextCard(
               })
             }, { history: 'ignore' })
             dragState.pillId = pillId as unknown as string
-            editor.cancel()
+            pillEditor.cancel()
+            // Animate card shrinking into pill, then remove
+            Object.assign(card.style, {
+              transition: 'transform 0.2s ease-in, opacity 0.2s ease-in',
+              transform: 'scale(0.3)',
+              opacity: '0',
+            })
+            setTimeout(() => card.remove(), 200)
             return
           }
           if (dragState.pillId) {
-            const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
-            editor.run(() => {
-              editor.updateShape({ id: dragState!.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 40, y: pagePos.y - 9 })
+            const pagePos = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            pillEditor.run(() => {
+              pillEditor.updateShape({ id: dragState!.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 40, y: pagePos.y - 9 })
             }, { history: 'ignore' })
           }
         },
         // onUp
         (ev: PointerEvent) => {
-          if (!dragState?.pillId) { dragState = null; return }
-          const pillId = dragState.pillId
-          dropPillOnTarget(editor, pillId as any, 'highlight', shapeId!, displayText, token)
-          try { editor.run(() => { editor.deleteShapes([pillId as any]) }, { history: 'ignore' }) } catch {}
+          if (dragState?.pillId) {
+            const pillId = dragState.pillId
+            const dropPoint = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            dropPillOnTarget(pillEditor, pillId as any, token, dropPoint, token)
+            try { pillEditor.run(() => { pillEditor.deleteShapes([pillId as any]) }, { history: 'ignore' }) } catch {}
+          }
           dragState = null
+          dragCoordinator.release()
         },
       )
     })

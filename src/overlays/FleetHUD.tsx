@@ -429,7 +429,7 @@ export function FleetHUD({
           liveEdit={true}
           cameraOverride={overlayCam}
           fullViewport={true}
-          onEditorMount={(e) => { overlayEditorRef.current = e }}
+          onEditorMount={(e) => { overlayEditorRef.current = e; (window as any).__tldraw_hud_editor__ = e }}
           className="fleet-hud"
         />
       </div>
