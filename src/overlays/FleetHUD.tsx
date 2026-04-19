@@ -324,9 +324,18 @@ export function FleetHUD({
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
     let unsub: (() => void) | null = null
-    // Re-check on pointerup: the isPointing guard blocks removal during
-    // active interactions. After release, we need to re-evaluate.
     const onPointerUp = () => checkSelection()
+    // Safety valve: if the HUD editor is stuck in brushing/pointing_canvas
+    // when a pointerup arrives ANYWHERE on the window, cancel the state.
+    // We should never be brushing with pointer up.
+    const onWindowPointerUp = () => {
+      const ed = overlayEditorRef.current
+      if (!ed) return
+      const childState = ed.root.getCurrent()?.getCurrent()
+      if (childState?.id === 'brushing' || childState?.id === 'pointing_canvas') {
+        childState.cancel()
+      }
+    }
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
         checkSelection()
@@ -343,9 +352,8 @@ export function FleetHUD({
             }
           }
         }, { scope: 'session', source: 'all' })
-        // Listen for pointerup on the HUD canvas so checkSelection runs
-        // after isPointing goes false.
         el.addEventListener('pointerup', onPointerUp, true)
+        window.addEventListener('pointerup', onWindowPointerUp, true)
       } else {
         rafId = requestAnimationFrame(trySubscribe)
       }
@@ -356,9 +364,8 @@ export function FleetHUD({
       cancelAnimationFrame(rafId)
       unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
+      window.removeEventListener('pointerup', onWindowPointerUp, true)
       // Only clear layout mode when the HUD is actually closing (expanded going false).
-      // Do NOT remove the class here unconditionally — React re-renders fire cleanup
-      // during active interactions, which kills pointer-events mid-brush/drag.
       if (!expanded) {
         fleetLayoutActiveRef.current = false
         el.classList.remove('hud-layout-active')
