@@ -10,6 +10,20 @@ export function IdentityPicker() {
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [autoIdentified, setAutoIdentified] = useState(false)
+
+  // Auto-identify from ?name= query param (skips dialog for testing/agents)
+  if (needsIdentity && !autoIdentified) {
+    const urlName = new URLSearchParams(window.location.search).get('name')
+    if (urlName) {
+      const trimmed = urlName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+      if (trimmed) {
+        setAutoIdentified(true)
+        identify(trimmed)
+        return null
+      }
+    }
+  }
 
   if (!needsIdentity) return null
 

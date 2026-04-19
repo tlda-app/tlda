@@ -396,6 +396,11 @@ export function connect() {
           return
         }
         const event = convertChatEvent(data)
+        // Dedup: skip if this event was already added (optimistic send or prior echo)
+        if (data.id && _events.some(e => e._dbId === data.id)) {
+          if (data.id > _lastEventId) _lastEventId = data.id
+          return
+        }
         _events.push(event)
         if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
