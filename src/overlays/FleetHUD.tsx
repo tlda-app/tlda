@@ -332,8 +332,20 @@ export function FleetHUD({
       cameraYRef.current = null
       setFleetBounds(getFleetBounds(mainEditor))
     }
+    // Toggle: FleetIconPill click dispatches fleet-hud-toggle
+    const onToggle = () => {
+      setExpanded(prev => {
+        const next = !prev
+        localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
+        return next
+      })
+    }
     window.addEventListener('fleet-hud-reset', onReset)
-    return () => window.removeEventListener('fleet-hud-reset', onReset)
+    window.addEventListener('fleet-hud-toggle', onToggle)
+    return () => {
+      window.removeEventListener('fleet-hud-reset', onReset)
+      window.removeEventListener('fleet-hud-toggle', onToggle)
+    }
   }, [mainEditor])
 
   // Don't render if no fleet shapes
@@ -341,22 +353,9 @@ export function FleetHUD({
 
   const ghost = <FleetDropGhost mainEditor={mainEditor} />
 
-  // Collapsed: just the pill
+  // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
   if (!expanded) {
-    return (
-      <>
-        {ghost}
-        <div className="fleet-pill-container">
-          <span
-            className="fleet-pill"
-            onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
-            onPointerDown={e => e.stopPropagation()}
-          >
-            {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
-          </span>
-        </div>
-      </>
-    )
+    return <>{ghost}</>
   }
 
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically

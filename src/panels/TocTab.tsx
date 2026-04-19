@@ -567,7 +567,6 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      <FleetToggle />
       <DarkModeToggle />
       <VimModeToggle />
       <CameraLinkToggle />
