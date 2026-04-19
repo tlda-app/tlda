@@ -403,9 +403,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
     if (olderEvents.length === 0) return liveEvents
-    // Deduplicate by _dbId or timestamp+from
-    const seen = new Set(liveEvents.map((e: any) => e._dbId || `${e.timestamp}:${e.from}`))
-    const unique = olderEvents.filter((e: any) => !seen.has(e._dbId || `${e.timestamp}:${e.from}`))
+    // Deduplicate by _dbId AND timestamp+from (covers pre-reconciliation optimistic events)
+    const seen = new Set<string>()
+    for (const e of liveEvents) {
+      if (e._dbId) seen.add(String(e._dbId))
+      seen.add(`${e.timestamp}:${e.from}`)
+    }
+    const unique = olderEvents.filter((e: any) => {
+      if (e._dbId && seen.has(String(e._dbId))) return false
+      if (seen.has(`${e.timestamp}:${e.from}`)) return false
+      return true
+    })
     return [...unique, ...liveEvents]
   }, [liveEvents, olderEvents])
 
@@ -547,7 +555,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         const html = renderChatLine(m, ctx)
         if (html) {
-          items.push({ key: m._dbId || `${m.timestamp}:${m.from}`, html })
+          items.push({ key: `${m.timestamp}:${m.from}`, html })
         }
       }
     }

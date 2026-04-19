@@ -692,9 +692,16 @@ if (existsSync(katexDir)) {
 
 // ---------- Viewer SPA ----------
 // Serve built SPA from dist/ (Vite build output)
+// Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
-  app.use(express.static(distDir))
+  app.use(express.static(distDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.set('Cache-Control', 'no-cache')
+      }
+    }
+  }))
 }
 
 // SPA catch-all: serve index.html for client-side routing
@@ -706,6 +713,7 @@ app.get('/{*path}', (req, res) => {
 
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
+    res.set('Cache-Control', 'no-cache')
     return res.sendFile(indexPath)
   }
 
@@ -1034,18 +1042,26 @@ function handleFleetWsMessage(ws, msg) {
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(context ? { context } : {}),
     }
-    const event = fleetStore.share?.({
-      type: 'chat',
-      from,
-      to,
-      text,
+    // Write to DB WITHOUT broadcasting (insert + unread only).
+    // Reply with event_id FIRST so the client can reconcile the optimistic
+    // event before the echo arrives on the same socket.
+    const eventData = {
+      type: 'chat', from, to, text,
       metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-    })
-    if (!event) { error('store error'); return }
-    // Echo _tempId back so the client can reconcile the optimistic event
-    // synchronously in the WS reply handler — before the broadcast echo
-    // arrives on the same socket.
-    reply({ ok: true, event_id: event.id, _tempId: msg._tempId || null })
+    }
+    const ts = new Date().toISOString()
+    const meta = eventData.metadata ? JSON.stringify(eventData.metadata) : null
+    const result = fleetStore.db.prepare(
+      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('chat', ts, from, to, text, meta)
+    const eventId = Number(result.lastInsertRowid)
+    // Track unread
+    fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+    // Reply FIRST — client reconciles _tempId → _dbId synchronously
+    reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
+    // THEN broadcast to all clients
+    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: eventData.metadata }
+    broadcastEvent('fleet-event', inserted)
     return
   }
 
