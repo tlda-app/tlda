@@ -27,6 +27,7 @@
   color: rgba(80, 80, 80, 0.7);
 }
 
+
 /* Expanded HUD — full overlay with fleet shapes, positioned by JS */
 /* z-index 999: must match or exceed tldraw UI chrome since stacking contexts
    prevent z-index competition across boundaries anyway */

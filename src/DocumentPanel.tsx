@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
-import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote, markRecordingEnded, hasPendingPlacement } from './tools/VoiceNoteTool'
+import { setStopRecordingCallback, setPendingVoiceTranscript, clearPendingPlacement } from './tools/VoiceNoteTool'
+import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, getTranscript, toggleRecording } from './voice.mjs'
+import { log } from './logger'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
@@ -774,15 +776,17 @@ function VoiceNoteButtonInner() {
   const [recording, setRecording] = useState(false)
   const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
   useClickActions(editor, clicksEnabled)
-  const recRef = useRef<any>(null)
-  const transcriptRef = useRef('')
+  const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
 
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
 
   const cancelRecording = useCallback(() => {
-    if (recRef.current) { recRef.current.stop(); recRef.current = null }
-    transcriptRef.current = ''
-    clearVoiceTranscript()
+    if (isRecording()) stopRecording()
+    if (hiddenTARef.current) {
+      clearVoiceTarget(hiddenTARef.current)
+      hiddenTARef.current.remove()
+      hiddenTARef.current = null
+    }
     clearPendingPlacement()
     setStopRecordingCallback(null)
     setRecording(false)
@@ -790,39 +794,29 @@ function VoiceNoteButtonInner() {
   }, [editor])
 
   const startRecording = useCallback(() => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) return
-    transcriptRef.current = ''
-    clearVoiceTranscript()
-    const rec = new SR()
-    rec.continuous = true
-    rec.interimResults = false
-    rec.lang = 'en-US'
-    rec.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) appendVoiceTranscript(e.results[i][0].transcript + ' ')
-      }
-    }
-    rec.onend = () => {
-      // If user has already tapped to place, commit now. Otherwise the recording
-      // ended before placement (e.g. silence timeout) — mark the flag so
-      // onPointerUp can commit when the user eventually taps.
-      if (hasPendingPlacement()) {
-        commitVoiceNote()
-      } else {
-        markRecordingEnded()
-      }
-      if (recRef.current === rec) recRef.current = null
-    }
-    rec.start()
-    recRef.current = rec
-    // Register stop callback for the tool to call on placement
+    // Create a hidden textarea as the voice system's transcription target.
+    // voice.mjs handles all error recovery, restarts, and interim results.
+    const ta = document.createElement('textarea')
+    ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
+    document.body.appendChild(ta)
+    hiddenTARef.current = ta
+
+    setVoiceTarget(ta, [], {}, null, null)
+    if (!isRecording()) toggleRecording()
+    log.debug('voice', 'note recording started via voice system')
+
+    // The stop callback is called by VoiceNoteTool.onPointerUp on placement.
+    // It snapshots the current transcript, stops recording, and cleans up.
     setStopRecordingCallback(() => {
-      if (recRef.current) { recRef.current.stop(); recRef.current = null }
+      setPendingVoiceTranscript(getTranscript())
+      log.debug('voice', 'note placement — transcript snapshotted', { len: getTranscript().length })
+      if (isRecording()) stopRecording()
+      clearVoiceTarget(ta)
+      ta.remove()
+      hiddenTARef.current = null
       setRecording(false)
     })
     setRecording(true)
-    // Enter ghost/placement mode immediately
     editor.setCurrentTool('voice-note')
   }, [editor])
 

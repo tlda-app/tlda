@@ -1,22 +1,21 @@
 /**
  * VoiceNoteTool — placement StateNode for voice notes.
  *
- * Entered programmatically after voice recording stops. Shows a mic-dot
- * ghost that follows the cursor/pen. On tap, places a collapsed math-note
- * with the recorded transcript as its content.
+ * Entered programmatically after the voice note button is tapped.
+ * Shows a mic-dot ghost that follows the cursor/pen. On tap, reads the
+ * current transcript from the voice system and places a math-note.
  *
- * Transcript is passed via setPendingVoiceTranscript() before entering the tool.
+ * The stop callback (set by DocumentPanel) snapshots the transcript and
+ * stops the voice system before commitVoiceNote() reads it.
  */
 import { StateNode, createShapeId, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from '../svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
+import { log } from '../logger'
 
 let _pendingTranscript = ''
 let _stopRecording: (() => void) | null = null
 let _pendingPlacement: { point: { x: number; y: number }; editor: any } | null = null
-// Set when rec.onend fires before the user has tapped to place.
-// Signals onPointerUp to commit immediately rather than waiting for onend.
-let _recordingEnded = false
 
 export function setPendingVoiceTranscript(text: string) {
   _pendingTranscript = text
@@ -24,19 +23,6 @@ export function setPendingVoiceTranscript(text: string) {
 
 export function setStopRecordingCallback(fn: (() => void) | null) {
   _stopRecording = fn
-}
-
-export function appendVoiceTranscript(text: string) {
-  _pendingTranscript += text
-}
-
-export function clearVoiceTranscript() {
-  _pendingTranscript = ''
-  _recordingEnded = false
-}
-
-export function markRecordingEnded() {
-  _recordingEnded = true
 }
 
 export function setPendingPlacement(point: { x: number; y: number }, editor: any) {
@@ -47,17 +33,17 @@ export function clearPendingPlacement() {
   _pendingPlacement = null
 }
 
-export function hasPendingPlacement() {
-  return _pendingPlacement !== null
-}
-
 export function commitVoiceNote() {
   const placement = _pendingPlacement
   const transcript = _pendingTranscript
   _pendingPlacement = null
   _pendingTranscript = ''
 
-  if (!placement || !transcript) return
+  if (!placement) {
+    log.warn('voice', 'commitVoiceNote bail — no placement')
+    return
+  }
+  log.debug('voice', 'commitVoiceNote', { transcriptLen: transcript.length })
 
   const { point, editor } = placement
   const id = createShapeId()
@@ -68,7 +54,7 @@ export function commitVoiceNote() {
     x: point.x - 100,
     y: point.y - 25,
     meta: { voiceNote: true, rawTranscript: transcript } as Partial<JsonObject>,
-    props: { w: 200, h: 50, text: transcript, color: 'yellow', collapsed: true },
+    props: { w: 200, h: 50, text: transcript, color: 'yellow', collapsed: transcript.length > 0 },
   })
 
   if (currentDocumentInfo) {
@@ -121,34 +107,24 @@ export class VoiceNoteTool extends StateNode {
   }
 
   override onPointerDown = () => {
-    // Hide ghost immediately on tap — shape will be created on pointer-up
     if (this.ghost) this.ghost.style.display = 'none'
   }
 
   override onPointerUp = () => {
     const { editor } = this
     const point = { ...editor.inputs.currentPagePoint }
-
-    // Store placement point so commitVoiceNote() can use it when rec.onend fires
     setPendingPlacement(point, editor)
-    // Stop the mic — onresult/onend will still fire with final results
+    // Stop callback snapshots transcript from voice system before we commit
     if (_stopRecording) { _stopRecording(); _stopRecording = null }
-
+    commitVoiceNote()
     editor.setCurrentTool('select')
-
-    // If rec.onend already fired before this tap (e.g. silence timeout caused
-    // recognition to stop early), onend won't fire again — commit immediately.
-    if (_recordingEnded) {
-      _recordingEnded = false
-      commitVoiceNote()
-    }
-    // Otherwise, shape creation happens in commitVoiceNote(), called from rec.onend
   }
 
   override onKeyDown = (info: any) => {
     if (info.key === 'Escape') {
       if (_stopRecording) { _stopRecording(); _stopRecording = null }
       _pendingTranscript = ''
+      _pendingPlacement = null
       this.editor.setCurrentTool('select')
     }
   }
