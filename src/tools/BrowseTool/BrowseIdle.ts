@@ -29,6 +29,7 @@ import {
   getHitShapeOnCanvasPointerDown,
   startEditingShapeWithRichText,
 } from 'tldraw'
+import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
@@ -166,9 +167,8 @@ export class BrowseIdle extends StateNode {
 
       // In HUD layout mode, don't deselect on empty-area clicks — let TLDraw
       // handle it via pointing_canvas (BrowsePointingCanvas skips selectNone).
-      // Without this, _deselHandler fires at capture phase before TLDraw,
-      // calls selectNone, removes hud-layout-active, kills pointer-events.
-      if (target.closest('.fleet-hud-wrap.hud-layout-active .tl-canvas')) return
+      // Uses a JS ref (not the CSS class) to avoid circular dependency.
+      if (fleetLayoutActiveRef.current && target.closest('.fleet-hud-wrap .tl-canvas')) return
 
       // If clicking on a tldraw selection/resize handle, don't interfere
       if (target.closest('.tl-corner-handle, .tl-resize-handle, .tl-selection__fg')) return
@@ -283,7 +283,7 @@ export class BrowseIdle extends StateNode {
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
           // treat as empty canvas so drag-box select works over document backgrounds.
           // In the main canvas, keep passing through to DOM.
-          if (this.editor.getContainer().closest('.fleet-hud-wrap.hud-layout-active')) {
+          if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
             this.parent.transition('pointing_canvas', info)
             return
           }

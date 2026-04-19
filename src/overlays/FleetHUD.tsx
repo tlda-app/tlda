@@ -21,6 +21,11 @@ const FLEET_SHAPE_TYPES_SET = new Set(FLEET_SHAPE_TYPES)
  *  hit-testing (they're rendered by the overlay instead). */
 export const fleetHudOpenRef = { current: false }
 
+/** True when layout mode is active (fleet shapes are selectable/draggable).
+ *  Read by BrowseIdle's _deselHandler to skip selectNone during layout.
+ *  Separate from the CSS class to avoid circular dependency. */
+export const fleetLayoutActiveRef = { current: false }
+
 interface FleetHUDProps {
   mainEditor: Editor
   shapeUtils: TLAnyShapeUtilConstructor[]
@@ -310,8 +315,9 @@ export function FleetHUD({
       if (hasFleetSelected) {
         // ADD immediately — user selected a fleet shape, enable interaction
         if (removeRaf !== null) { cancelAnimationFrame(removeRaf); removeRaf = null }
+        fleetLayoutActiveRef.current = true
         el.classList.add('hud-layout-active')
-      } else if (el.classList.contains('hud-layout-active')) {
+      } else if (fleetLayoutActiveRef.current) {
         // REMOVE deferred — wait until next frame so all pointer events and
         // state transitions have settled. If the state machine isn't in idle
         // at that point, something is still in progress; defer again.
@@ -332,6 +338,7 @@ export function FleetHUD({
             return s && FLEET_TYPES_HUD.has(s.type as string)
           })
           if (!stillSelected) {
+            fleetLayoutActiveRef.current = false
             el.classList.remove('hud-layout-active')
           }
         })
@@ -374,6 +381,7 @@ export function FleetHUD({
       if (removeRaf !== null) cancelAnimationFrame(removeRaf)
       unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
+      fleetLayoutActiveRef.current = false
       el.classList.remove('hud-layout-active')
     }
   }, [expanded])
