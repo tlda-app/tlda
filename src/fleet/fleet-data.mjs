@@ -161,6 +161,7 @@ export function getAgent(id) {
 export async function sendMessage(to, text, opts = {}) {
   const body = { type: 'chat', message: text, to }
   if (_humanId) body.from = _humanId
+  if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
@@ -361,6 +362,12 @@ export function connect() {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
           _wsCallbacks.delete(msg.id)
+          // Reconcile optimistic events SYNCHRONOUSLY before resolving —
+          // the next WS message may be the echo, and _dbId must be set
+          // before the echo's dedup check runs.
+          if (msg.result && msg.result._tempId && msg.result.event_id) {
+            reconcileOptimistic(msg.result._tempId, msg.result.event_id)
+          }
           if (msg.error) cb.reject(new Error(msg.error))
           else cb.resolve(msg.result)
         }

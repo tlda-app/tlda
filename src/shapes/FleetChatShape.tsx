@@ -2409,10 +2409,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
-                        sendTargets.map(t => sendMessage(t, text, context ? { context } : {}))
+                        sendTargets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
                       ).then((results: {ok: boolean, event_id: number}[]) => {
                         if (!results.every(r => r.ok)) throw new Error('send failed')
-                        reconcileOptimistic(tempId, results[0]?.event_id)
+                        // reconcileOptimistic already called synchronously in the WS reply handler
                       }).catch(() => {
                         if (attempt < 3) {
                           setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
@@ -2465,10 +2465,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
-                      targets.map(t => sendMessage(t, text, context ? { context } : {}))
+                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
                     ).then((results: {ok: boolean, event_id: number}[]) => {
                       if (!results.every(r => r.ok)) throw new Error('send failed')
-                      reconcileOptimistic(tempId, results[0]?.event_id)
+                      // reconcileOptimistic already called synchronously in the WS reply handler
                     }).catch(() => {
                       if (attempt < 3) {
                         setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
@@ -2499,10 +2499,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
-                      targets.map(t => sendMessage(t, text, context ? { context } : {}))
+                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
                     ).then((results: {ok: boolean, event_id: number}[]) => {
                       if (!results.every(r => r.ok)) throw new Error('send failed')
-                      reconcileOptimistic(tempId, results[0]?.event_id)
+                      // reconcileOptimistic already called synchronously in the WS reply handler
                     }).catch(() => {
                       if (attempt < 3) {
                         setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)

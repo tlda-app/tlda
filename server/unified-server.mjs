@@ -246,17 +246,9 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
-// Echo suppression. Two mechanisms:
-// 1. Per-connection flag: ws._suppressNextBroadcast (set by WS chat handler)
-// 2. Legacy connId: suppressEchoFor(connId) for HTTP POST callers
-// Both are per-connection so concurrent sends don't interfere.
-
-function suppressEchoFor(connId) {
-  if (!connId) return
-  for (const ws of wsFleetClients) {
-    if (ws._connId === connId) { ws._suppressNextBroadcast = true; return }
-  }
-}
+// No server-side echo suppression. Dedup is client-side: the WS reply
+// includes the event ID, which the client maps to its optimistic event
+// before the echo arrives (WS message ordering guarantees this).
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
@@ -265,16 +257,7 @@ function broadcastFleet(msg) {
   }
 }
 function broadcastEvent(type, data) {
-  const msg = JSON.stringify({ event: type, data })
-  for (const ws of wsFleetClients) {
-    // Suppress echo: skip the sender's WS for this event broadcast only.
-    // Per-connection flag set by the WS chat handler before share().
-    if (ws._suppressNextBroadcast) {
-      ws._suppressNextBroadcast = false
-      continue
-    }
-    try { if (ws.readyState === 1) ws.send(msg) } catch { wsFleetClients.delete(ws) }
-  }
+  broadcastFleet({ event: type, data })
 }
 function broadcastState() {
   if (!fleetStore) return
@@ -695,7 +678,7 @@ app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, suppressEchoFor,
+  fleetStore, broadcastEvent, broadcastState, suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -1031,8 +1014,16 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to, from, metadata, inline_attachments, attachments, cc, context } = msg
-    if (!to || !text) { error('missing to or message'); return }
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
+    if (!rawTo || !text) { error('missing to or message'); return }
+    // Resolve names to IDs (same as HTTP POST handler)
+    const resolve = (id) => {
+      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
+      const a = fleetStore?.findAgent(id); return a ? a.id : null
+    }
+    const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
+    const to = resolve(rawTo)
+    if (!to) { error(`Recipient not found: "${rawTo}"`); return }
     // Fleet MCP sends inline_attachments / attachments / cc / context at the
     // top level of the msg. Fold them into the metadata JSON so the receiver
     // pipeline (fleet-data.mjs → chat-render.mjs / my_task) can find them.
@@ -1043,9 +1034,6 @@ function handleFleetWsMessage(ws, msg) {
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(context ? { context } : {}),
     }
-    // Tag this WS to suppress the next broadcast. Per-connection flag
-    // (not global) so concurrent sends on different connections don't interfere.
-    ws._suppressNextBroadcast = true
     const event = fleetStore.share?.({
       type: 'chat',
       from,
@@ -1053,13 +1041,11 @@ function handleFleetWsMessage(ws, msg) {
       text,
       metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
     })
-    if (!event) { ws._suppressNextBroadcast = false; error('store error'); return }
-    // No manual broadcast — share() already fires the listener that
-    // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
-    // A second manual broadcast here used to produce duplicate messages
-    // in receivers (one with the trimmed metadata shape, one with the full
-    // store record).
-    reply({ ok: true, event_id: event.id })
+    if (!event) { error('store error'); return }
+    // Echo _tempId back so the client can reconcile the optimistic event
+    // synchronously in the WS reply handler — before the broadcast echo
+    // arrives on the same socket.
+    reply({ ok: true, event_id: event.id, _tempId: msg._tempId || null })
     return
   }
 
