@@ -1120,6 +1120,7 @@ function connect() {
 }
 
 let reconnectScheduled = false
+let _connectedBootId = null  // boot_id of the server we are currently connected to; null on fresh daemon start
 function scheduleReconnect() {
   if (reconnectScheduled) return
   reconnectScheduled = true
@@ -1140,18 +1141,19 @@ function handleServerMessage(msg) {
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
 
-    // Detect server restarts: compare server_boot_id to the last persisted value.
-    // If it changed, the server restarted. The fleet MCP has a built-in WS reconnect
-    // (1s initial delay, exponential backoff). We wait 8s before checking — if the MCP
-    // reconnected on its own (last_seen > serverBootTime), skip the forced restart.
-    // Only restart MCPs that failed to reconnect within that window.
+    // Detect server restarts: compare server_boot_id to the boot_id we saw when we
+    // last connected. Use an in-memory variable (_connectedBootId) so that when the
+    // DAEMON itself restarts and makes its first connection, we don't falsely trigger
+    // MCP restarts (the file-persisted value would differ if the server also restarted,
+    // but in that case the MCPs have already been reconnecting on their own for seconds).
+    // Only trigger restarts when the daemon is continuously running and sees the server
+    // come back with a new boot_id — i.e., a genuine server restart under our feet.
     const newBootId = msg.server_boot_id ?? null
-    const lastBootId = readLastServerBootId()
-    if (newBootId && lastBootId && newBootId !== lastBootId) {
+    if (newBootId && _connectedBootId && newBootId !== _connectedBootId) {
       const toRestart = agents.filter(a => a.tmux_session && !a.dead)
       const serverBootTime = parseInt(newBootId)
       if (toRestart.length > 0) {
-        console.log(`[daemon] server restarted (boot_id ${lastBootId} → ${newBootId}): will check ${toRestart.length} agent(s) for self-reconnect in 8s`)
+        console.log(`[daemon] server restarted (boot_id ${_connectedBootId} → ${newBootId}): will check ${toRestart.length} agent(s) for self-reconnect in 8s`)
         toRestart.forEach((agent, i) => {
           setTimeout(async () => {
             // Check if the MCP reconnected on its own since the server restart.
@@ -1180,7 +1182,7 @@ function handleServerMessage(msg) {
         })
       }
     }
-    if (newBootId) writeLastServerBootId(newBootId)
+    if (newBootId) _connectedBootId = newBootId
     // Start periodic death detection
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
