@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
-import { setStopRecordingCallback, setPendingVoiceTranscript, clearPendingPlacement } from './tools/VoiceNoteTool'
+import { setStopRecordingCallback } from './tools/VoiceNoteTool'
 import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, getTranscript, toggleRecording } from './voice.mjs'
 import { log } from './logger'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
@@ -787,7 +787,6 @@ function VoiceNoteButtonInner() {
       hiddenTARef.current.remove()
       hiddenTARef.current = null
     }
-    clearPendingPlacement()
     setStopRecordingCallback(null)
     setRecording(false)
     editor.setCurrentTool('select')
@@ -805,11 +804,10 @@ function VoiceNoteButtonInner() {
     if (!isRecording()) toggleRecording()
     log.debug('voice', 'note recording started via voice system')
 
-    // The stop callback is called by VoiceNoteTool.onPointerUp on placement.
-    // It snapshots the current transcript, stops recording, and cleans up.
+    // The stop callback is called by VoiceNoteTool.onPointerUp (commit) or ESC.
+    // VoiceNoteTool reads getTranscript() before calling this, so we just stop and clean up.
     setStopRecordingCallback(() => {
-      setPendingVoiceTranscript(getTranscript())
-      log.debug('voice', 'note placement — transcript snapshotted', { len: getTranscript().length })
+      log.debug('voice', 'note placement — stop callback fired')
       if (isRecording()) stopRecording()
       clearVoiceTarget(ta)
       ta.remove()
