@@ -77,6 +77,14 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-selection__fg * {
   pointer-events: auto !important;
 }
+/* Layout mode: when a fleet shape is selected via the ⊞ button, the wrap gets
+   .hud-layout-active. This enables pointer-events on the TLDraw canvas so the
+   user can drag-box select multiple fleet shapes. Without a selection, the canvas
+   stays pointer-events: none and empty-area clicks pass through to the main canvas. */
+.fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
+  pointer-events: auto !important;
+}
+
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
    fleet shapes. iframes capture pointer events regardless of any pe:none on

@@ -117,6 +117,11 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+  // Track whether any fleet shapes are selected in the HUD editor (layout mode).
+  // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
+  // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
+  const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
   // cameraYRef (Y): set once, never updated by shape moves.
@@ -281,6 +286,50 @@ export function FleetHUD({
     return () => {
       document.removeEventListener('dragover', onDragOver, true)
       document.removeEventListener('drop', onDrop, true)
+    }
+  }, [expanded])
+
+  // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
+  // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box
+  // select works — but ONLY when the user has already clicked ⊞ to enter layout
+  // mode. Normal browsing (nothing selected) keeps the canvas pointer-events: none
+  // so empty-area clicks pass through to the main canvas as always.
+  useEffect(() => {
+    if (!expanded) return
+    const el = hudRef.current
+    if (!el) return
+
+    const checkSelection = () => {
+      const editor = overlayEditorRef.current
+      if (!editor) return
+      const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
+        const s = editor.getShape(id as any)
+        return s && FLEET_TYPES_HUD.has(s.type as string)
+      })
+      el.classList.toggle('hud-layout-active', hasFleetSelected)
+    }
+
+    // Poll via RAF until overlayEditorRef is set, then switch to store listener
+    let rafId: number
+    let unsub: (() => void) | null = null
+    const trySubscribe = () => {
+      if (overlayEditorRef.current) {
+        checkSelection()
+        unsub = overlayEditorRef.current.store.listen(({ changes }) => {
+          for (const [, to] of Object.values(changes.updated)) {
+            if ((to as any).typeName === 'instance_page_state') { checkSelection(); return }
+          }
+        }, { scope: 'session', source: 'all' })
+      } else {
+        rafId = requestAnimationFrame(trySubscribe)
+      }
+    }
+    trySubscribe()
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      unsub?.()
+      el.classList.remove('hud-layout-active')
     }
   }, [expanded])
 
