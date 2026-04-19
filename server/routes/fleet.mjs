@@ -70,7 +70,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, sendRpc, resolveRpc, daemonConnections }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -341,90 +341,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!filePath) { res.status(400).send('Missing path'); return }
     try { res.sendFile(filePath) }
     catch (e) { res.status(404).send(e.message) }
-  })
-
-  // --- POST /api/chat ---
-  router.post('/api/chat', (req, res) => {
-    const { message, to, from, cc, attachments, inline_attachments, context, suppress_echo } = req.body || {}
-    if (!message && (!attachments || !attachments.length)) { res.status(400).send('missing message'); return }
-    if (!to || to === 'undefined' || to === 'null') { res.status(400).send('missing "to"'); return }
-    const resolve = (id) => {
-      // Server owner shortcut (MCP agents send to SERVER_OWNER_NAME)
-      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
-      // Try DB lookup — finds agents and humans by ID or friendly_name
-      const a = fleetStore?.findAgent(id); return a ? a.id : null
-    }
-    const sender = from ? (resolve(from) || from) : SERVER_OWNER_ID
-    const recipient = resolve(to)
-    if (!recipient) { res.status(404).send(`Recipient not found: "${to}"`); return }
-    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
-    if (ccResolved && ccResolved.length === 0) ccResolved = null
-    // Auto-CC QA agents when a non-human sends to any human
-    const recipientAgent = fleetStore?.getAgent(recipient)
-    if (recipientAgent?.human && !fleetStore?.getAgent(sender)?.human && fleetStore) {
-      const watchers = fleetStore.getAllAgents()
-        .filter(a => a.labels?.includes('qa') && a.id !== sender && a.id !== recipient)
-        .map(a => a.id)
-      if (watchers.length) {
-        ccResolved = ccResolved ? [...new Set([...ccResolved, ...watchers])] : watchers
-      }
-    }
-    let processedAttachments = attachments
-    if (attachments && attachments.length) {
-      processedAttachments = attachments.map(a => {
-        if (a.path && fs.existsSync(a.path)) {
-          const copied = copyAttachment(a.path)
-          if (copied) return { ...a, path: copied, originalPath: a.path }
-        }
-        return a
-      })
-    }
-    let text = message || ''
-    if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    // Resolve wiretaps
-    let wiretapRecipients = []
-    if (fleetStore) {
-      const taps = fleetStore.getWiretaps()
-      for (const tap of taps) {
-        if (!tap.filter) continue
-        let matches = false
-        try {
-          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-          const fromMatch = !f.from || f.from.some(grp => grp.every(t => [sender, ...(fleetStore.findAgent(sender)?.labels || [])].includes(t)))
-          const toMatch = !f.to || f.to.some(grp => grp.every(t => [recipient, ...(fleetStore.findAgent(recipient)?.labels || [])].includes(t)))
-          matches = fromMatch && toMatch
-        } catch {}
-        if (matches && tap.agent_id !== sender && tap.agent_id !== recipient) {
-          wiretapRecipients.push(tap.agent_id)
-        }
-      }
-    }
-    const allRecipients = [...new Set([recipient, ...(ccResolved || []), ...wiretapRecipients])]
-    if (fleetStore) {
-      // Suppress SSE echo to the sending browser connection (optimistic send dedup)
-      if (suppress_echo && suppressEchoFor) suppressEchoFor(suppress_echo)
-      const event = fleetStore.share({
-        type: 'chat',
-        from: sender,
-        to: recipient,
-        text,
-        metadata: {
-          cc: ccResolved || undefined,
-          attachments: processedAttachments || undefined,
-          inline_attachments: inline_attachments || undefined,
-          wiretap_cc: wiretapRecipients.length ? wiretapRecipients : undefined,
-          context: context || undefined,
-        },
-      })
-      // _suppressEchoWs is cleared by broadcastFleet having run synchronously above
-      // No manual broadcast — share() already fires the listener that
-      // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
-      // The previous manual broadcast on top of that produced duplicate
-      // messages in receivers.
-      res.json({ ok: true, event_id: event?.id })
-    } else {
-      res.json({ ok: true })
-    }
   })
 
   // --- POST /api/tasks/delegate ---

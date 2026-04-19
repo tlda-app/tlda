@@ -31,7 +31,6 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
-let _connId = null             // per-WS-connection ID assigned by server, sent in POST for echo suppression
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -150,24 +149,17 @@ export async function sendMessage(to, text, opts = {}) {
   const body = { message: text, to }
   // Include sender identity so the server attributes the message correctly
   if (_humanId) body.from = _humanId
-  // Tell server to suppress SSE echo to this connection (optimistic send dedup)
-  if (_connId) body.suppress_echo = _connId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
   try {
-    const r = await fetch(`${FLEET}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const d = await r.json().catch(() => ({}))
-    console.log(`[chat-send] to=${to} id=${d.event_id} ok=${r.ok} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: r.ok, event_id: d.event_id, error: d.error }
+    const d = await wsSend({ type: 'chat', ...body })
+    console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+    return { ok: true, event_id: d.event_id }
   } catch (e) {
-    console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
+    console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
   }
 }
@@ -192,60 +184,37 @@ export function reconcileOptimistic(tempId, serverEventId) {
   if (ev) { ev._dbId = serverEventId; delete ev._tempId; notify('messages', null) }
 }
 
-export async function respawnAgent(id) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, respawn: true }),
-  })
+export function respawnAgent(id) {
+  return wsSend({ type: 'spawn', agent: id, respawn: true })
 }
 
-export async function spawnAgent(model, doc) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, ...(doc ? { doc } : {}) }),
-  })
+export function spawnAgent(model, doc) {
+  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}) })
 }
 
-export async function renameAgent(id, name) {
-  return fetch(`${FLEET}/api/rename`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, name }),
-  })
+export function renameAgent(id, name) {
+  return wsSend({ type: 'rename', agent: id, name })
 }
 
-export async function setAgentLabels(id, labels) {
-  return fetch(`${FLEET}/api/label`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, labels }),
-  })
+export function setAgentLabels(id, labels) {
+  return wsSend({ type: 'label', agent: id, labels })
 }
 
-export async function kickAgent(id) {
-  return fetch(`${FLEET}/api/kick`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id }),
-  })
+export function kickAgent(id) {
+  return wsSend({ type: 'kick', agent: id })
 }
 
-export async function sendKey(session, key) {
-  return fetch(`${FLEET}/api/send-key`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, key }),
-  })
+export function sendKey(agent, key) {
+  return wsSend({ type: 'send-key', agent, key })
 }
 
-export async function sendText(session, text) {
-  return fetch(`${FLEET}/api/send-text`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, text }),
-  })
+export function sendText(agent, text) {
+  return wsSend({ type: 'send-text', agent, text })
+}
+
+/** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
+export function fleetWS(type, body = {}) {
+  return wsSend({ type, ...body })
 }
 
 // --- WebSocket connection ---
@@ -298,13 +267,7 @@ export function connect() {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
     }
-    // Always do a full state refresh on reconnect — not just catch-up.
-    // This ensures agents/tasks are populated even if the initial load failed
-    // or the server restarted and event IDs reset.
-    fetch(`${FLEET}/api/state`).then(r => r.json()).then(s => {
-      updateAgents(s.agents || [])
-      updateTasks(s.tasks || [])
-    }).catch(() => {})
+    // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
@@ -360,7 +323,6 @@ export function connect() {
 
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
-        if (msg.connId) _connId = msg.connId  // store per-connection ID for echo suppression
         updateAgents(msg.agents || [])
         updateTasks(msg.tasks || [])
         // Sync thinking/compacting state from server (authoritative)

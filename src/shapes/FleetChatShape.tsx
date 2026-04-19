@@ -29,7 +29,7 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 // @ts-ignore — vanilla JS module
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, fleetWS } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent, reconcileOptimistic } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -369,11 +369,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       )
       .map((e: any) => e._dbId || e.id)
     for (const eid of unreadEventIds) {
-      fetch(`${FLEET_API}/api/mark-event-read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
-      }).catch(() => {})
+      fleetWS('mark-event-read', { event_id: eid, agent: getHumanId() }).catch(() => {})
     }
     setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
   }, [liveEvents])
@@ -1297,12 +1293,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = approveBtn.dataset.agentId
         if (agentId) {
           const card = approveBtn.closest('.plan-card') as HTMLElement
-          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId, response: 'approve' }),
-          })
-            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
+          fleetWS('plan-mode-respond', { agent: agentId, response: 'approve' })
             .then(() => { if (card) card.classList.add('plan-card-approved') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
         }
@@ -1314,12 +1305,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = rejectBtn.dataset.agentId
         if (agentId) {
           const card = rejectBtn.closest('.plan-card') as HTMLElement
-          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId, response: 'reject' }),
-          })
-            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
+          fleetWS('plan-mode-respond', { agent: agentId, response: 'reject' })
             .then(() => { if (card) card.classList.add('plan-card-rejected') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
         }
@@ -1372,11 +1358,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (now - lastEscRef.current < 500) {
         // Hard interrupt: Esc twice within 500ms
         lastEscRef.current = 0
-        fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+        fleetWS('interrupt', { agent }).catch(() => {})
       } else {
         // Soft interrupt: single Esc
         lastEscRef.current = now
-        fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+        fleetWS('send-key', { agent, key: 'Escape' }).catch(() => {})
       }
     }
     ta.addEventListener('keydown', onEscKey)
@@ -2249,11 +2235,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
                   if (thinkingTargets.length === 0) return
                   for (const target of thinkingTargets) {
-                    fetch(`${FLEET_API}/api/interrupt`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ agent: target }),
-                    }).catch(() => {})
+                    fleetWS('interrupt', { agent: target }).catch(() => {})
                   }
                   return
                 }
@@ -2350,11 +2332,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                               .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
                           : false
                         if (hasCard) {
-                          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ agent: agentId, response: planResponse }),
-                          }).catch(() => {})
+                          fleetWS('plan-mode-respond', { agent: agentId, response: planResponse }).catch(() => {})
                           // Mark the card visually
                           const cards = chatLog?.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`)
                           cards?.forEach((el) => el.classList.add(planResponse === 'approve' ? 'plan-card-approved' : 'plan-card-rejected'))
@@ -2369,15 +2347,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (ENTER_PLAN_RE.test(text)) {
                       for (const agentId of sendTargets) {
                         const agentName = agentNames[agentId] || agentId
-                        fetch(`${FLEET_API}/api/plan-mode-toggle`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ agent: agentId }),
-                        })
-                          .then(r => r.json().then(data => ({ ok: r.ok, data })))
-                          .then(({ ok, data }) => {
-                            if (!ok || data?.error) {
-                              sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+                        fleetWS('plan-mode-toggle', { agent: agentId })
+                          .then(data => {
+                            if (data?.error) {
+                              sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data.error}`, {})
                             } else if (data?.mode) {
                               const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
                               sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})

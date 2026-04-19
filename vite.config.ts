@@ -45,17 +45,17 @@ export default defineConfig({
     proxy: {
       // Fleet WebSocket endpoints
       '/ws/fleet': {
-        target: 'ws://localhost:5176',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5176',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
       // All API routes → unified server
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      '/api': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/docs': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/health': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
     },
   },
   preview: {

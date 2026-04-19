@@ -246,16 +246,9 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
-// Set before a share() call to suppress the SSE echo on the originating WS connection.
+// Set before a share() call to suppress the echo back to the originating WS connection.
 // Cleared immediately after share() returns (listeners fire synchronously inside share()).
 let _suppressEchoWs = null
-
-function suppressEchoFor(connId) {
-  if (!connId) return
-  for (const ws of wsFleetClients) {
-    if (ws._connId === connId) { _suppressEchoWs = ws; return }
-  }
-}
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
@@ -688,7 +681,7 @@ app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, suppressEchoFor,
+  fleetStore, broadcastEvent, broadcastState,
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -896,15 +889,13 @@ server.on('upgrade', (req, socket, head) => {
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
-      ws._connId = Math.random().toString(36).slice(2)  // unique per-connection ID
       wsFleetClients.add(ws)
 
-      // Send initial state (includes connId so the client can suppress its own echoes)
+      // Send initial state on connect
       if (fleetStore) {
         const initState = {
           agents: fleetStore.getAllAgents().filter(a => !a.dead),
           tasks: fleetStore.getActiveTasks(),
-          connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
       }
@@ -932,7 +923,7 @@ server.on('upgrade', (req, socket, head) => {
 // ---------- Fleet WS message handler ----------
 // Handles request/response messages from the fleet MCP (sendWS pattern)
 
-function handleFleetWsMessage(ws, msg) {
+async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const reply = (result) => {
     if (id) ws.send(JSON.stringify({ id, result }))
@@ -1215,6 +1206,355 @@ function handleFleetWsMessage(ws, msg) {
     const { agentId } = msg
     if (!agentId) { error('missing agentId'); return }
     reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
+    return
+  }
+
+  // ---- rename ----
+  if (type === 'rename') {
+    const { agent: agentQuery, name: newName } = msg
+    if (!agentQuery || newName == null) { error('agent and name required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (newName) {
+      const conflict = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
+    }
+    fleetStore.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, name: newName || null })
+    return
+  }
+
+  // ---- label ----
+  if (type === 'label') {
+    const { agent: agentQuery, labels } = msg
+    if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    agent.labels = labels
+    fleetStore.upsertAgent(agent)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, labels })
+    return
+  }
+
+  // ---- kick ----
+  if (type === 'kick') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const route = resolveRpc('kick', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'kick', { agent_id: agent.id })
+      broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- interrupt ----
+  if (type === 'interrupt') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('interrupt', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- spawn ----
+  if (type === 'spawn') {
+    const { name, model, doc, agent, respawn } = msg
+    let spawnName = name
+    if (respawn && agent) {
+      const a = fleetStore.findAgent(agent)
+      spawnName = a?.friendly_name || agent
+    }
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
+    try {
+      const result = await sendRpc(machineIds[0], 'spawn', {
+        name: spawnName || undefined, model: model || undefined,
+        doc: doc || undefined, respawn: !!respawn,
+      })
+      broadcastState()
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- send-key ----
+  if (type === 'send-key') {
+    const { agent: agentQuery, key } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('send-key', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- send-text ----
+  if (type === 'send-text') {
+    const { agent: agentQuery, text, enter } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('send-text', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text, enter: enter !== false })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- capture-pane ----
+  if (type === 'capture-pane') {
+    const { agent: agentQuery, lines } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: lines || 50 })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- plan-mode-respond ----
+  if (type === 'plan-mode-respond') {
+    const { agent: agentQuery, response } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    if (response !== 'approve' && response !== 'reject') { error('response must be approve or reject'); return }
+    const op = response === 'approve' ? 'send-text' : 'send-key'
+    const route = resolveRpc(op, agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      let result
+      if (response === 'approve') {
+        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
+      } else {
+        result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+      }
+      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null })
+      broadcastState()
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- plan-mode-toggle ----
+  if (type === 'plan-mode-toggle') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const parseCCMode = (pane) => {
+        if (/plan mode on/i.test(pane)) return 'plan'
+        if (/accept edits on/i.test(pane)) return 'acceptEdits'
+        return 'default'
+      }
+      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const currentMode = parseCCMode(cap1?.content || '')
+      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
+      for (let i = 0; i < btabs; i++) {
+        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
+      }
+      if (btabs > 0) await new Promise(r => setTimeout(r, 300))
+      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const finalMode = parseCCMode(cap2?.content || '')
+      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      broadcastState()
+      reply({ ok: true, mode: finalMode, was: currentMode })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- mark-event-read ----
+  if (type === 'mark-event-read') {
+    const { event_id, agent: rawAgent } = msg
+    if (!event_id || !rawAgent) { error('event_id and agent required'); return }
+    const agent = fleetStore.findAgent(rawAgent)
+    const agentId = agent?.id || rawAgent
+    const changed = fleetStore.markEventRead?.(parseInt(event_id, 10), agentId)
+    if (changed) broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
+    reply({ ok: true, changed: !!changed })
+    return
+  }
+
+  // ---- terminal-card ----
+  if (type === 'terminal-card') {
+    const { from: rawFrom, reason } = msg
+    if (!rawFrom) { error('missing from'); return }
+    const agent = fleetStore.findAgent(rawFrom)
+    if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
+    if (!agent.tmux_session) { error('agent has no tmux_session'); return }
+    if (!agent.machine_id) { error('agent has no machine_id'); return }
+    const label = agent.friendly_name || agent.id.slice(0, 12)
+    const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
+    const event = fleetStore.share?.({
+      type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
+      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
+    })
+    broadcastEvent('fleet-event', {
+      type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID,
+      id: event?.id, event_id: event?.id, text,
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+    })
+    reply({ ok: true, event_id: event?.id })
+    return
+  }
+
+  // ---- wiretap-add ----
+  if (type === 'wiretap-add') {
+    const { agent, filter } = msg
+    if (!agent || !filter) { error('missing agent or filter'); return }
+    const tap = fleetStore.addWiretap(agent, filter)
+    reply(tap)
+    return
+  }
+
+  // ---- wiretap-remove ----
+  if (type === 'wiretap-remove') {
+    const { id: tapId } = msg
+    if (!tapId || isNaN(parseInt(tapId))) { error('invalid id'); return }
+    fleetStore.removeWiretap(parseInt(tapId))
+    reply({ ok: true })
+    return
+  }
+
+  // ---- wiretap-list ----
+  if (type === 'wiretap-list') {
+    const { agent } = msg
+    const taps = agent ? fleetStore.getWiretapsByAgent?.(agent) : fleetStore.getWiretaps?.()
+    reply(taps || [])
+    return
+  }
+
+  // ---- retract ----
+  if (type === 'retract') {
+    const { agent: rawAgent, task_id } = msg
+    if (!rawAgent) { error('missing agent'); return }
+    const agentId = fleetStore.findAgent(rawAgent)?.id || rawAgent
+    const task = task_id ? fleetStore.getTask?.(task_id) : fleetStore.getTaskByAgent?.(agentId)
+    if (!task) { error('no active task'); return }
+    fleetStore.removeTask?.(task.id)
+    broadcastState()
+    reply({ ok: true, task_id: task.id })
+    return
+  }
+
+  // ---- shared-docs-set ----
+  if (type === 'shared-docs-set') {
+    const { doc, path: docPath, title, agent, ephemeral } = msg
+    if (!doc) { error('missing doc'); return }
+    const now = new Date().toISOString()
+    fleetStore.db.prepare(`
+      INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
+    `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
+    reply({ ok: true })
+    return
+  }
+
+  // ---- shared-docs-get ----
+  if (type === 'shared-docs-get') {
+    const docs = fleetStore.db.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
+    reply(docs)
+    return
+  }
+
+  // ---- mark-dead ----
+  if (type === 'mark-dead') {
+    const { agent: agentId } = msg
+    if (!agentId) { error('missing agent'); return }
+    fleetStore.markDead(agentId)
+    broadcastState()
+    reply({ ok: true })
+    return
+  }
+
+  // ---- chat-history ----
+  if (type === 'chat-history') {
+    const { limit: rawLimit = 50, before, agent } = msg
+    const limit = Math.min(parseInt(rawLimit) || 50, 1000)
+    try {
+      let events = []
+      const fleetEvents = fleetStore.queryChatHistory?.({ before, agent, limit: limit + 1 }) || []
+      events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      const hasMore = events.length > limit
+      if (hasMore) events.shift()
+      events = events.filter(e => { const t = e.text || ''; return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder') })
+      const allAgents = fleetStore.getAllAgents()
+      const agentMap = {}
+      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const unreadIds = new Set()
+      try { const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all(); for (const r of rows) unreadIds.add(r.event_id) } catch {}
+      const resolved = events.map(e => ({
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }))
+      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
+      reply({ events: resolved, hasMore, nextCursor })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- store-events ----
+  if (type === 'store-events') {
+    const afterId = parseInt(msg.after || '0')
+    const beforeId = msg.before ? parseInt(msg.before) : null
+    const limit = Math.min(parseInt(msg.limit || '200'), 5000)
+    const evtAgent = msg.agent || null
+    const evtType = msg.event_type || null
+    try {
+      let events
+      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
+      if (evtAgent) {
+        let where = '(from_id = ? OR to_id = ?)'
+        const baseParams = [evtAgent, evtAgent]
+        const q = afterId
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
+          : beforeId
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
+        events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
+          : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
+          : fleetStore.db.prepare(q).all(...baseParams, limit)
+        if (beforeId) events.reverse()
+      } else if (evtType) {
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`).all(evtType, afterId, limit)
+      } else if (beforeId) {
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
+        events.reverse()
+      } else {
+        events = fleetStore.getEventsSince(afterId, limit)
+      }
+      const lastId = fleetStore.getLastEventId()
+      reply({ events, lastId })
+    } catch (e) { error(e.message) }
     return
   }
 
