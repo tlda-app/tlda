@@ -11,7 +11,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { dropGhostState, dropGhostBus } from '../shapes/FleetPillShape'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
@@ -102,40 +101,6 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
     w: maxX - minX + PAD * 2,
     h: maxY - minY + PAD * 2,
   }
-}
-
-/** Ghost rect shown over the empty slot when dragging a pill over bare canvas */
-function FleetDropGhost({ mainEditor }: { mainEditor: Editor }) {
-  const [ghost, setGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-
-  useEffect(() => {
-    const handler = () => {
-      const slot = dropGhostState.slot
-      if (!slot) { setGhost(null); return }
-      // Prefer screenRect set by the HUD editor — it used the HUD camera to
-      // convert page→screen, so the ghost lands in the HUD's viewport rather
-      // than wherever the main canvas would render the same page coordinates.
-      if (dropGhostState.screenRect) {
-        setGhost(dropGhostState.screenRect)
-        return
-      }
-      // Fallback: convert via main editor (correct when drag originates on
-      // the main canvas, not inside the HUD panel).
-      const tl = mainEditor.pageToScreen({ x: slot.x, y: slot.y })
-      const br = mainEditor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
-      setGhost({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
-    }
-    dropGhostBus.addEventListener('change', handler)
-    return () => { dropGhostBus.removeEventListener('change', handler); setGhost(null) }
-  }, [mainEditor])
-
-  if (!ghost) return null
-  return (
-    <div
-      className="fleet-drop-ghost"
-      style={{ left: ghost.x, top: ghost.y, width: ghost.w, height: ghost.h }}
-    />
-  )
 }
 
 export function FleetHUD({
@@ -339,13 +304,10 @@ export function FleetHUD({
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
-  const ghost = <FleetDropGhost mainEditor={mainEditor} />
-
   // Collapsed: just the pill
   if (!expanded) {
     return (
       <>
-        {ghost}
         <div className="fleet-pill-container">
           <span
             className="fleet-pill"
@@ -411,7 +373,6 @@ export function FleetHUD({
 
   return (
     <>
-      {ghost}
       <div
         className="fleet-hud-wrap"
         ref={hudRef}

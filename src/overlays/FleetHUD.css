@@ -131,19 +131,6 @@ body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   pointer-events: all;
 }
 
-/* Ghost rect shown when dragging a pill over an empty grid slot */
-.fleet-drop-ghost {
-  position: fixed;
-  pointer-events: none;
-  z-index: 298;
-  border: 2px dashed rgba(120, 120, 200, 0.5);
-  border-radius: 6px;
-  background: rgba(100, 100, 200, 0.06);
-}
-html[data-theme="dark"] .fleet-drop-ghost {
-  border-color: rgba(160, 140, 255, 0.45);
-  background: rgba(120, 100, 220, 0.08);
-}
 
 /* Dark mode */
 html[data-theme="dark"] .fleet-pill {
