@@ -333,9 +333,35 @@ export function FleetHUD({
     }
     trySubscribe()
 
+    // HACK: Safety valve — if pointer-events:none was restored mid-drag
+    // (e.g. class removed by a React re-render), TLDraw never sees pointerup
+    // and stays stuck in brushing/pointing_canvas with isPointing=true.
+    // On any window pointerup, if the overlay editor is still "pointing",
+    // force-dispatch pointer_up through TLDraw so it cleans up its state.
+    const onWindowPointerUp = (e: PointerEvent) => {
+      const editor = overlayEditorRef.current
+      if (!editor) return
+      if (!editor.inputs.isPointing) return
+      editor.dispatch({
+        type: 'pointer',
+        name: 'pointer_up',
+        target: 'canvas',
+        pointerId: e.pointerId,
+        point: { x: e.clientX, y: e.clientY, z: 0.5 },
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        button: e.button,
+        buttons: e.buttons,
+      })
+    }
+    window.addEventListener('pointerup', onWindowPointerUp, true)
+
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
+      window.removeEventListener('pointerup', onWindowPointerUp, true)
       el.classList.remove('hud-layout-active')
     }
   }, [expanded])
