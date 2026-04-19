@@ -104,7 +104,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
     if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agents = fleetStore ? fleetStore.getAliveAgents() : []
+    const agents = fleetStore ? fleetStore.getAllAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
