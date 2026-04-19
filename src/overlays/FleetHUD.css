@@ -70,6 +70,18 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
   pointer-events: auto !important;
 }
+/* In layout/drag mode (fleet-drag-mode on the shape), disable pointer-events
+   on shape content so clicks pass through to TLDraw's canvas — enabling drag.
+   This needs higher specificity than the fleet-shape auto rule above (0,4,0)
+   so it actually wins. Keep fleet-btn-group interactive so the ⊞ / × buttons work. */
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .tl-html-container,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .tl-html-container * {
+  pointer-events: none !important;
+}
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .fleet-btn-group,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .fleet-btn-group * {
+  pointer-events: auto !important;
+}
 /* TLDraw selection/resize handles must be interactive, but shape
    indicators (hover outlines) must NOT block clicks on shape content.
    Only restore pointer-events on the selection foreground (resize handles). */
@@ -80,13 +92,6 @@
 /* Layout mode: make the entire canvas interactive so brush-select and
    click-to-deselect work on empty areas. Without this, clicks on empty
    canvas pass through to the main editor. */
-.fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
-  pointer-events: auto !important;
-}
-/* Layout mode: when a fleet shape is selected via the ⊞ button, the wrap gets
-   .hud-layout-active. This enables pointer-events on the TLDraw canvas so the
-   user can drag-box select multiple fleet shapes. Without a selection, the canvas
-   stays pointer-events: none and empty-area clicks pass through to the main canvas. */
 .fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
   pointer-events: auto !important;
 }
