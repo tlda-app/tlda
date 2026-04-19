@@ -299,21 +299,43 @@ export function FleetHUD({
     const el = hudRef.current
     if (!el) return
 
+    let removeRaf: number | null = null
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // Only allow removing hud-layout-active when the state machine is in
-      // idle. Any other state (brushing, translating, pointing_canvas, etc.)
-      // means an interaction is in progress. Removing pointer-events during
-      // an active interaction kills the pointerup delivery and permanently
-      // sticks the state machine.
-      const currentState = editor.root.getCurrent()?.getCurrent()?.id
-      if (currentState && currentState !== 'idle') return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
-      el.classList.toggle('hud-layout-active', hasFleetSelected)
+      if (hasFleetSelected) {
+        // ADD immediately — user selected a fleet shape, enable interaction
+        if (removeRaf !== null) { cancelAnimationFrame(removeRaf); removeRaf = null }
+        el.classList.add('hud-layout-active')
+      } else if (el.classList.contains('hud-layout-active')) {
+        // REMOVE deferred — wait until next frame so all pointer events and
+        // state transitions have settled. If the state machine isn't in idle
+        // at that point, something is still in progress; defer again.
+        if (removeRaf !== null) return // already scheduled
+        removeRaf = requestAnimationFrame(() => {
+          removeRaf = null
+          const ed = overlayEditorRef.current
+          if (!ed) return
+          const state = ed.root.getCurrent()?.getCurrent()?.id
+          if (state && state !== 'idle') {
+            // Still busy — try again next frame
+            checkSelection()
+            return
+          }
+          // Confirm nothing selected (might have changed since schedule)
+          const stillSelected = ed.getSelectedShapeIds().some(id => {
+            const s = ed.getShape(id as any)
+            return s && FLEET_TYPES_HUD.has(s.type as string)
+          })
+          if (!stillSelected) {
+            el.classList.remove('hud-layout-active')
+          }
+        })
+      }
     }
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
@@ -349,6 +371,7 @@ export function FleetHUD({
 
     return () => {
       cancelAnimationFrame(rafId)
+      if (removeRaf !== null) cancelAnimationFrame(removeRaf)
       unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
       el.classList.remove('hud-layout-active')
