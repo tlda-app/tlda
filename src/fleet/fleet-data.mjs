@@ -31,7 +31,6 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
-let _connId = null             // per-WS-connection ID assigned by server, sent in POST for echo suppression
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -160,27 +159,19 @@ export function getAgent(id) {
 // --- Write API (all go through server) ---
 
 export async function sendMessage(to, text, opts = {}) {
-  const body = { message: text, to }
-  // Include sender identity so the server attributes the message correctly
+  const body = { type: 'chat', message: text, to }
   if (_humanId) body.from = _humanId
-  // Tell server to suppress SSE echo to this connection (optimistic send dedup)
-  if (_connId) body.suppress_echo = _connId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
   try {
-    const r = await fetch(`${FLEET}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const d = await r.json().catch(() => ({}))
-    console.log(`[chat-send] to=${to} id=${d.event_id} ok=${r.ok} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: r.ok, event_id: d.event_id, error: d.error }
+    const d = await wsSend(body)
+    console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+    return { ok: true, event_id: d.event_id }
   } catch (e) {
-    console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
+    console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
   }
 }
@@ -378,7 +369,6 @@ export function connect() {
 
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
-        if (msg.connId) _connId = msg.connId  // store per-connection ID for echo suppression
         updateAgents(msg.agents || [])
         updateTasks(msg.tasks || [])
         // Sync thinking/compacting state from server (authoritative)
