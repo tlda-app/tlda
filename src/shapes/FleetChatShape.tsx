@@ -2448,15 +2448,70 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
+                  // Same optimistic send path as Enter key — one send path for everything
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
+                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                  injectOptimisticEvent({
+                    _tempId: tempId,
+                    type: 'chat',
+                    event_type: 'chat',
+                    from: getHumanId(),
+                    to: targets[0],
+                    text,
+                    timestamp: new Date().toISOString(),
+                    read: true,
+                  })
+                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const sendWithRetry = (attempt: number) => {
+                    Promise.all(
+                      targets.map(t => sendMessage(t, text, context ? { context } : {}))
+                    ).then((results: {ok: boolean, event_id: number}[]) => {
+                      if (!results.every(r => r.ok)) throw new Error('send failed')
+                      reconcileOptimistic(tempId, results[0]?.event_id)
+                    }).catch(() => {
+                      if (attempt < 3) {
+                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                      } else {
+                        updateOptimisticEvent(tempId, { _failed: true })
+                      }
+                    })
+                  }
+                  sendWithRetry(1)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  return Promise.all(targets.map(t => sendMessage(t, text, context ? { context } : undefined)))
+                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                  injectOptimisticEvent({
+                    _tempId: tempId,
+                    type: 'chat',
+                    event_type: 'chat',
+                    from: getHumanId(),
+                    to: targets[0],
+                    text,
+                    timestamp: new Date().toISOString(),
+                    read: true,
+                  })
+                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const sendWithRetry = (attempt: number) => {
+                    Promise.all(
+                      targets.map(t => sendMessage(t, text, context ? { context } : {}))
+                    ).then((results: {ok: boolean, event_id: number}[]) => {
+                      if (!results.every(r => r.ok)) throw new Error('send failed')
+                      reconcileOptimistic(tempId, results[0]?.event_id)
+                    }).catch(() => {
+                      if (attempt < 3) {
+                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+                      } else {
+                        updateOptimisticEvent(tempId, { _failed: true })
+                      }
+                    })
+                  }
+                  sendWithRetry(1)
                 }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
               }}
               style={{
