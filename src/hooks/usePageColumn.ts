@@ -137,20 +137,20 @@ class PageColumn {
       }
     }
 
-    // Render as a very thin geo rectangle — 0.5 canvas units wide, hairline divider
+    // Render as a very thin geo rectangle — 0.25 canvas units wide, hairline divider
     const handleH = 99999
     const handleY = this.yOffset - handleH / 2
     this.editor.createShape({
       id: this.handleId,
       type: 'geo' as any,
-      x: handleX - 0.25, y: handleY,
-      isLocked: false, opacity: 0.15,
+      x: handleX - 0.125, y: handleY,
+      isLocked: false, opacity: 0.05,
       props: {
-        w: 0.5, h: handleH,
+        w: 0.25, h: handleH,
         geo: 'rectangle', color: 'grey', fill: 'solid', dash: 'solid', size: 's',
       },
     })
-    this.handlePos = { x: handleX - 0.25, y: handleY }
+    this.handlePos = { x: handleX - 0.125, y: handleY }
 
     // Listen for handle drag — apply Y offset (default) or X gap (if strongly horizontal)
     this.handleUnsub = this.editor.store.listen(({ changes }) => {

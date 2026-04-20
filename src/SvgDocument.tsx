@@ -9,6 +9,7 @@ import {
   defaultShapeUtils,
   defaultBindingUtils,
   HighlightShapeUtil,
+  GeoShapeUtil,
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
@@ -100,6 +101,7 @@ import { useFootControl } from './hooks/useFootControl'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { useDividerDiff } from './hooks/useDividerDiff'
 import { useCompareColumn } from './hooks/useCompareColumn'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
@@ -492,8 +494,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Shadow history scrubber
   const {
     shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
+    shadowActiveVersion, shadowColumnX,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
+  // Divider diff: draw on the gap between columns to trigger word-level diff
+  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX)
 
   // Side-by-side version comparison — relay Yjs signal to window event
   useEffect(() => {
@@ -820,7 +826,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       override indicator() { return null as any }
     }
-    const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
+    // Suppress hover/selection indicator on shadow column handle geo shapes —
+    // the handle is nearly invisible (opacity 0.05) and the blue glow is distracting
+    class ShadowAwareGeoShapeUtil extends GeoShapeUtil {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      override indicator(shape: any) {
+        if ((shape.id as string).startsWith('shape:shadow-col-handle-')) return null as any
+        return super.indicator(shape)
+      }
+    }
+    const utils = defaultShapeUtils.map(u =>
+      u === HighlightShapeUtil ? QuietHighlightShapeUtil :
+      u === GeoShapeUtil ? ShadowAwareGeoShapeUtil : u
+    )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
     const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
