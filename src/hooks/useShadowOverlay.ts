@@ -15,7 +15,7 @@ import type { TLShapeId, Editor } from 'tldraw'
 import { fetchShadowVersions } from '../historyStore'
 import type { ShadowVersion } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'
-import { TARGET_WIDTH } from '../layoutConstants'
+
 import { usePageColumn } from './usePageColumn'
 import type { PageColumnOptions } from './usePageColumn'
 
@@ -47,18 +47,11 @@ export function useShadowOverlay(
 
   useEffect(() => { fetchVersions() }, [fetchVersions])
 
-  // Compute column position based on side preference
-  const placeSide = typeof localStorage !== 'undefined'
-    ? localStorage.getItem('tlda-shadow-side') || 'right'
-    : 'right'
-
   const columnX = useMemo(() => {
     if (document.pages.length === 0) return 0
     const firstPage = document.pages[0]
-    return placeSide === 'right'
-      ? firstPage.bounds.x + firstPage.bounds.width + OLD_PAGE_GAP
-      : firstPage.bounds.x - TARGET_WIDTH - OLD_PAGE_GAP
-  }, [document.pages, placeSide])
+    return firstPage.bounds.x + firstPage.bounds.width + OLD_PAGE_GAP
+  }, [document.pages])
 
   // Build PageColumn options — null when no shadow is active.
   // Uses committedIdx (debounced) so rapid scrubbing doesn't churn columns.

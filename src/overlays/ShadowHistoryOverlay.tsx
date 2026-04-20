@@ -2,7 +2,7 @@
  * ShadowHistoryOverlay — floating scrubber for navigating shadow repo history.
  *
  * Shows as a slim bar at the bottom of the canvas. When the user scrubs to a
- * historical position, old SVG pages appear to the left of the current pages.
+ * historical position, old SVG pages appear to the right of the current pages.
  *
  * Activates via a "History" button in the document panel, or by calling
  * toggleShadowOverlay() from the parent.
@@ -16,7 +16,7 @@
  * No stopEventPropagation needed here.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import type { ShadowVersion } from '../historyStore'
 import './ShadowHistoryOverlay.css'
 
@@ -44,9 +44,6 @@ interface Props {
 }
 
 export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  const [side, setSide] = useState<'left' | 'right'>(() =>
-    (localStorage.getItem('tlda-shadow-side') as 'left' | 'right') || 'left'
-  )
   const sliderMax = versions.length
   // Slider: right edge (sliderMax) = current, left edge (0) = oldest.
   const sliderVal = activeIdx < 0 ? sliderMax : sliderMax - 1 - activeIdx
@@ -122,17 +119,6 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
       <span className="shadow-scrubber-pos">{pos}</span>
       <span className="shadow-scrubber-label">{labelText}</span>
 
-      <button
-        className="shadow-scrubber-side"
-        onClick={() => {
-          const next = side === 'left' ? 'right' : 'left'
-          setSide(next)
-          localStorage.setItem('tlda-shadow-side', next)
-          // Re-scrub to reposition shapes
-          if (activeIdx >= 0) onScrub(activeIdx)
-        }}
-        title={`Old version on ${side} — click to switch`}
-      >{side === 'left' ? '◁' : '▷'}</button>
       <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
         ×
       </button>

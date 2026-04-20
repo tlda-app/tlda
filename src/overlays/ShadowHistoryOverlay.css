@@ -113,9 +113,7 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
   transition: transform 0.15s;
 }
-.shadow-scrubber-range::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-}
+
 .shadow-scrubber-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
@@ -125,10 +123,10 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Label area */
+/* Label area — fixed width prevents layout shift when text changes (Loading↔timestamp↔Current) */
 .shadow-scrubber-label {
   flex: none;
-  max-width: 200px;
+  width: 120px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
