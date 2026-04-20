@@ -118,21 +118,25 @@ export function useShadowOverlay(
   // 1. Find the source line nearest to the viewport center in the current doc's lookup.
   // 2. Find that same line in the shadow version's lookup.
   // 3. Set yOffset so the shadow line appears at the viewport center.
-  // Falls back to page-based alignment if lookups aren't available.
+  // If the shadow lookup isn't ready yet (DVI compile in progress), retries every 5s.
+  // No fallback to different behavior — either SyncTeX alignment or nothing.
   useEffect(() => {
     if (!activeVersion || !editorRef.current) { setShadowYOffset(0); return }
     let cancelled = false
     const editor = editorRef.current
     const hash7 = activeVersion.hash.slice(0, 7)
+    const shadowLookupUrl = `/api/projects/${docName}/history/shadow/${hash7}/lookup`
 
-    ;(async () => {
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const tryAlign = async () => {
+      if (cancelled) return
       const vp = editor.getViewportPageBounds()
       const vpCenterY = vp.y + vp.h / 2
 
-      // Try SyncTeX label alignment
       const [currentLines, shadowLines] = await Promise.all([
         fetchLookupLines(`/docs/${docName}/lookup.json`),
-        fetchLookupLines(`/api/projects/${docName}/history/shadow/${hash7}/lookup`),
+        fetchLookupLines(shadowLookupUrl),
       ])
 
       if (cancelled) return
@@ -150,7 +154,7 @@ export function useShadowOverlay(
           if (dist < bestDist) { bestDist = dist; bestKey = key }
         }
 
-        // Find the same key in shadow lookup and compute yOffset
+        // Align shadow so that line appears at viewport center
         if (bestKey && shadowLines[bestKey]) {
           const se = shadowLines[bestKey]
           const shadowLineY = (se.page - 1) * PAGE_STRIDE + (se.y + SYNCTEX_VIEWBOX_OFFSET) * SCALE_Y
@@ -159,19 +163,18 @@ export function useShadowOverlay(
         }
       }
 
-      if (cancelled) return
+      // Shadow lookup not ready (DVI compile in progress) — retry in 5s.
+      // Clear cache entry so the next attempt actually re-fetches.
+      _lookupCache.delete(shadowLookupUrl)
+      retryTimer = setTimeout(tryAlign, 5000)
+    }
 
-      // Fallback: page-based alignment
-      const mainPage0 = document.pages[0]?.bounds.y ?? 0
-      const nearestPage = Math.max(0, Math.min(
-        shadowTotalPages - 1,
-        Math.round((vpCenterY - mainPage0 - PAGE_HEIGHT / 2) / PAGE_STRIDE),
-      ))
-      setShadowYOffset(vpCenterY - nearestPage * PAGE_STRIDE - PAGE_HEIGHT / 2)
-    })()
-
-    return () => { cancelled = true }
-  }, [activeVersion?.hash, shadowTotalPages, document.pages, docName])
+    tryAlign()
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  }, [activeVersion?.hash, document.pages, docName])
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!activeVersion || !visible) return null
