@@ -661,6 +661,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       // Focus the editor
       view.focus()
+      // Move cursor to end of content so the user can continue typing after existing text.
+      // On double-click edit of a note, CodeMirror's own click handler repositions the cursor
+      // to the clicked location — this just sets the initial position sensibly.
+      view.dispatch({
+        selection: { anchor: view.state.doc.length },
+        scrollIntoView: true,
+      })
 
       // Wire voice accumulator: Right Shift → dictate into this note.
       // voiceAnchorPos/lastVoiceLen/voiceFilling are declared above (before EditorState.create)
