@@ -6,10 +6,17 @@
  *
  * Activates via a "History" button in the document panel, or by calling
  * toggleShadowOverlay() from the parent.
+ *
+ * Slider direction: current version is on the RIGHT edge (sliderMax), oldest
+ * is on the LEFT edge (0). Dragging right = toward current; dragging left =
+ * into history. Dragging all the way to the right dismisses the overlay.
+ *
+ * Pointer events are handled by BrowseIdle.markEventAsHandled, which prevents
+ * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
+ * No stopEventPropagation needed here.
  */
 
-import { useCallback, useState, useEffect } from 'react'
-import { stopEventPropagation } from 'tldraw'
+import { useCallback, useState } from 'react'
 import type { ShadowVersion } from '../historyStore'
 import './ShadowHistoryOverlay.css'
 
@@ -41,17 +48,19 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     (localStorage.getItem('tlda-shadow-side') as 'left' | 'right') || 'left'
   )
   const sliderMax = versions.length
-  const sliderVal = activeIdx < 0 ? 0 : activeIdx + 1
+  // Slider: right edge (sliderMax) = current, left edge (0) = oldest.
+  const sliderVal = activeIdx < 0 ? sliderMax : sliderMax - 1 - activeIdx
 
   const handleRange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseInt(e.target.value, 10)
-    onScrub(v <= 0 ? -1 : v - 1)
-  }, [onScrub])
+    // v = sliderMax → current (-1); v < sliderMax → versions[sliderMax - 1 - v]
+    onScrub(v >= sliderMax ? -1 : sliderMax - 1 - v)
+  }, [onScrub, sliderMax])
 
   const step = useCallback((dir: number) => {
-    // dir=-1 = newer (toward current), dir=+1 = older (away from current)
+    // dir=-1 = older (left), dir=+1 = newer (right, toward current)
     const newSlider = Math.max(0, Math.min(sliderMax, sliderVal + dir))
-    onScrub(newSlider <= 0 ? -1 : newSlider - 1)
+    onScrub(newSlider >= sliderMax ? -1 : sliderMax - 1 - newSlider)
   }, [sliderVal, sliderMax, onScrub])
 
   // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
@@ -83,14 +92,12 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     <div
       className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
       style={isHidden ? { display: 'none' } : undefined}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
     >
-      {/* Older */}
+      {/* Older — moves left (decreases sliderVal) */}
       <button
         className="shadow-scrubber-step"
-        disabled={sliderVal >= sliderMax}
-        onClick={() => step(1)}
+        disabled={sliderVal <= 0}
+        onClick={() => step(-1)}
         title="Older"
       >‹</button>
 
@@ -101,14 +108,14 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
         max={sliderMax}
         value={sliderVal}
         onChange={handleRange}
-        title="Drag to scrub history"
+        title="Drag to scrub history — right = current, left = older"
       />
 
-      {/* Newer */}
+      {/* Newer — moves right (increases sliderVal, toward current) */}
       <button
         className="shadow-scrubber-step"
-        disabled={sliderVal <= 0}
-        onClick={() => step(-1)}
+        disabled={sliderVal >= sliderMax}
+        onClick={() => step(1)}
         title="Newer"
       >›</button>
 
