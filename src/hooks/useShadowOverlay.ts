@@ -18,8 +18,11 @@ import type { SvgDocument } from '../svgDocumentLoader'
 
 import { usePageColumn } from './usePageColumn'
 import type { PageColumnOptions } from './usePageColumn'
+import { PAGE_GAP, PDF_HEIGHT, PDF_WIDTH, TARGET_WIDTH } from '../layoutConstants'
 
 const OLD_PAGE_GAP = 48
+const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
+const PAGE_STRIDE = PAGE_HEIGHT + PAGE_GAP
 
 export function useShadowOverlay(
   editorRef: React.MutableRefObject<Editor | null>,
@@ -36,6 +39,8 @@ export function useShadowOverlay(
   const [visible, setVisible] = useState(false)
   // Real page count for the committed shadow version (fetched after commit; falls back to current doc)
   const [shadowTotalPages, setShadowTotalPages] = useState(document.pages.length)
+  // Y offset for the shadow column — aligned to viewport center on scrub
+  const [shadowYOffset, setShadowYOffset] = useState(0)
   const versionsRef = useRef(versions)
   versionsRef.current = versions
 
@@ -72,6 +77,25 @@ export function useShadowOverlay(
     })
   }, [activeVersion?.hash, docName, document.pages.length])
 
+  // Align shadow column Y to viewport center when version or page count changes.
+  // Find which page the viewport center lands on, clamp to shadow's page count,
+  // then offset so that page appears at the viewport center Y.
+  useEffect(() => {
+    if (!activeVersion || !editorRef.current) { setShadowYOffset(0); return }
+    const vp = editorRef.current.getViewportPageBounds()
+    const vpCenterY = vp.y + vp.h / 2
+    // Which page (0-indexed) of the main doc is at viewport center?
+    const mainPage0 = document.pages[0]?.bounds.y ?? 0
+    const nearestPage = Math.max(0, Math.min(
+      shadowTotalPages - 1,
+      Math.round((vpCenterY - mainPage0 - PAGE_HEIGHT / 2) / PAGE_STRIDE),
+    ))
+    // Place shadow page (nearestPage+1) so its center is at vpCenterY
+    // shadow center = yOffset + nearestPage * PAGE_STRIDE + PAGE_HEIGHT / 2
+    const newYOffset = vpCenterY - nearestPage * PAGE_STRIDE - PAGE_HEIGHT / 2
+    setShadowYOffset(newYOffset)
+  }, [activeVersion?.hash, shadowTotalPages, document.pages])
+
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!activeVersion || !visible) return null
     return {
@@ -81,9 +105,9 @@ export function useShadowOverlay(
       totalPages: shadowTotalPages,
       prefetch: 1,
       opacity: 0.9,
-      yOffset: 0,
+      yOffset: shadowYOffset,
     }
-  }, [activeVersion?.hash, visible, docName, columnX, shadowTotalPages])
+  }, [activeVersion?.hash, visible, docName, columnX, shadowTotalPages, shadowYOffset])
 
   // Delegate shape management to usePageColumn.
   // Cleanup is automatic: when columnOptions becomes null (visible=false or activeIdx=-1),
