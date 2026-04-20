@@ -25,6 +25,14 @@ export class VoiceNoteTool extends StateNode {
   static override id = 'voice-note'
 
   private _shapeId: TLShapeId | null = null
+  private _transcriptInterval: ReturnType<typeof setInterval> | null = null
+
+  private _clearInterval() {
+    if (this._transcriptInterval) {
+      clearInterval(this._transcriptInterval)
+      this._transcriptInterval = null
+    }
+  }
 
   override onEnter = () => {
     const { editor } = this
@@ -38,19 +46,27 @@ export class VoiceNoteTool extends StateNode {
       y: point.y - 10,
       props: { w: NOTE_W, h: 50, text: '', color: 'yellow', autoSize: true, collapsed: false },
     })
+    // Poll transcript at 50ms so ghost text updates continuously, not just on pointer move
+    this._transcriptInterval = setInterval(() => {
+      if (!this._shapeId) { this._clearInterval(); return }
+      this.editor.updateShape({
+        id: this._shapeId,
+        type: 'math-note' as any,
+        props: { text: getTranscript() },
+      })
+    }, 50)
   }
 
   override onPointerMove = () => {
     if (!this._shapeId) return
     const { editor } = this
     const point = editor.inputs.currentPagePoint
-    const transcript = getTranscript()
+    // Interval handles text updates; just track position here
     editor.updateShape({
       id: this._shapeId,
       type: 'math-note' as any,
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
-      props: { text: transcript },
     })
   }
 
@@ -64,9 +80,12 @@ export class VoiceNoteTool extends StateNode {
     const id = this._shapeId
     const point = { ...editor.inputs.currentPagePoint }
 
-    // Snapshot transcript before stopping recording (stop may clear voice state)
+    // Snapshot transcript and stop interval — but do NOT stop recording.
+    // setEditingShape below puts the note in edit mode, which registers its
+    // own voice accumulator, so recording continues seamlessly without the
+    // user needing to tap shift again.
     const transcript = getTranscript()
-    if (_stopRecording) { _stopRecording(); _stopRecording = null }
+    this._clearInterval()
 
     // Commit shape at current position with final transcript — always expanded
     // so the user can immediately read and edit what was recorded
@@ -105,6 +124,7 @@ export class VoiceNoteTool extends StateNode {
 
   override onKeyDown = (info: any) => {
     if (info.key === 'Escape') {
+      this._clearInterval()
       if (_stopRecording) { _stopRecording(); _stopRecording = null }
       // ESC cancels — delete the shape (nothing was committed)
       if (this._shapeId) {
@@ -119,6 +139,7 @@ export class VoiceNoteTool extends StateNode {
     // Shape stays on canvas — ESC is the only explicit cancel.
     // If the tool exits via any other path (click-commit, tool switch, etc.)
     // the shape was either committed or should survive for the user to edit.
+    this._clearInterval()
     this._shapeId = null
   }
 }
