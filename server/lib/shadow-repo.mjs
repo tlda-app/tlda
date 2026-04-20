@@ -9,10 +9,20 @@
 
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
-const execAsync = promisify(execCb)
+const _execAsyncRaw = promisify(execCb)
+const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, rmSync, symlinkSync, lstatSync } from 'fs'
-import { join, relative } from 'path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
+import { join, relative, basename } from 'path'
+
+// Ensure TeX binaries are on PATH (launchd doesn't inherit shell PATH).
+for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64-linux', '/usr/local/texlive/2025/bin/x86_64-linux']) {
+  try {
+    if (!process.env.PATH?.includes(texbin) && statSync(texbin).isDirectory()) {
+      process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
+    }
+  } catch {}
+}
 
 // Protected compare refs — exempt from pruning while a compare is active.
 // Set by the MCP doc_compare handler, cleared when compare is dismissed.
@@ -23,7 +33,7 @@ export function setCompareRef(projectName, hash7) {
 }
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
-import { projectDir, sourceDir, outputDir } from './project-store.mjs'
+import { projectDir, sourceDir, outputDir, readProject } from './project-store.mjs'
 
 const GITIGNORE_CONTENT = `# Build artifacts
 *.aux
@@ -339,4 +349,107 @@ function pruneShadowCache(name) {
  */
 export function getShadowRepoDir(name) {
   return shadowRepoDir(name)
+}
+
+// ── On-demand shadow page generation ─────────────────────────────────────────
+
+// Active DVI compiles: "name:hash7" → Promise<void>
+// First request for a hash7 starts the compile; all subsequent requests wait on the same promise.
+const _activeDviBuilds = new Map()
+
+const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+
+/**
+ * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
+ * No-op if DVI already exists. Serializes concurrent callers for the same hash7.
+ */
+async function ensureShadowDvi(name, hash7) {
+  const cacheDir = join(historyDir(name), `shadow-${hash7}`)
+  const dviFile = join(cacheDir, 'main.dvi')
+  if (existsSync(dviFile)) return
+
+  const key = `${name}:${hash7}`
+  if (!_activeDviBuilds.has(key)) {
+    const promise = (async () => {
+      // Re-check under lock
+      if (existsSync(dviFile)) return
+
+      const project = readProject(name)
+      const mainFile = project?.mainFile || 'main.tex'
+      const texBase = basename(mainFile, '.tex')
+
+      console.log(`[shadow] Compiling ${name}@${hash7}...`)
+      const tmpSrc = await checkoutSource(name, hash7)
+      try {
+        mkdirSync(cacheDir, { recursive: true })
+        // latexmk -dvi with draft graphicx (no figure loading)
+        try {
+          await execAsync(
+            `latexmk -dvi -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
+            { cwd: tmpSrc, timeout: 180000 },
+          )
+        } catch { /* check for DVI below */ }
+
+        const srcDvi = join(tmpSrc, `${texBase}.dvi`)
+        if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${name}@${hash7}`)
+        copyFileSync(srcDvi, dviFile)
+
+        // Extract page count from log and save to meta.json
+        let pages = null
+        const logPath = join(tmpSrc, `${texBase}.log`)
+        if (existsSync(logPath)) {
+          const m = readFileSync(logPath, 'utf8').match(/Output written on .+?\((\d+) pages?\)/)
+          if (m) pages = parseInt(m[1], 10)
+        }
+        writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
+        console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
+      } finally {
+        rmSync(tmpSrc, { recursive: true, force: true })
+      }
+    })()
+    _activeDviBuilds.set(key, promise)
+    promise.finally(() => {
+      if (_activeDviBuilds.get(key) === promise) _activeDviBuilds.delete(key)
+    })
+  }
+
+  await _activeDviBuilds.get(key)
+}
+
+/**
+ * Build and return the path to a shadow history page SVG.
+ * Cascade: cached SVG → generate from cached DVI → compile DVI then generate.
+ * Throws if the page cannot be produced.
+ */
+export async function buildShadowPage(name, hash7, pageNum) {
+  const cacheDir = join(historyDir(name), `shadow-${hash7}`)
+  const svgFile = join(cacheDir, `page-${pageNum}.svg`)
+
+  // Fast path: SVG already cached
+  if (existsSync(svgFile)) return svgFile
+
+  // Ensure DVI exists (compiles if needed, serialized per hash7)
+  await ensureShadowDvi(name, hash7)
+
+  // Re-check: dvisvgm may have produced this page as a side-effect of a concurrent call
+  if (existsSync(svgFile)) return svgFile
+
+  const dviFile = join(cacheDir, 'main.dvi')
+  if (!existsSync(dviFile)) throw new Error(`DVI not found after compile: shadow-${hash7}`)
+
+  // Generate just this page from the DVI
+  await execAsync(
+    `dvisvgm --page=${pageNum} --font-format=woff2 --bbox=papersize --linkmark=none ` +
+    `--output="${cacheDir}/page-%p.svg" "${dviFile}"`,
+    { cwd: cacheDir, timeout: 30000 },
+  )
+
+  // Normalize zero-padded names (dvisvgm may produce page-01.svg for page 1)
+  for (const f of readdirSync(cacheDir)) {
+    const m = f.match(/^page-0+(\d+\.svg)$/)
+    if (m) renameSync(join(cacheDir, f), join(cacheDir, `page-${m[1]}`))
+  }
+
+  if (!existsSync(svgFile)) throw new Error(`dvisvgm did not produce page-${pageNum}.svg for shadow-${hash7}`)
+  return svgFile
 }

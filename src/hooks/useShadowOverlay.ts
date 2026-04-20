@@ -12,7 +12,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { TLShapeId, Editor } from 'tldraw'
-import { fetchShadowVersions } from '../historyStore'
+import { fetchShadowVersions, fetchShadowMeta } from '../historyStore'
 import type { ShadowVersion } from '../historyStore'
 import type { SvgDocument } from '../svgDocumentLoader'
 
@@ -34,6 +34,8 @@ export function useShadowOverlay(
   const [committedIdx, setCommittedIdx] = useState(-1)  // column version (debounced)
   const [loading, setLoading] = useState(false)
   const [visible, setVisible] = useState(false)
+  // Real page count for the committed shadow version (fetched after commit; falls back to current doc)
+  const [shadowTotalPages, setShadowTotalPages] = useState(document.pages.length)
   const versionsRef = useRef(versions)
   versionsRef.current = versions
 
@@ -59,18 +61,29 @@ export function useShadowOverlay(
     ? versions[committedIdx]
     : null
 
+  // Fetch real page count when committed version changes
+  useEffect(() => {
+    if (!activeVersion) {
+      setShadowTotalPages(document.pages.length)
+      return
+    }
+    fetchShadowMeta(docName, activeVersion.hash).then(meta => {
+      setShadowTotalPages(meta.pages ?? document.pages.length)
+    })
+  }, [activeVersion?.hash, docName, document.pages.length])
+
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!activeVersion || !visible) return null
     return {
       docName,
       source: { type: 'shadow' as const, docName, ref: activeVersion.hash },
       columnX,
-      totalPages: document.pages.length,
+      totalPages: shadowTotalPages,
       prefetch: 1,
       opacity: 0.9,
       yOffset: 0,
     }
-  }, [activeVersion?.hash, visible, docName, columnX, document.pages.length])
+  }, [activeVersion?.hash, visible, docName, columnX, shadowTotalPages])
 
   // Delegate shape management to usePageColumn.
   // Cleanup is automatic: when columnOptions becomes null (visible=false or activeIdx=-1),

@@ -168,3 +168,18 @@ export async function fetchShadowVersions(docName: string, limit = 50): Promise<
 export function shadowSnapshotPageUrl(docName: string, hash: string, page: number): string {
   return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/page-${page}.svg`
 }
+
+/**
+ * Fetch page count for a shadow version.
+ * Returns null if not yet compiled.
+ */
+export async function fetchShadowMeta(docName: string, hash: string): Promise<{ pages: number | null }> {
+  try {
+    const hash7 = hash.slice(0, 7)
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/${hash7}/meta`)
+    if (!res.ok) return { pages: null }
+    return await res.json()
+  } catch {
+    return { pages: null }
+  }
+}

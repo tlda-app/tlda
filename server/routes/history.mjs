@@ -8,12 +8,12 @@
 
 import { Router } from 'express'
 import { join } from 'path'
-import { existsSync, readdirSync } from 'fs'
+import { existsSync, readdirSync, readFileSync } from 'fs'
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
-import { readProject, outputDir, sourceDir as getSourceDir } from '../lib/project-store.mjs'
+import { readProject, outputDir, projectDir, sourceDir as getSourceDir } from '../lib/project-store.mjs'
 import { runBuild } from '../lib/build-runner.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
@@ -399,6 +399,36 @@ function cleanExtractedText(text) {
     .replace(/  +/g, ' ')
     .trim()
 }
+
+/**
+ * GET /shadow/:hash7/meta — Page count and compile status for a shadow version.
+ * Returns { pages, hash7, compiledAt } if compiled, or { pages: null } if not yet.
+ */
+router.get('/shadow/:hash7/meta', requireRead, (req, res) => {
+  const { name, hash7 } = req.params
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const metaPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'meta.json')
+  if (existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(readFileSync(metaPath, 'utf8'))
+      return res.json(meta)
+    } catch {}
+  }
+
+  // Not yet compiled — check if cached SVGs exist (older entries from cacheSvgSnapshot)
+  const svgDir = join(projectDir(name), 'history', `shadow-${hash7}`)
+  if (existsSync(svgDir)) {
+    const svgs = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
+    if (svgs.length > 0) {
+      return res.json({ pages: svgs.length, hash7, compiledAt: null })
+    }
+  }
+
+  res.json({ pages: null, hash7 })
+})
 
 /**
  * GET /shadow — List recent shadow repo versions.

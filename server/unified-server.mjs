@@ -512,6 +512,23 @@ app.use('/docs', (req, res, next) => {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
+
+    // On-demand shadow page generation: history/shadow-{hash7}/page-N.svg
+    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/page-(\d+)\.svg$/)
+    if (shadowPageMatch) {
+      const hash7 = shadowPageMatch[2]
+      const pageNum = parseInt(shadowPageMatch[3], 10)
+      try {
+        const { buildShadowPage } = await import('./lib/shadow-repo.mjs')
+        const svgPath = await buildShadowPage(name, hash7, pageNum)
+        res.set('Cache-Control', 'public, max-age=86400')
+        return res.sendFile(resolve(svgPath), { dotfiles: 'allow' })
+      } catch (e) {
+        console.error(`[shadow] on-demand page failed: ${name}@${hash7} p${pageNum}: ${e.message}`)
+        return res.status(404).json({ error: 'Shadow page unavailable', detail: e.message })
+      }
+    }
+
     return res.status(404).json({ error: 'Not found' })
   }
 
