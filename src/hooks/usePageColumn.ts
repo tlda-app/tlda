@@ -391,12 +391,13 @@ export function usePageColumn(
     activeKeyRef.current = optionsKey
 
     // Startup orphan cleanup: on the first transition (from '__startup__' sentinel to null),
-    // sweep any handle shapes left over from previous sessions that didn't clean up properly.
+    // sweep handle shapes AND page column shapes left over from previous sessions.
     if (!options && editor) {
       requestAnimationFrame(() => {
         if (columnRef.current) return  // column was created before rAF fired
         for (const s of editor.getCurrentPageShapes()) {
-          if ((s.id as string).startsWith('shape:shadow-col-handle-')) {
+          const id = s.id as string
+          if (id.startsWith('shape:shadow-col-handle-') || /^shape:col-\d+-shadow-/.test(id)) {
             if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
             editor.deleteShapes([s.id])
           }
