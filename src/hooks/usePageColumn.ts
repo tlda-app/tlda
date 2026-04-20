@@ -129,11 +129,12 @@ class PageColumn {
     const hash7 = (this.options.source.ref || 'live').slice(0, 7)
     this.handleId = createShapeId(`shadow-col-handle-${hash7}`)
 
-    // Delete any stale shape at this ID (e.g. from a previous session)
-    const existing = this.editor.getShape(this.handleId)
-    if (existing) {
-      if (existing.isLocked) this.editor.updateShape({ id: this.handleId, type: existing.type, isLocked: false })
-      this.editor.deleteShapes([this.handleId])
+    // Sweep ALL existing shadow column handles (any hash7, any session) before creating new one
+    for (const s of this.editor.getCurrentPageShapes()) {
+      if ((s.id as string).startsWith('shape:shadow-col-handle-')) {
+        if (s.isLocked) this.editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+        this.editor.deleteShapes([s.id])
+      }
     }
 
     // Render as a TLDraw line shape — stroke only, no fill, no minimum rectangle width
