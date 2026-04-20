@@ -94,7 +94,6 @@ function visiblePageRange(
 
 // ── Imperative column manager ──────────────────────────────────────────────
 
-const HANDLE_WIDTH = 4
 const AXIS_RATIO = 3  // must exceed this ratio for horizontal movement
 
 class PageColumn {
@@ -119,27 +118,41 @@ class PageColumn {
     this.yOffset = options.yOffset ?? 0
   }
 
-  /** Create a draggable handle shape in the gap between columns */
+  /** Create a draggable handle line in the gap between columns */
   createHandle(mainRightEdge: number) {
-    const handleH = Math.min(this.options.totalPages * (PAGE_HEIGHT + PAGE_GAP), 2000)
     const isRight = this.columnX > mainRightEdge
     const handleX = isRight
-      ? mainRightEdge + (this.columnX - mainRightEdge) / 2 - HANDLE_WIDTH / 2
-      : this.columnX + TARGET_WIDTH + (mainRightEdge - this.columnX - TARGET_WIDTH) / 2 - HANDLE_WIDTH / 2
+      ? mainRightEdge + (this.columnX - mainRightEdge) / 2
+      : this.columnX + TARGET_WIDTH + (mainRightEdge - this.columnX - TARGET_WIDTH) / 2
 
-    this.handleId = createShapeId(`col-${this.columnId}-handle`)
+    // Deterministic ID based on source ref — stable across sessions so Yjs doesn't accumulate
+    const hash7 = (this.options.source.ref || 'live').slice(0, 7)
+    this.handleId = createShapeId(`shadow-col-handle-${hash7}`)
+
+    // Delete any stale shape at this ID (e.g. from a previous session)
+    const existing = this.editor.getShape(this.handleId)
+    if (existing) {
+      if (existing.isLocked) this.editor.updateShape({ id: this.handleId, type: existing.type, isLocked: false })
+      this.editor.deleteShapes([this.handleId])
+    }
+
+    // Render as a TLDraw line shape — stroke only, no fill, no minimum rectangle width
+    const lineHalfH = 50000
+    const lineY = this.yOffset - lineHalfH
     this.editor.createShape({
       id: this.handleId,
-      type: 'geo' as any,
-      x: handleX, y: this.yOffset,
-      isLocked: false, opacity: 0.1,
+      type: 'line' as any,
+      x: handleX, y: lineY,
+      isLocked: false, opacity: 0.25,
       props: {
-        w: HANDLE_WIDTH, h: handleH,
-        geo: 'rectangle', fill: 'solid',
-        color: 'light-blue', dash: 'solid',
+        color: 'grey', dash: 'solid', size: 's', spline: 'line',
+        points: {
+          a1: { id: 'a1', index: 'a1', x: 0, y: 0 },
+          a2: { id: 'a2', index: 'a2', x: 0, y: lineHalfH * 2 },
+        },
       },
     })
-    this.handlePos = { x: handleX, y: this.yOffset }
+    this.handlePos = { x: handleX, y: lineY }
 
     // Listen for handle drag — apply Y offset (default) or X gap (if strongly horizontal)
     this.handleUnsub = this.editor.store.listen(({ changes }) => {
@@ -288,6 +301,13 @@ class PageColumn {
         this.editor.deleteShapes([this.handleId])
       }
       this.handleId = null
+    }
+    // Clean up orphan handles from old session-counter-based naming scheme
+    for (const s of this.editor.getCurrentPageShapes()) {
+      if (/^shape:col-\d+.*-handle$/.test(s.id as string)) {
+        if (s.isLocked) this.editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+        this.editor.deleteShapes([s.id])
+      }
     }
     // Remove tracked pages
     if (this.loaded.size > 0) this.removePages([...this.loaded])
