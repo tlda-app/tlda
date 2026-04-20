@@ -97,17 +97,6 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Panel** — expandable side panel (top-right) with table of contents, notes list, search, proof info, and change review.
 
-**Keyboard shortcuts:**
-
-| Key | Action |
-|-----|--------|
-| `m` | Create a math note |
-| `d` | Draw (pen) |
-| `e` | Eraser |
-| `t` | Text select |
-| `r` | Toggle proof reader |
-| `n`/`p` | Next/previous change |
-
 ## Voice input
 
 Voice lets you dictate into chat instead of typing. It uses Chrome's built-in Web Speech API — no external services, no API keys.
@@ -123,6 +112,10 @@ Voice lets you dictate into chat instead of typing. It uses Chrome's built-in We
 A small dot appears next to the HUD status text while recording: green means audio is flowing, amber means no audio is detected (the system is auto-recovering in the background).
 
 **Voice commands:** Say "send" at the end of a message to send it automatically. Say "right chat" or "left chat" to switch between visible chat panels.
+
+### Voice notes
+
+While recording, tap the voice note button in the toolbar to drop a math note on the canvas. The note appears under your cursor and shows the live transcript as you speak — drag it to position it while you dictate. Tap anywhere to commit it in place. The note enters edit mode immediately and recording continues, so you can keep speaking without touching anything. ESC cancels and removes the ghost.
 
 **Vocabulary:** Chrome's speech recognition doesn't know math terminology, so voice.mjs post-processes the transcript. Greek letters ("phi", "theta"), author names ("Donoho", "Sobolev", "Bregman"), and domain terms ("RKHS", "AMLE", "estimand") are auto-corrected from Chrome's guesses. You can add custom replacements with `addVocabReplacement(pattern, replacement)`.
 

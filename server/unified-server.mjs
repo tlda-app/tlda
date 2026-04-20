@@ -1408,7 +1408,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'activity-event') {
     if (!fleetStore) return
-    const { agent_id, tool, arg, input, ts, usage, prettyResult } = msg
+    const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
     if (!agent_id) return
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
@@ -1417,7 +1417,7 @@ function handleDaemonWsMessage(ws, msg) {
         from: agent_id,
         to: agent_id,
         text: tool === '_text' ? (arg || '') : (tool || ''),
-        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}) },
+        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}), ...(origTool ? { origTool } : {}) },
         unread: false,
         timestamp: ts || new Date().toISOString(),
       })

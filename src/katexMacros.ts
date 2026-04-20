@@ -32,8 +32,23 @@ export const defaultMacros: Record<string, string> = {
   "\\R": "\\mathbb{R}",
   "\\calS": "\\mathcal{S}",
 
-  // Text shortcuts
-  "\\qwhere": "\\quad \\text{where} \\quad",
+  // Text shortcuts (physics package qq* commands)
+  "\\qq": "\\quad\\text{#1}\\quad",
+  "\\qwhere": "\\quad\\text{where}\\quad",
+  "\\qfor": "\\quad\\text{for}\\quad",
+  "\\qand": "\\quad\\text{and}\\quad",
+  "\\qor": "\\quad\\text{or}\\quad",
+  "\\qthen": "\\quad\\text{then}\\quad",
+  "\\qif": "\\quad\\text{if}\\quad",
+  "\\qelse": "\\quad\\text{else}\\quad",
+  "\\qotherwise": "\\quad\\text{otherwise}\\quad",
+  "\\qgiven": "\\quad\\text{given}\\quad",
+  "\\qall": "\\quad\\text{for all}\\quad",
+  "\\qsince": "\\quad\\text{since}\\quad",
+  "\\qlet": "\\quad\\text{let}\\quad",
+  "\\qimplies": "\\quad\\Rightarrow\\quad",
+  "\\qas": "\\quad\\text{as}\\quad",
+  "\\qc": ",",
   "\\qmin": "\\underline{q}",
   "\\hQn": "\\frac{1}{n}\\sum_{i=1}^n",
 
@@ -78,9 +93,32 @@ export const defaultMacros: Record<string, string> = {
   "\\zs": "z^{\\scriptscriptstyle *}",
 
   // Physics package equivalents
-  "\\qty": "\\left#1\\right",
+  // \qty is stripped (zero-arg no-op): \qty(x) → (x), \qty[x] → [x]
+  // Curly-brace case \qty{x} loses braces — no clean KaTeX solution.
+  "\\qty": "",
   "\\abs": "\\left|#1\\right|",
   "\\norm": "\\left\\|#1\\right\\|",
+  "\\eval": "\\left.#1\\right|",
+  "\\order": "\\mathcal{O}\\left(#1\\right)",
+  "\\dv": "\\frac{d#1}{d#2}",
+  "\\pdv": "\\frac{\\partial #1}{\\partial #2}",
+  "\\fdv": "\\frac{\\delta #1}{\\delta #2}",
+  "\\bra": "\\left\\langle #1\\right|",
+  "\\ket": "\\left|#1\\right\\rangle",
+  "\\braket": "\\left\\langle #1\\middle|#2\\right\\rangle",
+  "\\expval": "\\left\\langle #1\\right\\rangle",
+  "\\ev": "\\left\\langle #1\\right\\rangle",
+  "\\comm": "\\left[#1,\\,#2\\right]",
+  "\\acomm": "\\left\\{#1,\\,#2\\right\\}",
+  "\\vb": "\\mathbf{#1}",
+  "\\vbu": "\\hat{#1}",
+  "\\grad": "\\nabla",
+  "\\curl": "\\nabla\\times",
+  "\\tr": "\\operatorname{Tr}",
+  "\\Tr": "\\operatorname{Tr}",
+  "\\rank": "\\operatorname{rank}",
+  "\\diag": "\\operatorname{diag}",
+  "\\sgn": "\\operatorname{sgn}",
 
   // Common delimiter shortcuts
   "\\cb": "\\left\\{#1\\right\\}",

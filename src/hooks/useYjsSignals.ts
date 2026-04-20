@@ -170,35 +170,12 @@ export function useYjsSignals({
           captureBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h }
         }
 
-        if (signal.bounds || signal.page) {
-          // Targeted screenshot: render via CanvasClipPanel (handles off-screen content).
-          // The ScreenshotCapture component handles rendering, capturing, and sending
-          // the signal:screenshot response.
-          if (setScreenshotCapture) {
-            setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
-          }
-          return
+        // All screenshots go through CanvasClipPanel — no direct editor.toImage().
+        // ScreenshotCapture handles rendering, capturing, and sending signal:screenshot
+        // + signal:screenshot-bounds so the annotation viewer appears in chat.
+        if (setScreenshotCapture) {
+          setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
         }
-
-        // Viewport screenshot (no bounds/page specified): capture current view directly
-        const vp = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: vp,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1])
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-        console.log(`[Screenshot] Captured viewport (${Math.round(base64.length / 1024)}KB)`)
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)
       }
