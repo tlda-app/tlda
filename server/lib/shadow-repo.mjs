@@ -13,7 +13,10 @@ const _execAsyncRaw = promisify(execCb)
 const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
-import { join, relative, basename } from 'path'
+import { join, relative, basename, dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts')
 
 // Ensure TeX binaries are on PATH (launchd doesn't inherit shell PATH).
 for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64-linux', '/usr/local/texlive/2025/bin/x86_64-linux']) {
@@ -382,10 +385,10 @@ async function ensureShadowDvi(name, hash7) {
       const tmpSrc = await checkoutSource(name, hash7)
       try {
         mkdirSync(cacheDir, { recursive: true })
-        // latexmk -dvi with draft graphicx (no figure loading)
+        // latexmk -dvi with draft graphicx (no figure loading), synctex for lookup
         try {
           await execAsync(
-            `latexmk -dvi -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
+            `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
             { cwd: tmpSrc, timeout: 180000 },
           )
         } catch { /* check for DVI below */ }
@@ -403,6 +406,30 @@ async function ensureShadowDvi(name, hash7) {
         }
         writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
         console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
+
+        // Generate lookup.json from synctex for label-based alignment
+        const project = readProject(name)
+        const mainFile = project?.mainFile || 'main.tex'
+        const synctexFile = join(tmpSrc, `${texBase}.synctex.gz`)
+        const lookupPath = join(cacheDir, 'lookup.json')
+        if (existsSync(synctexFile) && !existsSync(lookupPath)) {
+          try {
+            // extract-synctex-lookup.mjs finds synctex.gz next to the tex file
+            const texFilePath = join(tmpSrc, mainFile)
+            // If mainFile has a subdir, synctex.gz is in tmpSrc root — copy it alongside the tex
+            const synctexDest = join(tmpSrc, dirname(mainFile), `${texBase}.synctex.gz`)
+            if (synctexFile !== synctexDest && !existsSync(synctexDest)) {
+              copyFileSync(synctexFile, synctexDest)
+            }
+            await execAsync(
+              `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texFilePath}" "${lookupPath}"`,
+              { timeout: 30000 },
+            )
+            console.log(`[shadow] lookup.json ready for ${name}@${hash7}`)
+          } catch (e) {
+            console.warn(`[shadow] lookup.json generation failed for ${name}@${hash7}:`, e.message)
+          }
+        }
       } finally {
         rmSync(tmpSrc, { recursive: true, force: true })
       }
@@ -437,19 +464,15 @@ export async function buildShadowPage(name, hash7, pageNum) {
   const dviFile = join(cacheDir, 'main.dvi')
   if (!existsSync(dviFile)) throw new Error(`DVI not found after compile: shadow-${hash7}`)
 
-  // Generate just this page from the DVI
+  // Generate just this page — direct output path (no %p) guarantees exactly one file
+  const tmpSvg = svgFile + '.tmp'
   await execAsync(
     `dvisvgm --page=${pageNum} --font-format=woff2 --bbox=papersize --linkmark=none ` +
-    `--output="${cacheDir}/page-%p.svg" "${dviFile}"`,
+    `--output="${tmpSvg}" "${dviFile}"`,
     { cwd: cacheDir, timeout: 30000 },
   )
 
-  // Normalize zero-padded names (dvisvgm may produce page-01.svg for page 1)
-  for (const f of readdirSync(cacheDir)) {
-    const m = f.match(/^page-0+(\d+\.svg)$/)
-    if (m) renameSync(join(cacheDir, f), join(cacheDir, `page-${m[1]}`))
-  }
-
-  if (!existsSync(svgFile)) throw new Error(`dvisvgm did not produce page-${pageNum}.svg for shadow-${hash7}`)
+  if (!existsSync(tmpSvg)) throw new Error(`dvisvgm did not produce page-${pageNum}.svg for shadow-${hash7}`)
+  renameSync(tmpSvg, svgFile)
   return svgFile
 }

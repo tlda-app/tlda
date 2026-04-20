@@ -23,6 +23,24 @@ import { PAGE_GAP, PDF_HEIGHT, PDF_WIDTH, TARGET_WIDTH } from '../layoutConstant
 const OLD_PAGE_GAP = 48
 const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
 const PAGE_STRIDE = PAGE_HEIGHT + PAGE_GAP
+// SyncTeX y=0 is at the TeX reference point, 72pt from the top of the page (same as viewBox offset)
+const SYNCTEX_VIEWBOX_OFFSET = 72
+const SCALE_Y = PAGE_HEIGHT / PDF_HEIGHT
+
+// Module-level cache so repeated scrubs don't re-fetch the same data
+const _lookupCache = new Map<string, Record<string, { page: number; y: number }>>()
+
+async function fetchLookupLines(url: string): Promise<Record<string, { page: number; y: number }> | null> {
+  if (_lookupCache.has(url)) return _lookupCache.get(url)!
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    const lines = data.lines as Record<string, { page: number; y: number }>
+    _lookupCache.set(url, lines)
+    return lines
+  } catch { return null }
+}
 
 export function useShadowOverlay(
   editorRef: React.MutableRefObject<Editor | null>,
@@ -77,24 +95,64 @@ export function useShadowOverlay(
     })
   }, [activeVersion?.hash, docName, document.pages.length])
 
-  // Align shadow column Y to viewport center when version or page count changes.
-  // Find which page the viewport center lands on, clamp to shadow's page count,
-  // then offset so that page appears at the viewport center Y.
+  // Align shadow column Y to viewport center using SyncTeX label matching.
+  // 1. Find the source line nearest to the viewport center in the current doc's lookup.
+  // 2. Find that same line in the shadow version's lookup.
+  // 3. Set yOffset so the shadow line appears at the viewport center.
+  // Falls back to page-based alignment if lookups aren't available.
   useEffect(() => {
     if (!activeVersion || !editorRef.current) { setShadowYOffset(0); return }
-    const vp = editorRef.current.getViewportPageBounds()
-    const vpCenterY = vp.y + vp.h / 2
-    // Which page (0-indexed) of the main doc is at viewport center?
-    const mainPage0 = document.pages[0]?.bounds.y ?? 0
-    const nearestPage = Math.max(0, Math.min(
-      shadowTotalPages - 1,
-      Math.round((vpCenterY - mainPage0 - PAGE_HEIGHT / 2) / PAGE_STRIDE),
-    ))
-    // Place shadow page (nearestPage+1) so its center is at vpCenterY
-    // shadow center = yOffset + nearestPage * PAGE_STRIDE + PAGE_HEIGHT / 2
-    const newYOffset = vpCenterY - nearestPage * PAGE_STRIDE - PAGE_HEIGHT / 2
-    setShadowYOffset(newYOffset)
-  }, [activeVersion?.hash, shadowTotalPages, document.pages])
+    let cancelled = false
+    const editor = editorRef.current
+    const hash7 = activeVersion.hash.slice(0, 7)
+
+    ;(async () => {
+      const vp = editor.getViewportPageBounds()
+      const vpCenterY = vp.y + vp.h / 2
+
+      // Try SyncTeX label alignment
+      const [currentLines, shadowLines] = await Promise.all([
+        fetchLookupLines(`/docs/${docName}/lookup.json`),
+        fetchLookupLines(`/api/projects/${docName}/history/shadow/${hash7}/lookup`),
+      ])
+
+      if (cancelled) return
+
+      if (currentLines && shadowLines && document.pages.length > 0) {
+        // Find the current-doc lookup entry whose canvas Y is nearest to viewport center
+        let bestKey: string | null = null
+        let bestDist = Infinity
+        for (const [key, entry] of Object.entries(currentLines)) {
+          const pg = document.pages[entry.page - 1]
+          if (!pg) continue
+          const scaleY = pg.bounds.height / PDF_HEIGHT
+          const canvasY = pg.bounds.y + (entry.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY
+          const dist = Math.abs(canvasY - vpCenterY)
+          if (dist < bestDist) { bestDist = dist; bestKey = key }
+        }
+
+        // Find the same key in shadow lookup and compute yOffset
+        if (bestKey && shadowLines[bestKey]) {
+          const se = shadowLines[bestKey]
+          const shadowLineY = (se.page - 1) * PAGE_STRIDE + (se.y + SYNCTEX_VIEWBOX_OFFSET) * SCALE_Y
+          setShadowYOffset(vpCenterY - shadowLineY)
+          return
+        }
+      }
+
+      if (cancelled) return
+
+      // Fallback: page-based alignment
+      const mainPage0 = document.pages[0]?.bounds.y ?? 0
+      const nearestPage = Math.max(0, Math.min(
+        shadowTotalPages - 1,
+        Math.round((vpCenterY - mainPage0 - PAGE_HEIGHT / 2) / PAGE_STRIDE),
+      ))
+      setShadowYOffset(vpCenterY - nearestPage * PAGE_STRIDE - PAGE_HEIGHT / 2)
+    })()
+
+    return () => { cancelled = true }
+  }, [activeVersion?.hash, shadowTotalPages, document.pages, docName])
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!activeVersion || !visible) return null

@@ -137,23 +137,20 @@ class PageColumn {
       }
     }
 
-    // Render as a TLDraw line shape — stroke only, no fill, no minimum rectangle width
-    const lineHalfH = 50000
-    const lineY = this.yOffset - lineHalfH
+    // Render as a very thin geo rectangle — 0.5 canvas units wide, hairline divider
+    const handleH = 99999
+    const handleY = this.yOffset - handleH / 2
     this.editor.createShape({
       id: this.handleId,
-      type: 'line' as any,
-      x: handleX, y: lineY,
-      isLocked: false, opacity: 0.25,
+      type: 'geo' as any,
+      x: handleX - 0.25, y: handleY,
+      isLocked: false, opacity: 0.15,
       props: {
-        color: 'grey', dash: 'solid', size: 's', spline: 'line',
-        points: {
-          a1: { id: 'a1', index: 'a1', x: 0, y: 0 },
-          a2: { id: 'a2', index: 'a2', x: 0, y: lineHalfH * 2 },
-        },
+        w: 0.5, h: handleH,
+        geo: 'rectangle', color: 'grey', fill: 'solid', dash: 'solid', size: 's',
       },
     })
-    this.handlePos = { x: handleX, y: lineY }
+    this.handlePos = { x: handleX - 0.25, y: handleY }
 
     // Listen for handle drag — apply Y offset (default) or X gap (if strongly horizontal)
     this.handleUnsub = this.editor.store.listen(({ changes }) => {
@@ -363,7 +360,8 @@ export function usePageColumn(
   // Manage column imperatively via refs — render-time reconciliation avoids
   // React Strict Mode double-fire issues that destroy columns mid-fetch.
   const columnRef = useRef<PageColumn | null>(null)
-  const activeKeyRef = useRef<string | null>(null)
+  // '__startup__' sentinel so the first null→null transition fires reconcile for orphan cleanup
+  const activeKeyRef = useRef<string | null>('__startup__')
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
 
@@ -391,6 +389,20 @@ export function usePageColumn(
       syncTimerRef.current = null
     }
     activeKeyRef.current = optionsKey
+
+    // Startup orphan cleanup: on the first transition (from '__startup__' sentinel to null),
+    // sweep any handle shapes left over from previous sessions that didn't clean up properly.
+    if (!options && editor) {
+      requestAnimationFrame(() => {
+        if (columnRef.current) return  // column was created before rAF fired
+        for (const s of editor.getCurrentPageShapes()) {
+          if ((s.id as string).startsWith('shape:shadow-col-handle-')) {
+            if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+            editor.deleteShapes([s.id])
+          }
+        }
+      })
+    }
 
     // Create new column
     if (editor && options) {

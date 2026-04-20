@@ -401,6 +401,29 @@ function cleanExtractedText(text) {
 }
 
 /**
+ * GET /shadow/:hash7/lookup — SyncTeX lookup table for a shadow version.
+ * Returns the lookup.json if compiled with synctex, 404 if not available.
+ */
+router.get('/shadow/:hash7/lookup', requireRead, (req, res) => {
+  const { name, hash7 } = req.params
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const lookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'lookup.json')
+  if (!existsSync(lookupPath)) {
+    return res.status(404).json({ error: 'Lookup not available for this version' })
+  }
+
+  try {
+    res.setHeader('Content-Type', 'application/json')
+    res.sendFile(lookupPath)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
  * GET /shadow/:hash7/meta — Page count and compile status for a shadow version.
  * Returns { pages, hash7, compiledAt } if compiled, or { pages: null } if not yet.
  */
