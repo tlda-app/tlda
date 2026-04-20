@@ -68,16 +68,14 @@ export class VoiceNoteTool extends StateNode {
     const transcript = getTranscript()
     if (_stopRecording) { _stopRecording(); _stopRecording = null }
 
-    // Commit shape at current position with final transcript
+    // Commit shape at current position with final transcript — always expanded
+    // so the user can immediately read and edit what was recorded
     editor.updateShape({
       id,
       type: 'math-note' as any,
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
-      props: {
-        text: transcript,
-        collapsed: transcript.length > 0,
-      },
+      props: { text: transcript, collapsed: false },
       meta: { voiceNote: true, rawTranscript: transcript } as Partial<JsonObject>,
     })
 
@@ -101,32 +99,26 @@ export class VoiceNoteTool extends StateNode {
 
     log.debug('voice', 'VoiceNoteTool committed', { transcriptLen: transcript.length })
     this._shapeId = null
+    editor.setEditingShape(id)
     editor.setCurrentTool('select')
   }
 
   override onKeyDown = (info: any) => {
     if (info.key === 'Escape') {
       if (_stopRecording) { _stopRecording(); _stopRecording = null }
-      this._deleteShapeIfEmpty()
-      this._shapeId = null
+      // ESC cancels — delete the shape (nothing was committed)
+      if (this._shapeId) {
+        this.editor.deleteShape(this._shapeId)
+        this._shapeId = null
+      }
       this.editor.setCurrentTool('select')
     }
   }
 
   override onExit = () => {
-    // If tool was cancelled without committing, clean up empty shape
-    if (this._shapeId) {
-      this._deleteShapeIfEmpty()
-      this._shapeId = null
-    }
-  }
-
-  private _deleteShapeIfEmpty() {
-    if (!this._shapeId) return
-    const shape = this.editor.getShape(this._shapeId) as any
-    if (!shape) return
-    if (!shape.props?.text) {
-      this.editor.deleteShape(this._shapeId)
-    }
+    // Shape stays on canvas — ESC is the only explicit cancel.
+    // If the tool exits via any other path (click-commit, tool switch, etc.)
+    // the shape was either committed or should survive for the user to edit.
+    this._shapeId = null
   }
 }
