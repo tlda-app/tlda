@@ -72,6 +72,25 @@ export function useShadowOverlay(
 
   useEffect(() => { fetchVersions() }, [fetchVersions])
 
+  // Startup cleanup: sweep orphan shadow shapes left over from previous sessions.
+  // Runs 1.5s after mount to ensure Yjs has synced and the editor is available.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      const toDelete = editor.getCurrentPageShapes().filter(s => {
+        const id = s.id as string
+        return id.startsWith('shape:shadow-col-handle-') || /^shape:col-\d+-shadow-/.test(id)
+      })
+      if (toDelete.length === 0) return
+      for (const s of toDelete) {
+        if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+      }
+      editor.deleteShapes(toDelete.map(s => s.id))
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [])
+
   const columnX = useMemo(() => {
     if (document.pages.length === 0) return 0
     const firstPage = document.pages[0]
