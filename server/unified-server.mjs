@@ -495,7 +495,7 @@ app.use('/docs', (req, res, next) => {
   // Exempt site_libs (Quarto static assets) from auth — loaded by iframes which can't inject Authorization headers
   if (req.path.includes('/site_libs/')) return next()
   requireRead(req, res, next)
-}, (req, res, next) => {
+}, async (req, res, next) => {
   // Skip manifest (handled above)
   if (req.path === '/manifest.json') return next()
 
