@@ -271,7 +271,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot'])
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
@@ -331,7 +331,7 @@ function extractActivityEvents(events) {
     if (pending) {
       pendingPrettyPrint.delete(id)
       const capped = resultText.length > 5000 ? resultText.slice(0, 5000) + '\n\n… (truncated)' : resultText
-      result.push({ ...pending.evt, tool: '_prettyResult', prettyResult: capped })
+      result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
     }
   }
   // Expire old pending entries
@@ -507,6 +507,7 @@ function bufferActivity(agentId, evts) {
           ts: evt.ts,
           ...(evt.usage ? { usage: evt.usage } : {}),
           ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
+          ...(evt.origTool ? { origTool: evt.origTool } : {}),
         })
       }
     }

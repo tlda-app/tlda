@@ -376,6 +376,8 @@ export function dedupTools(toolItems) {
     }
     if (prev && prev._key === key) {
       prev._count++
+      // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
+      if (!prev._prettyResult && t._prettyResult) prev._prettyResult = t._prettyResult
     } else {
       result.push({ ...t, _key: key, _count: 1 })
     }

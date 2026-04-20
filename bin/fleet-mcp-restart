@@ -1,0 +1,268 @@
+#!/bin/bash
+# fleet-mcp-restart — restart an MCP server for an agent by navigating
+# Claude Code's /mcp interactive menu via tmux send-keys.
+#
+# Usage: bash fleet-mcp-restart [--skip-preflight] [session-name] [mcp-server-name]
+#   --skip-preflight: skip the busy-preflight step (Escape Escape loop); use when
+#                     the caller knows the agent won't be in a mid-operation state
+#                     that needs clearing (e.g. daemon-mediated self-restart)
+#   session-name:    tmux session (default: current session)
+#   mcp-server-name: which MCP to restart (default: fleet)
+#
+# State-driven: each step waits for the expected pane content to appear
+# (with a per-step timeout) instead of guessing how long things take.
+# Sleeps are unreliable; capture-pane is the source of truth.
+#
+# Mid-operation handling: if Claude Code is currently running (the
+# "esc to interrupt" hint is visible in the pane), /mcp typing will be
+# ignored. A preflight step sends Escape Escape in a loop until the
+# busy hint clears, then proceeds with the menu flow.
+
+set -euo pipefail
+
+# Parse flags and positional args.
+SKIP_PREFLIGHT=0
+POSITIONAL=()
+for arg in "$@"; do
+  if [ "$arg" = "--skip-preflight" ]; then SKIP_PREFLIGHT=1
+  else POSITIONAL+=("$arg"); fi
+done
+SESSION="${POSITIONAL[0]:-$(tmux display-message -p '#S' 2>/dev/null || true)}"
+MCP_SERVER="${POSITIONAL[1]:-fleet}"
+
+if [ -z "$SESSION" ]; then
+  echo "Error: not in a tmux session and no session name given." >&2
+  exit 1
+fi
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "Error: tmux session '$SESSION' not found." >&2
+  exit 1
+fi
+
+# Self-restart detection: if this script is running inside the same tmux
+# session it's targeting, the busy preflight is wrong because the Bash
+# subprocess running the script IS the source of the "busy" hint. Sending
+# Escape Escape would interrupt the very subprocess that's about to type
+# /mcp. Instead, skip the preflight entirely — Claude Code's TUI accepts
+# slash commands mid-tool-call, so /mcp will open the menu even though
+# the agent appears busy.
+SELF_SESSION="$(tmux display-message -p '#S' 2>/dev/null || true)"
+SELF_RESTART=0
+if [ -n "$SELF_SESSION" ] && [ "$SELF_SESSION" = "$SESSION" ]; then
+  SELF_RESTART=1
+fi
+
+POLL_INTERVAL=0.1   # 100ms
+STEP_TIMEOUT=5      # seconds per step
+BUSY_TIMEOUT=10     # seconds to spend trying to interrupt a busy agent
+
+# Capture the visible pane (entire screen, no scrollback).
+capture() { tmux capture-pane -t "$SESSION" -p; }
+
+# wait_for <description> <pattern> — poll capture every POLL_INTERVAL until
+# `pattern` (extended regex) matches some line, or STEP_TIMEOUT elapses.
+# Prints the matching pane on success; exits non-zero on timeout.
+wait_for() {
+  local desc="$1"
+  local pattern="$2"
+  local deadline=$(($(date +%s) + STEP_TIMEOUT))
+  while [ $(date +%s) -lt $deadline ]; do
+    local pane
+    pane=$(capture)
+    if echo "$pane" | grep -qE "$pattern"; then
+      printf '%s\n' "$pane"
+      return 0
+    fi
+    sleep $POLL_INTERVAL
+  done
+  echo "Error: timed out waiting for $desc" >&2
+  echo "Last pane content:" >&2
+  capture | tail -25 >&2
+  return 1
+}
+
+agent_is_busy() {
+  capture | grep -q 'esc to interrupt'
+}
+
+# ---------- Step 0: get the agent to prompt state ----------
+# If Claude Code is mid-operation, /mcp will never be accepted. Send
+# Escape Escape in a loop until the "esc to interrupt" hint disappears,
+# or give up after BUSY_TIMEOUT seconds. Each Escape Escape round polls
+# for up to 1.5s before retrying so Claude has time to react.
+#
+# Self-restart skips this entirely — the script's own subprocess is the
+# reason the agent appears busy, and interrupting would kill the script
+# itself. Claude Code's TUI accepts slash commands mid-tool-call, so
+# /mcp will open the menu regardless.
+if [ "$SELF_RESTART" -eq 0 ] && [ "$SKIP_PREFLIGHT" -eq 0 ] && agent_is_busy; then
+  echo "fleet-mcp-restart: agent mid-operation, sending Escape Escape to interrupt" >&2
+  busy_deadline=$(($(date +%s) + BUSY_TIMEOUT))
+  while [ $(date +%s) -lt $busy_deadline ]; do
+    tmux send-keys -t "$SESSION" Escape Escape
+    inner_deadline=$(($(date +%s) + 2))
+    while [ $(date +%s) -lt $inner_deadline ]; do
+      if ! agent_is_busy; then break 2; fi
+      sleep $POLL_INTERVAL
+    done
+  done
+  if agent_is_busy; then
+    echo "Error: agent still busy after ${BUSY_TIMEOUT}s of Escape Escape" >&2
+    capture | tail -10 >&2
+    exit 2
+  fi
+  # Small grace period for Claude to finish painting the prompt after interrupt.
+  sleep 0.2
+fi
+if [ "$SELF_RESTART" -eq 1 ]; then
+  echo "fleet-mcp-restart: self-restart detected (running inside $SESSION); skipping busy preflight" >&2
+elif [ "$SKIP_PREFLIGHT" -eq 1 ]; then
+  echo "fleet-mcp-restart: --skip-preflight set; skipping busy preflight" >&2
+fi
+
+# ---------- Step 1: open /mcp menu ----------
+#
+# History: sending "/mcp" + Enter as a single send-keys call was
+# suspected of having an "eats /m" issue post-interrupt, but in practice
+# the typing path works fine — the failure mode that bit us was always
+# the cursor navigation in step 2, not the typing in step 1. We send
+# each character separately with a tiny gap to be defensive against
+# Claude Code's input throttling.
+#
+# Preflight: Escape closes any popup, but does NOT clear text from the
+# prompt. So we ALSO send Ctrl+U (kill-line) to nuke any residual input
+# left over from a prior failed run. Without this, a leftover "/" would
+# turn the new "/mcp" into "//mcp" and fail to match a slash command.
+if [ "$SELF_RESTART" -eq 0 ] && [ "$SKIP_PREFLIGHT" -eq 0 ]; then
+  tmux send-keys -t "$SESSION" Escape
+  sleep 0.1
+  tmux send-keys -t "$SESSION" C-u
+  sleep 0.1
+fi
+
+for ch in '/' m c p; do
+  tmux send-keys -t "$SESSION" "$ch"
+  sleep 0.05
+done
+tmux send-keys -t "$SESSION" Enter
+
+# Wait until the pane shows the MCP server list — fleet should appear with
+# a "·" separator per Claude Code's menu format.
+PANE=$(wait_for "/mcp menu to open" "^[[:space:]]*(❯[[:space:]]+)?${MCP_SERVER}[[:space:]]+·")
+
+# ---------- Step 2: navigate cursor to fleet ----------
+#
+# History: an earlier version counted line-distance from the current `❯`
+# position to the `fleet` line and sent that many arrow keys. That fails
+# in two ways: (1) the prompt area also uses `❯`, so cursor-finding
+# picked up the wrong glyph, and (2) the menu navigates by ENTRIES, not
+# lines — section headers and blank lines aren't navigable, so N line
+# distance ≠ N arrow presses.
+#
+# New approach: only consider the menu region (lines after "Manage MCP
+# servers"), and poll-and-press: keep sending the arrow key while the
+# cursor isn't on the fleet line, with a max iteration cap. We pick the
+# direction up front based on where fleet is relative to the current
+# cursor in line-space (a heuristic, not a count) — fleet is usually
+# near the top, so Up is the safe default.
+menu_region() {
+  local pane="$1"
+  awk '
+    seen { print; next }
+    /Manage MCP/ { seen = 1 }
+  ' <<< "$pane"
+}
+cursor_on_fleet() {
+  local region="$1"
+  echo "$region" | grep -qE "^[[:space:]]*❯[[:space:]]+${MCP_SERVER}[[:space:]]+·"
+}
+fleet_present() {
+  local region="$1"
+  echo "$region" | grep -qE "^[[:space:]]*(❯[[:space:]]+)?${MCP_SERVER}[[:space:]]+·"
+}
+# Cursor line in the menu region (1-indexed). Skips lines that are
+# clearly headers / blank.
+cursor_line() {
+  local region="$1"
+  awk '/^[[:space:]]*❯/ { print NR; exit }' <<< "$region"
+}
+fleet_line() {
+  local region="$1"
+  awk '/^[[:space:]]*(❯[[:space:]]+)?fleet[[:space:]]+·/ { print NR; exit }' <<< "$region"
+}
+
+REGION=$(menu_region "$PANE")
+
+if ! fleet_present "$REGION"; then
+  echo "Error: ${MCP_SERVER} not found in /mcp server list" >&2
+  tmux send-keys -t "$SESSION" Escape
+  exit 1
+fi
+
+# Pick direction once based on initial cursor position vs fleet position.
+# Fleet is near the top of the list; if the cursor's line number is
+# greater than fleet's line number, go Up. Otherwise Down.
+INITIAL_CURSOR=$(cursor_line "$REGION")
+FLEET_POS=$(fleet_line "$REGION")
+INITIAL_CURSOR=${INITIAL_CURSOR:-999}  # if no cursor found, assume below fleet
+DIR="Down"
+if [ "$INITIAL_CURSOR" -gt "$FLEET_POS" ]; then DIR="Up"; fi
+
+# Now poll-and-press: send one arrow at a time, re-capture, check if
+# cursor is on fleet. Cap at MAX_PRESSES to avoid an infinite loop if
+# the menu doesn't behave as expected.
+MAX_PRESSES=12  # 6 servers × 2 (full cycle with wrap), should be plenty
+PRESSES=0
+while ! cursor_on_fleet "$(menu_region "$(capture)")"; do
+  if [ "$PRESSES" -ge "$MAX_PRESSES" ]; then
+    echo "Error: cursor never landed on fleet after $MAX_PRESSES $DIR presses" >&2
+    capture | tail -25 >&2
+    tmux send-keys -t "$SESSION" Escape
+    exit 1
+  fi
+  tmux send-keys -t "$SESSION" "$DIR"
+  PRESSES=$((PRESSES + 1))
+  sleep 0.1
+done
+
+# ---------- Step 3: open fleet detail panel ----------
+#
+# After opening with Enter, the panel shows numbered options. The list
+# differs based on MCP state:
+#   Connected MCP: 1. View tools / 2. Reconnect / 3. Disable
+#   Failed MCP:    1. Reconnect / 2. Disable
+# We can't hard-code Reconnect's number — parse the panel and find which
+# option is labeled "Reconnect".
+tmux send-keys -t "$SESSION" Enter
+
+# Wait for any "N. Reconnect" line to appear in the detail panel.
+PANEL=$(wait_for "fleet detail panel with Reconnect option" '[0-9]+\.[[:space:]]+Reconnect')
+
+# Extract the digit before "Reconnect"
+RECONNECT_NUM=$(echo "$PANEL" | grep -oE '[0-9]+\.[[:space:]]+Reconnect' | head -1 | awk '{print $1}' | tr -d '.')
+if [ -z "$RECONNECT_NUM" ]; then
+  echo "Error: could not parse Reconnect option number from detail panel" >&2
+  capture | tail -25 >&2
+  tmux send-keys -t "$SESSION" Escape
+  exit 1
+fi
+
+# ---------- Step 4: trigger Reconnect ----------
+tmux send-keys -t "$SESSION" "$RECONNECT_NUM"
+sleep 0.1
+tmux send-keys -t "$SESSION" Enter
+
+# Wait for the actual reconnect-completed signal. Claude Code prints
+# `⎿  Reconnected to fleet.` underneath the `❯ /mcp` prompt line on
+# success. Matching that explicitly avoids the false-positive trap of
+# matching `Status: ✔ connected` from the detail panel itself.
+if ! wait_for "reconnect to complete" "Reconnected to ${MCP_SERVER}" > /dev/null 2>&1; then
+  echo "Warning: did not see 'Reconnected to ${MCP_SERVER}' confirmation" >&2
+  # Fall through — the reconnect probably still happened.
+fi
+
+# Escape out of the menu in case it's still open.
+tmux send-keys -t "$SESSION" Escape
+
+echo "Sent MCP reconnect sequence (${MCP_SERVER}) to $SESSION"

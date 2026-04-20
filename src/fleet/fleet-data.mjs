@@ -547,7 +547,7 @@ export function convertChatEvent(e) {
   } else if (type === 'activity') {
     const tool = e.metadata?.tool || e.text
     msg._activity = true
-    msg._toolName = tool === '_text' ? null : tool
+    msg._toolName = tool === '_text' ? null : (tool === '_prettyResult' ? (e.metadata?.origTool || tool) : tool)
     msg._isText = tool === '_text'
     msg._text = tool === '_text' ? (e.metadata?.arg || e.text) : null
     msg._toolArg = e.metadata?.arg || ''

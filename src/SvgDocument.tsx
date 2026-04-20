@@ -68,6 +68,7 @@ import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
 const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
+import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
 import { FollowingBadge } from './pills/FollowingBadge'
@@ -1080,6 +1081,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        <BuildProgressPill />
         <BuildWarningPill warnings={buildWarnings} />
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors handled by fleet-docview shapes with 'errors' source */}

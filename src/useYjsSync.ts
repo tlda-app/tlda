@@ -58,7 +58,11 @@ export function dispatchSignalDirect(key: string, data: Record<string, unknown>)
 
 type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
-const reloadHandle = bus.register<ReloadSignal>({ key: 'signal:reload' })
+const reloadHandle = bus.register<ReloadSignal>({
+  key: 'signal:reload',
+  initBehavior: 'fire-if-recent',
+  recentMs: 120_000,  // replay last reload signal if < 2 min old (covers new-tab after build)
+})
 export const onReloadSignal = reloadHandle.on
 
 export type ForwardSyncSignal =
