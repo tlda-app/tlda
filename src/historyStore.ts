@@ -150,7 +150,7 @@ export interface ShadowVersion {
 /**
  * Fetch shadow repo versions for a project. Returns newest-first.
  */
-export async function fetchShadowVersions(docName: string, limit = 50): Promise<ShadowVersion[]> {
+export async function fetchShadowVersions(docName: string, limit = 9999): Promise<ShadowVersion[]> {
   try {
     const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow?limit=${limit}`)
     if (!res.ok) return []

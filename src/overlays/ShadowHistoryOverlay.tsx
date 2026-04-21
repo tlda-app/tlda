@@ -11,6 +11,11 @@
  * is on the LEFT edge (0). Dragging right = toward current; dragging left =
  * into history. Dragging all the way to the right dismisses the overlay.
  *
+ * Scale: sqrt mapping so recent versions occupy more of the slider range.
+ * Slider pos → version idx: idx = (N-1) * (1 - pos/(N-1))^2
+ * Version idx → slider pos: pos = (N-1) * (1 - sqrt(idx/(N-1)))
+ * Step buttons always move exactly 1 version, independent of scale.
+ *
  * Pointer events are handled by BrowseIdle.markEventAsHandled, which prevents
  * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
  * No stopEventPropagation needed here.
@@ -34,6 +39,26 @@ function formatTime(ts: number): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+// sqrt-scale helpers
+// Slider positions: 0 (oldest) to N-1 (newest historical) to N (current).
+// More slider resolution near "now" (right side).
+
+function sqrtIdxFromPos(pos: number, N: number): number {
+  if (pos >= N) return -1  // current
+  if (N <= 1) return 0
+  const t = pos / (N - 1)  // 0=oldest, 1=newest
+  const idx = Math.round((N - 1) * (1 - t) * (1 - t))
+  return Math.max(0, Math.min(N - 1, idx))
+}
+
+function sqrtPosFromIdx(idx: number, N: number): number {
+  if (idx < 0) return N  // current
+  if (N <= 1) return 0
+  const u = idx / (N - 1)  // 0=newest, 1=oldest
+  const t = 1 - Math.sqrt(u)  // 0=oldest direction, 1=newest direction
+  return Math.round((N - 1) * t)
+}
+
 interface Props {
   versions: ShadowVersion[]
   /** Index into versions (0 = newest). -1 means current. */
@@ -44,27 +69,33 @@ interface Props {
 }
 
 export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  const sliderMax = versions.length
-  // Slider: right edge (sliderMax) = current, left edge (0) = oldest.
-  const sliderVal = activeIdx < 0 ? sliderMax : sliderMax - 1 - activeIdx
+  const N = versions.length
+  const sliderMax = N
+  const sliderVal = sqrtPosFromIdx(activeIdx, N)
 
   const handleRange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseInt(e.target.value, 10)
-    // v = sliderMax → current (-1); v < sliderMax → versions[sliderMax - 1 - v]
-    onScrub(v >= sliderMax ? -1 : sliderMax - 1 - v)
-  }, [onScrub, sliderMax])
+    const pos = parseInt(e.target.value, 10)
+    onScrub(sqrtIdxFromPos(pos, N))
+  }, [onScrub, N])
 
   const step = useCallback((dir: number) => {
-    // dir=-1 = older (left), dir=+1 = newer (right, toward current)
-    const newSlider = Math.max(0, Math.min(sliderMax, sliderVal + dir))
-    onScrub(newSlider >= sliderMax ? -1 : sliderMax - 1 - newSlider)
-  }, [sliderVal, sliderMax, onScrub])
+    // dir=+1 = newer (right, toward current), dir=-1 = older (left)
+    if (dir > 0) {
+      // newer: decrease idx
+      if (activeIdx <= 0) onScrub(-1)
+      else onScrub(activeIdx - 1)
+    } else {
+      // older: increase idx
+      const newIdx = activeIdx < 0 ? 0 : Math.min(activeIdx + 1, N - 1)
+      onScrub(newIdx)
+    }
+  }, [activeIdx, N, onScrub])
 
   // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
-  const isHidden = versions.length < 2 || activeIdx < 0
+  const isHidden = N < 2 || activeIdx < 0
 
   const isCurrent = activeIdx < 0
-  const activeVersion = activeIdx >= 0 && activeIdx < versions.length ? versions[activeIdx] : null
+  const activeVersion = activeIdx >= 0 && activeIdx < N ? versions[activeIdx] : null
 
   let labelText: React.ReactNode
   if (loading) {
@@ -83,17 +114,17 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     )
   }
 
-  const pos = isCurrent ? 'now' : `${activeIdx + 1}/${versions.length}`
+  const pos = isCurrent ? 'now' : `${activeIdx + 1}/${N}`
 
   return (
     <div
       className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
       style={isHidden ? { display: 'none' } : undefined}
     >
-      {/* Older — moves left (decreases sliderVal) */}
+      {/* Older — moves left (increases activeIdx toward oldest) */}
       <button
         className="shadow-scrubber-step"
-        disabled={sliderVal <= 0}
+        disabled={activeIdx >= N - 1}
         onClick={() => step(-1)}
         title="Older"
       >‹</button>
@@ -105,13 +136,13 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
         max={sliderMax}
         value={sliderVal}
         onChange={handleRange}
-        title="Drag to scrub history — right = current, left = older"
+        title="Drag to scrub history — right = current, left = older (sqrt scale)"
       />
 
-      {/* Newer — moves right (increases sliderVal, toward current) */}
+      {/* Newer — moves right (decreases activeIdx toward newest) */}
       <button
         className="shadow-scrubber-step"
-        disabled={sliderVal >= sliderMax}
+        disabled={activeIdx < 0}
         onClick={() => step(1)}
         title="Newer"
       >›</button>
