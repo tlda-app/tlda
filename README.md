@@ -116,6 +116,8 @@ A small stack of build timestamps sits in the top-left corner of the canvas. The
 
 Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
 
+A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them. Word-by-word diffs are highlighted inline — additions in green, deletions in red.
+
 Click the current (top) timestamp to dismiss the history column.
 
 ## Voice input
