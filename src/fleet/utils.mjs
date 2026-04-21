@@ -440,20 +440,17 @@ export function renderMarkdown(html, extraMacros) {
   result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
 
   // File paths: shorten absolute paths + render relative .md paths as scratch cards
-  // First pass: replace <code>relative/path.md</code> with scratch card
-  result = result.replace(/<code>([^<]*?(?:scratch\/|[\w/._-]+\.md))<\/code>/g, (full, path) => {
-    if (/^[\w/._-]+\.md$/.test(path)) {
-      const name = path.split('/').pop()
-      const isScratch = /scratch\//.test(path)
-      const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-      const drag = isScratch ? ' draggable="true"' : ''
-      return `<span class="${cls}" data-path="${path}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-    }
-    return full
-  })
-  // Second pass: absolute and relative paths in text (skip inside HTML tags)
+  // Backtick-quoted content (<code> spans) is verbatim — never chipify it.
+  // Prose paths (unquoted text) are handled: absolute paths shortened, relative .md paths chipped.
+  // Second pass: absolute and relative paths in text (skip inside HTML tags and code/pre)
+  let _inCode2 = 0
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) return segment
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) _inCode2++
+      else if (/^<\/(code|pre)>/i.test(segment)) _inCode2 = Math.max(0, _inCode2 - 1)
+      return segment
+    }
+    if (_inCode2 > 0) return segment
     // Absolute paths
     segment = segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
       if (fullPath.endsWith('.md')) {
