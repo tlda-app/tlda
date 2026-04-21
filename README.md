@@ -110,6 +110,14 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Fleet button** — the "Fleet" label in the bottom-left corner controls agent annotation overlays. Click to toggle fleet shapes (agent notes, highlights, arrows) on or off. Click and drag to the right to open the layout picker, which has two presets: all shapes in the left margin, or shapes spread across both margins. You can reposition shapes freely; the presets are just a way to snap back to a known arrangement.
 
+## Version history
+
+A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
+
+Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
+
+Click the current (top) timestamp to dismiss the history column.
+
 ## Voice input
 
 Voice lets you dictate into chat instead of typing. It uses Chrome's built-in Web Speech API — no external services, no API keys.
