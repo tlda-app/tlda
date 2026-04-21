@@ -838,12 +838,13 @@ async function cmdListen() {
 
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda open [name]'); process.exit(1) }
-
   const server = getServer()
   const token = getToken()
-  const url = `${server}/?doc=${name}` + (token ? `&token=${token}` : '')
-  console.log(`Opening ${url}`)
+  const redirect = name ? `/?doc=${name}` : '/'
+  const url = token
+    ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
+    : `${server}${redirect}`
+  console.log(`Opening ${server}${redirect}`)
 
   const { execFile } = await import('child_process')
   execFile('open', [url])

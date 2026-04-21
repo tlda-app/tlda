@@ -89,7 +89,8 @@ tlda config init                                   # generate auth tokens (one t
 tlda server start                                  # start the server
 tlda create my-paper --dir /path/to/paper --main paper.tex
 tlda watch-all start                               # live rebuild on save
-tlda open my-paper                                 # opens http://localhost:5176/?doc=my-paper
+tlda open my-paper                                 # open the viewer for this doc
+tlda open                                          # open the index (lists all docs)
 ```
 
 `tlda config init` generates a read-write token (for you) and a read-only token (for sharing). Your tokens are stored in `~/.config/tlda/config.json` and used automatically.
@@ -151,7 +152,7 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 | `tlda create <name> --dir /path` | Create a project, push files, build |
 | `tlda push [name]` | Push source files, trigger rebuild |
 | `tlda watch-all start` | Watch all projects for changes |
-| `tlda open [name]` | Open viewer in browser |
+| `tlda open [name]` | Open viewer for a doc; omit name to open the index |
 | `tlda list` | List projects |
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
