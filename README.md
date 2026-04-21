@@ -60,7 +60,7 @@ Chat messages from agents appear in the margin alongside the document. You can t
 
 ## Sharing
 
-`tlda share my-paper` prints a read-only URL with your read token embedded. Anyone with that URL can view and annotate. If your server isn't reachable over the network yet, run `tlda remotes` to see Tailscale and Funnel URLs (with QR codes for phones and iPads).
+`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost. If neither is set up, it explains how to get there.
 
 ## Setup
 

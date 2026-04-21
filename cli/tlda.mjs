@@ -60,7 +60,6 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
   preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
-  remotes: 'tlda remotes [doc]\n\n  Show remote access URLs (Tailscale, Funnel) with QR codes.\n  Checks server reachability, firewall status, and prints scannable URLs.\n\n  Optionally pass a doc name to include ?doc=NAME in the URLs.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -851,11 +850,12 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
+  const { execSync } = await import('child_process')
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: tlda share [name]'); process.exit(1) }
 
-  const server = getServer()
   const config = loadConfig()
+  const port = getPort()
   const readToken = config.tokenRead || null
 
   if (!readToken) {
@@ -863,8 +863,51 @@ async function cmdShare() {
     process.exit(1)
   }
 
-  const url = `${server}/?doc=${name}&token=${readToken}`
-  console.log(url)
+  const run = (cmd) => {
+    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
+    catch { return null }
+  }
+
+  const makeUrl = (base) => {
+    const redirect = `/?doc=${name}`
+    return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
+  }
+
+  const printQr = async (url) => {
+    try {
+      const qr = await import('qrcode-terminal')
+      qr.default.generate(url, { small: true })
+    } catch {}
+  }
+
+  // Try Funnel (public HTTPS) first, then Tailscale, then localhost
+  const funnelStatus = run('tailscale funnel status 2>&1')
+  const funnelMatch = funnelStatus?.match(/https:\/\/\S+\.ts\.net/)
+  if (funnelMatch) {
+    const url = makeUrl(funnelMatch[0])
+    console.log(`${bold('Funnel')} (public)`)
+    console.log(`  ${cyan(url)}`)
+    console.log()
+    await printQr(url)
+    return
+  }
+
+  const tsIp = run('tailscale ip -4')
+  if (tsIp) {
+    const url = makeUrl(`http://${tsIp}:${port}`)
+    console.log(`${bold('Tailscale')}`)
+    console.log(`  ${cyan(url)}`)
+    console.log()
+    await printQr(url)
+    return
+  }
+
+  // Localhost fallback
+  const url = `http://localhost:${port}/?doc=${name}&token=${readToken}`
+  console.log(`${bold('Local')} ${dim('(not reachable from other devices)')}`)
+  console.log(`  ${cyan(url)}`)
+  console.log()
+  console.log(dim('To share over the network: install Tailscale, or run `tailscale funnel start`'))
 }
 
 async function cmdList() {
@@ -1125,114 +1168,6 @@ async function cmdAuth() {
   console.log('  show   Show current tokens')
 }
 
-async function cmdRemotes() {
-  const { execSync } = await import('child_process')
-  const config = loadConfig()
-  const port = getPort()
-  const readToken = config.tokenRead || null
-  const doc = getPositional(0) || null
-
-  const run = (cmd) => {
-    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
-    catch { return null }
-  }
-
-  const check = async (url) => {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
-      return res.ok
-    } catch { return false }
-  }
-
-  // Server running?
-  const localOk = await check(`http://127.0.0.1:${port}/health`)
-  if (!localOk) {
-    console.error(red(`Server not responding on localhost:${port}`))
-    console.error(dim('Run: tlda server start'))
-    process.exit(1)
-  }
-  console.log(green(`Server running on port ${port}`))
-  console.log()
-
-  // Firewall check (macOS)
-  if (process.platform === 'darwin') {
-    const fwState = run('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate')
-    if (fwState?.includes('State = 1')) {
-      const nodePath = run('which node')
-      if (nodePath) {
-        const fwApps = run('/usr/libexec/ApplicationFirewall/socketfilterfw --listapps')
-        if (fwApps?.includes(nodePath) && fwApps?.includes('Block incoming connections')) {
-          // Find the block line that follows the node path
-          const lines = fwApps.split('\n')
-          const nodeIdx = lines.findIndex(l => l.includes(nodePath))
-          if (nodeIdx >= 0 && lines[nodeIdx + 1]?.includes('Block incoming')) {
-            console.log(red('macOS firewall is blocking Node.js incoming connections!'))
-            console.log(dim(`Run: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp ${nodePath}`))
-            console.log()
-          }
-        }
-      }
-    }
-  }
-
-  const buildLoginUrl = (base) => {
-    const redirect = doc ? `/?doc=${doc}` : '/'
-    if (readToken) {
-      return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
-    }
-    return `${base}${redirect}`
-  }
-
-  const printQr = async (url) => {
-    try {
-      const qr = await import('qrcode-terminal')
-      qr.default.generate(url, { small: true })
-    } catch {
-      console.log(dim('  (qrcode-terminal not available)'))
-    }
-  }
-
-  const entries = []
-
-  // Tailscale
-  const tsIp = run('tailscale ip -4')
-  if (tsIp) {
-    const base = `http://${tsIp}:${port}`
-    const url = buildLoginUrl(base)
-    const ok = await check(`${base}/health`)
-    entries.push({ label: 'Tailscale', url, ok })
-  }
-
-  // Funnel
-  const funnelStatus = run('tailscale funnel status 2>&1')
-  if (funnelStatus) {
-    const urlMatch = funnelStatus.match(/https:\/\/\S+\.ts\.net/)
-    if (urlMatch) {
-      const base = urlMatch[0]
-      const url = buildLoginUrl(base)
-      const ok = await check(`${base}/health`)
-      entries.push({ label: 'Funnel', url, ok })
-    }
-  }
-
-  if (entries.length === 0) {
-    console.log(dim('No remote access methods found.'))
-    console.log(dim('Install Tailscale: https://tailscale.com'))
-    return
-  }
-
-  for (const { label, url, ok } of entries) {
-    const status = ok ? green('reachable') : red('unreachable')
-    console.log(`${bold(label)} ${dim('—')} ${status}`)
-    if (readToken) {
-      console.log(dim('  Login URL (sets cookie, then redirects):'))
-    }
-    console.log(`  ${cyan(url)}`)
-    console.log()
-    if (ok) await printQr(url)
-    console.log()
-  }
-}
 
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
@@ -2310,7 +2245,6 @@ async function main() {
       case 'publish': await cmdPublish(); break
       case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
-      case 'remotes': await cmdRemotes(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
@@ -2339,7 +2273,6 @@ Commands:
   logs           Show server log (alias: tlda server logs)
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
-  remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
   deploy         Build, restart server, verify SPA renders
