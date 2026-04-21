@@ -799,11 +799,10 @@ async function escalateRecovery() {
   if (_escalating) return
   _escalating = true
   try {
-    // Step 1: kill playwright processes via server
-    await fetch('/api/voice/kill-playwright', { method: 'POST' }).catch(() => {})
-    // Step 2: hard reset voice (getUserMedia cycle)
+    // Hard reset voice (getUserMedia cycle) then restart recording.
+    // Note: playwright kill is intentionally NOT here — it would kill agent browser
+    // sessions. Playwright cleanup only happens on the triple-shift Chrome restart.
     await hardResetVoice()
-    // Step 3: restart recording
     _consecutiveWatchdogFails = 0
     startRecording()
   } catch (err) {
