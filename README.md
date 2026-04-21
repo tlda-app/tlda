@@ -97,6 +97,8 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Panel** — expandable side panel (top-right) with table of contents, notes list, search, proof info, and change review.
 
+**Fleet button** — the "Fleet" label in the bottom-left corner controls agent annotation overlays. Click to toggle fleet shapes (agent notes, highlights, arrows) on or off. Click and drag to the right to open the layout picker, which has two presets: all shapes in the left margin, or shapes spread across both margins. You can reposition shapes freely; the presets are just a way to snap back to a known arrangement.
+
 ## Voice input
 
 Voice lets you dictate into chat instead of typing. It uses Chrome's built-in Web Speech API — no external services, no API keys.
