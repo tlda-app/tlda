@@ -1567,7 +1567,7 @@ async function cmdDoctor() {
     }
   }
 
-  // 6. MCP server configured
+  // 6. MCP servers configured (tlda + fleet)
   {
     const mcpConfigs = [
       join(homedir(), '.claude', 'settings.json'),
@@ -1576,9 +1576,11 @@ async function cmdDoctor() {
       join(process.cwd(), '.mcp.json'),
     ]
     const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-    const mcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
+    const tldaMcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
+    const fleetMcpEntry = join(tldaRoot, 'mcp-server', 'fleet.mjs')
 
-    let mcpFound = false
+    let tldaFound = false
+    let fleetFound = false
     for (const cfgPath of mcpConfigs) {
       if (!existsSync(cfgPath)) continue
       try {
@@ -1586,28 +1588,47 @@ async function cmdDoctor() {
         const servers = cfg.mcpServers || {}
         for (const s of Object.values(servers)) {
           const args = s.args || []
-          if (args.some(a => String(a).includes('mcp-server'))) {
-            mcpFound = true; break
-          }
+          if (args.some(a => String(a).includes('mcp-server/index.mjs'))) tldaFound = true
+          if (args.some(a => String(a).includes('mcp-server/fleet.mjs'))) fleetFound = true
         }
       } catch {}
-      if (mcpFound) break
     }
 
-    if (mcpFound) {
-      ok('MCP server configured in Claude settings')
+    if (tldaFound) {
+      ok('tlda MCP configured')
     } else {
-      fail('MCP server not found in Claude settings')
+      fail('tlda MCP not found in Claude settings')
       console.log()
-      console.log('  Add this to your project .mcp.json or ~/.claude/settings.json:')
+      console.log('  Add to ~/.config/claude/settings.json:')
       console.log()
       console.log('  ' + cyan(JSON.stringify({
         mcpServers: {
-          'tldraw-feedback': {
+          'tlda': {
             type: 'stdio',
             command: process.execPath,
-            args: [mcpEntry],
+            args: [tldaMcpEntry],
             env: { TLDA_SERVER: serverUrl }
+          }
+        }
+      }, null, 2).split('\n').join('\n  ')))
+      console.log()
+      issues++
+    }
+
+    if (fleetFound) {
+      ok('fleet MCP configured')
+    } else {
+      fail('fleet MCP not found in Claude settings')
+      console.log()
+      console.log('  Add to ~/.config/claude/settings.json:')
+      console.log()
+      console.log('  ' + cyan(JSON.stringify({
+        mcpServers: {
+          'fleet': {
+            type: 'stdio',
+            command: process.execPath,
+            args: [fleetMcpEntry],
+            cwd: tldaRoot
           }
         }
       }, null, 2).split('\n').join('\n  ')))
