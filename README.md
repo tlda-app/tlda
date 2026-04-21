@@ -41,7 +41,13 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 
 ## Working with agents
 
-tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. Agents connect per-document and can:
+tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
+
+```bash
+tlda mcp-setup
+```
+
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can:
 
 - See your highlights, pen strokes, and pings
 - Drop anchored notes and multiple-choice questions on the document
@@ -51,6 +57,10 @@ tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 - Read and edit your LaTeX source, run builds, do deep math checking
 
 Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
+
+## Sharing
+
+`tlda share my-paper` prints a read-only URL with your read token embedded. Anyone with that URL can view and annotate. If your server isn't reachable over the network yet, run `tlda remotes` to see Tailscale and Funnel URLs (with QR codes for phones and iPads).
 
 ## Setup
 

@@ -1033,6 +1033,43 @@ async function cmdPublish() {
   exec(`node ${scriptPath} ${passthrough.join(' ')}`, { stdio: 'inherit' })
 }
 
+async function cmdMcpSetup() {
+  const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const nodePath = process.execPath
+  const serverUrl = getServer()
+  const outPath = join(process.cwd(), '.mcp.json')
+
+  let existing = {}
+  try { existing = JSON.parse(readFileSync(outPath, 'utf8')) } catch {}
+
+  const config = {
+    ...existing,
+    mcpServers: {
+      ...(existing.mcpServers || {}),
+      tlda: {
+        type: 'stdio',
+        command: nodePath,
+        args: [join(tldaRoot, 'mcp-server', 'index.mjs')],
+        env: { TLDA_SERVER: serverUrl }
+      },
+      fleet: {
+        type: 'stdio',
+        command: nodePath,
+        args: [join(tldaRoot, 'mcp-server', 'fleet.mjs')],
+        cwd: tldaRoot
+      }
+    }
+  }
+
+  writeFileSync(outPath, JSON.stringify(config, null, 2) + '\n')
+  console.log(`Wrote ${outPath}`)
+  console.log(`  tlda MCP:  ${join(tldaRoot, 'mcp-server', 'index.mjs')}`)
+  console.log(`  fleet MCP: ${join(tldaRoot, 'mcp-server', 'fleet.mjs')}`)
+  console.log(`  server:    ${serverUrl}`)
+  console.log()
+  console.log(`Open Claude Code in this directory and the tlda + fleet tools will be available.`)
+}
+
 async function cmdConfig() {
   const sub = getPositional(0)
   if (sub === 'set') {
@@ -2274,6 +2311,7 @@ async function main() {
       case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
       case 'remotes': await cmdRemotes(); break
+      case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
@@ -2305,6 +2343,7 @@ Commands:
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
   deploy         Build, restart server, verify SPA renders
+  mcp-setup      Write .mcp.json for Claude Code integration (current directory)
   doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 
