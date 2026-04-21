@@ -75,11 +75,16 @@ npm install -g github:qtm285/tlda
 ### Quick start
 
 ```bash
+tlda config init                                   # generate auth tokens (one time)
 tlda server start                                  # start the server
 tlda create my-paper --dir /path/to/paper --main paper.tex
 tlda watch-all start                               # live rebuild on save
-tlda open my-paper                                 # open in browser
+tlda open my-paper                                 # opens http://localhost:5176/?doc=my-paper
 ```
+
+`tlda config init` generates a read-write token (for you) and a read-only token (for sharing). Your tokens are stored in `~/.config/tlda/config.json` and used automatically.
+
+To share with a collaborator: `tlda share my-paper` prints a URL with the read-only token embedded. Anyone with that URL can annotate but cannot control the presentation.
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
 
