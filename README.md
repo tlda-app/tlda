@@ -39,29 +39,6 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 - **Voice input** — speak into chat; Chrome transcribes and fills the textarea. Domain-specific vocabulary (Greek letters, math terms, author names) is auto-corrected
 - **Real-time sync** — everything syncs over WebSocket. Open on your laptop and iPad simultaneously
 
-## Working with agents
-
-tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
-
-```bash
-tlda mcp-setup
-```
-
-This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can:
-
-- See your highlights, pen strokes, and pings
-- Drop anchored notes and multiple-choice questions on the document
-- Read the text you're pointing at
-- Scroll the viewer to specific locations
-- Monitor for new annotations in the background
-- Read and edit your LaTeX source, run builds, do deep math checking
-
-Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
-
-## Sharing
-
-`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost. If neither is set up, it explains how to get there.
-
 ## Setup
 
 ### macOS (Homebrew)
@@ -98,6 +75,29 @@ tlda open                                          # open the index (lists all d
 To share with a collaborator: `tlda share my-paper` prints a URL with the read-only token embedded. Anyone with that URL can annotate but cannot control the presentation.
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
+
+## Working with agents
+
+tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
+
+```bash
+tlda mcp-setup
+```
+
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can:
+
+- See your highlights, pen strokes, and pings
+- Drop anchored notes and multiple-choice questions on the document
+- Read the text you're pointing at
+- Scroll the viewer to specific locations
+- Monitor for new annotations in the background
+- Read and edit your LaTeX source, run builds, do deep math checking
+
+Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
+
+## Sharing
+
+`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost. If neither is set up, it explains how to get there.
 
 ## Viewer controls
 
@@ -147,17 +147,19 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 
 | Command | What it does |
 |---------|-------------|
+| `tlda config init` | Generate auth tokens (run once) |
 | `tlda server start` | Start the server (port 5176) |
 | `tlda server stop` | Stop the server |
 | `tlda create <name> --dir /path` | Create a project, push files, build |
 | `tlda push [name]` | Push source files, trigger rebuild |
-| `tlda watch-all start` | Watch all projects for changes |
+| `tlda watch-all start` | Watch all projects for changes, auto-rebuild on save |
 | `tlda open [name]` | Open viewer for a doc; omit name to open the index |
 | `tlda list` | List projects |
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
+| `tlda share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
+| `tlda mcp-setup` | Write `.mcp.json` for Claude Code integration |
 | `tlda doctor` | Health check + dependency verification |
-| `tlda share [name]` | Print read-only viewer URL |
 | `tlda config set <key> <val>` | Persistent configuration |
 | `tlda delete <name>` | Delete a project |
 
