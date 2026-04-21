@@ -197,7 +197,7 @@ function checkQualification(agentId, toolName, filePath) {
         agent_id: agentId,
         file: filePath,
         required: resolvedReq,
-        message: `⚠ ${agentId} edited ${fileShort} without reading ${reqShort}`,
+        message: `⚠ ${agentId} edited ${fileShort} without reading \`${reqShort}\``,
       })
     }
   }
@@ -947,26 +947,9 @@ async function rpcKick({ agent_id }) {
 }
 
 async function rpcRestartMcp({ tmux_session, skipPreflight }) {
-  checkSession(tmux_session)
-  // Verify session exists first so we return a clean error.
-  try { await execFileP('tmux', ['has-session', '-t', tmux_session], { timeout: 3000 }) }
-  catch { throw new Error(`tmux session not found: ${tmux_session}`) }
-  // Delegate to fleet-mcp-restart, which navigates the /mcp interactive
-  // menu (server list → fleet → Reconnect). Sending /mcp + Enter alone is
-  // not enough — the menu requires cursor navigation.
-  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-mcp-restart')
-  const args = [script, tmux_session]
-  if (skipPreflight) args.push('--skip-preflight')
-  try {
-    // 30s: the script itself may spend up to 10s interrupting a mid-
-    // operation agent (BUSY_TIMEOUT in fleet-mcp-restart) + up to 20s
-    // across the four state-driven navigation steps. 15s was too tight
-    // once the mid-operation handling landed.
-    const { stdout, stderr } = await execFileP('bash', args, { timeout: 30000 })
-    return { ok: true, tmux_session, stdout: stdout.trim(), stderr: stderr.trim() }
-  } catch (e) {
-    throw new Error(`fleet-mcp-restart failed: ${e.stderr || e.message}`)
-  }
+  // No-op: the fleet MCP reconnects automatically via WS retry logic.
+  // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
+  return { ok: true, tmux_session, noop: true }
 }
 
 // Live terminal-card watching. The server tracks per-browser interest

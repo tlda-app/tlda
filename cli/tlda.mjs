@@ -1838,7 +1838,7 @@ ${tokenEnvLines.join('\n')}
     } catch {
       // Not running — kill any zombie holding the port
       try {
-        const stale = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
+        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
         if (stale) {
           for (const pid of stale.split('\n')) {
             try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
