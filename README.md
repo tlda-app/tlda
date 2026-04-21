@@ -54,26 +54,22 @@ Chat messages from agents appear in the margin alongside the document. You can t
 
 ## Setup
 
-### Prerequisites
+### macOS (Homebrew)
 
-- [Node.js](https://nodejs.org/) (v18+)
-- A TeX distribution with `latexmk` and `dvisvgm` — [MacTeX](https://tug.org/mactex/) on macOS or [TeX Live](https://tug.org/texlive/) on Linux
+```bash
+brew tap qtm285/tlda
+brew install tlda
+brew install --cask mactex-no-gui   # LaTeX — skip if you already have it
+```
 
-### Install
+That's it. `tlda` is now on your path. Run `tlda doctor` to confirm everything is working.
+
+### Linux / manual
+
+Install [Node.js](https://nodejs.org/) (v18+) and a TeX distribution with `latexmk` and `dvisvgm` ([TeX Live](https://tug.org/texlive/)), then:
 
 ```bash
 npm install -g github:qtm285/tlda
-```
-
-This installs the `tlda` command, builds the viewer, and you're ready to go.
-
-Or clone and link:
-
-```bash
-git clone https://github.com/qtm285/tlda.git
-cd tlda
-npm install
-npm link
 ```
 
 ### Quick start
