@@ -1410,7 +1410,8 @@ async function cmdDoctor() {
   if (checkBin('git')) {
     ok('git found')
   } else {
-    warn('git not found — change review and history features will not work', 'brew install git')
+    fail('git not found — change review and history features will not work', 'brew install git')
+    issues++
   }
 
   // 3. Server
