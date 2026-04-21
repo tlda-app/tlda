@@ -33,7 +33,6 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 - **Source-anchored annotations** — notes are tied to source lines via synctex, so they survive rebuilds and recompilations
 - **Reference viewer** — double-click any `\ref` or `\eqref` to see the target inline. Arrow buttons step through references; go-there jumps to the target page
 - **Proof reader** — scroll into a proof and a panel shows the theorem statement, plus panels for referenced definitions and lemmas from other pages. No flipping back and forth
-- **Change review** — scrub a timeline of git history and builds, see old and new pages side by side, triage each change with status dots
 - **Build errors on the page** — LaTeX errors appear anchored to the source line where they occur, clickable to open in your editor
 - **Editor integration** — Cmd-click any rendered text to open the source at that line (Zed, VS Code, etc.)
 - **Voice input** — speak into chat; Chrome transcribes and fills the textarea. Domain-specific vocabulary (Greek letters, math terms, author names) is auto-corrected
@@ -107,7 +106,7 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Highlighter** — 11-color slider on the right edge. On iPad, double-tap with stylus to switch colors. On desktop, click the dots.
 
-**Panel** — expandable side panel (top-right) with table of contents, notes list, search, proof info, and change review.
+**Panel** — expandable side panel (top-right) with table of contents and notes list.
 
 **Fleet button** — the "Fleet" label in the bottom-left corner controls agent annotation overlays. Click to toggle fleet shapes (agent notes, highlights, arrows) on or off. Click and drag to the right to open the layout picker, which has two presets: all shapes in the left margin, or shapes spread across both margins. You can reposition shapes freely; the presets are just a way to snap back to a known arrangement.
 
