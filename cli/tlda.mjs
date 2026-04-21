@@ -1391,7 +1391,7 @@ async function cmdDoctor() {
     issues++
   }
 
-  // 2. LaTeX tools
+  // 2. LaTeX tools + git
   const checkBin = (bin) => {
     try { execSync(`which ${bin}`, { stdio: 'pipe' }); return true } catch { return false }
   }
@@ -1406,6 +1406,11 @@ async function cmdDoctor() {
   } else {
     fail('dvisvgm not found', 'Included in MacTeX. If using BasicTeX: tlmgr install dvisvgm')
     issues++
+  }
+  if (checkBin('git')) {
+    ok('git found')
+  } else {
+    warn('git not found — change review and history features will not work', 'brew install git')
   }
 
   // 3. Server
