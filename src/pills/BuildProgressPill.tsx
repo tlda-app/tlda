@@ -15,7 +15,7 @@ export function BuildProgressPill() {
         case 'compiling':  label = 'compiling';  break
         case 'converting': label = 'converting'; break
         case 'hot':        label = 'patched';    break
-        case 'done':       label = 'rebuilt';    break
+        case 'done':       label = 'done';       break
         case 'failed':     label = 'failed';     break
       }
       setPhase(label)

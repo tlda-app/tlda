@@ -916,7 +916,6 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
     // SVGs are built lazily when pages are first requested (see buildCurrentPage).
     status.phase = 'converting'
-    signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
     const dviFile = join(buildDir, `${texBase}.dvi`)
     publishFile(dviFile, join(outDir, 'main.dvi'))
     // Clear stale SVGs — clients will request them on demand after the reload signal
