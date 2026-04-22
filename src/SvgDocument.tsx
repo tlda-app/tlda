@@ -1085,8 +1085,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
-        <BuildProgressPill />
         <BuildWarningPill warnings={buildWarnings} />
+        <BuildProgressPill />
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>

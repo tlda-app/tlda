@@ -11,15 +11,17 @@ export function BuildProgressPill() {
   useEffect(() => {
     return onBuildProgressSignal((signal) => {
       let label = ''
+      let detail = signal.detail
       switch (signal.phase) {
         case 'compiling':  label = 'compiling';  break
-        case 'converting': label = 'converting'; break
-        case 'hot':        label = 'patched';    break
-        case 'done':       label = 'done';       break
+        case 'converting': break
+        case 'hot':        break
+        case 'done':       label = 'compiling'; detail = `done ${signal.detail || ''}`.trim(); break
         case 'failed':     label = 'failed';     break
       }
+      if (!label) return
       setPhase(label)
-      setDetail(signal.detail)
+      setDetail(detail)
       setVisible(true)
 
       if (fadeTimer.current) clearTimeout(fadeTimer.current)
@@ -36,9 +38,8 @@ export function BuildProgressPill() {
   if (!visible || !phase) return null
 
   return (
-    <div className="build-progress-row" onPointerDown={e => e.stopPropagation()}>
-      <span className="build-progress-pill">{phase}</span>
-      {detail && <span className="build-progress-detail">{detail}</span>}
-    </div>
+    <span className="build-progress-text" onPointerDown={e => e.stopPropagation()}>
+      {phase}{detail ? ` ${detail}` : ''}
+    </span>
   )
 }
