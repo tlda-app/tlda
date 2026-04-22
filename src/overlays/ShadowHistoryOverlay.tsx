@@ -1,29 +1,21 @@
 /**
  * ShadowHistoryOverlay — floating scrubber for navigating shadow repo history.
  *
- * Shows as a slim bar at the bottom of the canvas. When the user scrubs to a
- * historical position, old SVG pages appear to the right of the current pages.
- *
- * Activates via a "History" button in the document panel, or by calling
- * toggleShadowOverlay() from the parent.
- *
- * Slider direction: current version is on the RIGHT edge (sliderMax), oldest
- * is on the LEFT edge (0). Dragging right = toward current; dragging left =
- * into history. Dragging all the way to the right dismisses the overlay.
- *
- * Scale: sqrt mapping so recent versions occupy more of the slider range.
- * Slider pos → version idx: idx = (N-1) * (1 - pos/(N-1))^2
- * Version idx → slider pos: pos = (N-1) * (1 - sqrt(idx/(N-1)))
- * Step buttons always move exactly 1 version, independent of scale.
+ * Shows as a slim bar at the bottom of the canvas. The slider is a TIME AXIS
+ * spanning from the oldest build to now. Dragging to a position queries the
+ * server for the nearest real build at that timestamp. Step buttons move to
+ * the actual adjacent build (one save at a time), so any historical version
+ * is reachable even in projects with hundreds of thousands of builds.
  *
  * Pointer events are handled by BrowseIdle.markEventAsHandled, which prevents
  * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
- * No stopEventPropagation needed here.
  */
 
-import { useCallback } from 'react'
-import type { ShadowVersion } from '../historyStore'
+import { useCallback, useRef, useState } from 'react'
+import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
 import './ShadowHistoryOverlay.css'
+
+const SLIDER_STEPS = 1000  // resolution of the time-axis slider
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
@@ -39,63 +31,68 @@ function formatTime(ts: number): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-// sqrt-scale helpers
-// Slider positions: 0 (oldest) to N-1 (newest historical) to N (current).
-// More slider resolution near "now" (right side).
-
-function sqrtIdxFromPos(pos: number, N: number): number {
-  if (pos >= N) return -1  // current
-  if (N <= 1) return 0
-  const t = pos / (N - 1)  // 0=oldest, 1=newest
-  const idx = Math.round((N - 1) * (1 - t) * (1 - t))
-  return Math.max(0, Math.min(N - 1, idx))
+// Map slider integer position (0=oldest, SLIDER_STEPS=current) to a timestamp
+function sliderPosToTimestamp(pos: number, bounds: ShadowTimeBounds): number {
+  if (pos >= SLIDER_STEPS) return Date.now()
+  const t = pos / SLIDER_STEPS  // 0=oldest, 1≈newest
+  return Math.round(bounds.oldest.timestamp + t * (bounds.newest.timestamp - bounds.oldest.timestamp))
 }
 
-function sqrtPosFromIdx(idx: number, N: number): number {
-  if (idx < 0) return N  // current
-  if (N <= 1) return 0
-  const u = idx / (N - 1)  // 0=newest, 1=oldest
-  const t = 1 - Math.sqrt(u)  // 0=oldest direction, 1=newest direction
-  return Math.round((N - 1) * t)
+// Map an active version's timestamp back to a slider position
+function timestampToSliderPos(ts: number, bounds: ShadowTimeBounds): number {
+  const span = bounds.newest.timestamp - bounds.oldest.timestamp
+  if (span === 0) return 0
+  const t = (ts - bounds.oldest.timestamp) / span
+  return Math.round(Math.max(0, Math.min(SLIDER_STEPS - 1, t * SLIDER_STEPS)))
 }
 
 interface Props {
-  versions: ShadowVersion[]
-  /** Index into versions (0 = newest). -1 means current. */
-  activeIdx: number
+  timeBounds: ShadowTimeBounds
+  /** Currently displayed version. null = current (no shadow column). */
+  activeVersion: ShadowVersion | null
   loading: boolean
-  onScrub: (idx: number) => void
+  onScrubTime: (timestamp: number) => void
+  onStep: (dir: 'older' | 'newer') => void
   onClose: () => void
+  onRealign?: () => void
 }
 
-export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  const N = versions.length
-  const sliderMax = N
-  const sliderVal = sqrtPosFromIdx(activeIdx, N)
+export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign }: Props) {
+  const resolvedSliderVal = activeVersion
+    ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
+    : SLIDER_STEPS  // rightmost = current
 
+  // Optimistic local position: tracks the drag position immediately so the
+  // slider doesn't snap back while waiting for the server to resolve a version.
+  // Reset to null when activeVersion changes (server resolved).
+  const [localPos, setLocalPos] = useState<number | null>(null)
+  const sliderVal = localPos ?? resolvedSliderVal
+
+  // When the server resolves a new version, clear the local optimistic position
+  const prevHashRef = useRef<string | null>(null)
+  const activeHash = activeVersion?.hash ?? null
+  if (activeHash !== prevHashRef.current) {
+    prevHashRef.current = activeHash
+    if (localPos !== null) setLocalPos(null)
+  }
+
+  const lastScrubRef = useRef<number>(0)
   const handleRange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const pos = parseInt(e.target.value, 10)
-    onScrub(sqrtIdxFromPos(pos, N))
-  }, [onScrub, N])
+    const now = Date.now()
+    // Update local position immediately for smooth dragging
+    setLocalPos(Math.min(pos, SLIDER_STEPS - 1))
+    if (now - lastScrubRef.current < 50) return  // 50ms throttle for server calls
+    lastScrubRef.current = now
+    const clamped = Math.min(pos, SLIDER_STEPS - 1)
+    onScrubTime(sliderPosToTimestamp(clamped, timeBounds))
+  }, [onScrubTime, timeBounds])
 
-  const step = useCallback((dir: number) => {
-    // dir=+1 = newer (right, toward current), dir=-1 = older (left)
-    if (dir > 0) {
-      // newer: decrease idx
-      if (activeIdx <= 0) onScrub(-1)
-      else onScrub(activeIdx - 1)
-    } else {
-      // older: increase idx
-      const newIdx = activeIdx < 0 ? 0 : Math.min(activeIdx + 1, N - 1)
-      onScrub(newIdx)
-    }
-  }, [activeIdx, N, onScrub])
+  const isCurrent = activeVersion === null
+  const isAtOldest = activeVersion?.hash === timeBounds.oldest.hash
 
   // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
-  const isHidden = N < 2 || activeIdx < 0
-
-  const isCurrent = activeIdx < 0
-  const activeVersion = activeIdx >= 0 && activeIdx < N ? versions[activeIdx] : null
+  const isHidden = isCurrent
 
   let labelText: React.ReactNode
   if (loading) {
@@ -104,7 +101,6 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     labelText = <span className="shadow-current-badge">Current</span>
   } else if (activeVersion) {
     const time = formatTime(activeVersion.timestamp)
-    // Show short hash alongside relative time — commit messages are always "Build at <ISO>"
     const shortHash = activeVersion.hash.slice(0, 7)
     labelText = (
       <>
@@ -114,41 +110,46 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     )
   }
 
-  const pos = isCurrent ? 'now' : `${activeIdx + 1}/${N}`
-
   return (
     <div
       className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
       style={isHidden ? { display: 'none' } : undefined}
     >
-      {/* Older — moves left (increases activeIdx toward oldest) */}
+      {/* Older — step to the build just before this one */}
       <button
         className="shadow-scrubber-step"
-        disabled={activeIdx >= N - 1}
-        onClick={() => step(-1)}
-        title="Older"
+        disabled={isAtOldest}
+        onClick={() => onStep('older')}
+        title="Older (one build)"
       >‹</button>
 
       <input
         type="range"
         className="shadow-scrubber-range"
         min={0}
-        max={sliderMax}
+        max={SLIDER_STEPS}
         value={sliderVal}
         onChange={handleRange}
-        title="Drag to scrub history — right = current, left = older (sqrt scale)"
+        title="Drag to scrub history by time — right = current, left = older"
       />
 
-      {/* Newer — moves right (decreases activeIdx toward newest) */}
+      {/* Newer — step to the build just after, or back to current */}
       <button
         className="shadow-scrubber-step"
-        disabled={activeIdx < 0}
-        onClick={() => step(1)}
-        title="Newer"
+        disabled={isCurrent}
+        onClick={() => onStep('newer')}
+        title="Newer (one build)"
       >›</button>
 
-      <span className="shadow-scrubber-pos">{pos}</span>
       <span className="shadow-scrubber-label">{labelText}</span>
+
+      {onRealign && !isCurrent && (
+        <button
+          className="shadow-scrubber-realign"
+          onClick={onRealign}
+          title="Re-align columns to viewport center"
+        >⊙</button>
+      )}
 
       <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
         ×

@@ -185,14 +185,9 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
  * well in chat metadata.
  */
 function currentDocVersion(panel: any): string | null {
-  const sv = panel?.shadowVersions
-  if (Array.isArray(sv) && sv.length > 0) {
-    const idx = (typeof panel.shadowActiveIdx === 'number' && panel.shadowActiveIdx >= 0)
-      ? panel.shadowActiveIdx
-      : 0
-    const entry = sv[idx] || sv[0]
-    if (entry?.hash) return String(entry.hash).slice(0, 12)
-  }
+  // If user has scrubbed to a historical version, stamp that version's hash
+  const sav = panel?.shadowActiveVersion
+  if (sav?.hash) return String(sav.hash).slice(0, 12)
   const entries = panel?.historyEntries
   if (entries && entries.length > 0) {
     const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)

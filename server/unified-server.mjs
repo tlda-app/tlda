@@ -33,7 +33,7 @@ blocked((ms, stack) => {
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, openSync, statSync } from 'fs'
 import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
@@ -576,6 +576,36 @@ app.use('/docs', (req, res, next) => {
       console.error(`[docs] Error generating combined HTML for ${name}:`, e.message)
     }
     return res.status(404).json({ error: 'Not found' })
+  }
+
+  // On-demand current-column SVG: page-N.svg built lazily from output/main.dvi.
+  // buildCurrentPage handles DVI staleness (via ensureCurrentDvi) and SVG staleness.
+  // We delegate to it whenever: SVG is missing, DVI is missing/stale, or source.stamp
+  // is newer than the DVI (source changed since last build).
+  const livePageMatch = filePath.match(/^page-(\d+)\.svg$/)
+  if (livePageMatch) {
+    const pageNum = parseInt(livePageMatch[1], 10)
+    const svgPath = join(PROJECTS_DIR, name, 'output', filePath)
+    const dviPath = join(PROJECTS_DIR, name, 'output', 'main.dvi')
+    const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
+    const svgExists = existsSync(svgPath)
+    const dviExists = existsSync(dviPath)
+    const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
+    const needsBuild = !svgExists ||
+      !dviExists ||
+      statSync(svgPath).mtimeMs < dviMtime ||
+      (existsSync(stampPath) && statSync(stampPath).mtimeMs > dviMtime)
+    if (needsBuild) {
+      try {
+        const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
+        const built = await buildCurrentPage(name, pageNum)
+        res.set('Cache-Control', 'no-cache')
+        return res.sendFile(resolve(built), { dotfiles: 'allow' })
+      } catch (e) {
+        console.error(`[live] on-demand page failed: ${name} p${pageNum}: ${e.message}`)
+        return res.status(404).json({ error: 'Page unavailable', detail: e.message })
+      }
+    }
   }
 
   // Try project output first

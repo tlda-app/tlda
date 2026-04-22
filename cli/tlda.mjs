@@ -66,7 +66,7 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -840,6 +840,7 @@ async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
   const server = getServer()
   const token = getToken()
+  const browser = getFlag('browser') || loadConfig().browser || null
   const redirect = name ? `/?doc=${name}` : '/'
   const url = token
     ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
@@ -847,7 +848,11 @@ async function cmdOpen() {
   console.log(`Opening ${server}${redirect}`)
 
   const { execFile } = await import('child_process')
-  execFile('open', [url])
+  if (browser) {
+    execFile('open', ['-a', browser, url])
+  } else {
+    execFile('open', [url])
+  }
 }
 
 async function cmdShare() {

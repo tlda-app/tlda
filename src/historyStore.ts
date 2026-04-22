@@ -144,7 +144,66 @@ export function snapshotPageUrl(docName: string, snapshotId: string, page: numbe
 export interface ShadowVersion {
   hash: string
   timestamp: number
-  message: string
+  message?: string
+}
+
+/**
+ * Time bounds for the shadow repo — oldest and newest build timestamps.
+ */
+export interface ShadowTimeBounds {
+  oldest: ShadowVersion
+  newest: ShadowVersion
+}
+
+/**
+ * Fetch the build active at a given timestamp (nearest build at or before that time).
+ */
+export async function versionAtTime(docName: string, timestamp: number): Promise<ShadowVersion | null> {
+  try {
+    const res = await fetch(
+      `${serverBase}/api/projects/${docName}/history/shadow/at?time=${timestamp}`
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.version ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch the time bounds (oldest + newest build) for the shadow repo.
+ */
+export async function fetchShadowTimeBounds(docName: string): Promise<ShadowTimeBounds | null> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/bounds`)
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data.oldest || !data.newest) return null
+    return data as ShadowTimeBounds
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get the build immediately adjacent to a known hash.
+ */
+export async function fetchAdjacentShadowVersion(
+  docName: string,
+  hash: string,
+  dir: 'older' | 'newer',
+): Promise<ShadowVersion | null> {
+  try {
+    const res = await fetch(
+      `${serverBase}/api/projects/${docName}/history/shadow/adjacent?hash=${encodeURIComponent(hash)}&dir=${dir}`
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.version ?? null
+  } catch {
+    return null
+  }
 }
 
 /**

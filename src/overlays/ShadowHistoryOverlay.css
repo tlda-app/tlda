@@ -154,6 +154,27 @@
   text-align: center;
 }
 
+/* Realign button — re-runs SyncTeX alignment on current version */
+.shadow-scrubber-realign {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: rgba(148, 163, 184, 0.5);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.shadow-scrubber-realign:hover {
+  color: rgba(99, 102, 241, 0.9);
+  background: rgba(148, 163, 184, 0.15);
+}
+
 /* Close button */
 .shadow-scrubber-close {
   flex: none;

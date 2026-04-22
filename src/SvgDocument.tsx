@@ -9,7 +9,6 @@ import {
   defaultShapeUtils,
   defaultBindingUtils,
   HighlightShapeUtil,
-  GeoShapeUtil,
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
@@ -304,11 +303,11 @@ function VersionStamp({ docName }: { docName: string }) {
   }, [fetchVersions])
 
   const handleClick = useCallback(async (idx: number) => {
-    if (idx === 0) return // dismiss via scrubber, not version wheel
+    if (idx === 0) return // index 0 = most recent build, dismiss handled by scrubber
     const v = versions[idx]
     if (!v) return
-    // Activate shadow column for this version
-    ;(window as any).__shadowScrub?.(idx)
+    // Activate shadow column for this version using the time-axis scrubber
+    ;(window as any).__shadowScrubVersion?.(v)
     setActiveIdx(idx)
   }, [versions])
 
@@ -493,13 +492,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Shadow history scrubber
   const {
-    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
-    shadowActiveVersion, shadowColumnX,
-    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+    shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
+    shadowColumnX, shadowYOffset,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
-  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX)
+  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
 
   // Side-by-side version comparison — relay Yjs signal to window event
   useEffect(() => {
@@ -802,13 +801,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onToggleTimeline: toggleTimeline,
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
-    shadowHistoryVersionCount: shadowVersions.length,
-    shadowVersions,
-    shadowActiveIdx,
-    onShadowScrub: handleShadowScrub,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions])
-  // Note: shadowActiveIdx intentionally excluded from deps — changes to it
-  // should NOT cascade re-renders through PanelContext (causes hooks errors)
+    shadowActiveVersion,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
   // When the fleet HUD overlay is open, hide fleet shapes in the main editor
   // from both rendering AND hit-testing. The overlay renders its own copies.
@@ -826,18 +820,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       override indicator() { return null as any }
     }
-    // Suppress hover/selection indicator on shadow column handle geo shapes —
-    // the handle is nearly invisible (opacity 0.05) and the blue glow is distracting
-    class ShadowAwareGeoShapeUtil extends GeoShapeUtil {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      override indicator(shape: any) {
-        if ((shape.id as string).startsWith('shape:shadow-col-handle-')) return null as any
-        return super.indicator(shape)
-      }
-    }
     const utils = defaultShapeUtils.map(u =>
-      u === HighlightShapeUtil ? QuietHighlightShapeUtil :
-      u === GeoShapeUtil ? ShadowAwareGeoShapeUtil : u
+      u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
@@ -1083,13 +1067,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {shadowVisible && (
+      {shadowVisible && shadowTimeBounds && (
         <ShadowHistoryOverlay
-          versions={shadowVersions}
-          activeIdx={shadowActiveIdx}
+          timeBounds={shadowTimeBounds}
+          activeVersion={shadowActiveVersion ?? null}
           loading={shadowLoading}
-          onScrub={handleShadowScrub}
+          onScrubTime={handleShadowScrubTime}
+          onStep={handleShadowStep}
           onClose={hideShadowOverlay}
+          onRealign={realignShadow}
         />
       )}
       <div className="build-pills-row">

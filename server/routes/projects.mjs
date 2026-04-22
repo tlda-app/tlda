@@ -16,13 +16,13 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, basename } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
-  extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir,
+  extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { loadSynctex } from '../lib/synctex-query.mjs'
@@ -296,8 +296,10 @@ export async function processProjectPush(name, body) {
   if (project.format === 'svg' && files?.length > 0) {
     const relevantPath = join(getOutputDir(name), 'relevant-files.json')
     if (!existsSync(relevantPath)) {
-      console.log(`[${name}] push skipped: relevant-files.json missing — run \`tlda build ${name}\` to bootstrap`)
-      return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'no-relevant-set' }
+      // No relevant-files.json yet — mark stale so the initial page request triggers a build.
+      markProjectStale(name)
+      broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
+      return { status: 200, ok: true, filesWritten: files.length, building: false }
     }
     try {
       const { files: relevantList } = JSON.parse(readFileSync(relevantPath, 'utf8'))
@@ -337,43 +339,25 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // SVG/LaTeX format: debounced build. runBuild kills any in-progress
-  // build and restarts — that was fine for single pushes but with a
-  // rapid-fire editor (math agent typing) each push killed the running
-  // build, so nothing ever completed. Debounce here so rapid edits
-  // coalesce into a single build that starts after the edits pause.
-  scheduleDebouncedBuild(name, priorityPages)
-  return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
+  // SVG/LaTeX format: mark source as stale so ensureCurrentDvi rebuilds on
+  // the next page request. No proactive build — Ensure does everything.
+  markProjectStale(name)
+  broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
+  return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
 }
 
-// Per-project debounce for runBuild. Key = project name, value = timer id.
-// On each push we clear any pending timer and schedule a fresh one. The
-// build only fires after `BUILD_DEBOUNCE_MS` of quiet. Combined with
-// runBuild's existing "kill in-progress and restart" behavior, this
-// means: the LAST edit in a burst wins, and rapid bursts don't cause
-// thrashing.
-const _buildDebounceTimers = new Map()
-const BUILD_DEBOUNCE_MS = 1500
-
-function scheduleDebouncedBuild(name, priorityPages) {
-  const existing = _buildDebounceTimers.get(name)
-  if (existing) clearTimeout(existing)
-  const timer = setTimeout(async () => {
-    _buildDebounceTimers.delete(name)
-    try {
-      await runBuild(name, { priorityPages })
-      const updated = readProject(name)
-      if (updated?.buildStatus === 'success') {
-        emitGlobalEvent('doc-arrived', {
-          name, title: updated.title || name,
-          format: updated.format, pages: updated.pages || 0,
-        })
-      }
-    } catch (e) {
-      console.error(`[api] Build failed for ${name}: ${e.message}`)
-    }
-  }, BUILD_DEBOUNCE_MS)
-  _buildDebounceTimers.set(name, timer)
+/**
+ * Mark a project's source as stale. Writes a source.stamp file whose mtime is
+ * checked by ensureCurrentDvi — if source.stamp is newer than main.dvi, the
+ * next page request triggers a full LaTeX rebuild.
+ */
+function markProjectStale(name) {
+  const dir = getProjectDir(name)
+  try {
+    writeFileSync(join(dir, 'source.stamp'), new Date().toISOString())
+  } catch (e) {
+    console.error(`[${name}] Failed to write source.stamp: ${e.message}`)
+  }
 }
 
 // Push files + trigger build

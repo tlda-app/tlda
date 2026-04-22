@@ -294,6 +294,16 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'shadow-handle': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.shadow-handle',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({

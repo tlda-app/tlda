@@ -17,8 +17,140 @@ import { readProject, outputDir, projectDir, sourceDir as getSourceDir } from '.
 import { runBuild } from '../lib/build-runner.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
-import { listVersions, versionAt, checkoutSource, getShadowRepoDir } from '../lib/shadow-repo.mjs'
-import { broadcastSignal } from '../lib/sync-rooms.mjs'
+import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
+import { ensure, historicalCtx } from '../lib/ensure.mjs'
+import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
+
+// ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
+const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
+const _SCALE = _TARGET_WIDTH / _PDF_WIDTH
+const _PAGE_H = _PDF_HEIGHT * _SCALE
+const _VBOX = 72  // dvisvgm viewBox offset in PDF points
+
+function _pdfToCanvas(page, pdfX, pdfY) {
+  return {
+    x: (pdfX + _VBOX) * _SCALE,
+    y: (page - 1) * (_PAGE_H + _PAGE_GAP) + (pdfY + _VBOX) * _SCALE,
+  }
+}
+
+function _toF16(v) {
+  if (v === 0) return 0
+  if (!isFinite(v)) return v > 0 ? 0x7c00 : 0xfc00
+  const s = v < 0 ? 1 : 0; v = Math.abs(v)
+  if (v > 65504) return s ? 0xfc00 : 0x7c00
+  if (v < 5.96e-8) return s << 15
+  const l = Math.log2(v); let e = Math.floor(l), f = v / 2**e - 1
+  if (e < -14) { f = v / 2**-14; return (s<<15)|Math.round(f*1024) }
+  e += 15; if (e >= 31) return s ? 0xfc00 : 0x7c00
+  return (s<<15)|(e<<10)|Math.round(f*1024)
+}
+function _f16(u) {
+  const s = (u>>15) ? -1 : 1, e = (u>>10)&0x1f, f = u&0x3ff
+  if (!e) return s * 2**-14 * (f/1024)
+  if (e===31) return f ? NaN : s*Infinity
+  return s * 2**(e-15) * (1+f/1024)
+}
+function _encodeB64Path(pts) {
+  if (!pts.length) return ''
+  const buf = Buffer.alloc(12 + (pts.length-1)*6)
+  buf.writeFloatLE(pts[0].x, 0); buf.writeFloatLE(pts[0].y, 4); buf.writeFloatLE(pts[0].z??0.5, 8)
+  let px=pts[0].x, py=pts[0].y, pz=pts[0].z??0.5
+  for (let i=1; i<pts.length; i++) {
+    const dx=pts[i].x-px, dy=pts[i].y-py, dz=(pts[i].z??0.5)-pz, o=12+(i-1)*6
+    const dxu=_toF16(dx), dyu=_toF16(dy), dzu=_toF16(dz)
+    buf.writeUInt16LE(dxu,o); buf.writeUInt16LE(dyu,o+2); buf.writeUInt16LE(dzu,o+4)
+    px+=_f16(dxu); py+=_f16(dyu); pz+=_f16(dzu)
+  }
+  return buf.toString('base64')
+}
+
+/** Extract content of a {…} block starting just after the opening brace. */
+function _readBraced(str, start) {
+  let depth = 1, i = start
+  while (i < str.length && depth > 0) {
+    if (str[i] === '{') depth++
+    else if (str[i] === '}') { depth--; if (depth === 0) break }
+    i++
+  }
+  return { content: str.slice(start, i), nextI: i + 1 }
+}
+
+/**
+ * Parse latexdiff output → arrays of changed text strings.
+ * Extracts \DIFadd{...} content (added in new) and \DIFdel{...} content (deleted from old).
+ */
+function _parseDiffOutput(diffText) {
+  const addTexts = [], delTexts = []
+  let i = 0
+  while (i < diffText.length) {
+    if (diffText.startsWith('\\DIFadd{', i)) {
+      const { content, nextI } = _readBraced(diffText, i + 8)
+      if (content.trim()) addTexts.push(content.trim())
+      i = nextI
+    } else if (diffText.startsWith('\\DIFdel{', i)) {
+      const { content, nextI } = _readBraced(diffText, i + 8)
+      if (content.trim()) delTexts.push(content.trim())
+      i = nextI
+    } else {
+      i++
+    }
+  }
+  return { addTexts, delTexts }
+}
+
+/**
+ * Search excerptLines for a changed text span. Returns the first matching line's
+ * { lineNum, colStart, colEnd, lineLen }, or null if not found.
+ */
+function _findInExcerpt(excerptLines, firstLineNum, searchText) {
+  // Normalize whitespace for matching
+  const needle = searchText.replace(/\s+/g, ' ').trim()
+  if (needle.length < 2) return null
+  for (let k = 0; k < excerptLines.length; k++) {
+    const hay = excerptLines[k].replace(/\s+/g, ' ')
+    const idx = hay.indexOf(needle)
+    if (idx >= 0) {
+      return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + needle.length, lineLen: excerptLines[k].length }
+    }
+  }
+  // Fallback: try first significant word of the needle (handles multi-line or split content)
+  const firstWord = needle.split(/\s+/).find(w => w.replace(/[\\{}$]/g, '').length > 3)
+  if (firstWord) {
+    for (let k = 0; k < excerptLines.length; k++) {
+      const idx = excerptLines[k].indexOf(firstWord)
+      if (idx >= 0) {
+        return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + firstWord.length, lineLen: excerptLines[k].length }
+      }
+    }
+  }
+  return null
+}
+
+/** Create a single horizontal highlight shape and write it to the Yjs room. */
+async function _createHighlightShape(docName, entry, colStart, colEnd, lineLen, color, xColumnOffset, yColumnOffset, triggerId) {
+  const canvas = _pdfToCanvas(entry.page, entry.x, entry.y)
+  const fullLeft = canvas.x
+  const fullWidth = _TARGET_WIDTH * 0.9 - fullLeft
+  if (fullWidth <= 0) return null
+  const norm = Math.max(lineLen, 1)
+  const xs = fullLeft + xColumnOffset + (colStart / norm) * fullWidth
+  const xe = fullLeft + xColumnOffset + (colEnd   / norm) * fullWidth
+  const w  = Math.max(xe - xs, 4)
+  const shapeId = `shape:diff-${Date.now()}-${Math.random().toString(36).slice(2,8)}`
+  await putShape(`doc-${docName}`, {
+    id: shapeId, type: 'highlight', typeName: 'shape',
+    x: xs, y: canvas.y + yColumnOffset - 3,
+    rotation: 0, isLocked: false, opacity: 0.5,
+    parentId: 'page:page', index: 'a1',
+    props: {
+      segments: [{ type: 'free', path: _encodeB64Path([{x:0,y:0,z:0.5},{x:w,y:0,z:0.5}]) }],
+      color, size: 's', isComplete: true, isPen: false, scale: 1, scaleX: 1, scaleY: 1,
+    },
+    meta: { diffTrigger: triggerId, diffType: color.includes('green') ? 'addition' : 'deletion' },
+  })
+  return shapeId
+}
 
 // Lazy-load svg-text from mcp-server (it's in a sibling directory)
 let _loadPageText = null
@@ -410,17 +542,18 @@ router.get('/shadow/:hash7/lookup', requireRead, (req, res) => {
   const project = readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const lookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'lookup.json')
-  if (!existsSync(lookupPath)) {
-    return res.status(404).json({ error: 'Lookup not available for this version' })
-  }
-
-  try {
-    res.setHeader('Content-Type', 'application/json')
-    res.sendFile(lookupPath)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  // Use the make system: ensure lookup.json (chains: lookup → synctex → DVI → source)
+  const ctx = historicalCtx(name, hash7)
+  ensure(ctx, 'lookup.json')
+    .then(lookupPath => {
+      const data = readFileSync(lookupPath, 'utf8')
+      res.setHeader('Content-Type', 'application/json')
+      res.send(data)
+    })
+    .catch(e => {
+      console.warn(`[history] lookup build failed (${name}@${hash7}):`, e.message)
+      res.status(404).json({ error: 'Lookup not available', detail: e.message })
+    })
 })
 
 /**
@@ -492,7 +625,10 @@ router.get('/shadow/at', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
-    const version = await versionAt(name, time)
+    // If time is a pure number string, treat as unix milliseconds so git
+    // doesn't interpret it as a literal year-58000 date string.
+    const parsedTime = /^\d+$/.test(time) ? parseInt(time, 10) : time
+    const version = await versionAt(name, parsedTime)
     res.json({ version })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -588,6 +724,143 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
 })
 
 /**
+ * POST /diff-region — Word-level diff between current and historical version in a page region.
+ *
+ * Body: { hash7, page, pdfYMin, pdfYMax, columnX, triggerId }
+ * Response: { shapeIds: string[] }
+ *
+ * Uses synctex reverse lookup → latexdiff → forward lookup → creates highlight shapes.
+ */
+router.post('/diff-region', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { hash7, page, pdfYMin, pdfYMax, columnX = 848, shadowYOffset = 0, triggerId = '' } = req.body ?? {}
+
+  if (!hash7 || page == null || pdfYMin == null || pdfYMax == null) {
+    return res.status(400).json({ error: 'Required: hash7, page, pdfYMin, pdfYMax' })
+  }
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  // 1. Reverse synctex: find source line range covering this y-region
+  const { loadSynctex } = await import('../lib/synctex-query.mjs')
+  const synctex = await loadSynctex(name)
+  if (!synctex) return res.status(404).json({ error: 'No synctex data for current version' })
+
+  const margin = 8
+  const { records, inputMap } = synctex
+  const texFileIds = new Set()
+  for (const [id, p] of inputMap) { if (p.endsWith('.tex')) texFileIds.add(id) }
+
+  const pageRecords = records.filter(r =>
+    r.page === page &&
+    r.y >= pdfYMin - margin &&
+    r.y <= pdfYMax + margin &&
+    texFileIds.has(r.inputId),
+  )
+  if (pageRecords.length === 0) {
+    return res.status(404).json({ error: 'No synctex records found in specified region' })
+  }
+
+  const startLine = Math.min(...pageRecords.map(r => r.line))
+  const endLine   = Math.max(...pageRecords.map(r => r.line))
+  const hitFileAbsolute = inputMap.get(pageRecords[0].inputId)
+
+  const srcDir = getSourceDir(name)
+  const relHitFile = hitFileAbsolute.startsWith(srcDir)
+    ? hitFileAbsolute.slice(srcDir.length + 1)
+    : (project.mainFile || 'main.tex')
+
+  // 2. Read current source excerpt
+  const padding = 4
+  let currentLines
+  try {
+    currentLines = readFileSync(hitFileAbsolute, 'utf8').split('\n')
+  } catch (e) {
+    return res.status(500).json({ error: `Cannot read current source: ${e.message}` })
+  }
+  const fromLine = Math.max(1, startLine - padding)
+  const toLine   = Math.min(currentLines.length, endLine + padding)
+  const currentExcerptLines = currentLines.slice(fromLine - 1, toLine)
+  const currentExcerpt = currentExcerptLines.join('\n')
+
+  // 3. Read historical source excerpt via git show in shadow-repo
+  const repoDir = getShadowRepoDir(name)
+  let historicalExcerptLines = []
+  try {
+    const { stdout } = await execAsync(
+      `git show "${hash7}:${relHitFile}"`,
+      { cwd: repoDir, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
+    )
+    const histLines = stdout.split('\n')
+    const histFrom = Math.max(1, startLine - padding)
+    const histTo   = Math.min(histLines.length, endLine + padding)
+    historicalExcerptLines = histLines.slice(histFrom - 1, histTo)
+  } catch (e) {
+    return res.status(404).json({ error: `Historical source not found at ${hash7}:${relHitFile}: ${e.message}` })
+  }
+  const historicalExcerpt = historicalExcerptLines.join('\n')
+
+  // 4. Run latexdiff — parse \DIFadd / \DIFdel markers for word-level diff
+  const { tmpdir } = await import('os')
+  const { writeFileSync, unlinkSync } = await import('fs')
+  const ts = Date.now()
+  const tmpOld = join(tmpdir(), `tlda-ldiff-old-${ts}.tex`)
+  const tmpNew = join(tmpdir(), `tlda-ldiff-new-${ts}.tex`)
+  let addTexts = [], delTexts = []
+  try {
+    writeFileSync(tmpOld, historicalExcerpt)
+    writeFileSync(tmpNew, currentExcerpt)
+    const ldOut = await execAsync(
+      `latexdiff --math-markup=0 "${tmpOld}" "${tmpNew}"`,
+      { timeout: 15000, maxBuffer: 5 * 1024 * 1024 },
+    ).then(r => r.stdout).catch(e => e.stdout ?? '')
+    ;({ addTexts, delTexts } = _parseDiffOutput(ldOut))
+  } finally {
+    try { unlinkSync(tmpOld) } catch {}
+    try { unlinkSync(tmpNew) } catch {}
+  }
+
+  // 5. Load lookup tables (source line → PDF position)
+  let currentLookup = {}
+  try { currentLookup = JSON.parse(readFileSync(join(outputDir(name), 'lookup.json'), 'utf8')).lines ?? {} } catch {}
+
+  let shadowLookup = {}
+  const shadowLookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'lookup.json')
+  if (existsSync(shadowLookupPath)) {
+    try { shadowLookup = JSON.parse(readFileSync(shadowLookupPath, 'utf8')).lines ?? {} } catch {}
+  }
+
+  // 6. Create highlight shapes for each changed word span
+  const shapeIds = []
+  const seenNewLines = new Set(), seenOldLines = new Set()
+
+  for (const text of addTexts) {
+    const info = _findInExcerpt(currentExcerptLines, fromLine, text)
+    if (!info) continue
+    if (seenNewLines.has(info.lineNum)) continue  // one highlight per source line
+    seenNewLines.add(info.lineNum)
+    const entry = currentLookup[info.lineNum]
+    if (!entry) continue
+    const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-green', 0, 0, triggerId)
+    if (id) shapeIds.push(id)
+  }
+
+  for (const text of delTexts) {
+    const info = _findInExcerpt(historicalExcerptLines, fromLine, text)
+    if (!info) continue
+    if (seenOldLines.has(info.lineNum)) continue
+    seenOldLines.add(info.lineNum)
+    const entry = shadowLookup[info.lineNum]
+    if (!entry) continue
+    const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-red', columnX, shadowYOffset, triggerId)
+    if (id) shapeIds.push(id)
+  }
+
+  res.json({ shapeIds })
+})
+
+/**
  * GET /source-diff?ref1=<hash>&ref2=<hash> — Git diff of source files between two refs.
  * ref2 defaults to HEAD if omitted.
  * Returns { diff: string, ref1, ref2 }.
@@ -611,6 +884,48 @@ router.get('/source-diff', requireRead, async (req, res) => {
     res.json({ diff: stdout, ref1, ref2 })
   } catch (e) {
     res.status(500).json({ error: `git diff failed: ${e.message}` })
+  }
+})
+
+/**
+ * GET /shadow/bounds — Time range of the shadow repo history.
+ * Returns { oldest: {hash, timestamp}, newest: {hash, timestamp} }.
+ * Used by the time-axis scrubber to set its range without fetching the full list.
+ */
+router.get('/shadow/bounds', requireRead, async (req, res) => {
+  const { name } = req.params
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const bounds = await getTimeBounds(name)
+    if (!bounds) return res.json({ oldest: null, newest: null })
+    res.json(bounds)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * GET /shadow/adjacent?hash=<hash>&dir=older|newer
+ * Returns the build immediately before or after the given hash.
+ * Returns { version: {hash, timestamp} } or { version: null } if at boundary.
+ */
+router.get('/shadow/adjacent', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { hash, dir } = req.query
+
+  if (!hash) return res.status(400).json({ error: 'hash is required' })
+  if (dir !== 'older' && dir !== 'newer') return res.status(400).json({ error: 'dir must be older or newer' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    const version = await adjacentVersion(name, hash, dir)
+    res.json({ version })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
   }
 })
 

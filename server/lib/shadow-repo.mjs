@@ -173,6 +173,89 @@ export async function versionAt(name, time) {
 }
 
 /**
+ * Get the oldest and newest build timestamps. Used to set the time-axis
+ * range for the history scrubber without transferring the full version list.
+ */
+export async function getTimeBounds(name) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+
+  try {
+    // Newest: most recent commit (default git log order)
+    // Oldest: root commit — use rev-list with --max-parents=0 to find the
+    // initial commit, since `git log --reverse -n 1` selects before reversing
+    // and still returns the newest commit.
+    const newestResult = await execAsync(
+      `git log --format="%H %at" -n 1`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const rootHashResult = await execAsync(
+      `git rev-list --max-parents=0 HEAD`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const rootHash = rootHashResult.stdout.trim().split('\n')[0]
+    const oldestResult = rootHash
+      ? await execAsync(`git log --format="%H %at" -n 1 "${rootHash}"`, { cwd: repoDir, timeout: 10000 })
+      : newestResult
+
+    const parseEntry = (stdout) => {
+      const line = stdout.trim()
+      if (!line) return null
+      const [hash, unixTime] = line.split(' ')
+      return { hash, timestamp: parseInt(unixTime, 10) * 1000 }
+    }
+    const newest = parseEntry(newestResult.stdout)
+    const oldest = parseEntry(oldestResult.stdout)
+    if (!newest || !oldest) return null
+    return { newest, oldest }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get the build immediately adjacent to a known hash.
+ * dir='older' → the build just before this one in time.
+ * dir='newer' → the build just after this one in time.
+ * Returns null if already at the boundary.
+ */
+export async function adjacentVersion(name, hash, dir) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+
+  try {
+    const { stdout: tsOut } = await execAsync(
+      `git log --format="%at" -n 1 "${hash}"`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const ts = parseInt(tsOut.trim(), 10)
+    if (isNaN(ts)) return null
+
+    let result
+    if (dir === 'older') {
+      const before = new Date((ts - 1) * 1000).toISOString()
+      result = await execAsync(
+        `git log --format="%H %at" --before="${before}" -n 1`,
+        { cwd: repoDir, timeout: 10000 },
+      )
+    } else {
+      const after = new Date((ts + 1) * 1000).toISOString()
+      result = await execAsync(
+        `git log --format="%H %at" --after="${after}" --reverse -n 1`,
+        { cwd: repoDir, timeout: 10000 },
+      )
+    }
+
+    const line = result.stdout.trim()
+    if (!line) return null
+    const [adjHash, adjTs] = line.split(' ')
+    return { hash: adjHash, timestamp: parseInt(adjTs, 10) * 1000 }
+  } catch {
+    return null
+  }
+}
+
+/**
  * List recent commits. Returns [{hash, timestamp, message}].
  */
 export async function listVersions(name, { limit = 20 } = {}) {
@@ -366,7 +449,7 @@ const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPac
  * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
  * No-op if DVI already exists. Serializes concurrent callers for the same hash7.
  */
-async function ensureShadowDvi(name, hash7) {
+export async function ensureShadowDvi(name, hash7) {
   const cacheDir = join(historyDir(name), `shadow-${hash7}`)
   const dviFile = join(cacheDir, 'main.dvi')
   if (existsSync(dviFile)) return
@@ -449,30 +532,13 @@ async function ensureShadowDvi(name, hash7) {
  * Throws if the page cannot be produced.
  */
 export async function buildShadowPage(name, hash7, pageNum) {
-  const cacheDir = join(historyDir(name), `shadow-${hash7}`)
-  const svgFile = join(cacheDir, `page-${pageNum}.svg`)
+  const { ensure, historicalCtx } = await import('./ensure.mjs')
+  const ctx = historicalCtx(name, hash7)
+  return ensure(ctx, `page-${pageNum}.svg`)
+}
 
-  // Fast path: SVG already cached
-  if (existsSync(svgFile)) return svgFile
-
-  // Ensure DVI exists (compiles if needed, serialized per hash7)
-  await ensureShadowDvi(name, hash7)
-
-  // Re-check: dvisvgm may have produced this page as a side-effect of a concurrent call
-  if (existsSync(svgFile)) return svgFile
-
-  const dviFile = join(cacheDir, 'main.dvi')
-  if (!existsSync(dviFile)) throw new Error(`DVI not found after compile: shadow-${hash7}`)
-
-  // Generate just this page — direct output path (no %p) guarantees exactly one file
-  const tmpSvg = svgFile + '.tmp'
-  await execAsync(
-    `dvisvgm --page=${pageNum} --font-format=woff2 --bbox=papersize --linkmark=none ` +
-    `--output="${tmpSvg}" "${dviFile}"`,
-    { cwd: cacheDir, timeout: 30000 },
-  )
-
-  if (!existsSync(tmpSvg)) throw new Error(`dvisvgm did not produce page-${pageNum}.svg for shadow-${hash7}`)
-  renameSync(tmpSvg, svgFile)
-  return svgFile
+export async function buildCurrentPage(name, pageNum) {
+  const { ensure, currentCtx } = await import('./ensure.mjs')
+  const ctx = currentCtx(name)
+  return ensure(ctx, `page-${pageNum}.svg`)
 }

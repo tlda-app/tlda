@@ -3,13 +3,14 @@
  *
  * Runs the build pipeline as child processes:
  *   1. latexmk → DVI + synctex
- *   2. dvisvgm → SVG pages (priority pages first if specified)
+ *   2. Publish main.dvi to output/, clear stale SVGs, signal reload
  *   3. extract-preamble.js → macros.json
  *   4. extract-synctex-lookup.mjs → lookup.json
  *   5. compute-proof-pairing.mjs → proof-info.json
  *
+ * SVG pages are built on demand by buildCurrentPage() (shadow-repo.mjs) when
+ * the client requests them. The build never runs dvisvgm — ensure does.
  * Each step writes output to server/projects/{name}/output/.
- * Signals reload via @tldraw/sync custom messages after SVG conversion.
  */
 
 import { exec as execCb } from 'child_process'
@@ -32,7 +33,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild } from './history-store.mjs'
-import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
+import { commitSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 
@@ -433,9 +434,19 @@ async function compileLaTeX(ctx) {
   if (!existsSync(dviFile)) throw new Error('DVI file not created')
 
   // Parse expected page count from log for later verification against dvisvgm output
+  // TeX wraps long lines at 79 chars — join continuations before matching.
   let expectedPages = null
   if (existsSync(logPath)) {
-    const m = readFileSync(logPath, 'utf8').match(/Output written on .+\((\d+) pages?/)
+    const raw = readFileSync(logPath, 'utf8')
+    const joined = raw.split('\n').reduce((acc, line) => {
+      if (acc.length > 0 && acc[acc.length - 1].length === 79) {
+        acc[acc.length - 1] += line
+      } else {
+        acc.push(line)
+      }
+      return acc
+    }, []).join('\n')
+    const m = joined.match(/Output written on .+\((\d+) pages?/)
     if (m) expectedPages = parseInt(m[1])
   }
   return { expectedPages }
@@ -761,6 +772,53 @@ function writeRelevantFiles(ctx) {
   }
 }
 
+// ─── Exported helpers ────────────────────────────────────────────────────────
+
+export function emitDocArrived(name) {
+  try {
+    const updated = readProject(name)
+    if (updated?.buildStatus === 'success') {
+      emitGlobalEvent('doc-arrived', {
+        name, title: updated.title || name,
+        format: updated.format, pages: updated.pages || 0,
+      })
+    }
+  } catch {}
+}
+
+// ─── Lazy DVI ensure ─────────────────────────────────────────────────────────
+
+/**
+ * Ensure the current DVI is up to date.
+ * Triggered by buildCurrentPage when a page is requested.
+ * If a source.stamp file exists that is newer than main.dvi, the project is
+ * stale and a full build runs. Multiple concurrent callers share one build.
+ */
+const _ensureCurrentDviInflight = new Map()
+
+export async function ensureCurrentDvi(name) {
+  const outDir = outputDir(name)
+  const dviFile = join(outDir, 'main.dvi')
+  const stampFile = join(projectDir(name), 'source.stamp')
+
+  const needsBuild = !existsSync(dviFile) ||
+    (existsSync(stampFile) && statSync(stampFile).mtimeMs > statSync(dviFile).mtimeMs)
+
+  if (!needsBuild) return dviFile
+
+  // Already building — coalesce
+  if (_ensureCurrentDviInflight.has(name)) return _ensureCurrentDviInflight.get(name)
+
+  const building = runBuild(name)
+    .then(() => {
+      emitDocArrived(name)
+      return dviFile
+    })
+    .finally(() => _ensureCurrentDviInflight.delete(name))
+  _ensureCurrentDviInflight.set(name, building)
+  return building
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
@@ -855,14 +913,23 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     signalBuildProgress(name, 'compiling', null)
     const { expectedPages } = await compileLaTeX(ctx)
 
-    // Phase 2+3: SVG conversion and macro extraction run in parallel
+    // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
+    // SVGs are built lazily when pages are first requested (see buildCurrentPage).
     status.phase = 'converting'
     signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
-    const oldHashes = loadPageHashes(outDir)
-    const [svgResult] = await Promise.all([
-      convertSvgs(ctx, priorityPages, oldHashes, expectedPages),
-      extractMacros(ctx),
-    ])
+    const dviFile = join(buildDir, `${texBase}.dvi`)
+    publishFile(dviFile, join(outDir, 'main.dvi'))
+    // Clear stale SVGs — clients will request them on demand after the reload signal
+    for (const f of readdirSync(outDir)) {
+      if (/^page-\d+\.svg$/.test(f)) {
+        try { unlinkSync(join(outDir, f)) } catch {}
+      }
+    }
+    ctx.addLog(`DVI published — signaling reload`)
+    signalReload(name, null)
+
+    // Phase 3: Macro extraction
+    await extractMacros(ctx)
 
     // Phase 4+5: Synctex → proof pairing (sequential, post-reload)
     status.phase = 'extracting'
@@ -879,7 +946,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
     // Finalize
     updateProject(name, {
-      pages: svgResult.pageCount,
+      pages: expectedPages ?? 0,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
     })
@@ -887,8 +954,8 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
 
     // Append changelog entry with TeX diff
     try {
-      const clEntry = appendBuildEntry(name, svgResult.changedPages, Object.values(svgResult.newHashes).join(''))
-      if (clEntry) ctx.addLog(`Changelog: ${svgResult.changedPages.length} page(s), diff ${clEntry.texDiff.length} chars`)
+      const clEntry = appendBuildEntry(name, [], null)
+      if (clEntry) ctx.addLog(`Changelog: diff ${clEntry.texDiff.length} chars`)
     } catch (e) {
       ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
     }
@@ -896,19 +963,16 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
     // Update doc-version sentinel shape with source git commit hash (non-blocking)
     updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
       ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
     })
 
-    // Commit source snapshot to shadow repo and cache SVGs (non-blocking)
+    // Commit source snapshot to shadow repo (non-blocking)
     commitSnapshot(name).then(result => {
       if (result) {
-        cacheSvgSnapshot(name, result.hash).catch(e => {
-          ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
-        })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
       }
     }).catch(e => {

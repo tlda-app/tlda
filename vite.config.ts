@@ -43,7 +43,7 @@ export default defineConfig({
       ignored: ['**/fleet/dashboard/**'],
     },
     proxy: {
-      // Fleet WebSocket endpoints
+      // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
         target: 'ws://localhost:5176',
         ws: true,
@@ -52,10 +52,15 @@ export default defineConfig({
         target: 'ws://localhost:5176',
         ws: true,
       },
-      // All API routes → unified server
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      // Yjs sync WebSocket → test server
+      '/sync': {
+        target: 'ws://localhost:5187',
+        ws: true,
+      },
+      // All API routes → test server
+      '/api': 'http://localhost:5187',
+      '/docs': 'http://localhost:5187',
+      '/health': 'http://localhost:5187',
     },
   },
   preview: {
@@ -64,9 +69,9 @@ export default defineConfig({
     proxy: {
       '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
       '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      '/api': 'http://localhost:5187',
+      '/docs': 'http://localhost:5187',
+      '/health': 'http://localhost:5187',
     },
   },
   optimizeDeps: {
