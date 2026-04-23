@@ -1314,6 +1314,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
+              // Reset FleetHUD panOffset so it recomputes with the restored camera.
+              // Without this, the HUD may have already computed panOffset using the
+              // default camera (before this setTimeout fired), causing fleet shapes
+              // to appear shifted relative to the document.
+              window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds
