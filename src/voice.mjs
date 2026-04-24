@@ -13,17 +13,13 @@
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 
 // --- Backend selection ---
-const WHISPER_URL = 'http://127.0.0.1:8178'
-let _backend = 'chrome'         // 'chrome' | 'whisper'
-let _whisperAvailable = false   // true if whisper server responded at init
+const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
+let _backend = 'chrome'         // 'chrome' | 'whisper-stream'
+let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
 
-// --- Whisper backend state ---
-let _micStream = null           // MediaStream from getUserMedia
-let _mediaRecorder = null       // MediaRecorder instance
-let _audioChunks = []           // accumulated audio data chunks
-let _whisperAbort = null        // AbortController — cancel in-flight transcription
-let _whisperLoopRunning = false // true while the sequential transcription loop is active
-let _whisperPrevText = ''       // previous transcription — for prompt seeding
+// --- Whisper-stream backend state ---
+let _whisperWs = null           // WebSocket connection to whisper-bridge
+let _whisperConnected = false   // true when WS is open
 
 // Math mode — when on, aggressive replacements for Greek letters
 // (replaces common English words that sound like Greek letters)
@@ -364,7 +360,7 @@ function showHud(text, stateColor) {
 function showRecordingHud() {
   const who = targetLabel()
   const mode = _mathMode ? ' [math]' : ''
-  const be = _backend === 'whisper' ? ' [whisper]' : ''
+  const be = _backend === 'whisper-stream' ? ' [whisper]' : ''
   const text = who ? `recording → ${who}${mode}${be}` : `recording${mode}${be}`
   showHud(text, '#c87070')
 }
@@ -387,10 +383,8 @@ function fadeHud(delayMs = 2000) {
 // Safe to call multiple times (idempotent after first call per editing session).
 function enterEdit() {
   if (_state === 'edit') return
-  // Lock current whisper output — everything shown so far becomes frozen
-  if (_backend === 'whisper' && _left) {
-    _whisperLocked = _left.slice(_whisperPreVoice.length)
-  }
+  // Whisper-stream: nothing to clear — transcription is append-only.
+  // The text in the textarea is now the user's, whisper appends after it.
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
@@ -764,259 +758,139 @@ function _setupRecognition() {
   }
 }
 
-// --- Whisper backend ---
+// --- Whisper-stream backend ---
+// Connects to whisper-bridge WebSocket (ws://localhost:8179).
+// whisper-stream captures mic directly and transcribes in real-time.
+// Each message is a new chunk of text — append to _left.
+// No MediaRecorder, no WAV conversion, no browser mic needed.
 
-// Convert audio blob to WAV (16kHz mono) for whisper.cpp server
-async function blobToWav(blob) {
-  const arrayBuf = await blob.arrayBuffer()
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 })
-  const decoded = await audioCtx.decodeAudioData(arrayBuf)
-  const samples = decoded.getChannelData(0) // mono
-  audioCtx.close()
-  // Build WAV file
-  const wavBuf = new ArrayBuffer(44 + samples.length * 2)
-  const view = new DataView(wavBuf)
-  const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)) }
-  writeStr(0, 'RIFF')
-  view.setUint32(4, 36 + samples.length * 2, true)
-  writeStr(8, 'WAVE')
-  writeStr(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true) // PCM
-  view.setUint16(22, 1, true) // mono
-  view.setUint32(24, 16000, true) // sample rate
-  view.setUint32(28, 32000, true) // byte rate
-  view.setUint16(32, 2, true) // block align
-  view.setUint16(34, 16, true) // bits per sample
-  writeStr(36, 'data')
-  view.setUint32(40, samples.length * 2, true)
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]))
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
-  }
-  return new Blob([wavBuf], { type: 'audio/wav' })
-}
-
-async function whisperTranscribe(blob, signal) {
-  // whisper.cpp server requires WAV format
-  const wavBlob = await blobToWav(blob)
-  const form = new FormData()
-  form.append('file', wavBlob, 'audio.wav')
-  form.append('response_format', 'json')
-  // Prompt seeding: feed last few words so Whisper maintains context
-  if (_whisperPrevText) {
-    const words = _whisperPrevText.split(/\s+/).slice(-8).join(' ')
-    form.append('prompt', words)
-  }
-  const res = await fetch(`${WHISPER_URL}/inference`, { method: 'POST', body: form, signal })
-  if (!res.ok) throw new Error(`whisper: ${res.status}`)
-  const data = await res.json()
-  return (data.text || '')
+function cleanWhisperText(text) {
+  return text
     .replace(/\[BLANK_AUDIO\]/gi, '')
     .replace(/\[silence\]/gi, '')
-    .replace(/\(sighs?\)/gi, '')
-    .replace(/\*sighs?\*/gi, '')
-    .replace(/\(breathes?\)/gi, '')
-    .replace(/\(cough(?:ing|s)?\)/gi, '')
-    .replace(/\(clears? throat\)/gi, '')
-    .replace(/\(laughter\)/gi, '')
-    .replace(/\(music\)/gi, '')
-    .replace(/\(birds? chirping\)/gi, '')
-    .replace(/\(wind\)/gi, '')
-    .replace(/\(applause\)/gi, '')
-    .replace(/\(background (?:noise|music|chatter)\)/gi, '')
-    .replace(/\([^)]{0,30}\)/g, '') // strip any remaining short parenthetical annotations
+    .replace(/\([^)]{0,30}\)/g, '')  // strip parenthetical annotations
     .replace(/\.{3,}/g, '')
     .replace(/Thank you for watching[.!]?/gi, '')
     .replace(/Thanks for watching[.!]?/gi, '')
-    .replace(/\buh+\b/gi, '')
-    .replace(/\bum+\b/gi, '')
     .replace(/\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
-// Whisper state: locked text that doesn't change, plus unlocked tail that whisper can update
-let _whisperPreVoice = '' // text before cursor when voice started
-let _whisperLocked = ''   // portion of whisper output that's been locked (user entered edit)
+function onWhisperMessage(event) {
+  if (!_recording || _backend !== 'whisper-stream') return
+  try {
+    const msg = JSON.parse(event.data)
+    if (msg.type !== 'transcript' || !msg.text) return
+    const text = cleanWhisperText(msg.text)
+    if (!text) return
 
-// Sequential transcription loop — at most one request in-flight at a time.
-// Whisper re-transcribes all accumulated audio each cycle. Only the unlocked
-// tail (after _whisperLocked) is allowed to change. When the user enters edit
-// mode (cursor move, click, type), enterEdit() fires and everything currently
-// shown becomes locked via the _left snapshot.
-async function whisperLoop(mimeType) {
-  _whisperLoopRunning = true
-  const myGeneration = _generation
-  while (_recording && _backend === 'whisper' && _generation === myGeneration) {
-    await new Promise(r => setTimeout(r, 3000))
-    if (!_recording || _audioChunks.length === 0) continue
-    if (_generation !== myGeneration) break
-    const ac = new AbortController()
-    _whisperAbort = ac
-    try {
-      const blob = new Blob(_audioChunks, { type: mimeType })
-      const text = await whisperTranscribe(blob, ac.signal)
-      if (!_recording || ac.signal.aborted || _generation !== myGeneration) continue
-      if (!text) continue
+    _lastResultTime = Date.now()
+    dotAudioFlowing()
 
-      _lastResultTime = Date.now()
-      dotAudioFlowing()
-
-      // Enter speech state on first result — snapshot cursor position
-      if (_state !== 'speech') {
-        _state = 'speech'
-        const ta = _activeTextarea
-        const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
-        _whisperPreVoice = ta?.value?.slice(0, cursor) ?? ''
-        _right = ta?.value?.slice(cursor) ?? ''
-        _interim = ''
-        _whisperLocked = ''
-      }
-
-      // Full whisper output — apply locked prefix rule:
-      // _whisperLocked is the portion that's been frozen by edit mode.
-      // Only update text after the locked portion.
-      const processed = postProcessTranscript(text)
-      if (_whisperLocked && processed.startsWith(_whisperLocked)) {
-        // Whisper agrees with locked prefix — update only the tail
-        _left = _whisperPreVoice + processed
-      } else if (_whisperLocked) {
-        // Whisper diverged from locked prefix — keep locked, append new tail
-        const tail = processed.length > _whisperLocked.length
-          ? processed.slice(_whisperLocked.length)
-          : ''
-        _left = _whisperPreVoice + _whisperLocked + tail
-      } else {
-        // Nothing locked yet — full update
-        _left = _whisperPreVoice + processed
-      }
+    // Enter speech state on first result — snapshot cursor position
+    if (_state !== 'speech') {
+      _state = 'speech'
+      const ta = _activeTextarea
+      const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
+      _left = ta?.value?.slice(0, cursor) ?? ''
+      _right = ta?.value?.slice(cursor) ?? ''
       _interim = ''
-      _whisperPrevText = text
-
-      const leftTrimmed = _left.trim()
-
-      // Voice-switch: "left chat"/"right chat"
-      const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
-      if (switchMatch) {
-        const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
-          .filter(ta => ta.offsetHeight > 0)
-          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-        const target = textareas.find(ta => ta !== _activeTextarea) || textareas[0]
-        if (target) {
-          target.focus()
-          showHud('→ other chat', '#9370db')
-          fadeHud(1500)
-          _state = 'edit'
-          _generation++
-          _left = _interim = _right = ''
-          _whisperPrevText = ''
-          _whisperPreVoice = ''
-          _whisperLocked = ''
-          _audioChunks = []
-          setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
-          break
-        }
-      }
-
-      // Voice-send: "send" / "send it" / "sent"
-      const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
-      if (sendMatch) {
-        const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
-        if (cleanText && _accumulator && _accumulator.onSend) {
-          _state = 'edit'
-          _generation++
-          _left = _interim = _right = ''
-          _whisperPrevText = ''
-          _whisperPreVoice = ''
-          _whisperLocked = ''
-          _audioChunks = []
-          _accumulator.onSend(cleanText)
-          showHud('sent', '#7ab8a0')
-          fadeHud(2500)
-          break
-        }
-        if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
-          const who = targetLabel()
-          const wordCount = cleanText.split(/\s+/).length
-          _state = 'edit'
-          _generation++
-          _left = _interim = _right = ''
-          _whisperPrevText = ''
-          _whisperPreVoice = ''
-          _whisperLocked = ''
-          _audioChunks = []
-          _filling = true
-          if (_activeTextarea) {
-            _activeTextarea.value = ''
-            _activeTextarea.style.height = 'auto'
-          }
-          _filling = false
-          _activeSendFn(_activeSendTargets, cleanText)
-          showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
-          fadeHud(2500)
-          break
-        }
-      }
-
-      fillTextarea(_left + _interim + _right)
-    } catch (err) {
-      if (err.name === 'AbortError') continue
-      console.warn('voice: whisper transcription error', err)
-    } finally {
-      if (_whisperAbort === ac) _whisperAbort = null
     }
-  }
-  _whisperLoopRunning = false
-  // If broke out due to send/switch, restart the loop for the next message
-  if (_recording && _backend === 'whisper' && _generation !== myGeneration) {
-    whisperLoop(mimeType)
+
+    // Append new transcription chunk to _left — once committed, text doesn't change
+    const processed = postProcessTranscript(text)
+    _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
+    _interim = ''
+
+    const leftTrimmed = _left.trim()
+
+    // Voice-switch: "left chat"/"right chat"
+    const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+    if (switchMatch) {
+      const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
+        .filter(ta => ta.offsetHeight > 0)
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      const target = textareas.find(ta => ta !== _activeTextarea) || textareas[0]
+      if (target) {
+        target.focus()
+        showHud('→ other chat', '#9370db')
+        fadeHud(1500)
+        _state = 'edit'
+        _generation++
+        _left = _interim = _right = ''
+        setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
+        return
+      }
+    }
+
+    // Voice-send: "send" / "send it" / "sent"
+    const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
+    if (sendMatch) {
+      const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
+      if (cleanText && _accumulator && _accumulator.onSend) {
+        _state = 'edit'
+        _generation++
+        _left = _interim = _right = ''
+        _accumulator.onSend(cleanText)
+        showHud('sent', '#7ab8a0')
+        fadeHud(2500)
+        return
+      }
+      if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
+        const who = targetLabel()
+        const wordCount = cleanText.split(/\s+/).length
+        _state = 'edit'
+        _generation++
+        _left = _interim = _right = ''
+        _filling = true
+        if (_activeTextarea) {
+          _activeTextarea.value = ''
+          _activeTextarea.style.height = 'auto'
+        }
+        _filling = false
+        _activeSendFn(_activeSendTargets, cleanText)
+        showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
+        fadeHud(2500)
+        return
+      }
+    }
+
+    fillTextarea(_left + _interim + _right)
+  } catch (err) {
+    console.warn('voice: whisper message error', err)
   }
 }
 
-function startWhisperRecording() {
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    if (!_recording) { stream.getTracks().forEach(t => t.stop()); return }
-    _micStream = stream
-    // Safari only supports audio/mp4, Chrome supports webm/opus
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : 'audio/wav'
-    console.log('voice: whisper MediaRecorder mimeType:', mimeType)
-    _mediaRecorder = new MediaRecorder(stream, { mimeType })
-    _audioChunks = []
-    _whisperPrevText = ''
-
-    _mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) _audioChunks.push(e.data)
+function connectWhisperBridge() {
+  if (_whisperWs) return
+  try {
+    _whisperWs = new WebSocket(WHISPER_BRIDGE_URL)
+    _whisperWs.onopen = () => {
+      _whisperConnected = true
+      console.log('voice: connected to whisper bridge')
     }
-
-    _mediaRecorder.start(1000) // ondataavailable every 1s
-    whisperLoop(mimeType)
-  }).catch(err => {
-    console.warn('voice: mic access failed', err)
-    _recording = false
-    showHud('mic denied', '#c87070')
-    fadeHud(3000)
-  })
+    _whisperWs.onmessage = onWhisperMessage
+    _whisperWs.onclose = () => {
+      _whisperConnected = false
+      _whisperWs = null
+      // Reconnect after 3s if still on whisper backend
+      if (_backend === 'whisper-stream') {
+        setTimeout(connectWhisperBridge, 3000)
+      }
+    }
+    _whisperWs.onerror = () => {} // onclose handles reconnect
+  } catch {
+    _whisperWs = null
+  }
 }
 
-function stopWhisperCleanup() {
-  if (_whisperAbort) { _whisperAbort.abort(); _whisperAbort = null }
-  _audioChunks = []
-  _whisperPrevText = ''
-  if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
-    _mediaRecorder.ondataavailable = null
-    try { _mediaRecorder.stop() } catch {}
-  }
-  _mediaRecorder = null
-  if (_micStream) {
-    _micStream.getTracks().forEach(t => t.stop())
-    _micStream = null
+function disconnectWhisperBridge() {
+  if (_whisperWs) {
+    _whisperWs.onclose = null // prevent reconnect
+    _whisperWs.close()
+    _whisperWs = null
+    _whisperConnected = false
   }
 }
 
@@ -1059,16 +933,10 @@ function startRecording() {
 
   _audioCaptureRetries = 0
 
-  if (_backend === 'whisper') {
-    const doStart = () => {
-      if (!_recording) return
-      startWhisperRecording()
-    }
-    if (_micChannel) {
-      setTimeout(doStart, 300)
-    } else {
-      doStart()
-    }
+  if (_backend === 'whisper-stream') {
+    // whisper-stream captures mic directly — no browser mic needed.
+    // Just ensure we're connected to the bridge WebSocket.
+    connectWhisperBridge()
   } else {
     const doStart = () => {
       if (!_recording) return
@@ -1105,8 +973,7 @@ function stopRecording() {
     _recognition = null
   }
 
-  // Stop Whisper if active
-  stopWhisperCleanup()
+  // Whisper-stream: leave bridge connected (it auto-reconnects anyway)
 
   // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
   if (_accumulator?.onStop) _accumulator.onStop()
@@ -1132,7 +999,7 @@ async function hardResetVoice() {
     } catch {}
     _recognition = null
   }
-  stopWhisperCleanup()
+  disconnectWhisperBridge()
   _recording = false
   _state = 'edit'
   _accumulator = null
@@ -1202,25 +1069,25 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Detect whisper server (non-blocking — never delay voice init)
-  // Use &voice=whisper in URL to start with whisper backend
+  // Detect whisper-stream bridge (non-blocking — never delay voice init)
+  // Use &voice=whisper in URL to start with whisper-stream backend
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  fetch(`${WHISPER_URL}/`, { method: 'GET', signal: AbortSignal.timeout(1000) })
-    .then(res => {
-      if (res.ok) {
-        _whisperAvailable = true
-        if (urlVoice === 'whisper') {
-          const wasRecording = _recording
-          if (wasRecording) stopRecording()
-          _backend = 'whisper'
-          console.log('voice: using whisper backend (via URL param)')
-          if (wasRecording) startRecording()
-        } else {
-          console.log('voice: whisper server available — add &voice=whisper to URL to use')
-        }
+  try {
+    const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+    testWs.onopen = () => {
+      testWs.close()
+      _whisperAvailable = true
+      if (urlVoice === 'whisper') {
+        _backend = 'whisper-stream'
+        console.log('voice: using whisper-stream backend (via URL param)')
+        connectWhisperBridge()
+        if (_recording) showRecordingHud()
+      } else {
+        console.log('voice: whisper-stream bridge available — add &voice=whisper to URL to use')
       }
-    })
-    .catch(() => {})
+    }
+    testWs.onerror = () => { testWs.close() }
+  } catch {}
 
   if (!SpeechRecognition) {
     console.warn('voice: Web Speech API not available')
@@ -1336,7 +1203,7 @@ export async function initVoice() {
     }
   })
 
-  const backend = _backend === 'whisper' ? 'whisper' : 'Web Speech API'
+  const backend = _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
   return true
 }
@@ -1374,8 +1241,8 @@ export function getGeneration() { return _generation }
 export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export function setBackend(be) {
-  if (be !== 'chrome' && be !== 'whisper') return
-  if (be === 'whisper' && !_whisperAvailable) return
+  if (be !== 'chrome' && be !== 'whisper-stream') return
+  if (be === 'whisper-stream' && !_whisperAvailable) return
   if (be === _backend) return
   const wasRecording = _recording
   if (wasRecording) stopRecording()
@@ -1389,9 +1256,5 @@ export function resetTranscript() {
   _left = _interim = _right = ''
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}
-  }
-  if (_backend === 'whisper') {
-    _audioChunks = []
-    _whisperPrevText = ''
   }
 }
