@@ -1129,20 +1129,18 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Detect whisper server
-  try {
-    const res = await fetch(`${WHISPER_URL}/`, { method: 'GET', signal: AbortSignal.timeout(1000) })
-    if (res.ok) {
-      _whisperAvailable = true
-      _backend = 'whisper'
-      console.log('voice: whisper server detected at', WHISPER_URL)
-    }
-  } catch {
-    // whisper not available — fall back to Web Speech API
-  }
+  // Detect whisper server (non-blocking — never delay voice init)
+  fetch(`${WHISPER_URL}/`, { method: 'GET', signal: AbortSignal.timeout(1000) })
+    .then(res => {
+      if (res.ok) {
+        _whisperAvailable = true
+        console.log('voice: whisper server available at', WHISPER_URL, '— say "use whisper" to switch')
+      }
+    })
+    .catch(() => {})
 
-  if (!_whisperAvailable && !SpeechRecognition) {
-    console.warn('voice: no backend available (no whisper server, no Web Speech API)')
+  if (!SpeechRecognition) {
+    console.warn('voice: Web Speech API not available')
     return false
   }
 
