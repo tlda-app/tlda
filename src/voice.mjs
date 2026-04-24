@@ -1077,13 +1077,14 @@ export async function initVoice() {
     testWs.onopen = () => {
       testWs.close()
       _whisperAvailable = true
-      if (urlVoice === 'whisper') {
+      if (urlVoice === 'chrome') {
+        console.log('voice: staying on Chrome (via URL param)')
+      } else {
+        // whisper-stream is the default when bridge is available
         _backend = 'whisper-stream'
-        console.log('voice: using whisper-stream backend (via URL param)')
+        console.log('voice: using whisper-stream backend')
         connectWhisperBridge()
         if (_recording) showRecordingHud()
-      } else {
-        console.log('voice: whisper-stream bridge available — add &voice=whisper to URL to use')
       }
     }
     testWs.onerror = () => { testWs.close() }

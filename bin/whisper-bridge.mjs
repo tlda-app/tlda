@@ -10,7 +10,7 @@ import { createInterface } from 'readline'
 
 const MODEL = process.argv.includes('--model')
   ? process.argv[process.argv.indexOf('--model') + 1]
-  : '/opt/homebrew/share/whisper-cpp/ggml-base.en.bin'
+  : '/opt/homebrew/share/whisper-cpp/ggml-small.en.bin'
 const PORT = process.argv.includes('--port')
   ? parseInt(process.argv[process.argv.indexOf('--port') + 1])
   : 8179
@@ -52,10 +52,23 @@ rl.on('line', (raw) => {
   if (clean === '[Start speaking]') return
   if (clean.startsWith('main:')) return
 
-  // Broadcast to all connected WebSocket clients
+  // Dedup: only send the NEW portion that wasn't in the previous output.
+  // whisper-stream re-outputs overlapping text from the --keep window.
   if (clean !== lastText) {
+    let newText = clean
+    if (lastText) {
+      // Find the longest suffix of lastText that matches a prefix of clean
+      for (let i = Math.min(lastText.length, clean.length); i > 0; i--) {
+        if (clean.startsWith(lastText.slice(-i))) {
+          newText = clean.slice(i).trim()
+          break
+        }
+      }
+    }
     lastText = clean
-    broadcast(JSON.stringify({ type: 'transcript', text: clean, timestamp: Date.now() }))
+    if (newText) {
+      broadcast(JSON.stringify({ type: 'transcript', text: newText, timestamp: Date.now() }))
+    }
   }
 })
 
