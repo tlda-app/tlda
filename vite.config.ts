@@ -54,13 +54,13 @@ export default defineConfig({
       },
       // Yjs sync WebSocket → test server
       '/sync': {
-        target: 'ws://localhost:5187',
+        target: 'ws://localhost:5176',
         ws: true,
       },
       // All API routes → test server
-      '/api': 'http://localhost:5187',
-      '/docs': 'http://localhost:5187',
-      '/health': 'http://localhost:5187',
+      '/api': 'http://localhost:5176',
+      '/docs': 'http://localhost:5176',
+      '/health': 'http://localhost:5176',
     },
   },
   preview: {
@@ -69,9 +69,9 @@ export default defineConfig({
     proxy: {
       '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
       '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
-      '/api': 'http://localhost:5187',
-      '/docs': 'http://localhost:5187',
-      '/health': 'http://localhost:5187',
+      '/api': 'http://localhost:5176',
+      '/docs': 'http://localhost:5176',
+      '/health': 'http://localhost:5176',
     },
   },
   optimizeDeps: {

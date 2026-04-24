@@ -585,18 +585,6 @@ function _setupRecognition() {
     if (e.results[e.results.length - 1]?.isFinal) {
       const leftTrimmed = _left.trim()
 
-      // Voice-backend: "use whisper" / "use chrome" at end of text
-      const backendMatch = leftTrimmed.match(/use\s+(whisper|chrome)\s*[.!,]?\s*$/i)
-      if (backendMatch) {
-        const newBackend = backendMatch[1].toLowerCase()
-        _state = 'edit'
-        _generation++
-        _left = _interim = _right = ''
-        if (_activeTextarea) { _filling = true; _activeTextarea.value = ''; _filling = false }
-        setBackend(newBackend)
-        return
-      }
-
       // Voice-switch: "left chat"/"right chat" at end of text
       const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
       if (switchMatch) {
@@ -834,20 +822,6 @@ async function whisperLoop(mimeType) {
 
       // Check for voice commands in the final text
       const leftTrimmed = _left.trim()
-
-      // Voice-backend: "use whisper" / "use chrome"
-      const backendMatch = leftTrimmed.match(/use\s+(whisper|chrome)\s*[.!,]?\s*$/i)
-      if (backendMatch) {
-        const newBackend = backendMatch[1].toLowerCase()
-        _state = 'edit'
-        _generation++
-        _left = _interim = _right = ''
-        _whisperPrevText = ''
-        _audioChunks = []
-        if (_activeTextarea) { _filling = true; _activeTextarea.value = ''; _filling = false }
-        setBackend(newBackend)
-        break
-      }
 
       // Voice-switch
       const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
@@ -1130,11 +1104,19 @@ export async function initVoice() {
   _initialized = true
 
   // Detect whisper server (non-blocking — never delay voice init)
+  // Use &voice=whisper in URL to start with whisper backend
+  const urlVoice = new URLSearchParams(window.location.search).get('voice')
   fetch(`${WHISPER_URL}/`, { method: 'GET', signal: AbortSignal.timeout(1000) })
     .then(res => {
       if (res.ok) {
         _whisperAvailable = true
-        console.log('voice: whisper server available at', WHISPER_URL, '— say "use whisper" to switch')
+        if (urlVoice === 'whisper') {
+          _backend = 'whisper'
+          console.log('voice: using whisper backend (via URL param)')
+          if (_recording) showRecordingHud()
+        } else {
+          console.log('voice: whisper server available — add &voice=whisper to URL to use')
+        }
       }
     })
     .catch(() => {})
