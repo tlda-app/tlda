@@ -208,7 +208,7 @@ function currentDocVersion(panel: any): string | null {
  */
 function buildRefAttachments(text: string, editor: any): Array<{
   token: string; type: string; label: string;
-  color?: string; file?: string; lineno?: number; content?: string
+  color?: string; file?: string; sourceLines?: any[]; content?: string
 }> {
   if (!text || !text.includes('«')) return []
   const chipPattern = /«(.+?)»/g
@@ -230,7 +230,8 @@ function buildRefAttachments(text: string, editor: any): Array<{
     if (!shape) continue
     const meta = shape.meta as any
 
-    // Highlight shapes: sourceLines have {line, content, file, highlighted}
+    // sourceLines: [{line, content, file, highlighted, hlStart?, hlEnd?}]
+    // hlStart/hlEnd are character offsets within the line for precise column ranges.
     const sourceLines: any[] = meta?.sourceLines || []
     const highlighted = sourceLines.filter((sl: any) => sl.highlighted === true)
     const firstLine = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
@@ -241,7 +242,7 @@ function buildRefAttachments(text: string, editor: any): Array<{
       label,
       color: meta?.glowColor,
       file: firstLine?.file,
-      lineno: firstLine?.line,
+      sourceLines,
       content: meta?.highlightText || label,
     })
   }
