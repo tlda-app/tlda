@@ -200,6 +200,54 @@ function currentDocVersion(panel: any): string | null {
   return null
 }
 
+/**
+ * Scan message text for «highlight:...#shape:ID» and «annotation:...#shape:ID» tokens,
+ * look up each shape in the editor, and return an attachments array for sendMessage().
+ * The receiving side (fleet.mjs resolveChipTokens) looks up attachments by token to
+ * expand them into formatted source-line references for agents.
+ */
+function buildRefAttachments(text: string, editor: any): Array<{
+  token: string; type: string; label: string;
+  color?: string; file?: string; lineno?: number; content?: string
+}> {
+  if (!text || !text.includes('«')) return []
+  const chipPattern = /«(.+?)»/g
+  const attachments = []
+  for (const match of text.matchAll(chipPattern)) {
+    const inner = match[1]
+    const colonIdx = inner.indexOf(':')
+    if (colonIdx < 0) continue
+    const type = inner.slice(0, colonIdx)
+    if (type !== 'highlight' && type !== 'annotation') continue
+
+    const token = match[0]
+    const hashIdx = inner.lastIndexOf('#')
+    if (hashIdx < 0) continue
+    const shapeRef = inner.slice(hashIdx + 1)  // e.g. "shape:V2nwXJKv2uYjzQia8ll1E"
+    const label = inner.slice(colonIdx + 1, hashIdx)
+
+    const shape = editor.getShape(shapeRef as any)
+    if (!shape) continue
+    const meta = shape.meta as any
+
+    // Highlight shapes: sourceLines have {line, content, file, highlighted}
+    const sourceLines: any[] = meta?.sourceLines || []
+    const highlighted = sourceLines.filter((sl: any) => sl.highlighted === true)
+    const firstLine = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
+
+    attachments.push({
+      token,
+      type,
+      label,
+      color: meta?.glowColor,
+      file: firstLine?.file,
+      lineno: firstLine?.line,
+      content: meta?.highlightText || label,
+    })
+  }
+  return attachments
+}
+
 // --- Shape definition ---
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
@@ -2410,9 +2458,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                     historyIndexRef.current = -1
                     userScrolledUp.current = false; setShowScrollBtn(false)
                     if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    const refAttachments = buildRefAttachments(text, editor)
+                    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+                    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
-                        sendTargets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
+                        sendTargets.map(t => sendMessage(t, text, sendOpts))
                       ).then((results: {ok: boolean, event_id: number}[]) => {
                         if (!results.every(r => r.ok)) throw new Error('send failed')
                         // reconcileOptimistic already called synchronously in the WS reply handler
@@ -2466,9 +2517,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                   })
                   userScrolledUp.current = false; setShowScrollBtn(false)
                   if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const refAttachments = buildRefAttachments(text, editor)
+                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
-                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
+                      targets.map(t => sendMessage(t, text, sendOpts))
                     ).then((results: {ok: boolean, event_id: number}[]) => {
                       if (!results.every(r => r.ok)) throw new Error('send failed')
                       // reconcileOptimistic already called synchronously in the WS reply handler
@@ -2500,9 +2554,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                   })
                   userScrolledUp.current = false; setShowScrollBtn(false)
                   if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  const refAttachments = buildRefAttachments(text, editor)
+                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
-                      targets.map(t => sendMessage(t, text, context ? { context, _tempId: tempId } : { _tempId: tempId }))
+                      targets.map(t => sendMessage(t, text, sendOpts))
                     ).then((results: {ok: boolean, event_id: number}[]) => {
                       if (!results.every(r => r.ok)) throw new Error('send failed')
                       // reconcileOptimistic already called synchronously in the WS reply handler
