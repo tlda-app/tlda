@@ -192,7 +192,7 @@ function currentDocVersion(panel: any): string | null {
   if (entries && entries.length > 0) {
     const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)
       ? panel.activeHistoryIdx
-      : 0
+      : entries.length - 1  // entries are oldest-first; -1/default = current = newest
     const entry = entries[idx]
     const raw = entry?.commitHash || entry?.id
     if (raw) return String(raw).slice(0, 12)
