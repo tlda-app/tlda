@@ -169,7 +169,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const docName = new URLSearchParams(window.location.search).get('doc')
     if (!docName) return
 
-    const url = `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg`
+    const url = `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg?t=${Date.now()}`
     fetch(url).then(async res => {
       if (!res.ok) return
       const newText = await res.text()

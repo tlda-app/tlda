@@ -191,7 +191,7 @@ async function fetchPage(
   basePath: string,
   index: number,
 ): Promise<{ index: number; svgDoc: Document } | null> {
-  const url = `${basePath}page-${index + 1}.svg`
+  const url = `${basePath}page-${index + 1}.svg?t=${Date.now()}`
   try {
     let resp = await fetch(url)
     if (!resp.ok) {

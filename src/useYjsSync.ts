@@ -61,7 +61,7 @@ type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
 const reloadHandle = bus.register<ReloadSignal>({
   key: 'signal:reload',
   initBehavior: 'fire-if-recent',
-  recentMs: 120_000,  // replay last reload signal if < 2 min old (covers new-tab after build)
+  recentMs: 1_800_000,  // replay last reload signal if < 30 min old (covers new-tab after build)
 })
 export const onReloadSignal = reloadHandle.on
 
