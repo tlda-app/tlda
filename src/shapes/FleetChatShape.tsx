@@ -628,18 +628,22 @@ function FleetChatInner({ shape }: { shape: any }) {
           const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
           const refShape = highlight || srcShape
           const refBounds = editor.getShapePageBounds(refShape.id)
-          const anchor = highlight?.meta?.sourceAnchor || srcShape.meta?.sourceAnchor
+          const meta = (highlight?.meta || srcShape.meta) as any
+          const srcLineArr: any[] = meta?.sourceLines || []
+          const hlSrcLines = srcLineArr.filter((sl: any) => sl.highlighted)
+          const firstSrcLine = hlSrcLines.length > 0 ? hlSrcLines[0] : srcLineArr[0]
+          const anchor = meta?.sourceAnchor  // fallback for old shapes
           ref = {
             type: typePrefix || 'annotation',
             label: display,
-            content: srcShape.props?.text || '',
-            color: srcShape.props?.color,
+            content: srcShape.props?.text || meta?.highlightText || '',
+            color: srcShape.props?.color || meta?.glowColor,
             canvasBounds: refBounds ? { x: refBounds.x, y: refBounds.y, w: refBounds.w, h: refBounds.h } : undefined,
             shapeId: embeddedShapeId,
             highlightShapeId: highlight?.id,
             screenshotRef: refBounds ? `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}` : undefined,
-            file: anchor?.file,
-            lineno: anchor?.line,
+            file: firstSrcLine?.file || anchor?.file,
+            lineno: firstSrcLine?.line || anchor?.line,
           }
         }
       }
