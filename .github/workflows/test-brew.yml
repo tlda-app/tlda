@@ -1,0 +1,31 @@
+name: Test Homebrew Install
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  test-brew:
+    runs-on: macos-latest
+    steps:
+      - name: Tap and install
+        run: |
+          brew tap qtm285/tlda
+          brew install tlda
+
+      - name: Verify binary
+        run: |
+          which tlda
+          tlda --help | head -5
+
+      - name: Run doctor (skip TeX check)
+        run: |
+          tlda doctor || true
+
+      - name: Start and stop server
+        run: |
+          tlda server start
+          sleep 3
+          curl -s http://localhost:5176/ | head -1
+          tlda server stop
