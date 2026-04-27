@@ -736,6 +736,60 @@ async function computeProofPairing(ctx) {
   }
 }
 
+/** Phase 7: Generate source-map.json — unified client index.
+ * Combines synctex positions + label data into one file:
+ * - labels: all \label{} items with page, position, type, number
+ * - pages: per-page line index (y → file:line) for forward/reverse lookup
+ */
+async function generateSourceMap(ctx) {
+  const { name, texBase, buildDir, outDir, srcDir, addLog } = ctx
+  const { loadSynctex } = await import('./synctex-query.mjs')
+
+  try {
+    const synctex = await loadSynctex(name)
+    if (!synctex) { addLog('Source map: no synctex data'); return }
+
+    // Build per-page line index: sorted list of { y, file, line }
+    // Deduplicate by file:line (keep the first y for each source location)
+    const pageIndex = {}
+    const seen = new Set()
+    for (const r of synctex.records) {
+      const filePath = synctex.inputMap.get(r.inputId)
+      if (!filePath || !filePath.endsWith('.tex')) continue
+      // Derive relative file name
+      let relFile = filePath
+      try {
+        const realSrcDir = realpathSync(sourceDir(name))
+        if (filePath.startsWith(realSrcDir)) relFile = filePath.slice(realSrcDir.length + 1)
+      } catch {}
+      const key = `${r.page}:${relFile}:${r.line}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (!pageIndex[r.page]) pageIndex[r.page] = []
+      pageIndex[r.page].push({ y: Math.round(r.y * 10) / 10, file: relFile, line: r.line })
+    }
+    // Sort each page's entries by y
+    for (const page of Object.keys(pageIndex)) {
+      pageIndex[page].sort((a, b) => a.y - b.y)
+    }
+
+    // Load labels from the already-generated labels.json
+    const labelsPath = join(outDir, 'labels.json')
+    let labels = []
+    if (existsSync(labelsPath)) {
+      labels = JSON.parse(readFileSync(labelsPath, 'utf8'))
+    }
+
+    const sourceMap = { labels, pages: pageIndex }
+    const outPath = join(outDir, 'source-map.json')
+    writeFileSync(outPath, JSON.stringify(sourceMap))
+    const sizeKB = Math.round(statSync(outPath).size / 1024)
+    addLog(`Source map: ${labels.length} labels, ${Object.keys(pageIndex).length} pages (${sizeKB} KB)`)
+  } catch (e) {
+    addLog(`Source map generation failed: ${e.message}`)
+  }
+}
+
 /** Phase 6: Generate theorem-map.json from .aux file. */
 async function generateTheoremMap(ctx) {
   const { texBase, texDir, srcDir, buildDir, outDir, addLog } = ctx
@@ -1044,7 +1098,10 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Phase 6: Theorem map
     await generateTheoremMap(ctx)
 
-    // Phase 7: Relevant-files set (for source-change filtering). Parses
+    // Phase 7: Source map — unified index for the client
+    await generateSourceMap(ctx)
+
+    // Phase 8: Relevant-files set (for source-change filtering). Parses
     // the .fls file that pdflatex -recorder wrote and captures every
     // INPUT path that lives inside the project's sourceDir.
     writeRelevantFiles(ctx)

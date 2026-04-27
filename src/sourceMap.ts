@@ -1,11 +1,13 @@
 /**
  * Source Map — unified bidirectional mapping between source and rendered positions.
  *
- * Loads labels.json (all labels with page + type + number) at document init.
- * Provides forward (source → page) and reverse (label → page) lookups.
+ * Loads one file: source-map.json (generated at build time from synctex + aux).
+ * Contains:
+ *   - labels: all \label{} items with page, type, number
+ *   - pages: per-page sorted line index (y → file:line) for forward/reverse lookup
  *
- * Replaces the scattered partial indices (anchorIndex SVG views, theorem-map,
- * lookup.json line lookups) with one API.
+ * One file, one module, one API. Replaces lookup.json, theorem-map.json, labels.json,
+ * anchorIndex, and buildReverseIndex.
  */
 
 export interface Label {
@@ -18,36 +20,67 @@ export interface Label {
   line?: number       // source line
 }
 
+interface PageEntry {
+  y: number           // PDF y position
+  file: string        // relative source file
+  line: number        // source line number
+}
+
 let _labels: Label[] = []
 let _labelsByName = new Map<string, Label>()
 let _labelsByNumber = new Map<string, Label>()
+let _pages: Record<string, PageEntry[]> = {}  // page number → sorted entries
+let _docName = ''
 let _loaded = false
 let _loading: Promise<void> | null = null
 
 /**
- * Load the label index for a document. Call once at document init.
+ * Load the source map for a document. Call once at document init.
  */
 export function load(docName: string): Promise<void> {
-  if (_loaded) return Promise.resolve()
+  if (_loaded && _docName === docName) return Promise.resolve()
   if (_loading) return _loading
-  _loading = fetch(`/docs/${docName}/labels.json`)
-    .then(r => r.ok ? r.json() : [])
-    .then((labels: Label[]) => {
-      _labels = labels
+  _docName = docName
+  _loading = fetch(`/docs/${docName}/source-map.json`)
+    .then(r => {
+      if (!r.ok) throw new Error(`${r.status}`)
+      return r.json()
+    })
+    .then(data => {
+      // Labels
+      _labels = data.labels || []
       _labelsByName.clear()
       _labelsByNumber.clear()
-      for (const l of labels) {
+      for (const l of _labels) {
         _labelsByName.set(l.label, l)
         if (l.number) _labelsByNumber.set(l.number, l)
       }
+      // Page index
+      _pages = data.pages || {}
       _loaded = true
-      console.log(`[sourceMap] Loaded ${labels.length} labels`)
+      const pageCount = Object.keys(_pages).length
+      console.log(`[sourceMap] Loaded: ${_labels.length} labels, ${pageCount} pages`)
     })
     .catch(e => {
-      console.warn(`[sourceMap] Failed to load labels: ${e.message}`)
+      console.warn(`[sourceMap] Failed to load source-map.json: ${e.message}`)
+      // Fall back to labels.json if source-map.json doesn't exist yet
+      return fetch(`/docs/${docName}/labels.json`)
+        .then(r => r.ok ? r.json() : [])
+        .then((labels: Label[]) => {
+          _labels = labels
+          for (const l of _labels) {
+            _labelsByName.set(l.label, l)
+            if (l.number) _labelsByNumber.set(l.number, l)
+          }
+          _loaded = true
+          console.log(`[sourceMap] Fallback: ${_labels.length} labels (no page index)`)
+        })
+        .catch(() => {})
     })
   return _loading
 }
+
+// --- Label lookups ---
 
 /**
  * Resolve a label to its page and metadata.
@@ -57,23 +90,15 @@ export function resolveLabel(query: string): Label | null {
   return _labelsByName.get(query) || _labelsByNumber.get(query) || null
 }
 
-/**
- * Get all labels.
- */
-export function allLabels(): Label[] {
-  return _labels
-}
+/** Get all labels. */
+export function allLabels(): Label[] { return _labels }
 
-/**
- * Find labels on a specific page.
- */
+/** Find labels on a specific page. */
 export function labelsOnPage(page: number): Label[] {
   return _labels.filter(l => l.page === page)
 }
 
-/**
- * Search labels by partial match (for autocomplete).
- */
+/** Search labels by partial match. */
 export function searchLabels(query: string): Label[] {
   const q = query.toLowerCase()
   return _labels.filter(l =>
@@ -83,86 +108,54 @@ export function searchLabels(query: string): Label[] {
   )
 }
 
-// --- Forward lookup: source line → page/position ---
-
-interface LineEntry {
-  page: number
-  x: number
-  y: number
-}
-
-let _lines: Record<string, LineEntry> = {}
-let _linesLoaded = false
-let _linesLoading: Promise<void> | null = null
+// --- Forward lookup: source → page ---
 
 /**
- * Load the line-level lookup for forward mapping.
- * Separate from labels because it's larger (~300KB).
+ * Forward lookup: source file:line → rendered page + y position.
  */
-function loadLines(docName: string): Promise<void> {
-  if (_linesLoaded) return Promise.resolve()
-  if (_linesLoading) return _linesLoading
-  _linesLoading = fetch(`/docs/${docName}/lookup.json`)
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (data?.lines) {
-        _lines = data.lines
-        _linesLoaded = true
-      }
-    })
-    .catch(() => {})
-  return _linesLoading
-}
-
-/**
- * Forward lookup: source file:line → rendered page + position.
- * Loads lookup.json lazily on first call.
- */
-export async function sourceToPage(docName: string, file: string, line: number): Promise<{ page: number; x: number; y: number } | null> {
-  await loadLines(docName)
-  // lookup.json keys are "LINE" for main file, "file.tex:LINE" for input files
-  const key1 = String(line)
-  const key2 = `${file}:${line}`
-  const entry = _lines[key2] || _lines[key1]
-  if (!entry) return null
-  return { page: entry.page, x: entry.x, y: entry.y }
-}
-
-/**
- * Reverse lookup: page + y position → nearest source line.
- * Uses the same lookup.json data as sourceToPage, but searches by position.
- */
-export async function pageToSource(docName: string, page: number, y: number): Promise<{ file: string; line: number } | null> {
-  await loadLines(docName)
-  let best: { file: string; line: number } | null = null
-  let bestDist = Infinity
-  for (const [key, entry] of Object.entries(_lines)) {
-    if (entry.page !== page) continue
-    const dist = Math.abs(entry.y - y)
-    if (dist < bestDist) {
-      bestDist = dist
-      // Parse key: "LINE" or "file.tex:LINE"
-      const colonIdx = key.lastIndexOf(':')
-      if (colonIdx > 0 && key.slice(0, colonIdx).includes('.')) {
-        best = { file: key.slice(0, colonIdx), line: parseInt(key.slice(colonIdx + 1)) }
-      } else {
-        best = { file: '', line: parseInt(key) }
+export function sourceToPage(file: string, line: number): { page: number; y: number } | null {
+  for (const [page, entries] of Object.entries(_pages)) {
+    for (const e of entries) {
+      if (e.line === line && (e.file === file || file === '' || e.file.endsWith(file))) {
+        return { page: parseInt(page), y: e.y }
       }
     }
   }
-  return best
+  return null
 }
 
+// --- Reverse lookup: page → source ---
+
 /**
- * Clear cached data (call on rebuild).
+ * Reverse lookup: page + y position → nearest source file:line.
  */
+export function pageToSource(page: number, y: number): { file: string; line: number } | null {
+  const entries = _pages[String(page)]
+  if (!entries || entries.length === 0) return null
+  // Binary search for nearest y
+  let lo = 0, hi = entries.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (entries[mid].y < y) lo = mid + 1
+    else hi = mid
+  }
+  // Check lo and lo-1 for closest
+  let best = entries[lo]
+  if (lo > 0 && Math.abs(entries[lo - 1].y - y) < Math.abs(best.y - y)) {
+    best = entries[lo - 1]
+  }
+  return { file: best.file, line: best.line }
+}
+
+// --- Lifecycle ---
+
+/** Clear cached data (call on rebuild). */
 export function clear() {
   _labels = []
   _labelsByName.clear()
   _labelsByNumber.clear()
+  _pages = {}
   _loaded = false
   _loading = null
-  _lines = {}
-  _linesLoaded = false
-  _linesLoading = null
+  _docName = ''
 }
