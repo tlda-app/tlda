@@ -4,6 +4,7 @@ import type { Editor } from 'tldraw'
 import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
+import * as sourceMap from '../sourceMap'
 import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
@@ -119,6 +120,8 @@ export function useYjsSignals({
         })
       } else {
         clearLookupCache(document.name)
+        sourceMap.clear()
+        sourceMap.load(document.name)
         diffDataRef.current = null
         setDiffFetchSeq(s => s + 1)
         proofDataRef.current = null
