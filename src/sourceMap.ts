@@ -129,6 +129,31 @@ export async function sourceToPage(docName: string, file: string, line: number):
 }
 
 /**
+ * Reverse lookup: page + y position → nearest source line.
+ * Uses the same lookup.json data as sourceToPage, but searches by position.
+ */
+export async function pageToSource(docName: string, page: number, y: number): Promise<{ file: string; line: number } | null> {
+  await loadLines(docName)
+  let best: { file: string; line: number } | null = null
+  let bestDist = Infinity
+  for (const [key, entry] of Object.entries(_lines)) {
+    if (entry.page !== page) continue
+    const dist = Math.abs(entry.y - y)
+    if (dist < bestDist) {
+      bestDist = dist
+      // Parse key: "LINE" or "file.tex:LINE"
+      const colonIdx = key.lastIndexOf(':')
+      if (colonIdx > 0 && key.slice(0, colonIdx).includes('.')) {
+        best = { file: key.slice(0, colonIdx), line: parseInt(key.slice(colonIdx + 1)) }
+      } else {
+        best = { file: '', line: parseInt(key) }
+      }
+    }
+  }
+  return best
+}
+
+/**
  * Clear cached data (call on rebuild).
  */
 export function clear() {
