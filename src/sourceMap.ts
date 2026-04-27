@@ -63,19 +63,6 @@ export function load(docName: string): Promise<void> {
     })
     .catch(e => {
       console.warn(`[sourceMap] Failed to load source-map.json: ${e.message}`)
-      // Fall back to labels.json if source-map.json doesn't exist yet
-      return fetch(`/docs/${docName}/labels.json`)
-        .then(r => r.ok ? r.json() : [])
-        .then((labels: Label[]) => {
-          _labels = labels
-          for (const l of _labels) {
-            _labelsByName.set(l.label, l)
-            if (l.number) _labelsByNumber.set(l.number, l)
-          }
-          _loaded = true
-          console.log(`[sourceMap] Fallback: ${_labels.length} labels (no page index)`)
-        })
-        .catch(() => {})
     })
   return _loading
 }

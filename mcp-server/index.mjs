@@ -3586,29 +3586,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const q = query.trim();
       let entry = null;
 
-      // Try theorem-map.json first (named theorems/lemmas/etc.)
+      // Load source-map.json (unified index)
+      const smPath = path.join(tldaProjectsDir, doc, 'output', 'source-map.json');
       const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
-      if (fs.existsSync(mapPath)) {
+
+      if (fs.existsSync(smPath)) {
+        const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
+        const labels = sm.labels || [];
+        entry = labels.find(e => e.label === q || e.number === q);
+        if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
+      } else if (fs.existsSync(mapPath)) {
+        // Legacy fallback
         const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
         entry = mapData[q];
         if (!entry) entry = Object.values(mapData).find(e => e.number === q);
       }
 
-      // Fall back to labels.json (covers ALL labels: equations, sections, etc.)
       if (!entry) {
-        const labelsPath = path.join(tldaProjectsDir, doc, 'output', 'labels.json');
-        if (fs.existsSync(labelsPath)) {
-          const labels = JSON.parse(fs.readFileSync(labelsPath, 'utf8'));
-          entry = labels.find(e => e.label === q || e.number === q);
-          // Fuzzy: search by partial match
-          if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
-        }
-      }
-
-      if (!entry) {
-        // Show available from theorem-map (named results only, not all 347 labels)
         let available = '';
-        if (fs.existsSync(mapPath)) {
+        if (fs.existsSync(smPath)) {
+          const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
+          const named = (sm.labels || []).filter(e => ['thm','lem','prop','cor','def','ass'].includes(e.type));
+          available = named.map(e => `${e.number} (${e.label})`).join(', ');
+        } else if (fs.existsSync(mapPath)) {
           const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
           available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
         }

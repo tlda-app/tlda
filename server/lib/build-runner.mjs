@@ -773,11 +773,20 @@ async function generateSourceMap(ctx) {
       pageIndex[page].sort((a, b) => a.y - b.y)
     }
 
-    // Load labels from the already-generated labels.json
-    const labelsPath = join(outDir, 'labels.json')
+    // Parse labels directly from .aux file
+    const auxFile = join(buildDir, `${texBase}.aux`)
     let labels = []
-    if (existsSync(labelsPath)) {
-      labels = JSON.parse(readFileSync(labelsPath, 'utf8'))
+    if (existsSync(auxFile)) {
+      const auxText = readFileSync(auxFile, 'utf8')
+      const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
+      let m
+      while ((m = re.exec(auxText)) !== null) {
+        const [, label, number, page, title] = m
+        const pageNum = parseInt(page, 10)
+        if (isNaN(pageNum)) continue
+        const type = label.includes(':') ? label.split(':')[0] : 'label'
+        labels.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
+      }
     }
 
     const sourceMap = { labels, pages: pageIndex }
@@ -850,11 +859,7 @@ async function generateTheoremMap(ctx) {
   writeFileSync(tmpPath, JSON.stringify(map, null, 2))
   publishFile(tmpPath, join(outDir, 'theorem-map.json'))
 
-  // Also write labels.json — comprehensive label index for the client source map
-  const labelsPath = join(buildDir, 'labels.json')
-  writeFileSync(labelsPath, JSON.stringify(entries))
-  publishFile(labelsPath, join(outDir, 'labels.json'))
-  addLog(`Theorem map: ${entries.length} entries (${Object.keys(map).length} named, ${entries.length - Object.keys(map).length} other labels)`)
+  addLog(`Theorem map: ${entries.length} entries`)
 }
 
 /** Cache build state (.aux, .bbl, etc.) for next incremental build. */
