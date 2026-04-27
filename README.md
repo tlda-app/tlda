@@ -142,7 +142,7 @@ While recording, tap the voice note button in the toolbar to drop a math note on
 
 **Vocabulary:** Chrome's speech recognition doesn't know math terminology, so voice.mjs post-processes the transcript. Greek letters ("phi", "theta"), author names ("Donoho", "Sobolev", "Bregman"), and domain terms ("RKHS", "AMLE", "estimand") are auto-corrected from Chrome's guesses. You can add custom replacements with `addVocabReplacement(pattern, replacement)`.
 
-**Browser support:** Chrome is required — it's the only browser with a usable Web Speech API implementation. Safari's support exists but is unreliable.
+**Browser support:** Works in Chrome and Safari. Safari uses the native Web Speech API; Chrome's is more reliable for long sessions. For local transcription without any browser dependency, tlda supports [whisper-stream](https://github.com/ggerganov/whisper.cpp) — see `tlda server start` (auto-starts the whisper bridge if installed).
 
 ## Figures
 
