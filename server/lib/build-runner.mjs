@@ -388,17 +388,68 @@ async function compileLaTeX(ctx) {
       if (existsSync(bblPath)) unlinkSync(bblPath)
       addLog(`Running ${bibTool} for citations...`)
       signalBuildProgress(name, 'compiling', bibTool)
+      let bibFailed = false
       try {
         await run(bibCmd, { cwd: buildDir, timeout: 60000 })
         addLog(`${bibTool} done — recompiling`)
       } catch (e) {
-        addLog(`${bibTool} failed (non-fatal): ${e.message.split('\n')[0]}`)
+        const errMsg = e.message || ''
+        addLog(`${bibTool} failed: ${errMsg.split('\n')[0]}`)
+        bibFailed = true
+
+        // Detect biber corruption — clean state files + PAR cache and retry
+        if (useBiblatex) {
+          // Biber fails silently with exit code 2 when its PAR cache is corrupt
+          // (Unicode::UCD error). Also fails with XML/malformed errors on bad .bcf.
+          const isCorrupt = true // Always retry on biber failure — cleaning is safe
+          if (isCorrupt) {
+            addLog('Biber failed — cleaning state files and PAR cache, retrying')
+            const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+            for (const ext of cleanExts) {
+              const f = join(buildDir, `${texBase}${ext}`)
+              if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+              // Also clean from build cache so corruption doesn't persist
+              const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+              if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+            }
+            // Clean biber's PAR cache — delete only the corrupt unicore/ dir
+            try {
+              const tmpDir = process.env.TMPDIR || '/tmp'
+              for (const d of readdirSync(tmpDir)) {
+                if (!d.startsWith('par-')) continue
+                const parDir = join(tmpDir, d)
+                for (const sub of readdirSync(parDir)) {
+                  if (!sub.startsWith('cache-')) continue
+                  const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+                  if (existsSync(unicorePath)) {
+                    try {
+                      for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                      addLog('Cleaned corrupt biber unicore cache')
+                    } catch {}
+                  }
+                }
+              }
+            } catch {}
+            // Retry biber
+            try {
+              await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+              addLog('Biber retry succeeded')
+              bibFailed = false
+            } catch (e2) {
+              addLog(`Biber retry also failed: ${e2.message?.split('\n')[0]}`)
+            }
+          }
+        }
       }
       // Recompile with bibliography — pdflatex may exit non-zero on warnings, that's fine
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch (e) {
         addLog(`pdflatex exited with warnings after ${bibTool} (continuing): ${e.message.split('\n')[0]}`)
+      }
+      // If biber still failed, check the output for raw cite keys and warn
+      if (bibFailed) {
+        addLog('⚠ Citations may show as raw keys — biber could not process the bibliography')
       }
     }
   }
@@ -411,6 +462,55 @@ async function compileLaTeX(ctx) {
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch {}
+    }
+
+    // After second pass, re-read log. If MANY citations are undefined (>5),
+    // it's likely biber corruption, not just a few missing keys.
+    // Run one more pass first, then nuclear clean only on mass failure.
+    const postSecondLog = readFileSync(logPath, 'utf8')
+    const undefinedCites = (postSecondLog.match(/Citation .* undefined/g) || []).length
+    if (undefinedCites > 5) {
+      addLog(`${undefinedCites} undefined citations — running third pass`)
+      try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch {}
+      const finalLog = readFileSync(logPath, 'utf8')
+      const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
+      if (stillUndefined > 5 && existsSync(bcfPath)) {
+        addLog(`${stillUndefined} citations still undefined — cleaning biber state and retrying`)
+        const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+        for (const ext of cleanExts) {
+          const f = join(buildDir, `${texBase}${ext}`)
+          if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+          const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+          if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+        }
+        // Clean biber PAR cache — delete the specific unicore/ dir that corrupts
+        try {
+          const tmpDir = process.env.TMPDIR || '/tmp'
+          for (const d of readdirSync(tmpDir)) {
+            if (!d.startsWith('par-')) continue
+            const parDir = join(tmpDir, d)
+            for (const sub of readdirSync(parDir)) {
+              if (!sub.startsWith('cache-')) continue
+              const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+              if (existsSync(unicorePath)) {
+                // Only delete the corrupted unicore dir, not the whole cache
+                try {
+                  for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                  addLog('Cleaned corrupt biber unicore cache')
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+        const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        try {
+          await run(bibCmd2, { cwd: buildDir, timeout: 60000 })
+          await run(cmd, { cwd: texDir, timeout: 120000, env })
+          addLog('Citation recovery succeeded')
+        } catch (e) {
+          addLog(`Citation recovery failed: ${e.message?.split('\n')[0]}`)
+        }
+      }
     }
   }
 
