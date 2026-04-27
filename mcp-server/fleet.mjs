@@ -3780,6 +3780,7 @@ async function handleChannelMessage(msg) {
     const s = String(raw || '');
     return s.length > PREVIEW_MAX ? s.slice(0, PREVIEW_MAX) + '…' : s;
   };
+  const isTruncated = (raw) => String(raw || '').length > PREVIEW_MAX;
   const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
   const toLabel = (data.to || data.to_id || '')?.replace(/^fleet:/, '') || '';
 
@@ -3799,14 +3800,18 @@ async function handleChannelMessage(msg) {
     // Direct target: use the existing notification format
     if (eventType === 'delegate') {
       const desc = previewOf(data.text || data.description);
-      content = `📬 New task assigned: ${desc}\nCall my_task() to see it.`;
+      const rawDesc = data.text || data.description || '';
+      const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call my_task() for the full text before responding)` : '';
+      content = `📬 New task assigned: ${desc}${truncNote}\nCall my_task() to see it.`;
     } else if (eventType === 'chat') {
-      const preview = previewOf(data.text || data.message);
+      const rawText = data.text || data.message || '';
+      const preview = previewOf(rawText);
       const ctx = data.metadata?.context;
       const docHint = ctx?.doc
         ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
         : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}\nCall my_task() to read and respond.`;
+      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
     } else if (eventType === 'task_done') {
       content = `📬 Task update. Call my_task() to see details.`;
     }
