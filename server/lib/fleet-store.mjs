@@ -409,6 +409,15 @@ export class FleetStore {
       read: false,
     };
 
+    // Resolve wiretaps for ALL event types (not just chat)
+    if (inserted.from_id && inserted.to_id) {
+      const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id)
+      if (wiretapAgents.length > 0) {
+        inserted.metadata = inserted.metadata || {}
+        inserted.metadata.wiretap_cc = wiretapAgents
+      }
+    }
+
     // Notify listeners (SSE broadcast)
     for (const fn of this._listeners) {
       try { fn(inserted); } catch {}

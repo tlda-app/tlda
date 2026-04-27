@@ -1137,8 +1137,6 @@ function teardownWatchers() {
   terminalWatchTimers.clear()
 }
 
-let evicted = false
-
 function connect() {
   const wsUrl = SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
     (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
@@ -1167,10 +1165,6 @@ function connect() {
   })
 
   ws.on('close', (code, reason) => {
-    if (evicted) {
-      console.log(`[daemon] WS closed after eviction; exiting`)
-      process.exit(0)
-    }
     console.log(`[daemon] WS closed (${code} ${reason || ''}); will reconnect`)
     teardownWatchers()
     scheduleReconnect()
@@ -1230,11 +1224,13 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'daemon-evict') {
-    evicted = true
     const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
-    console.error(`[daemon] EVICTED: ${msg.reason || 'unknown'}${replacedBy}`)
+    console.warn(`[daemon] evicted: ${msg.reason || 'unknown'}${replacedBy} — will reconnect`)
     teardownWatchers()
     try { ws.close() } catch {}
+    // Don't exit — reconnect. Server restarts cause transient evictions;
+    // the daemon should survive and re-register when the server is back.
+    scheduleReconnect()
     return
   }
   if (msg.type === 'rpc') {

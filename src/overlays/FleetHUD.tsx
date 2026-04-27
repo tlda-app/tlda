@@ -118,6 +118,13 @@ export function FleetHUD({
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   // Camera tick used to recompute canvas→screen for the render on camera change
   const [cameraTick, setCameraTick] = useState(0)
+  // True once document page shapes are present — panOffset must not be computed before this.
+  // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
+  // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
+  const [docShapesReady, setDocShapesReady] = useState(() => {
+    const s = mainEditor.getCurrentPageShapes()
+    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+  })
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -193,6 +200,21 @@ export function FleetHUD({
       window.removeEventListener('pointerup', handlePointerUp, true)
     }
   }, [mainEditor])
+
+  // Watch for SVG/HTML page shapes to arrive (async on browser restore).
+  // Resets panOffset so it recomputes with real shape bounds rather than fallback.
+  useEffect(() => {
+    if (docShapesReady) return
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      const hasPage = Object.values(changes.added).some((r: any) =>
+        r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
+      if (hasPage) {
+        setDocShapesReady(true)
+        panOffsetRef.current = null  // recompute with real bounds
+      }
+    }, { source: 'all', scope: 'document' })
+    return unsub
+  }, [mainEditor, docShapesReady])
 
   // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
   // main canvas — avoids the "two copies" issue where both the HUD and main
@@ -435,17 +457,19 @@ export function FleetHUD({
   if (panOffsetRef.current === null) {
     // Compute initial X: fleet right edge sits MARGIN_GAP px left of
     // the document's left margin at the current camera position.
+    // Guard: if SVG/HTML page shapes haven't loaded yet (browser restore path),
+    // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
+    // placed fleet shapes in the middle of the document text.
+    if (!docShapesReady) return null
     const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
       (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-    let docLeftScreen = window.innerWidth / 2
-    if (docShapes.length > 0) {
-      let minPageX = Infinity
-      for (const s of docShapes) {
-        const b = mainEditor.getShapePageBounds(s.id)
-        if (b && b.x < minPageX) minPageX = b.x
-      }
-      docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+    if (docShapes.length === 0) return null
+    let minPageX = Infinity
+    for (const s of docShapes) {
+      const b = mainEditor.getShapePageBounds(s.id)
+      if (b && b.x < minPageX) minPageX = b.x
     }
+    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
     // Use the left group's right edge for camera positioning — not the full
     // fleet bounds, which may include a right-margin chat far to the right.
     // "Left group" = shapes within 1200px of the leftmost fleet shape.

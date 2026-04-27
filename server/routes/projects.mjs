@@ -373,8 +373,23 @@ router.post('/:name/build', requireRw, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const { priorityPages } = req.body || {}
+  const clean = req.query.clean === '1'
 
-  res.json({ ok: true, building: true })
+  // Clean build: delete aux/biber cache files before rebuilding
+  if (clean) {
+    const srcDir = getSourceDir(req.params.name)
+    if (existsSync(srcDir)) {
+      const cleanExts = ['.aux', '.bbl', '.bcf', '.blg', '.run.xml', '.fls', '.fdb_latexmk', '.synctex.gz', '.log', '.out', '.toc', '.lof', '.lot']
+      for (const file of readdirSync(srcDir)) {
+        if (cleanExts.some(ext => file.endsWith(ext))) {
+          try { const { unlinkSync } = await import('fs'); unlinkSync(join(srcDir, file)) } catch {}
+        }
+      }
+      console.log(`[api] Clean build: deleted aux files for ${req.params.name}`)
+    }
+  }
+
+  res.json({ ok: true, building: true, clean })
 
   try {
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]

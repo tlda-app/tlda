@@ -383,8 +383,14 @@ function fadeHud(delayMs = 2000) {
 // Safe to call multiple times (idempotent after first call per editing session).
 function enterEdit() {
   if (_state === 'edit') return
-  // Whisper-stream: nothing to clear — transcription is append-only.
-  // The text in the textarea is now the user's, whisper appends after it.
+  // Whisper-stream: flush the bridge — drops old audio output for ~4s
+  // so text the user just edited doesn't get overwritten.
+  // Show amber glow so user knows voice is suppressed.
+  if (_backend === 'whisper-stream') {
+    whisperLog(`enterEdit — flushing, gen=${_generation}`)
+    flushWhisperBridge()
+    setTextareaGlow(GLOW_AMBER)
+  }
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
@@ -401,6 +407,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     // Without this, the old recognition session keeps running with a stale
     // generation and onresult discards everything, making voice appear dead.
     wasRecording = _recording
+    if (_backend === 'whisper-stream') flushWhisperBridge()
     hardResetVoice()
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
@@ -787,6 +794,7 @@ function onWhisperMessage(event) {
 
     _lastResultTime = Date.now()
     dotAudioFlowing()
+    whisperLog(`msg: state=${_state} text="${text.slice(0,40)}"`)
 
     // Enter speech state on first result — snapshot cursor position
     if (_state !== 'speech') {
@@ -819,6 +827,7 @@ function onWhisperMessage(event) {
         _state = 'edit'
         _generation++
         _left = _interim = _right = ''
+        flushWhisperBridge()
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
       }
@@ -832,6 +841,7 @@ function onWhisperMessage(event) {
         _state = 'edit'
         _generation++
         _left = _interim = _right = ''
+        flushWhisperBridge()
         _accumulator.onSend(cleanText)
         showHud('sent', '#7ab8a0')
         fadeHud(2500)
@@ -843,6 +853,7 @@ function onWhisperMessage(event) {
         _state = 'edit'
         _generation++
         _left = _interim = _right = ''
+        flushWhisperBridge()
         _filling = true
         if (_activeTextarea) {
           _activeTextarea.value = ''
@@ -874,14 +885,25 @@ function connectWhisperBridge() {
     _whisperWs.onclose = () => {
       _whisperConnected = false
       _whisperWs = null
-      // Reconnect after 3s if still on whisper backend
-      if (_backend === 'whisper-stream') {
-        setTimeout(connectWhisperBridge, 3000)
-      }
+      // Don't auto-reconnect — Safari shows mic permission dialogs for
+      // each new WebSocket connection. Reconnect only on next recording start.
     }
     _whisperWs.onerror = () => {} // onclose handles reconnect
   } catch {
     _whisperWs = null
+  }
+}
+
+function flushWhisperBridge() {
+  if (_whisperWs && _whisperConnected) {
+    try { _whisperWs.send(JSON.stringify({ type: 'flush' })) } catch {}
+  }
+}
+
+function whisperLog(text) {
+  console.log('voice:', text)
+  if (_whisperWs && _whisperConnected) {
+    try { _whisperWs.send(JSON.stringify({ type: 'log', text })) } catch {}
   }
 }
 
@@ -1010,13 +1032,17 @@ async function hardResetVoice() {
   _lastResultTime = 0
   hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    for (const track of stream.getTracks()) {
-      try { track.stop() } catch {}
+  // Skip this when using whisper-stream — it captures mic via SDL, not the browser.
+  // The getUserMedia cycle triggers Safari mic permission dialogs.
+  if (_backend !== 'whisper-stream') {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      for (const track of stream.getTracks()) {
+        try { track.stop() } catch {}
+      }
+    } catch (err) {
+      console.warn('voice: hard reset getUserMedia cycle failed', err)
     }
-  } catch (err) {
-    console.warn('voice: hard reset getUserMedia cycle failed', err)
   }
 }
 
@@ -1070,8 +1096,16 @@ export async function initVoice() {
   _initialized = true
 
   // Detect whisper-stream bridge (non-blocking — never delay voice init)
-  // Use &voice=whisper in URL to start with whisper-stream backend
+  // Detect whisper-stream bridge and set backend.
+  // If URL has &voice=chrome, force Chrome. Otherwise whisper-stream is default
+  // when the bridge is available. Set _backend eagerly so right-shift doesn't
+  // trigger a SpeechRecognition (and browser mic prompt) during the async check.
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
+  if (urlVoice !== 'chrome') {
+    // Optimistically assume whisper — prevents Chrome mic prompt on Safari.
+    // If the bridge isn't running, we'll fall back to Chrome in the onerror.
+    _backend = 'whisper-stream'
+  }
   try {
     const testWs = new WebSocket(WHISPER_BRIDGE_URL)
     testWs.onopen = () => {
@@ -1080,18 +1114,26 @@ export async function initVoice() {
       if (urlVoice === 'chrome') {
         console.log('voice: staying on Chrome (via URL param)')
       } else {
-        // whisper-stream is the default when bridge is available
         _backend = 'whisper-stream'
         console.log('voice: using whisper-stream backend')
         connectWhisperBridge()
         if (_recording) showRecordingHud()
       }
     }
-    testWs.onerror = () => { testWs.close() }
-  } catch {}
+    testWs.onerror = () => {
+      testWs.close()
+      // Bridge not available — fall back to Chrome
+      if (_backend === 'whisper-stream' && !_whisperAvailable) {
+        _backend = 'chrome'
+        console.log('voice: whisper bridge not available, using Chrome')
+      }
+    }
+  } catch {
+    _backend = 'chrome'
+  }
 
-  if (!SpeechRecognition) {
-    console.warn('voice: Web Speech API not available')
+  if (!SpeechRecognition && _backend === 'chrome') {
+    console.warn('voice: no backend available')
     return false
   }
 
@@ -1181,7 +1223,23 @@ export async function initVoice() {
     }
   }
 
+  // Abort recognition before page unload to prevent WebKit crash
+  // (SpeechRecognitionServer::messageSenderConnection segfault when
+  // the recognition callback fires into a destroyed IPC channel)
+  window.addEventListener('beforeunload', () => {
+    if (_recognition) {
+      try { _recognition.abort() } catch {}
+      _recognition = null
+    }
+  })
+
+  // Also abort when tab goes hidden — Safari suspends recognition but
+  // the callback can fire during the suspension transition.
   document.addEventListener('visibilitychange', () => {
+    if (document.hidden && _recognition && _recording) {
+      try { _recognition.abort() } catch {}
+      _recognition = null
+    }
     if (!document.hidden && _recording) {
       // Tab became visible again — Chrome may have suspended recognition.
       // Restart it cleanly.

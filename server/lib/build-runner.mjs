@@ -13,7 +13,7 @@
  * Each step writes output to server/projects/{name}/output/.
  */
 
-import { exec as execCb } from 'child_process'
+import { exec as execCb, execSync } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
@@ -32,10 +32,11 @@ import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { snapshotBeforeBuild } from './history-store.mjs'
+import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
+import { clearSynctexCache } from './synctex-query.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -950,6 +951,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       lastBuild: new Date().toISOString(),
     })
     saveBuildCache(ctx)
+    clearSynctexCache(name)
 
     // Append changelog entry with TeX diff
     try {
@@ -972,7 +974,16 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Commit source snapshot to shadow repo (non-blocking)
     commitSnapshot(name).then(result => {
       if (result) {
+        recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+        // Tag the source repo with the shadow hash so agents can `git checkout shadow/<hash>`
+        try {
+          const project = readProject(name)
+          if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
+            const tag = `shadow/${result.hash.slice(0, 7)}`
+            execSync(`git tag -f "${tag}"`, { cwd: project.sourceDir, stdio: 'pipe', timeout: 5000 })
+          }
+        } catch {}
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)

@@ -63,7 +63,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   const gap = 10
   const chatW3 = 410
   const rightW = chatW3 * 2 + gap
-  const totalH = 640
+  const vp = editor.getViewportScreenBounds()
+  const totalH = Math.round((vp.h / editor.getCamera().z) * 0.7)
   const agentsH = 330
   const searchH = totalH - gap - agentsH
   const totalW = leftW + gap + rightW

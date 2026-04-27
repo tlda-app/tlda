@@ -11,6 +11,7 @@ import './BuildWarningPill.css'
 
 interface BuildWarningPillProps {
   warnings: BuildWarning[]
+  children?: React.ReactNode
 }
 
 /** Strip the LaTeX Warning: / Package natbib Warning: prefix. */
@@ -18,7 +19,7 @@ function cleanMessage(msg: string): string {
   return msg.replace(/^LaTeX Warning:\s*|^Package natbib Warning:\s*/i, '')
 }
 
-export function BuildWarningPill({ warnings }: BuildWarningPillProps) {
+export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) {
   const [showList, setShowList] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const doc = useContext(DocContext)
@@ -34,16 +35,26 @@ export function BuildWarningPill({ warnings }: BuildWarningPillProps) {
     return () => document.removeEventListener('pointerdown', handleClick, true)
   }, [showList])
 
-  if (warnings.length === 0) return null
+  const handleCleanRebuild = async () => {
+    if (!doc) return
+    try {
+      await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
+    } catch {}
+    setShowList(false)
+  }
 
+  // Always render container (for children like BuildProgressPill even with 0 warnings)
   return (
     <div className="build-warning-container" ref={containerRef}>
-      <span
-        className="build-warning-badge"
-        onClick={() => setShowList(s => !s)}
-        onPointerDown={e => e.stopPropagation()}
-        title={warnings.length + ' warning' + (warnings.length !== 1 ? 's' : '')}
-      >&#9888;{warnings.length}</span>
+      {warnings.length > 0 && (
+        <span
+          className="build-warning-badge"
+          onClick={() => setShowList(s => !s)}
+          onPointerDown={e => e.stopPropagation()}
+          title={warnings.length + ' warning' + (warnings.length !== 1 ? 's' : '')}
+        >&#9888;{warnings.length}</span>
+      )}
+      {children}
       {showList && (
         <div
           className="build-warning-list"
@@ -61,6 +72,12 @@ export function BuildWarningPill({ warnings }: BuildWarningPillProps) {
               </div>
             )
           })}
+          <div
+            className="build-warning-item clickable clean-rebuild"
+            onClick={handleCleanRebuild}
+          >
+            ↻ Clean rebuild
+          </div>
         </div>
       )}
     </div>

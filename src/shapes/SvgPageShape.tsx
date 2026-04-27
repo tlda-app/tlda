@@ -150,26 +150,25 @@ function SvgPageComponent({ shape }: { shape: any }) {
            b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
   }, [editor, shape.id])
 
-  // Re-fetch SVG when page re-enters the viewport and content is already loaded.
-  // This ensures pages show the current build even if the reload signal was missed
-  // (signal has a 2-min replay window; this covers browsers that stayed open longer).
+  // Fetch SVG when page enters the viewport — handles both initial load and re-entry.
+  // On first entry (no svgText): fetch the SVG.
+  // On re-entry (svgText exists): re-fetch to pick up any builds that happened while off-screen.
   // Skip compare pages — they have their own fetch logic above.
   const prevIsNearViewportRef = useRef(false)
   useEffect(() => {
     const wasNear = prevIsNearViewportRef.current
     prevIsNearViewportRef.current = isNearViewport
 
-    // Only act on false→true transitions with content already loaded
-    if (!isNearViewport || wasNear || !svgText) return
+    // Only act on false→true transitions
+    if (!isNearViewport || wasNear) return
 
-    // Skip compare pages — they fetch from shadow cache, not the main doc path
     const idStr = shape.id as string
     if (idStr.includes('compare-page-')) return
 
     const docName = new URLSearchParams(window.location.search).get('doc')
     if (!docName) return
 
-    const url = `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg?t=${Date.now()}`
+    const url = `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg`
     fetch(url).then(async res => {
       if (!res.ok) return
       const newText = await res.text()

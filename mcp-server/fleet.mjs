@@ -178,15 +178,18 @@ async function fetchCurrentDocVersion(doc) {
   try {
     const tldaPort = process.env.TLDA_PORT || 5176;
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=1`, {
+    const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
       headers,
       signal: AbortSignal.timeout(1500),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const v = data?.versions?.[0];
-    const hash = v?.hash || v?.commitHash || v?.id || null;
-    const version = typeof hash === 'string' ? hash.slice(0, 12) : null;
+    // Prefer most recent git-type entry (has real commitHash) over build-type entries
+    const versions = data?.versions || [];
+    const gitVersion = versions.find(v => v.type === 'git' && v.commitHash);
+    const v = gitVersion || versions[0];
+    const hash = v?.commitHash || v?.hash || null;
+    const version = typeof hash === 'string' ? hash.slice(0, 7) : null;
     _docVersionCache = { doc, version, ts: now };
     return version;
   } catch {
@@ -1115,6 +1118,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
+    // Re-try session detection if it failed at startup (file may not have existed yet)
+    if (!CLAUDE_SESSION && !args.session_id) {
+      try {
+        const ppid = process.ppid;
+        if (ppid && ppid > 1) {
+          const sessionFile = path.join(os.homedir(), '.claude', 'sessions', `${ppid}.json`);
+          if (fs.existsSync(sessionFile)) {
+            const data = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+            if (data?.sessionId) {
+              CLAUDE_SESSION = data.sessionId;
+              process.stderr.write(`[fleet] register: session detected on retry: ${CLAUDE_SESSION}\n`);
+            }
+          }
+        }
+      } catch {}
+    }
+
     // Need either a session UUID or a name
     if (!AGENT_ID && !CLAUDE_SESSION && !agentName) {
       return { content: [{ type: 'text', text: 'No session ID detected and no name provided. Pass session_id or name for headless agents.' }], isError: true };
@@ -1338,6 +1358,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (entry.friendly_name) {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
+    }
+
+    if (!CLAUDE_SESSION) {
+      msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
+      process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }
 
     msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
@@ -2205,13 +2230,14 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
   // content. Handles: msg, activity, tool, annotation, highlight chip types.
   // metadata: optional message metadata (for annotation/highlight ref lookup via attachments)
   async function resolveChipTokens(text, metadata) {
-    if (!text || !text.includes('«')) return text
+    if (!text || !text.includes('«')) return { text, images: [] }
     const chipPattern = /«(.+?)»/g
     const chips = [...text.matchAll(chipPattern)]
-    if (chips.length === 0) return text
+    if (chips.length === 0) return { text, images: [] }
 
     const dashPort = process.env.FLEET_DASH_PORT || 5176
     let resolved = text
+    const chipImages = []
     for (const match of chips) {
       const inner = match[1]
       const colonIdx = inner.indexOf(':')
@@ -2227,6 +2253,11 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (refData) {
           const formatted = formatAnnotationRef(refData)
           if (formatted) resolved = resolved.replace(token, '\n' + formatted + '\n')
+          // Include screenshot for unresolved highlights
+          if (refData.unresolved && refData.screenshotDataUrl) {
+            const base64 = refData.screenshotDataUrl.replace(/^data:image\/png;base64,/, '')
+            chipImages.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } })
+          }
         }
         // No API fallback — ref data must be in attachments (embedded by sender)
       }
@@ -2369,7 +2400,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         }
       }
     }
-    return resolved
+    return { text: resolved, images: chipImages }
   }
 
   // ---- my_task ----
@@ -2410,8 +2441,9 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const docHint = ctx?.doc
           ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
           : '';
-        const resolvedText = await resolveChipTokens(m.text, m.metadata)
-        const { text: imgResolvedText, images } = await resolveImages(resolvedText)
+        const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
+        const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
+        images.push(...chipImages)
         return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
@@ -3704,7 +3736,7 @@ async function handleChannelMessage(msg) {
   // Dashboard WS sends { event: 'fleet-event', data: {...} } or state updates
   const eventType = msg.event === 'fleet-event' ? (msg.data?.type || '') : '';
   if (!eventType) return;
-  if (!['chat', 'delegate', 'task_done'].includes(eventType)) return;
+  if (!['chat', 'delegate', 'task_done', 'activity'].includes(eventType)) return;
 
   const data = msg.data || {};
 
@@ -3719,9 +3751,12 @@ async function handleChannelMessage(msg) {
     return;
   }
 
-  // Only care about events targeting this agent
+  // Check if this agent is a direct target OR a wiretap CC recipient
   const targetId = data.to || data.to_id || '';
-  if (targetId !== AGENT_ID) return;
+  const wiretapCc = data.metadata?.wiretap_cc || [];
+  const isDirectTarget = targetId === AGENT_ID;
+  const isWiretapTarget = wiretapCc.includes(AGENT_ID);
+  if (!isDirectTarget && !isWiretapTarget) return;
 
   // Skip events FROM this agent
   const fromId = data.from || data.from_id || '';
@@ -3745,20 +3780,36 @@ async function handleChannelMessage(msg) {
     const s = String(raw || '');
     return s.length > PREVIEW_MAX ? s.slice(0, PREVIEW_MAX) + '…' : s;
   };
-  if (eventType === 'delegate') {
-    const desc = previewOf(data.text || data.description);
-    content = `📬 New task assigned: ${desc}\nCall my_task() to see it.`;
-  } else if (eventType === 'chat') {
-    // Resolve friendly name: check metadata, then strip fleet: prefix from ID
-    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
-    const preview = previewOf(data.text || data.message);
-    const ctx = data.metadata?.context;
-    const docHint = ctx?.doc
-      ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
-      : '';
-    content = `📬 Message from ${fromLabel}${docHint}: ${preview}\nCall my_task() to read and respond.`;
-  } else if (eventType === 'task_done') {
-    content = `📬 Task update. Call my_task() to see details.`;
+  const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+  const toLabel = (data.to || data.to_id || '')?.replace(/^fleet:/, '') || '';
+
+  if (isWiretapTarget && !isDirectTarget) {
+    // Wiretap: format identically to get_thread entries so the agent can
+    // concatenate wiretap output with get_thread history seamlessly.
+    const ts = data.timestamp ? new Date(data.timestamp).toLocaleString() : '';
+    const text = eventType === 'delegate'
+      ? `[DELEGATE] ${data.description || ''}\n${data.message || data.text || ''}`
+      : eventType === 'task_done'
+      ? `[DONE] ${data.description || ''}`
+      : eventType === 'activity'
+      ? (data.metadata?.tool || data.text || '')
+      : data.text || data.message || '';
+    content = `[${ts}] ${fromLabel} → ${toLabel}\n${text}`;
+  } else {
+    // Direct target: use the existing notification format
+    if (eventType === 'delegate') {
+      const desc = previewOf(data.text || data.description);
+      content = `📬 New task assigned: ${desc}\nCall my_task() to see it.`;
+    } else if (eventType === 'chat') {
+      const preview = previewOf(data.text || data.message);
+      const ctx = data.metadata?.context;
+      const docHint = ctx?.doc
+        ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
+        : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}\nCall my_task() to read and respond.`;
+    } else if (eventType === 'task_done') {
+      content = `📬 Task update. Call my_task() to see details.`;
+    }
   }
 
   // Suppress if identical content within 30s
@@ -3776,7 +3827,7 @@ async function handleChannelMessage(msg) {
       params: {
         content,
         meta: {
-          event_type: eventType,
+          event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
           from: fromId,
         },
       },

@@ -122,6 +122,12 @@ export function formatAnnotationRef(refData) {
   if (!refData) return null
   const { type, label, color, file, sourceLines } = refData
 
+  // Unresolved highlight — calibration failed, show SVG-extracted text
+  if (refData.unresolved) {
+    const content = refData.content || label || ''
+    return `[${type || 'highlight'}] ${color || ''} ⚠ unresolved\n  ⟦${content}⟧`
+  }
+
   // Build location string as "file:line:col–line:col" ranges.
   // Group contiguous highlighted lines into ranges; handle discontinuous highlights.
   let locationRef = ''

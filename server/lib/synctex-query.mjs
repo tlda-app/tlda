@@ -96,6 +96,58 @@ export async function loadSynctex(projectName) {
     records.push({ inputId, line: lineNum, page: currentPage, x, y, w, h: h2, d })
   }
 
+  // --- Construct bounding boxes from adjacent records ---
+  // Most synctex records have w=0, h=0. Build boxes from the sequence:
+  // - Horizontal: each record extends from its x to the next record's x on the same baseline
+  // - Vertical: each baseline extends halfway to the adjacent baselines above and below
+
+  // Group records by page
+  const byPage = new Map()
+  for (const r of records) {
+    if (!byPage.has(r.page)) byPage.set(r.page, [])
+    byPage.get(r.page).push(r)
+  }
+
+  for (const [, pageRecs] of byPage) {
+    // Cluster baselines: records within 1pt vertically are on the same rendered line
+    const baselineY = new Map() // rounded y → [records]
+    for (const r of pageRecs) {
+      const key = Math.round(r.y * 2) / 2 // 0.5pt granularity
+      if (!baselineY.has(key)) baselineY.set(key, [])
+      baselineY.get(key).push(r)
+    }
+
+    // Sort baseline keys to compute vertical extents
+    const sortedBaselines = [...baselineY.keys()].sort((a, b) => a - b)
+    const baselineHalfGaps = new Map() // baseline y → { top, bottom } half-gaps
+    for (let i = 0; i < sortedBaselines.length; i++) {
+      const y = sortedBaselines[i]
+      const gapAbove = i > 0 ? (y - sortedBaselines[i - 1]) / 2 : 6
+      const gapBelow = i < sortedBaselines.length - 1 ? (sortedBaselines[i + 1] - y) / 2 : 6
+      baselineHalfGaps.set(y, { top: Math.min(gapAbove, 8), bottom: Math.min(gapBelow, 8) })
+    }
+
+    // For each baseline cluster, sort by x and assign horizontal extents
+    for (const [y, recs] of baselineY) {
+      recs.sort((a, b) => a.x - b.x)
+      const gaps = baselineHalfGaps.get(y) || { top: 6, bottom: 6 }
+
+      for (let i = 0; i < recs.length; i++) {
+        const r = recs[i]
+        // Only construct boxes for records that lack real dimensions
+        if (r.w > 0 && r.h > 0) continue
+
+        // Horizontal: extends to next record's x, or add a small default for last record
+        r.w = i < recs.length - 1 ? recs[i + 1].x - r.x : 5
+        if (r.w <= 0) r.w = 2 // safety: overlapping records
+
+        // Vertical: use half-gaps to adjacent baselines
+        r.h = gaps.top    // height above baseline
+        r.d = gaps.bottom // depth below baseline
+      }
+    }
+  }
+
   const result = { records, inputMap, unit, magnification }
   cache.set(projectName, result)
   return result
@@ -132,23 +184,31 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   const pageRecords = data.records.filter(r => r.page === page && sourceFileIds.has(r.inputId))
   if (pageRecords.length === 0) return null
 
-  // For each path point, find the nearest synctex record
-  // Only consider records within ~6pt vertically (half a line height)
+  // For each path point, collect synctex records whose bounding box contains it.
+  // Synctex coords: x = left edge, y = baseline, w = width, h = height above baseline, d = depth below.
+  // Bounding box: x to x+w horizontally, y-h to y+d vertically.
   const hitRecords = new Set()
   for (const pt of points) {
-    let bestDist = Infinity
-    let best = null
     for (const r of pageRecords) {
-      const yDist = Math.abs(r.y - pt.y)
-      if (yDist > 10) continue // must be on the same rendered line (~12pt spacing)
-      const dist = yDist + Math.abs(r.x - pt.x) * 0.1
-      if (dist < bestDist) {
-        bestDist = dist
-        best = r
+      const top = r.y - (r.h || 0)
+      const bottom = r.y + (r.d || 0)
+      const left = r.x
+      const right = r.x + (r.w || 0)
+      if (pt.x >= left && pt.x <= right && pt.y >= top && pt.y <= bottom) {
+        hitRecords.add(r)
       }
     }
-    if (best) {
-      hitRecords.add(best)
+    // Fallback: if no box contains this point, use nearest within ~6pt vertically
+    if (hitRecords.size === 0) {
+      let bestDist = Infinity
+      let best = null
+      for (const r of pageRecords) {
+        const yDist = Math.abs(r.y - pt.y)
+        if (yDist > 6) continue
+        const dist = yDist + Math.abs(r.x - pt.x) * 0.1
+        if (dist < bestDist) { bestDist = dist; best = r }
+      }
+      if (best) hitRecords.add(best)
     }
   }
 
@@ -185,11 +245,35 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     }
   }
 
-  // Build output: full contiguous range with context, but only mark
-  // path-hit lines as highlighted (non-hit lines between are shown but not highlighted)
-  const contextPad = 1
-  const from = Math.max(1, startLine - contextPad)
-  const to = Math.min(allLines.length, endLine + contextPad)
+  // Context: find rendered baselines above and below the highlight, and include
+  // the source text for those baselines. This gives context that matches what
+  // the user sees on the page, not arbitrary source file entries.
+  const CONTEXT_RENDERED_LINES = 5 // rendered lines above/below the highlight
+  const hitYs = [...hitRecords].map(r => r.y)
+  const hitYMin = Math.min(...hitYs)
+  const hitYMax = Math.max(...hitYs)
+
+  // Collect all unique baselines on this page, sorted by y
+  const allBaselines = [...new Set(pageRecords.map(r => Math.round(r.y * 2) / 2))].sort((a, b) => a - b)
+  const hitBaselineIdx = allBaselines.findIndex(y => y >= hitYMin - 1)
+  const hitBaselineEndIdx = allBaselines.findIndex(y => y > hitYMax + 1)
+  const contextStartIdx = Math.max(0, (hitBaselineIdx >= 0 ? hitBaselineIdx : 0) - CONTEXT_RENDERED_LINES)
+  const contextEndIdx = Math.min(allBaselines.length, (hitBaselineEndIdx >= 0 ? hitBaselineEndIdx : allBaselines.length) + CONTEXT_RENDERED_LINES)
+
+  // Find which source lines correspond to the context baselines
+  const contextSourceLines = new Set()
+  for (let i = contextStartIdx; i < contextEndIdx; i++) {
+    const y = allBaselines[i]
+    for (const r of pageRecords) {
+      if (Math.abs(r.y - y) < 1) contextSourceLines.add(r.line)
+    }
+  }
+  // Also include the hit lines themselves
+  for (const ln of hitLines.keys()) contextSourceLines.add(ln)
+
+  const sortedContext = [...contextSourceLines].sort((a, b) => a - b)
+  const from = sortedContext.length > 0 ? sortedContext[0] : startLine
+  const to = sortedContext.length > 0 ? sortedContext[sortedContext.length - 1] : endLine
 
   const lines = []
   for (let lineNum = from; lineNum <= to; lineNum++) {
@@ -197,43 +281,65 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation for hit lines — use record indices, not x fractions
+    // Column estimation for hit lines — x-fraction of the line's rendered extent
     if (isHit) {
       const hitRange = hitLines.get(lineNum)
       const lineRecs = allRecordsByLine.get(lineNum) || []
       if (lineRecs.length >= 2) {
-        // Sort records in source order (y asc, x asc) — NOT just by x
-        const inOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
-        const N = inOrder.length
-
-        // Find the record indices closest to the hit x-range
-        let startIdx = 0, endIdx = N - 1
-        let bestStartDist = Infinity, bestEndDist = Infinity
-        for (let j = 0; j < N; j++) {
-          const dStart = Math.abs(inOrder[j].x - hitRange.minX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.minX) < 20)?.y || inOrder[j].y)) * 0.5
-          const dEnd = Math.abs(inOrder[j].x - hitRange.maxX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.maxX) < 20)?.y || inOrder[j].y)) * 0.5
-          if (dStart < bestStartDist) { bestStartDist = dStart; startIdx = j }
-          if (dEnd < bestEndDist) { bestEndDist = dEnd; endIdx = j }
+        // Find the full x-extent of this line's rendered content
+        let lineXMin = Infinity, lineXMax = -Infinity
+        for (const r of lineRecs) {
+          if (r.x < lineXMin) lineXMin = r.x
+          const rRight = r.x + (r.w || 0)
+          if (rRight > lineXMax) lineXMax = rRight
         }
+        const lineXRange = lineXMax - lineXMin || 1
 
-        // Ensure endIdx >= startIdx
-        if (endIdx < startIdx) [startIdx, endIdx] = [endIdx, startIdx]
-        // Expand by 1 record on each side if single record hit
-        if (endIdx === startIdx && N > 1) {
-          startIdx = Math.max(0, startIdx - 1)
-          endIdx = Math.min(N - 1, endIdx + 1)
-        }
-
-        // Map record indices to character positions (records are in source order)
+        // Map the hit x-range to character positions as a fraction of the line
         const srcLine = allLines[i]
-        const stripped = srcLine.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1').replace(/\\[a-zA-Z]+/g, '').replace(/[{}$^_~]/g, '').replace(/\s+/g, ' ').trim()
-        const strippedLen = stripped.length || 1
-        entry.hlStart = Math.max(0, Math.round((startIdx / (N - 1)) * srcLine.length))
-        entry.hlEnd = Math.min(srcLine.length, Math.round((endIdx / (N - 1)) * srcLine.length))
+        const fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
+        const fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
+        entry.hlStart = Math.round(fracStart * srcLine.length)
+        entry.hlEnd = Math.round(fracEnd * srcLine.length)
+        // If zero-width (single hit record), highlight the full line content
+        // so the card isn't blank. Fuzzy matching below will narrow it down.
+        if (entry.hlStart === entry.hlEnd) {
+          entry.hlStart = 0
+          entry.hlEnd = srcLine.length
+        }
+      } else {
+        // Fewer than 2 records — highlight full line
+        entry.hlStart = 0
+        entry.hlEnd = allLines[i].length
       }
     }
 
     lines.push(entry)
+  }
+
+  // --- Fuzzy text matching pass: refine hlStart/hlEnd using SVG-extracted text ---
+  if (highlightText) {
+    const hlLines = lines.filter(l => l.highlighted)
+    const fullSource = hlLines.map(l => l.content).join(' ')
+    const stripped = stripTex(fullSource)
+    const normalizedHl = highlightText.replace(/\s+/g, ' ').trim()
+    const match = fuzzySubstringMatch(stripped, normalizedHl)
+    if (match) {
+      const sourceMatch = mapStrippedToSource(fullSource, match.start, match.end)
+      if (sourceMatch) {
+        let charOffset = 0
+        for (const l of hlLines) {
+          const lineLen = l.content.length
+          const matchStart = sourceMatch.start - charOffset
+          const matchEnd = sourceMatch.end - charOffset
+          if (matchEnd > 0 && matchStart < lineLen) {
+            l.hlStart = Math.max(0, matchStart)
+            l.hlEnd = Math.min(lineLen, matchEnd)
+          }
+          charOffset += lineLen + 1
+        }
+      }
+    }
   }
 
   // Derive relative file name

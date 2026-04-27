@@ -191,7 +191,7 @@ async function fetchPage(
   basePath: string,
   index: number,
 ): Promise<{ index: number; svgDoc: Document } | null> {
-  const url = `${basePath}page-${index + 1}.svg?t=${Date.now()}`
+  const url = `${basePath}page-${index + 1}.svg`
   try {
     let resp = await fetch(url)
     if (!resp.ok) {
@@ -222,8 +222,7 @@ export async function fetchSvgPagesAsync(
   const pages = document.pages
 
   // Determine which pages are visible in the initial viewport.
-  // Camera starts fit-x at the top (origin y=0), so estimate visible height
-  // from the viewport bounds. Pad by 1 page to prefetch just beyond the fold.
+  // Fetch those first for fast first-paint, then the rest in parallel.
   const vp = editor.getViewportScreenBounds()
   const cam = editor.getCamera()
   const viewHeight = vp.h / cam.z
@@ -275,7 +274,6 @@ export async function fetchSvgPagesAsync(
   // only for text selection overlay. Process in page order.
   svgDocs.sort((a, b) => a.index - b.index)
   for (const { index, svgDoc } of svgDocs) {
-    // Yield to the main thread between pages so interactions stays responsive
     await new Promise(r => requestAnimationFrame(r))
     pages[index].textData = await extractTextFromSvgAsync(svgDoc)
   }
@@ -302,9 +300,24 @@ export async function reloadPages(
 
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
-  const indices = pageNumbers
-    ? pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
-    : pages.map((_, i) => i)
+  let indices: number[]
+  if (pageNumbers) {
+    indices = pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
+  } else {
+    // Full reload — only fetch pages in/near the viewport
+    const vp = editor.getViewportScreenBounds()
+    const cam = editor.getCamera()
+    const viewTop = -cam.y
+    const viewBottom = viewTop + vp.h / cam.z
+    const bufferH = pages[0]?.bounds.height ?? 1035
+    indices = []
+    for (let i = 0; i < pages.length; i++) {
+      const b = pages[i].bounds
+      if (b.y + b.height > viewTop - bufferH * 2 && b.y < viewBottom + bufferH * 2) {
+        indices.push(i)
+      }
+    }
+  }
 
   if (indices.length === 0) return { failedPages: [] }
 
@@ -872,8 +885,14 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         if (id) {
           const shape = editor.getShape(id)
           if (shape?.type === 'highlight') {
-            const cardOff = showSourceContextCardForShape(editor, id)
-            glowCleanup = () => { cardOff?.() }
+            // Delay showing the source context card to avoid accidental triggers
+            const hoverTimer = setTimeout(() => {
+              // Re-check that we're still hovering this shape
+              if (editor.getHoveredShapeId() !== id) return
+              const cardOff = showSourceContextCardForShape(editor, id)
+              glowCleanup = () => { cardOff?.() }
+            }, 500)
+            glowCleanup = () => { clearTimeout(hoverTimer) }
           }
           // Show transcription toast on hover for recognized draw shapes
           if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {

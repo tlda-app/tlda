@@ -187,15 +187,19 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
 function currentDocVersion(panel: any): string | null {
   // If user has scrubbed to a historical version, stamp that version's hash
   const sav = panel?.shadowActiveVersion
-  if (sav?.hash) return String(sav.hash).slice(0, 12)
+  if (sav?.hash) return String(sav.hash).slice(0, 7)
   const entries = panel?.historyEntries
   if (entries && entries.length > 0) {
     const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)
       ? panel.activeHistoryIdx
       : entries.length - 1  // entries are oldest-first; -1/default = current = newest
-    const entry = entries[idx]
-    const raw = entry?.commitHash || entry?.id
-    if (raw) return String(raw).slice(0, 12)
+    // Prefer the scrubbed entry if it has a real git hash; otherwise find most recent git entry
+    const scrubbed = entries[idx]
+    if (scrubbed?.commitHash) return String(scrubbed.commitHash).slice(0, 7)
+    // Fall back to most recent entry that has a real commitHash (skip build-type entries)
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i]?.commitHash) return String(entries[i].commitHash).slice(0, 7)
+    }
   }
   return null
 }
@@ -226,7 +230,9 @@ function buildRefAttachments(text: string, editor: any): Array<{
     const shapeRef = inner.slice(hashIdx + 1)  // e.g. "shape:V2nwXJKv2uYjzQia8ll1E"
     const label = inner.slice(colonIdx + 1, hashIdx)
 
-    const shape = editor.getShape(shapeRef as any)
+    const mainEditor = (window as any).__tldraw_editor__
+    if (!mainEditor) continue
+    const shape = mainEditor.getShape(shapeRef as any)
     if (!shape) continue
     const meta = shape.meta as any
 
@@ -236,7 +242,7 @@ function buildRefAttachments(text: string, editor: any): Array<{
     const highlighted = sourceLines.filter((sl: any) => sl.highlighted === true)
     const firstLine = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
 
-    attachments.push({
+    const attachment: any = {
       token,
       type,
       label,
@@ -244,7 +250,13 @@ function buildRefAttachments(text: string, editor: any): Array<{
       file: firstLine?.file,
       sourceLines,
       content: meta?.highlightText || label,
-    })
+    }
+    // Include screenshot for unresolved highlights
+    if (meta?.unresolved && meta?.screenshotDataUrl) {
+      attachment.screenshotDataUrl = meta.screenshotDataUrl
+      attachment.unresolved = true
+    }
+    attachments.push(attachment)
   }
   return attachments
 }
@@ -726,6 +738,10 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+    // Plain URL links — open in new tab (TLDraw intercepts native <a> navigation)
+    const chatLink = (e.target as HTMLElement).closest('.chat-link') as HTMLAnchorElement | null
+    if (chatLink?.href) { e.preventDefault(); window.open(chatLink.href, '_blank'); return }
+
     // Also check for annotation chip clicks
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
@@ -919,6 +935,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
+      // Delay to avoid accidental triggers
+      await new Promise(r => setTimeout(r, 500))
+      if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
       if (!refId) return
@@ -1172,6 +1191,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chip) return
       if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
       annotationHoverTimerRef.current = setTimeout(() => {
+        // Re-check cursor is still over the chip
+        if (!chip.matches(':hover')) return
         const boundsStr = chip.dataset.bounds
         if (!boundsStr) return
         const [x, y, w, h] = boundsStr.split(',').map(Number)
@@ -1188,7 +1209,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
           detail: { bounds: { x, y, w, h }, shapeIds, label, color, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
         }))
-      }, 100)
+      }, 500)
     }
 
     function onAnnotationOut(e: MouseEvent) {
@@ -1218,6 +1239,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [autoscrollPaused, setAutoscrollPaused] = useState(false)
+  const autoscrollPausedRef = useRef(false)
+  useEffect(() => { autoscrollPausedRef.current = autoscrollPaused }, [autoscrollPaused])
   const lastScrollTopRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
@@ -1277,7 +1300,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (userScrolledUp.current || autoscrollPaused) return
+      if (userScrolledUp.current || autoscrollPausedRef.current) return
       el.scrollTop = el.scrollHeight
       lastScrollTopRef.current = el.scrollTop
     })
@@ -1289,7 +1312,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
   // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
-    if (!userScrolledUp.current && !autoscrollPaused && rawItems.length > 0) {
+    if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
       // Fallback: direct scrollTop in case scrollToIndex fires before the container
       // has a stable height (e.g. initial mount before virtualizer measures the element),
@@ -1313,7 +1336,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // changes and the user hasn't intentionally scrolled up.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (userScrolledUp.current || autoscrollPaused) return
+    if (userScrolledUp.current || autoscrollPausedRef.current) return
     const el = chatLogRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
@@ -1331,7 +1354,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (userScrolledUp.current || autoscrollPaused) return
+      if (userScrolledUp.current || autoscrollPausedRef.current) return
       const el = logEl!
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
         el.scrollTop = el.scrollHeight
@@ -1446,7 +1469,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
       const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current && !autoscrollPaused) {
+      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current && !autoscrollPausedRef.current) {
         chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
       }
       prevHeight = newHeight

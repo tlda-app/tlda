@@ -43,6 +43,7 @@ whisper.on('exit', (code) => {
 const rl = createInterface({ input: whisper.stdout })
 
 let lastText = ''
+let flushUntil = 0  // drop output until this timestamp (set on flush)
 
 rl.on('line', (raw) => {
   // Strip ANSI escape codes
@@ -51,24 +52,20 @@ rl.on('line', (raw) => {
   if (clean === '[BLANK_AUDIO]') return
   if (clean === '[Start speaking]') return
   if (clean.startsWith('main:')) return
+  // Filter whisper silence hallucinations (trained on YouTube, hallucinates these)
+  if (/subscribe|like and subscribe|thanks for watching|thank you for watching|please subscribe|my channel/i.test(clean)) return
+  if (/^\.*$/.test(clean)) return  // just dots
+  if (/^[.!?,\s]+$/.test(clean)) return  // just punctuation
 
-  // Dedup: only send the NEW portion that wasn't in the previous output.
-  // whisper-stream re-outputs overlapping text from the --keep window.
+  // After a flush, drop all output for one full processing window (step + length).
+  // This ensures old audio that was in whisper-stream's buffer before the flush
+  // doesn't produce text that overwrites the user's edits.
+  const now = Date.now()
+  if (now < flushUntil) return
+
   if (clean !== lastText) {
-    let newText = clean
-    if (lastText) {
-      // Find the longest suffix of lastText that matches a prefix of clean
-      for (let i = Math.min(lastText.length, clean.length); i > 0; i--) {
-        if (clean.startsWith(lastText.slice(-i))) {
-          newText = clean.slice(i).trim()
-          break
-        }
-      }
-    }
     lastText = clean
-    if (newText) {
-      broadcast(JSON.stringify({ type: 'transcript', text: newText, timestamp: Date.now() }))
-    }
+    broadcast(JSON.stringify({ type: 'transcript', text: clean, timestamp: now }))
   }
 })
 
@@ -91,6 +88,21 @@ function broadcast(msg) {
 
 wss.on('connection', (ws) => {
   console.log(`[bridge] client connected (${wss.clients.size} total)`)
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString())
+      if (msg.type === 'flush') {
+        lastText = ''
+        // Drop output for step + processing time (~4s) so old audio
+        // in whisper-stream's buffer doesn't leak through.
+        flushUntil = Date.now() + 4000
+        console.log(`[bridge] flush — dropping output for 4s`)
+      }
+      if (msg.type === 'log') {
+        console.log(`[voice] ${msg.text}`)
+      }
+    } catch {}
+  })
   ws.on('close', () => console.log(`[bridge] client disconnected (${wss.clients.size} total)`))
 })
 

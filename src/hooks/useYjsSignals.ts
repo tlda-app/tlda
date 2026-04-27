@@ -113,18 +113,6 @@ export function useYjsSignals({
       const editor = editorRef.current
       if (!editor) return
 
-      // Snapshot scroll anchor before the rebuild using the pre-reload lookup.
-      // delta = labelCanvasY − vpCenterY (positive = label is below center).
-      let anchorLabel: string | null = null
-      let anchorDelta = 0
-      const preLookup = lookupSnapshotRef.current
-      if (preLookup && document.pages.length > 0) {
-        const vp = editor.getViewportPageBounds()
-        const vpCenterY = vp.y + vp.h / 2
-        const match = _nearestLabel(preLookup.lines, document.pages, vpCenterY)
-        if (match) { anchorLabel = match.label; anchorDelta = match.canvasY - vpCenterY }
-      }
-
       if (signal.type === 'partial') {
         reloadPages(editor, document, signal.pages).then(result => {
           onReloadResult?.(result)
@@ -138,15 +126,38 @@ export function useYjsSignals({
         setProofFetchSeq(s => s + 1)
         reloadPages(editor, document, null).then(async result => {
           onReloadResult?.(result)
-          // Fetch refreshed lookup and restore scroll position
-          const newLookup = await loadLookup(document.name)
-          lookupSnapshotRef.current = newLookup
-          if (anchorLabel && newLookup) {
-            _applyScrollAnchor(editor, document.pages, newLookup.lines, anchorLabel, anchorDelta)
-          }
+          // Refresh lookup cache for future synctex queries
+          lookupSnapshotRef.current = await loadLookup(document.name)
         })
       }
     })
+  }, [document])
+
+  // Poll for new builds as a fallback — catches stale content if the reload signal
+  // was missed (e.g. tldraw sync WebSocket died silently after a server restart).
+  useEffect(() => {
+    const docName = document.name
+    let lastKnownBuild = ''
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(docName)}`)
+        if (!res.ok) return
+        const data = await res.json()
+        const buildTs = data.lastBuild || ''
+        if (!lastKnownBuild) { lastKnownBuild = buildTs; return }
+        if (buildTs && buildTs !== lastKnownBuild) {
+          lastKnownBuild = buildTs
+          const editor = editorRef.current
+          if (editor) {
+            console.log(`[Poll] New build detected (${buildTs}), reloading viewport pages`)
+            reloadPages(editor, document, null).then(result => onReloadResult?.(result))
+          }
+        }
+      } catch {}
+    }
+    const timer = setInterval(poll, 30_000)
+    poll() // initial check
+    return () => clearInterval(timer)
   }, [document])
 
   // Subscribe to Yjs forward sync signals (scroll, highlight from Claude)

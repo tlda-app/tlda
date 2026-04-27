@@ -74,6 +74,10 @@ export default defineConfig({
       '/health': 'http://localhost:5176',
     },
   },
+  define: {
+    USE_SERVER: false,
+    SYNCTEX_SERVER: JSON.stringify(''),
+  },
   optimizeDeps: {
     exclude: ['pdfjs-dist'],
   },

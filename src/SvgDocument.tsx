@@ -1085,8 +1085,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
-        <BuildWarningPill warnings={buildWarnings} />
-        <BuildProgressPill />
+        <BuildWarningPill warnings={buildWarnings}>
+          <BuildProgressPill />
+        </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>
@@ -1208,13 +1209,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
-          // For SVG documents: fetch page content in background (layout is already displayed)
-          if (!document.format || document.format === 'svg') {
-            const hasContent = document.pages.some(p => hasSvgText(p.shapeId))
-            if (!hasContent) {
-              fetchSvgPagesAsync(editor, document)
-            }
-          }
+          // SVG page content is fetched lazily by each SvgPageShape when it
+          // enters the viewport — no bulk fetch needed here.
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -1315,10 +1311,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 editor.setCamera(session.camera)
               }
               // Reset FleetHUD panOffset so it recomputes with the restored camera.
-              // Without this, the HUD may have already computed panOffset using the
-              // default camera (before this setTimeout fired), causing fleet shapes
-              // to appear shifted relative to the document.
-              window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+              // Defer two frames: setCamera needs one frame to propagate through
+              // TLDraw's internal state before pageToScreen gives correct values.
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                })
+              })
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds

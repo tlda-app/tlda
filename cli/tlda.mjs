@@ -1003,6 +1003,35 @@ async function cmdBuild() {
   console.log(green('Build triggered.'))
 }
 
+async function cmdRevert() {
+  const name = getPositional(0) || await inferProjectName()
+  let ref = getPositional(1)
+  if (!name || !ref) {
+    console.error('Usage: tlda revert <name> shadow:<hash>')
+    console.error('  Restores source files from a shadow repo snapshot and rebuilds.')
+    console.error('  Use `doc_version` MCP tool to list versions.')
+    process.exit(1)
+  }
+
+  // Accept both "shadow:abc1234" and bare "abc1234"
+  if (ref.startsWith('shadow:')) ref = ref.slice(7)
+
+  console.log(`Reverting "${name}" to shadow:${ref.slice(0, 7)}...`)
+
+  try {
+    // Restore source from shadow repo + write to author's working copy
+    const result = await api('POST', `/api/projects/${name}/history/shadow/${ref}/revert`)
+    if (result.error) {
+      console.error(red(`Revert failed: ${result.error}`))
+      process.exit(1)
+    }
+    console.log(green(`Reverted to shadow:${ref.slice(0, 7)} — rebuilding...`))
+  } catch (e) {
+    console.error(red(`Revert failed: ${e.message}`))
+    process.exit(1)
+  }
+}
+
 async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda delete <name>'); process.exit(1) }
@@ -1179,7 +1208,7 @@ function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
     'server', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
-    'status', 'errors', 'delete', 'rm', 'preview',
+    'status', 'errors', 'delete', 'rm', 'preview', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
@@ -1893,6 +1922,37 @@ ${tokenEnvLines.join('\n')}
           // activity cards, terminal-chat extraction, and source watching;
           // a server start with no daemon = silent failure for Skip.
           await ensureFleetDaemonRunning()
+          // Start whisper bridge for voice transcription (non-blocking)
+          try {
+            const bridgeScript = join(tldaRoot, 'bin', 'whisper-bridge.mjs')
+            if (existsSync(bridgeScript)) {
+              // Check if bridge is already running
+              let bridgeUp = false
+              try {
+                const ws = new (await import('ws')).default('ws://127.0.0.1:8179')
+                await new Promise((resolve, reject) => {
+                  ws.on('open', () => { bridgeUp = true; ws.close(); resolve() })
+                  ws.on('error', () => { ws.close(); resolve() })
+                  setTimeout(() => { ws.close(); resolve() }, 1000)
+                })
+              } catch {}
+              if (!bridgeUp) {
+                const { spawn: spawnBridge } = await import('child_process')
+                const { openSync: bridgeOpenSync } = await import('fs')
+                const bridgeLog = join(dirname(LOGFILE), 'whisper-bridge.log')
+                const bridgeLogFd = bridgeOpenSync(bridgeLog, 'a')
+                const bridgeChild = spawnBridge('node', [bridgeScript], {
+                  detached: true,
+                  stdio: ['ignore', bridgeLogFd, bridgeLogFd],
+                  cwd: tldaRoot,
+                })
+                bridgeChild.unref()
+                console.log(dim('  Whisper bridge started (voice transcription)'))
+              } else {
+                console.log(dim('  Whisper bridge already running'))
+              }
+            }
+          } catch {}
           return
         }
       } catch {}
@@ -2246,6 +2306,7 @@ async function main() {
       case 'preview': await ensureServer(); await cmdPreview(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
+      case 'revert':  await ensureServer(); await cmdRevert(); break
       case 'logs':    await cmdServer('logs'); break
       case 'log':     await cmdServer('logs'); break
       case 'publish': await cmdPublish(); break
