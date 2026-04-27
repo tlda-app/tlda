@@ -81,7 +81,7 @@ import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
-import { buildReverseIndex } from './synctexLookup'
+// buildReverseIndex removed — using sourceMap.pageToSource instead
 import { openInEditor } from './texsync'
 import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
@@ -1265,20 +1265,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               shapeToPage.set(document.pages[i].shapeId, i + 1)
             }
 
-            buildReverseIndex(document.name).then((reverseLookup) => {
-              if (!reverseLookup) return
+            setOnSourceClick((shapeId: string, clickYFraction: number) => {
+              const page = shapeToPage.get(shapeId)
+              if (!page) return
 
-              setOnSourceClick((shapeId: string, clickYFraction: number) => {
-                const page = shapeToPage.get(shapeId)
-                if (!page) return
+              const pdfY = clickYFraction * PDF_HEIGHT
+              const match = sourceMap.pageToSource(page, pdfY)
+              if (!match) return
 
-                // Convert click fraction to PDF y coordinate
-                const pdfY = clickYFraction * PDF_HEIGHT
-                const match = reverseLookup(page, pdfY)
-                if (!match) return
-
-                openInEditor(document.name, match.file, match.line)
-              })
+              openInEditor(document.name, match.file, match.line)
             })
           }
 
