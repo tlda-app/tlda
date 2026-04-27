@@ -281,28 +281,39 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation for hit lines — x-fraction of the line's rendered extent
+    // Column estimation for hit lines — use record indices (source-order position)
+    // Records are in source order, so index i/N corresponds to roughly character i*M/N.
     if (isHit) {
       const hitRange = hitLines.get(lineNum)
       const lineRecs = allRecordsByLine.get(lineNum) || []
       if (lineRecs.length >= 2) {
-        // Find the full x-extent of this line's rendered content
-        let lineXMin = Infinity, lineXMax = -Infinity
-        for (const r of lineRecs) {
-          if (r.x < lineXMin) lineXMin = r.x
-          const rRight = r.x + (r.w || 0)
-          if (rRight > lineXMax) lineXMax = rRight
-        }
-        const lineXRange = lineXMax - lineXMin || 1
+        // Sort records in source order (y asc, x asc)
+        const inOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+        const N = inOrder.length
 
-        // Map the hit x-range to character positions as a fraction of the line
+        // Find the record indices closest to the hit x-range
+        let startIdx = 0, endIdx = N - 1
+        let bestStartDist = Infinity, bestEndDist = Infinity
+        for (let j = 0; j < N; j++) {
+          const dStart = Math.abs(inOrder[j].x - hitRange.minX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.minX) < 20)?.y || inOrder[j].y)) * 0.5
+          const dEnd = Math.abs(inOrder[j].x - hitRange.maxX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.maxX) < 20)?.y || inOrder[j].y)) * 0.5
+          if (dStart < bestStartDist) { bestStartDist = dStart; startIdx = j }
+          if (dEnd < bestEndDist) { bestEndDist = dEnd; endIdx = j }
+        }
+
+        // Ensure endIdx >= startIdx
+        if (endIdx < startIdx) [startIdx, endIdx] = [endIdx, startIdx]
+        // Expand by 1 record on each side if single record hit
+        if (endIdx === startIdx && N > 1) {
+          startIdx = Math.max(0, startIdx - 1)
+          endIdx = Math.min(N - 1, endIdx + 1)
+        }
+
+        // Map record indices to character positions (records are in source order)
         const srcLine = allLines[i]
-        const fracStart = Math.max(0, (hitRange.minX - lineXMin) / lineXRange)
-        const fracEnd = Math.min(1, (hitRange.maxX - lineXMin) / lineXRange)
-        entry.hlStart = Math.round(fracStart * srcLine.length)
-        entry.hlEnd = Math.round(fracEnd * srcLine.length)
-        // If zero-width (single hit record), highlight the full line content
-        // so the card isn't blank. Fuzzy matching below will narrow it down.
+        entry.hlStart = Math.max(0, Math.round((startIdx / (N - 1)) * srcLine.length))
+        entry.hlEnd = Math.min(srcLine.length, Math.round((endIdx / (N - 1)) * srcLine.length))
+        // If zero-width, highlight full line — fuzzy matching below will narrow it
         if (entry.hlStart === entry.hlEnd) {
           entry.hlStart = 0
           entry.hlEnd = srcLine.length
