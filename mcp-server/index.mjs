@@ -2124,7 +2124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // create_shape tool definition removed — too low-level
     {
       name: 'lookup_theorem',
-      description: 'Look up a theorem, lemma, proposition, corollary, definition, or assumption in a tlda document by number or label. Returns label, type, number, page, source line, and title.',
+      description: 'Look up any labeled item in a tlda document — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3583,20 +3583,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
     try {
       const tldaProjectsDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects');
-      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
-      if (!fs.existsSync(mapPath)) {
-        return { content: [{ type: 'text', text: `No theorem-map.json for "${doc}". Trigger a build first.` }], isError: true };
-      }
-      const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
       const q = query.trim();
-      let entry = mapData[q];
-      if (!entry) entry = Object.values(mapData).find(e => e.number === q);
-      if (!entry) {
-        const available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
-        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.\nAvailable: ${available}` }] };
+      let entry = null;
+
+      // Try theorem-map.json first (named theorems/lemmas/etc.)
+      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
+      if (fs.existsSync(mapPath)) {
+        const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        entry = mapData[q];
+        if (!entry) entry = Object.values(mapData).find(e => e.number === q);
       }
+
+      // Fall back to labels.json (covers ALL labels: equations, sections, etc.)
+      if (!entry) {
+        const labelsPath = path.join(tldaProjectsDir, doc, 'output', 'labels.json');
+        if (fs.existsSync(labelsPath)) {
+          const labels = JSON.parse(fs.readFileSync(labelsPath, 'utf8'));
+          entry = labels.find(e => e.label === q || e.number === q);
+          // Fuzzy: search by partial match
+          if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
+        }
+      }
+
+      if (!entry) {
+        // Show available from theorem-map (named results only, not all 347 labels)
+        let available = '';
+        if (fs.existsSync(mapPath)) {
+          const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+          available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
+        }
+        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.${available ? '\nAvailable: ' + available : ''}` }] };
+      }
+      const typeName = { thm: 'THM', lem: 'LEM', prop: 'PROP', cor: 'COR', def: 'DEF', ass: 'ASS', eq: 'EQ', sec: 'SEC', fig: 'FIG' }[entry.type] || entry.type.toUpperCase();
       const lines = [
-        `**${entry.type.toUpperCase()} ${entry.number}** — ${entry.title || '(no title)'}`,
+        `**${typeName} ${entry.number}** — ${entry.title || '(no title)'}`,
         `Label: \`${entry.label}\``,
         `Page: ${entry.page}`,
         entry.file ? `Source: ${entry.file}:${entry.line}` : 'Source: unknown',
