@@ -1152,13 +1152,25 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           sourceMap.load(document.name)
 
           setNavigateToAnchor((anchorId: string, title: string) => {
-            let pageIdx = -1
+            let page = -1
             let yTop = 0, yBottom = PDF_HEIGHT
+            let labelForRegion = anchorId
 
-            // Try SVG anchor index first (has precise viewBox positions)
+            // 1. Resolve page from source map (works for all labels, even unloaded pages)
+            const titleParts = (title || anchorId).split('.')
+            const thmNum = titleParts.slice(1).join('.')
+            const smMatch = sourceMap.resolveLabel(anchorId) || sourceMap.resolveLabel(thmNum)
+            if (smMatch && smMatch.page >= 1 && smMatch.page <= document.pages.length) {
+              page = smMatch.page
+              labelForRegion = smMatch.label
+              yBottom = PDF_HEIGHT * 0.3
+            }
+
+            // 2. Refine position from SVG anchor index if available (has precise viewBox)
             const entry = anchorIndex.get(anchorId)
             if (entry) {
-              pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+              const svgPageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+              if (svgPageIdx >= 0) page = svgPageIdx + 1
               const svgVB = getSvgViewBox(entry.pageShapeId)
               if (svgVB && entry.viewBox) {
                 const parts = entry.viewBox.split(/\s+/).map(Number)
@@ -1170,39 +1182,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               }
             }
 
-            // Fallback: resolve from source map (labels.json) — works for unloaded pages
-            if (pageIdx < 0) {
-              const titleParts = (title || anchorId).split('.')
-              const thmNum = titleParts.slice(1).join('.')
-              const match = sourceMap.resolveLabel(anchorId) || sourceMap.resolveLabel(thmNum)
-              if (!match || match.page < 1 || match.page > document.pages.length) return
+            if (page < 1) return
 
-              pageIdx = match.page - 1
-              const { type: mType, displayLabel: mLabel } = anchorIdToLabel(title || `${match.type}.${match.number}`)
-              const region: LabelRegion = { page: match.page, yTop: 0, yBottom: PDF_HEIGHT * 0.3, type: mType, displayLabel: mLabel }
-              setRefViewerRefsLocal([{ label: match.label, region }])
-              const dvTitle = (mLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
-              editor.getCurrentPageShapes()
-                .filter((s: any) => s.type === 'fleet-docview')
-                .filter((s: any) => {
-                  try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
-                })
-                .forEach((dvShape: any) => {
-                  if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
-                  editor.updateShape({
-                    id: dvShape.id, type: dvShape.type,
-                    props: { ...dvShape.props, label: match.label, page: match.page, yTop: 0, yBottom: PDF_HEIGHT * 0.3, title: dvTitle },
-                  })
-                })
-              return
-            }
+            const { type, displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
 
-            // Convert xlink:title (e.g. "equation.28") to display label
-            const { type, displayLabel } = anchorIdToLabel(title || anchorId)
-
-            const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
-            setRefViewerRefsLocal([{ label: anchorId, region }])
-            // Update all fleet-docview shapes that have 'ref' in their sources
+            const region: LabelRegion = { page, yTop, yBottom, type, displayLabel }
+            setRefViewerRefsLocal([{ label: labelForRegion, region }])
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
             editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'fleet-docview')
@@ -1213,7 +1198,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
                 editor.updateShape({
                   id: dvShape.id, type: dvShape.type,
-                  props: { ...dvShape.props, label: anchorId, page: pageIdx + 1, yTop, yBottom, title: dvTitle },
+                  props: { ...dvShape.props, label: labelForRegion, page, yTop, yBottom, title: dvTitle },
                 })
               })
           })
