@@ -83,6 +83,51 @@ export function searchLabels(query: string): Label[] {
   )
 }
 
+// --- Forward lookup: source line → page/position ---
+
+interface LineEntry {
+  page: number
+  x: number
+  y: number
+}
+
+let _lines: Record<string, LineEntry> = {}
+let _linesLoaded = false
+let _linesLoading: Promise<void> | null = null
+
+/**
+ * Load the line-level lookup for forward mapping.
+ * Separate from labels because it's larger (~300KB).
+ */
+function loadLines(docName: string): Promise<void> {
+  if (_linesLoaded) return Promise.resolve()
+  if (_linesLoading) return _linesLoading
+  _linesLoading = fetch(`/docs/${docName}/lookup.json`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data?.lines) {
+        _lines = data.lines
+        _linesLoaded = true
+      }
+    })
+    .catch(() => {})
+  return _linesLoading
+}
+
+/**
+ * Forward lookup: source file:line → rendered page + position.
+ * Loads lookup.json lazily on first call.
+ */
+export async function sourceToPage(docName: string, file: string, line: number): Promise<{ page: number; x: number; y: number } | null> {
+  await loadLines(docName)
+  // lookup.json keys are "LINE" for main file, "file.tex:LINE" for input files
+  const key1 = String(line)
+  const key2 = `${file}:${line}`
+  const entry = _lines[key2] || _lines[key1]
+  if (!entry) return null
+  return { page: entry.page, x: entry.x, y: entry.y }
+}
+
 /**
  * Clear cached data (call on rebuild).
  */
@@ -92,4 +137,7 @@ export function clear() {
   _labelsByNumber.clear()
   _loaded = false
   _loading = null
+  _lines = {}
+  _linesLoaded = false
+  _linesLoading = null
 }
