@@ -645,19 +645,19 @@ async function generateTheoremMap(ctx) {
     return
   }
 
-  const PREFIXES = ['thm:', 'lem:', 'prop:', 'cor:', 'def:', 'ass:']
   const auxText = readFileSync(auxFile, 'utf8')
 
   // Parse \newlabel{LABEL}{{NUMBER}{PAGE}{TITLE}{...}} — skip @cref variants
+  // Include ALL labels (theorems, equations, sections, figures, etc.)
   const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
   const entries = []
   let m
   while ((m = re.exec(auxText)) !== null) {
     const [, label, number, page, title] = m
-    if (!PREFIXES.some(p => label.startsWith(p))) continue
     const pageNum = parseInt(page, 10)
     if (isNaN(pageNum)) continue
-    entries.push({ label, type: label.split(':')[0], number: number.trim(), page: pageNum, title: title.trim() })
+    const type = label.includes(':') ? label.split(':')[0] : 'label'
+    entries.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
   }
 
   if (entries.length === 0) {
@@ -695,7 +695,12 @@ async function generateTheoremMap(ctx) {
   const tmpPath = join(buildDir, 'theorem-map.json')
   writeFileSync(tmpPath, JSON.stringify(map, null, 2))
   publishFile(tmpPath, join(outDir, 'theorem-map.json'))
-  addLog(`Theorem map: ${entries.length} entries`)
+
+  // Also write labels.json — comprehensive label index for the client source map
+  const labelsPath = join(buildDir, 'labels.json')
+  writeFileSync(labelsPath, JSON.stringify(entries))
+  publishFile(labelsPath, join(outDir, 'labels.json'))
+  addLog(`Theorem map: ${entries.length} entries (${Object.keys(map).length} named, ${entries.length - Object.keys(map).length} other labels)`)
 }
 
 /** Cache build state (.aux, .bbl, etc.) for next incremental build. */

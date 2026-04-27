@@ -84,6 +84,7 @@ import { setupPulseForDiffLayout } from './diffHelpers'
 import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
 import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -1147,28 +1148,57 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
-          setNavigateToAnchor((anchorId: string, title: string) => {
-            const entry = anchorIndex.get(anchorId)
-            if (!entry) return
+          // Load source map (labels index) for ref resolution
+          sourceMap.load(document.name)
 
-            // Find which page this anchor is on
-            const pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
-            if (pageIdx < 0) return
+          setNavigateToAnchor((anchorId: string, title: string) => {
+            let pageIdx = -1
+            let yTop = 0, yBottom = PDF_HEIGHT
+
+            // Try SVG anchor index first (has precise viewBox positions)
+            const entry = anchorIndex.get(anchorId)
+            if (entry) {
+              pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+              const svgVB = getSvgViewBox(entry.pageShapeId)
+              if (svgVB && entry.viewBox) {
+                const parts = entry.viewBox.split(/\s+/).map(Number)
+                if (parts.length === 4) {
+                  const [, svgY, , svgH] = parts
+                  yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
+                  yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
+                }
+              }
+            }
+
+            // Fallback: resolve from source map (labels.json) — works for unloaded pages
+            if (pageIdx < 0) {
+              const titleParts = (title || anchorId).split('.')
+              const thmNum = titleParts.slice(1).join('.')
+              const match = sourceMap.resolveLabel(anchorId) || sourceMap.resolveLabel(thmNum)
+              if (!match || match.page < 1 || match.page > document.pages.length) return
+
+              pageIdx = match.page - 1
+              const { type: mType, displayLabel: mLabel } = anchorIdToLabel(title || `${match.type}.${match.number}`)
+              const region: LabelRegion = { page: match.page, yTop: 0, yBottom: PDF_HEIGHT * 0.3, type: mType, displayLabel: mLabel }
+              setRefViewerRefsLocal([{ label: match.label, region }])
+              const dvTitle = (mLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
+              editor.getCurrentPageShapes()
+                .filter((s: any) => s.type === 'fleet-docview')
+                .filter((s: any) => {
+                  try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
+                })
+                .forEach((dvShape: any) => {
+                  if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
+                  editor.updateShape({
+                    id: dvShape.id, type: dvShape.type,
+                    props: { ...dvShape.props, label: match.label, page: match.page, yTop: 0, yBottom: PDF_HEIGHT * 0.3, title: dvTitle },
+                  })
+                })
+              return
+            }
 
             // Convert xlink:title (e.g. "equation.28") to display label
             const { type, displayLabel } = anchorIdToLabel(title || anchorId)
-
-            // Convert viewBox to PDF coordinates
-            let yTop = 0, yBottom = PDF_HEIGHT
-            const svgVB = getSvgViewBox(entry.pageShapeId)
-            if (svgVB && entry.viewBox) {
-              const parts = entry.viewBox.split(/\s+/).map(Number)
-              if (parts.length === 4) {
-                const [, svgY, , svgH] = parts
-                yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
-                yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
-              }
-            }
 
             const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
             setRefViewerRefsLocal([{ label: anchorId, region }])

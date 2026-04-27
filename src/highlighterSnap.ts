@@ -919,8 +919,6 @@ function showSourceContextCard(
         },
       )
     })
-    document.body.appendChild(card)
-    return card // skip the click-to-dismiss below
   }
 
   // Click to dismiss
