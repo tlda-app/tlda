@@ -1143,12 +1143,18 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       if (result) {
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Tag the source repo with the shadow hash so agents can `git checkout shadow/<hash>`
+        // Commit + tag the source repo so shadow/<hash> points to the exact
+        // source content that produced this build. Without this, the tag
+        // points to whatever was last committed — which may not include the
+        // changes that triggered this build.
         try {
           const project = readProject(name)
           if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
             const tag = `shadow/${result.hash.slice(0, 7)}`
-            execSync(`git tag -f "${tag}"`, { cwd: project.sourceDir, stdio: 'pipe', timeout: 5000 })
+            const cwd = project.sourceDir
+            // Stage all .tex/.bib/.sty/.cls files and commit
+            execSync(`git add -A *.tex *.bib *.sty *.cls 2>/dev/null; git diff --cached --quiet || git commit -m "shadow ${result.hash.slice(0, 7)}" --allow-empty`, { cwd, stdio: 'pipe', timeout: 10000 })
+            execSync(`git tag -f "${tag}"`, { cwd, stdio: 'pipe', timeout: 5000 })
           }
         } catch {}
       }
