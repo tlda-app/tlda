@@ -4,6 +4,10 @@
 
 A collaborative workspace for reading and writing LaTeX documents with AI agents and human collaborators. Renders your compiled paper exactly as it would appear in published form, on a shared canvas where everyone — humans and agents — can annotate, highlight, chat, and point at things in real time.
 
+<p align="center">
+  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with fleet chat" width="100%">
+</p>
+
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
 **[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time.

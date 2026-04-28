@@ -63,6 +63,7 @@ public/assets/
 *.jpg
 !public/**/*.png
 !public/**/*.jpg
+!docs/images/*.png
 console-errors.txt
 TODO*.md
 .dev-url
