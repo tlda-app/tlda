@@ -153,14 +153,22 @@ function SvgPageComponent({ shape }: { shape: any }) {
   // Fetch SVG when page enters the viewport — handles both initial load and re-entry.
   // On first entry (no svgText): fetch the SVG.
   // On re-entry (svgText exists): re-fetch to pick up any builds that happened while off-screen.
+  // Abort in-flight fetches when the page leaves the viewport (prevents backlog on fast scroll).
   // Skip compare pages — they have their own fetch logic above.
   const prevIsNearViewportRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
   useEffect(() => {
     const wasNear = prevIsNearViewportRef.current
     prevIsNearViewportRef.current = isNearViewport
 
+    // Page left viewport — cancel any in-flight fetch
+    if (!isNearViewport) {
+      if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
+      return
+    }
+
     // Only act on false→true transitions
-    if (!isNearViewport || wasNear) return
+    if (wasNear) return
 
     const idStr = shape.id as string
     if (idStr.includes('compare-page-')) return
@@ -168,12 +176,17 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const docName = new URLSearchParams(window.location.search).get('doc')
     if (!docName) return
 
+    // Abort previous fetch if still in flight
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
     const url = `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg`
-    fetch(url).then(async res => {
+    fetch(url, { signal: controller.signal }).then(async res => {
       if (!res.ok) return
       const newText = await res.text()
       if (newText !== svgText) setSvgText(shape.id as string, newText)
-    }).catch(() => {})
+    }).catch(() => {}) // AbortError is expected when scrolling fast
   }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
   // Subscribe to change store for THIS shape's highlights only (not all shapes)
