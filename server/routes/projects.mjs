@@ -204,12 +204,12 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
 // Synctex path-based lookup: trace highlight path through synctex records
 router.post('/:name/synctex-path', requireRead, async (req, res) => {
   const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
-  const { page, points, text } = req.body
+  const { page, points, text, fragments } = req.body
   if (!page || !points?.length) {
     return res.status(400).json({ error: 'Required: page, points[]' })
   }
   try {
-    const result = await getSourceFromPath(req.params.name, page, points, text || '')
+    const result = await getSourceFromPath(req.params.name, page, points, text || '', fragments || [])
     if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
     res.json(result)
   } catch (e) {

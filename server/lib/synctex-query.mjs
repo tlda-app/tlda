@@ -170,7 +170,7 @@ export function clearSynctexCache(projectName) {
  * @param {Array<{x: number, y: number}>} points - PDF coordinates along the path
  * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
  */
-export async function getSourceFromPath(projectName, page, points, highlightText = '') {
+export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = []) {
   const data = await loadSynctex(projectName)
   if (!data || points.length === 0) return null
 
@@ -281,74 +281,50 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation for hit lines — use record indices (source-order position)
-    // Records are in source order, so index i/N corresponds to roughly character i*M/N.
+    // Column estimation: synctex gives LINE but not column.
+    // Use tspan-anchored matching if fragment data is available.
     if (isHit) {
-      const hitRange = hitLines.get(lineNum)
-      const lineRecs = allRecordsByLine.get(lineNum) || []
-      if (lineRecs.length >= 2) {
-        // Sort records in source order (y asc, x asc)
-        const inOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
-        const N = inOrder.length
-
-        // Find the record indices closest to the hit x-range
-        let startIdx = 0, endIdx = N - 1
-        let bestStartDist = Infinity, bestEndDist = Infinity
-        for (let j = 0; j < N; j++) {
-          const dStart = Math.abs(inOrder[j].x - hitRange.minX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.minX) < 20)?.y || inOrder[j].y)) * 0.5
-          const dEnd = Math.abs(inOrder[j].x - hitRange.maxX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.maxX) < 20)?.y || inOrder[j].y)) * 0.5
-          if (dStart < bestStartDist) { bestStartDist = dStart; startIdx = j }
-          if (dEnd < bestEndDist) { bestEndDist = dEnd; endIdx = j }
-        }
-
-        // Ensure endIdx >= startIdx
-        if (endIdx < startIdx) [startIdx, endIdx] = [endIdx, startIdx]
-        // Expand by 1 record on each side if single record hit
-        if (endIdx === startIdx && N > 1) {
-          startIdx = Math.max(0, startIdx - 1)
-          endIdx = Math.min(N - 1, endIdx + 1)
-        }
-
-        // Map record indices to character positions (records are in source order)
-        const srcLine = allLines[i]
-        entry.hlStart = Math.max(0, Math.round((startIdx / (N - 1)) * srcLine.length))
-        entry.hlEnd = Math.min(srcLine.length, Math.round((endIdx / (N - 1)) * srcLine.length))
-        // If zero-width, highlight full line — fuzzy matching below will narrow it
-        if (entry.hlStart === entry.hlEnd) {
-          entry.hlStart = 0
-          entry.hlEnd = srcLine.length
-        }
-      } else {
-        // Fewer than 2 records — highlight full line
-        entry.hlStart = 0
-        entry.hlEnd = allLines[i].length
-      }
+      entry.hlStart = 0
+      entry.hlEnd = allLines[i].length
     }
 
     lines.push(entry)
   }
 
-  // --- Fuzzy text matching pass: refine hlStart/hlEnd using SVG-extracted text ---
-  if (highlightText) {
-    const hlLines = lines.filter(l => l.highlighted)
-    const fullSource = hlLines.map(l => l.content).join(' ')
-    const stripped = stripTex(fullSource)
-    const normalizedHl = highlightText.replace(/\s+/g, ' ').trim()
-    const match = fuzzySubstringMatch(stripped, normalizedHl)
-    if (match) {
-      const sourceMatch = mapStrippedToSource(fullSource, match.start, match.end)
-      if (sourceMatch) {
-        let charOffset = 0
-        for (const l of hlLines) {
-          const lineLen = l.content.length
-          const matchStart = sourceMatch.start - charOffset
-          const matchEnd = sourceMatch.end - charOffset
-          if (matchEnd > 0 && matchStart < lineLen) {
-            l.hlStart = Math.max(0, matchStart)
-            l.hlEnd = Math.min(lineLen, matchEnd)
-          }
-          charOffset += lineLen + 1
-        }
+  // --- Tspan-anchored column estimation ---
+  // Each fragment is a rendered text span with (x, y, text) in PDF coords.
+  // Match fragment positions to synctex records to assign fragments to source lines.
+  // Then search for fragment text in the source line to find exact column positions.
+  if (fragments.length > 0) {
+    // Assign each fragment to the nearest synctex record's source line
+    const fragsByLine = new Map() // lineNum → [fragment texts in order]
+    for (const frag of fragments) {
+      let bestDist = Infinity
+      let bestLine = null
+      for (const r of pageRecords) {
+        const dy = Math.abs(r.y - frag.y)
+        if (dy > 15) continue // must be on same rendered line
+        const dx = Math.abs(r.x - frag.x)
+        const dist = dy * 10 + dx // weight y heavily
+        if (dist < bestDist) { bestDist = dist; bestLine = r.line }
+      }
+      if (bestLine != null && hitLines.has(bestLine)) {
+        if (!fragsByLine.has(bestLine)) fragsByLine.set(bestLine, [])
+        fragsByLine.get(bestLine).push(frag.text)
+      }
+    }
+
+    // For each highlighted line, find column range by searching for anchor words
+    for (const entry of lines) {
+      if (!entry.highlighted) continue
+      const frags = fragsByLine.get(entry.line)
+      if (!frags || frags.length === 0) continue
+
+      const src = entry.content
+      const result = anchorMatch(src, frags)
+      if (result) {
+        entry.hlStart = result.start
+        entry.hlEnd = result.end
       }
     }
   }
@@ -575,6 +551,93 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 }
 
 /** Strip tex commands to get approximate plain text. */
+/**
+ * Anchor matching: find where rendered text fragments appear in a source line.
+ *
+ * Fragments are individual rendered words/characters from the SVG (in order).
+ * Some match the source literally (plain text), some don't (TeX expansions).
+ * The first and last matched fragments bracket the highlighted region.
+ * Unmatched fragments (TeX commands that expanded) are between the anchors.
+ *
+ * For edge cases where no fragments match at all (all TeX/math), returns null
+ * and the caller falls back to full-line highlighting.
+ */
+function anchorMatch(sourceLine, fragmentTexts) {
+  let firstAnchorPos = -1
+  let lastAnchorEnd = -1
+  let searchFrom = 0
+
+  for (const frag of fragmentTexts) {
+    if (frag.length === 0) continue
+    // Search for this fragment literally in the source, starting from searchFrom
+    const idx = sourceLine.indexOf(frag, searchFrom)
+    if (idx >= 0) {
+      if (firstAnchorPos < 0) firstAnchorPos = idx
+      lastAnchorEnd = idx + frag.length
+      searchFrom = idx + frag.length
+    }
+    // If not found, try single characters (math variables like x, y, z)
+    else if (frag.length === 1) {
+      const idx2 = sourceLine.indexOf(frag, searchFrom)
+      if (idx2 >= 0) {
+        if (firstAnchorPos < 0) firstAnchorPos = idx2
+        lastAnchorEnd = idx2 + 1
+        searchFrom = idx2 + 1
+      }
+    }
+  }
+
+  if (firstAnchorPos < 0) return null // no anchors found
+
+  // Expand to include TeX commands at the boundaries
+  // Walk backward from firstAnchorPos to include preceding command
+  let start = firstAnchorPos
+  if (start > 0) {
+    // If there are unmatched fragments before the first anchor,
+    // walk back to include the TeX command that produced them
+    let i = start - 1
+    // Skip whitespace
+    while (i >= 0 && sourceLine[i] === ' ') i--
+    // If we hit a }, walk back to the matching { and the \command before it
+    if (i >= 0 && sourceLine[i] === '}') {
+      let depth = 1
+      i--
+      while (i >= 0 && depth > 0) {
+        if (sourceLine[i] === '}') depth++
+        if (sourceLine[i] === '{') depth--
+        i--
+      }
+      // Now walk back past the \command
+      while (i >= 0 && sourceLine[i] !== '\\' && sourceLine[i] !== ' ' && sourceLine[i] !== '$') i--
+      if (i >= 0 && sourceLine[i] === '\\') start = i
+      else if (i >= 0 && sourceLine[i] === '$') start = i
+    }
+  }
+
+  // Walk forward from lastAnchorEnd to include trailing command
+  let end = lastAnchorEnd
+  if (end < sourceLine.length) {
+    let i = end
+    while (i < sourceLine.length && sourceLine[i] === ' ') i++
+    if (i < sourceLine.length && sourceLine[i] === '\\') {
+      // Walk forward past the command and its argument
+      while (i < sourceLine.length && sourceLine[i] !== ' ' && sourceLine[i] !== '{') i++
+      if (i < sourceLine.length && sourceLine[i] === '{') {
+        let depth = 1
+        i++
+        while (i < sourceLine.length && depth > 0) {
+          if (sourceLine[i] === '{') depth++
+          if (sourceLine[i] === '}') depth--
+          i++
+        }
+      }
+      end = i
+    }
+  }
+
+  return { start, end }
+}
+
 function stripTex(tex) {
   return tex
     .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')  // \cmd{content} → content

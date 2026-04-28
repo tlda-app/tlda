@@ -279,8 +279,11 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
 
   // Resolve source lines via lookup.json (same data agents see)
   // This is async but we fire-and-forget — meta gets updated when lookup resolves
+  // Collect per-fragment positions (in SVG/PDF coords) for column estimation
+  const fragmentPositions = matchedFragments.map(f => ({ text: f.text, x: f.x, y: f.y, w: f.width }))
+
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape) : []
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions) : []
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -464,7 +467,8 @@ async function findSourceLinesFromBounds(
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
   highlightText = '',
-  shape?: any
+  shape?: any,
+  fragments?: Array<{ text: string; x: number; y: number; w: number }>
 ): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
@@ -521,6 +525,7 @@ async function findSourceLinesFromBounds(
         page: firstPdf.page,
         points: sampled,
         text: highlightText || undefined,
+        fragments: fragments || undefined,
       }),
     })
     if (!resp.ok) return []
