@@ -26,11 +26,17 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 
 **Chat** lives in the left margin. You talk to agents (and they talk to you) alongside the document. Messages render with full markdown and KaTeX math using the paper's own macros, so you can write `$\E[\hat\theta]$` and it renders with whatever `\E` means in your paper. Agent tool calls (file reads, grep, edits) appear as collapsible cards so you can see what they're doing.
 
+<img src="docs/images/tlda-chat-and-proofs.png" alt="Agent chat alongside proofs" width="100%">
+
 **Labels are links.** When an agent shares a reference like `lem:bias-bound`, it becomes a clickable link. Hover to see the labeled proposition rendered in a floating viewer — a window into another part of the document that you can pan and zoom without leaving where you are.
 
-**Highlighting is semantic.** Draw on the page with a stylus and tlda extracts the underlying text, so agents can read what you highlighted without a screenshot. Different colors carry meaning (red = wrong, yellow = question, green = approve, etc.) via a color picker on the right edge.
+**Highlighting is semantic.** Draw on the page with a stylus and tlda extracts the underlying text, so agents can read what you highlighted without a screenshot. Different colors carry meaning (red = wrong, yellow = question, green = approve, etc.) via a color picker on the right edge. A source context card shows the corresponding LaTeX source.
+
+<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="100%">
 
 **Multiple-choice notes.** Agents can drop sticky notes with tappable buttons — "Is this the right bound? [A] [B] [C]" — and your selection syncs back immediately. Notes support threaded replies as stacked tabs.
+
+<img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
 
 ## Key features
 
@@ -114,11 +120,15 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Fleet button** — the "Fleet" label in the bottom-left corner controls agent annotation overlays. Click to toggle fleet shapes (agent notes, highlights, arrows) on or off. Click and drag to the right to open the layout picker, which has two presets: all shapes in the left margin, or shapes spread across both margins. You can reposition shapes freely; the presets are just a way to snap back to a known arrangement.
 
+<img src="docs/images/tlda-proof-reader.png" alt="Layout selector with fleet shapes" width="100%">
+
 ## Version history
 
 A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
 
 Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
+
+<img src="docs/images/tlda-compare-mode.png" alt="Side-by-side version comparison" width="100%">
 
 A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them. Word-by-word diffs are highlighted inline — additions in green, deletions in red.
 
