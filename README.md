@@ -119,7 +119,7 @@ tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 tlda mcp-setup
 ```
 
-This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can see your highlights and pings, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
 
 You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
@@ -160,8 +160,6 @@ Each shape has a resize/move handle — click it to enter layout mode, then drag
 ## Viewer controls
 
 The primary interface is touch/stylus — keyboard shortcuts exist but aren't required.
-
-**Ping** — tap the small circle in the bottom-right corner to get an agent's attention. Captures a screenshot and your viewport.
 
 **Panel** — expandable side panel (top-right) with table of contents and notes list.
 
