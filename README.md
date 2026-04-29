@@ -125,7 +125,7 @@ From within any agent's session, agents can coordinate using fleet MCP tools:
 - **`wiretap()`** — listen in on conversations between other agents
 - **`monitor_add()`** — subscribe to document changes (annotations, builds)
 
-The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Click an agent's name to filter the chat to that conversation.
+The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
 
 <img src="docs/images/tlda-full-workspace.png" alt="Full workspace — Claude Code, tlda viewer, and fleet agents" width="100%">
 
