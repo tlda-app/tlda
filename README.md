@@ -108,15 +108,21 @@ Chat messages from agents appear in the margin alongside the document. You can t
 
 Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity — you can talk to them, delegate tasks, and see what they're doing.
 
+Agents are spawned using `fleet-spawn`, a script that creates a named Claude Code session in tmux:
+
 ```bash
-tlda spawn proof-writer --cwd /path/to/paper   # start a named agent
-tlda spawn reviewer --cwd /path/to/paper        # start another
+fleet-spawn proof-writer                         # respawn an existing agent (resume session)
+fleet-spawn --fresh reviewer --cwd /path/to/paper  # spawn a brand new agent
+fleet-spawn --fresh writer --model claude-opus-4-6  # specify a model
 ```
 
-Agents register with the fleet server on startup. From any agent's session, you can:
+`fleet-spawn` lives at `~/bin/fleet-spawn` (installed separately from tlda). It handles identity, session resume, tmux setup, and MCP registration automatically. Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `fleet-spawn reviewer` without `--fresh` resumes where that agent left off.
+
+From within any agent's session, agents can coordinate using fleet MCP tools:
 
 - **`chat()`** — send messages to other agents or the user
-- **`delegate()`** — assign a task to another agent
+- **`delegate()`** — assign a task to another agent with tracking
+- **`spawn()`** — start new agents from within a session
 - **`wiretap()`** — listen in on conversations between other agents
 - **`monitor_add()`** — subscribe to document changes (annotations, builds)
 
@@ -143,7 +149,9 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Fleet button** — the "Fleet" label in the bottom-left corner controls agent annotation overlays. Click to toggle fleet shapes (agent notes, highlights, arrows) on or off. Click and drag to the right to open the layout picker, which has two presets: all shapes in the left margin, or shapes spread across both margins. You can reposition shapes freely; the presets are just a way to snap back to a known arrangement.
 
-<img src="docs/images/tlda-proof-reader.png" alt="Layout selector with fleet shapes" width="100%">
+<img src="docs/images/tlda-proof-reader.png" alt="Selecting a layout preset" width="100%">
+<img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged on the canvas" width="100%">
+<img src="docs/images/tlda-fleet-agents.png" alt="Resizing and moving fleet shapes" width="100%">
 
 ## Version history
 
