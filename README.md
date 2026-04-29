@@ -149,7 +149,7 @@ Fleet shapes (agent notes, chat panels, highlights) can be arranged however you 
 
 <img src="docs/images/tlda-proof-reader.png" alt="Fleet button with layout picker showing two presets" width="100%">
 
-Each shape has a resize/move handle — click it to enter layout mode, then drag to reposition or resize. The presets are just a way to snap back to a known arrangement.
+Each shape has a layout button — click it to get drag handles. With drag handles active, drag a box around multiple shapes to select them as a group. Drag the group to reposition all your shapes at once, or resize the bounding box to rescale them together. The presets are just a way to snap back to a known arrangement.
 
 <img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a fleet shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged across the canvas" width="49%">
 
