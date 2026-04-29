@@ -87,7 +87,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref","proof"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
   }
 
   component(shape: any) {

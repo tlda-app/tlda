@@ -771,37 +771,30 @@ router.post('/diff-region', requireRead, async (req, res) => {
     ? hitFileAbsolute.slice(srcDir.length + 1)
     : (project.mainFile || 'main.tex')
 
-  // 2. Read current source excerpt
-  const padding = 4
+  // 2. Read FULL current source file
   let currentLines
   try {
     currentLines = readFileSync(hitFileAbsolute, 'utf8').split('\n')
   } catch (e) {
     return res.status(500).json({ error: `Cannot read current source: ${e.message}` })
   }
-  const fromLine = Math.max(1, startLine - padding)
-  const toLine   = Math.min(currentLines.length, endLine + padding)
-  const currentExcerptLines = currentLines.slice(fromLine - 1, toLine)
-  const currentExcerpt = currentExcerptLines.join('\n')
+  const currentFull = currentLines.join('\n')
 
-  // 3. Read historical source excerpt via git show in shadow-repo
+  // 3. Read FULL historical source via git show in shadow-repo
   const repoDir = getShadowRepoDir(name)
-  let historicalExcerptLines = []
+  let historicalLines = []
   try {
     const { stdout } = await execAsync(
       `git show "${hash7}:${relHitFile}"`,
       { cwd: repoDir, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
     )
-    const histLines = stdout.split('\n')
-    const histFrom = Math.max(1, startLine - padding)
-    const histTo   = Math.min(histLines.length, endLine + padding)
-    historicalExcerptLines = histLines.slice(histFrom - 1, histTo)
+    historicalLines = stdout.split('\n')
   } catch (e) {
     return res.status(404).json({ error: `Historical source not found at ${hash7}:${relHitFile}: ${e.message}` })
   }
-  const historicalExcerpt = historicalExcerptLines.join('\n')
+  const historicalFull = historicalLines.join('\n')
 
-  // 4. Run latexdiff — parse \DIFadd / \DIFdel markers for word-level diff
+  // 4. Run latexdiff on FULL files — avoids line-alignment issues from excerpts
   const { tmpdir } = await import('os')
   const { writeFileSync, unlinkSync } = await import('fs')
   const ts = Date.now()
@@ -809,11 +802,11 @@ router.post('/diff-region', requireRead, async (req, res) => {
   const tmpNew = join(tmpdir(), `tlda-ldiff-new-${ts}.tex`)
   let addTexts = [], delTexts = []
   try {
-    writeFileSync(tmpOld, historicalExcerpt)
-    writeFileSync(tmpNew, currentExcerpt)
+    writeFileSync(tmpOld, historicalFull)
+    writeFileSync(tmpNew, currentFull)
     const ldOut = await execAsync(
       `latexdiff --math-markup=0 "${tmpOld}" "${tmpNew}"`,
-      { timeout: 15000, maxBuffer: 5 * 1024 * 1024 },
+      { timeout: 30000, maxBuffer: 10 * 1024 * 1024 },
     ).then(r => r.stdout).catch(e => e.stdout ?? '')
     ;({ addTexts, delTexts } = _parseDiffOutput(ldOut))
   } finally {
@@ -831,28 +824,34 @@ router.post('/diff-region', requireRead, async (req, res) => {
     try { shadowLookup = JSON.parse(readFileSync(shadowLookupPath, 'utf8')).lines ?? {} } catch {}
   }
 
-  // 6. Create highlight shapes for each changed word span
+  // 6. Create highlight shapes for changes in the highlighted Y-region
+  // Filter: only include changes whose PDF position falls in the requested page/Y range
   const shapeIds = []
   const seenNewLines = new Set(), seenOldLines = new Set()
+  const yMargin = 20  // allow some slack around the highlighted region
 
   for (const text of addTexts) {
-    const info = _findInExcerpt(currentExcerptLines, fromLine, text)
+    const info = _findInExcerpt(currentLines, 1, text)
     if (!info) continue
-    if (seenNewLines.has(info.lineNum)) continue  // one highlight per source line
-    seenNewLines.add(info.lineNum)
+    if (seenNewLines.has(info.lineNum)) continue
     const entry = currentLookup[info.lineNum]
     if (!entry) continue
+    // Filter to highlighted region
+    if (entry.page !== page || entry.y < pdfYMin - yMargin || entry.y > pdfYMax + yMargin) continue
+    seenNewLines.add(info.lineNum)
     const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-green', 0, 0, triggerId)
     if (id) shapeIds.push(id)
   }
 
   for (const text of delTexts) {
-    const info = _findInExcerpt(historicalExcerptLines, fromLine, text)
+    const info = _findInExcerpt(historicalLines, 1, text)
     if (!info) continue
     if (seenOldLines.has(info.lineNum)) continue
-    seenOldLines.add(info.lineNum)
     const entry = shadowLookup[info.lineNum]
     if (!entry) continue
+    // Filter to highlighted region (shadow column page number matches)
+    if (entry.page !== page || entry.y < pdfYMin - yMargin || entry.y > pdfYMax + yMargin) continue
+    seenOldLines.add(info.lineNum)
     const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-red', columnX, shadowYOffset, triggerId)
     if (id) shapeIds.push(id)
   }
