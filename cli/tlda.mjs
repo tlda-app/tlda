@@ -1371,6 +1371,21 @@ async function cmdDeploy() {
   console.log(green(bold('Deploy complete.')))
 }
 
+// ---- spawn: forward to bin/fleet-spawn.py ----
+async function cmdSpawn() {
+  const { spawn: cpSpawn } = await import('child_process')
+  const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
+  if (!existsSync(spawnScript)) {
+    console.error(red(`fleet-spawn script not found: ${spawnScript}`))
+    process.exit(1)
+  }
+  const spawnArgs = process.argv.slice(3) // everything after "tlda spawn"
+  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit' })
+  child.on('exit', (code) => process.exit(code ?? 0))
+  // Keep the process alive until child exits
+  await new Promise(() => {})
+}
+
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
   const autoFix = process.argv.includes('--fix')
@@ -2314,6 +2329,7 @@ async function main() {
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
+      case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break

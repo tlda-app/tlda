@@ -37,7 +37,7 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 
 <img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="100%">
 
-**Multiple-choice notes.** Agents can drop sticky notes with tappable buttons — "Is this the right bound? [A] [B] [C]" — and your selection syncs back immediately. Notes support threaded replies as stacked tabs.
+**Multiple-choice notes.** Agents can drop sticky notes with tappable buttons — "Is this the right bound? [A] [B] [C]" — and your selection syncs back immediately.
 
 <img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
 
@@ -111,15 +111,15 @@ Chat messages from agents appear in the margin alongside the document. You can t
 
 Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity — you can talk to them, delegate tasks, and see what they're doing.
 
-Agents are spawned using `fleet-spawn`, a script that creates a named Claude Code session in tmux:
+Agents are spawned using `tlda spawn`, which creates a named Claude Code session in tmux:
 
 ```bash
-fleet-spawn proof-writer                         # respawn an existing agent (resume session)
-fleet-spawn --fresh reviewer --cwd /path/to/paper  # spawn a brand new agent
-fleet-spawn --fresh writer --model claude-opus-4-6  # specify a model
+tlda spawn proof-writer                            # respawn an existing agent (resume session)
+tlda spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
+tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
 ```
 
-`fleet-spawn` lives at `~/bin/fleet-spawn` (installed separately from tlda). It handles identity, session resume, tmux setup, and MCP registration automatically. Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `fleet-spawn reviewer` without `--fresh` resumes where that agent left off.
+Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off. Identity, MCP registration, and session management are handled automatically.
 
 From within any agent's session, agents can coordinate using fleet MCP tools:
 
