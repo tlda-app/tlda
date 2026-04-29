@@ -171,7 +171,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     if (wasNear) return
 
     const idStr = shape.id as string
-    if (idStr.includes('compare-page-')) return
+    if (idStr.includes('col-') || idStr.includes('compare-page-')) return
 
     const docName = new URLSearchParams(window.location.search).get('doc')
     if (!docName) return

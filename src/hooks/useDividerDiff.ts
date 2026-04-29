@@ -34,7 +34,15 @@ export function useDividerDiff(
     if (!editor) return
 
     const hash7 = activeHash.slice(0, 7)
-    const gapLeft = columnX - OLD_PAGE_GAP
+    // Compute actual gap: find right edge of main document pages
+    const mainPages = editor.getCurrentPageShapes()
+      .filter((s: any) => s.type === 'svg-page' && !((s.id as string).includes('col-')))
+    let mainRightEdge = 0
+    for (const p of mainPages) {
+      const b = editor.getShapePageBounds(p.id)
+      if (b && b.x + b.w > mainRightEdge) mainRightEdge = b.x + b.w
+    }
+    const gapLeft = mainRightEdge > 0 ? mainRightEdge : columnX - OLD_PAGE_GAP
     const gapRight = columnX
     const resultMap = resultMapRef.current
 
