@@ -81,7 +81,6 @@ import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
-// buildReverseIndex removed — using sourceMap.pageToSource instead
 import { openInEditor } from './texsync'
 import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
@@ -102,7 +101,6 @@ import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
-import { useCompareColumn } from './hooks/useCompareColumn'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
@@ -508,8 +506,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     })
     return unsub
   }, [])
-  useCompareColumn(editorRef.current, docName, document?.pages?.length ?? 0)
-
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
 

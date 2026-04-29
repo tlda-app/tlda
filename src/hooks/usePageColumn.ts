@@ -125,6 +125,10 @@ class PageColumn {
     this.columnId = `${columnSession}-${options.source.type}-${(options.source.ref || 'live').slice(0, 7)}`
     this.columnX = options.columnX
     this.yOffset = options.yOffset ?? 0
+    // Expose compare ref for chat metadata
+    if (options.source.ref) {
+      ;(window as any).__tlda_compare_ref__ = options.source.ref.slice(0, 7)
+    }
   }
 
   private handleXFromMargin(): number {
@@ -169,8 +173,27 @@ class PageColumn {
     this.handlePos = { x: handleX, y: handleY }
 
     // Listen for handle drag — apply Y offset (default) or X gap (if strongly horizontal)
+    // Also recreate the handle if it gets accidentally deleted (eraser, etc.)
     this.handleUnsub = this.editor.store.listen(({ changes }) => {
       if (this.destroyed || !this.handleId) return
+
+      // Handle deleted — recreate it
+      for (const rec of Object.values(changes.removed)) {
+        const r = rec as any
+        if (r.typeName !== 'shape' || r.id !== this.handleId) continue
+        const pos = this.handlePos || { x: r.x, y: r.y }
+        setTimeout(() => {
+          if (this.destroyed || this.loaded.size === 0) return
+          this.editor.createShape({
+            id: this.handleId!, type: 'line' as any,
+            x: pos.x, y: pos.y, isLocked: false, opacity: 0.05,
+            props: {
+              points: { a1: { id: 'a1', index: 'a1', x: 0, y: 0 }, a2: { id: 'a2', index: 'a2', x: 0, y: 99999 } },
+              color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
+            },
+          })
+        }, 50)
+      }
 
       for (const [, to] of Object.values(changes.updated)) {
         const rec = to as any
@@ -317,6 +340,8 @@ class PageColumn {
 
   destroy() {
     this.destroyed = true
+    // Clear compare ref from chat metadata
+    delete (window as any).__tlda_compare_ref__
     // Stop listening for handle drags
     this.handleUnsub?.()
     this.handleUnsub = null

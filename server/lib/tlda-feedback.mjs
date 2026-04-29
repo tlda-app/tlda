@@ -168,6 +168,17 @@ export function list(agent_id) {
 }
 
 /**
+ * Get all agent IDs subscribed to a given project.
+ * @param {string} projectName
+ * @returns {string[]}
+ */
+export function subscribers(projectName) {
+  const docName = toRoomName(projectName)
+  const subs = subscriptions.get(docName)
+  return subs ? [...subs] : []
+}
+
+/**
  * Snapshot for debugging / admin.
  * @returns {{ docName: string, agents: string[] }[]}
  */

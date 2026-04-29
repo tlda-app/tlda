@@ -664,7 +664,7 @@ async function collectDrawnShapes(docName) {
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
-      const sourceLine = record.meta?.sourceLine || null;
+      const sourceLine = record.meta?.sourceAnchor?.line || record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
@@ -2574,7 +2574,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (typeFilter && !typeFilter.includes(aType)) continue;
           if (unaddressedOnly && s.meta?.addressed) continue;
           if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;
-          const shapeLine = s.lines?.[0]?.line || s.sourceLine || 0;
+          const shapeLine = s.sourceLine || s.lines?.[0]?.line || 0;
           if (startLine && shapeLine && shapeLine < startLine) continue;
           if (endLine && shapeLine && shapeLine > endLine) continue;
           items.push({

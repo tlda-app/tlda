@@ -1045,4 +1045,20 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
   }
 })
 
+// GET /:name/shadow/log — list shadow commits with hashes and timestamps
+router.get('/:name/shadow/log', requireRead, async (req, res) => {
+  const { execSync } = await import('child_process')
+  const repoDir = join(getProjectDir(req.params.name), 'shadow-repo')
+  try {
+    const log = execSync('git log --format="%H %aI" --max-count=500', { cwd: repoDir, encoding: 'utf8', timeout: 5000 })
+    const commits = log.trim().split('\n').filter(Boolean).map(line => {
+      const [hash, ts] = line.split(' ')
+      return { hash: hash.slice(0, 7), timestamp: ts }
+    })
+    res.json({ commits })
+  } catch {
+    res.json({ commits: [] })
+  }
+})
+
 export default router

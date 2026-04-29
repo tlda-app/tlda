@@ -166,9 +166,11 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
       }
     })
   }
+  const compareRef = (window as any).__tlda_compare_ref__ || null
   return {
     doc: doc.docName || null,
     version: version || null,
+    compareRef,
     page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
     camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
     chatShapeId: chatShapeId || undefined,
@@ -1252,18 +1254,29 @@ function FleetChatInner({ shape }: { shape: any }) {
     // collapse clamping) fire scroll events too; using those to set userScrolledUp
     // caused false positives that permanently suppressed auto-scroll.
     const onScroll = () => {
+      const prevTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distFromBottom <= 10 && userScrolledUp.current) {
+      // Resume auto-scroll when user reaches the bottom
+      if (distFromBottom <= 10 && autoscrollPausedRef.current) {
+        setAutoscrollPaused(false)
         userScrolledUp.current = false
         setShowScrollBtn(false)
       }
+      // Detect scroll-up: scrollTop decreased AND we're far from bottom.
+      // This catches Magic Mouse / trackpad gestures that send tiny deltaY
+      // values the wheel handler misses.
+      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
+        userScrolledUp.current = true
+        setShowScrollBtn(true)
+      }
     }
 
-    // Wheel event: fires only on genuine user scroll gestures. Upward wheel =
-    // user is reading old messages → suppress auto-scroll.
+    // Wheel event: belt-and-suspenders with onScroll above.
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < -3 && !userScrolledUp.current) {
+      if (e.deltaY < 0 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
         userScrolledUp.current = true
         setShowScrollBtn(true)
       }
@@ -1275,7 +1288,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onTouchStart = (e: TouchEvent) => { touchStartY = e.touches[0].clientY }
     const onTouchMove = (e: TouchEvent) => {
       // Finger moves DOWN the screen → content scrolls UP → user reading old messages
-      if (e.touches[0].clientY - touchStartY > 10 && !userScrolledUp.current) {
+      if (e.touches[0].clientY - touchStartY > 10 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
         userScrolledUp.current = true
         setShowScrollBtn(true)
       }
@@ -2484,8 +2498,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    if (!autoscrollPausedRef.current) {
+                      userScrolledUp.current = false; setShowScrollBtn(false)
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    }
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2543,8 +2559,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  userScrolledUp.current = false; setShowScrollBtn(false)
-                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  if (!autoscrollPausedRef.current) {
+                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  }
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2580,8 +2598,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  userScrolledUp.current = false; setShowScrollBtn(false)
-                  if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  if (!autoscrollPausedRef.current) {
+                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  }
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments

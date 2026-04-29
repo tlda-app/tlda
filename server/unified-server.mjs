@@ -262,7 +262,7 @@ function broadcastEvent(type, data) {
 function broadcastState() {
   if (!fleetStore) return
   broadcastFleet({
-    agents: fleetStore.getAllAgents().filter(a => !a.dead),
+    agents: fleetStore.getAllAgents(),
     tasks: fleetStore.getActiveTasks(),
   })
 }
@@ -306,6 +306,15 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
+  }
+  if (event?.type === 'build-chat' && fleetStore && event.text) {
+    // Send build notifications only to agents monitoring this doc (via monitor_add)
+    if (event.name) {
+      const subs = tldaFeedback.subscribers(event.name)
+      for (const agentId of subs) {
+        fleetStore.chat('fleet:tlda', agentId, event.text)
+      }
+    }
   }
 })
 
@@ -947,7 +956,7 @@ server.on('upgrade', (req, socket, head) => {
       // Send initial state (includes connId so the client can suppress its own echoes)
       if (fleetStore) {
         const initState = {
-          agents: fleetStore.getAllAgents().filter(a => !a.dead),
+          agents: fleetStore.getAllAgents(),
           tasks: fleetStore.getActiveTasks(),
           connId: ws._connId,
         }

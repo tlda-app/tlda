@@ -1312,7 +1312,9 @@ export function setBackend(be) {
 }
 export function resetTranscript() {
   _state = 'edit'
+  _generation++
   _left = _interim = _right = ''
+  if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}
   }

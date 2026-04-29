@@ -74,20 +74,32 @@ function renderThreadResult(text, ctx) {
   // Split on --- separators
   const msgs = text.split(/\n\n---\n\n/)
   if (msgs.length <= 1) {
-    return `<div class="tool-pretty-result">${esc(text)}</div>`
+    return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)}</div>`
   }
-  const THREAD_PREVIEW = 5
+  const THREAD_PREVIEW = 8
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
   const renderMsg = (msg) => {
     const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
-    if (!headerMatch) return `<div class="pretty-thread-msg"><div class="pretty-msg-body">${esc(msg)}</div></div>`
+    if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
     const [, ts, from, to, body] = headerMatch
-    const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : ''
-    const toCls = ctx.getNickClass ? ctx.getNickClass(to) : ''
-    const shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
-    const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(body.trim()) : esc(body.trim())
-    return `<div class="pretty-thread-msg">
-      <div class="pretty-msg-header"><span class="pretty-ts">${esc(shortTs)}</span> <span class="${fromCls}">${esc(from)}</span> <span class="pretty-arrow">→</span> <span class="${toCls}">${esc(to)}</span></div>
+    const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
+    const toCls = ctx.getNickClass ? ctx.getNickClass(to) : 'chat-nick'
+    let shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
+    // Extract shadow version hash if present (format: "time @hash")
+    let verHtml = ''
+    const verMatch = shortTs.match(/\s*@([a-f0-9]{7})$/)
+    if (verMatch) {
+      shortTs = shortTs.replace(/\s*@[a-f0-9]{7}$/, '')
+      verHtml = ` <span class="pretty-ver">@${verMatch[1]}</span>`
+    }
+    const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(esc(body.trim())) : esc(body.trim())
+    const isFromUser = from === 'skip' || from === 'Skip'
+    const userClass = isFromUser ? ' from-user' : ''
+    return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
+      <span class="chat-ts">${esc(shortTs)}${verHtml}</span>
+      <span class="chat-nick ${fromCls}">${esc(from)}</span>
+      <span class="chat-arrow">→</span>
+      <span class="chat-nick ${toCls}">${esc(to)}</span>
       <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
   }
@@ -100,7 +112,8 @@ function renderThreadResult(text, ctx) {
     moreHtml = `<div class="pretty-expand-btn">${msgs.length - THREAD_PREVIEW} earlier — show all</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
   }
-  const headerLine = text.match(/^(⚠️[^\n]*\n)?(\d+ messages:)\n/)
+  // Parse header (message count + pagination warning)
+  const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)
   const header = headerLine ? `<div class="pretty-result-header">${esc(headerLine[0].trim())}</div>` : ''
   return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
 }

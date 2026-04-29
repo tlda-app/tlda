@@ -911,10 +911,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- POST /api/wiretap ---
   router.post('/api/wiretap', (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
-    const { agent, filter } = req.body || {}
+    const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter)
+    const tap = fleetStore.addWiretap(agent, filter, types)
     res.json(tap)
   })
 

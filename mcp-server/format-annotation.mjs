@@ -15,7 +15,7 @@
 export function formatHighlight(annotation) {
   const lineRef = annotation.sortLine ? `L${annotation.sortLine}` : (annotation.page ? `p${annotation.page}` : '')
   const hlText = annotation.highlightedText || annotation.highlightText || ''
-  const fileRef = annotation.file ? ` ${annotation.file}` : ''
+  const fileRef = annotation.sourceFile ? ` ${annotation.sourceFile}` : (annotation.file ? ` ${annotation.file}` : '')
   let out = `[highlight] ${annotation.color || 'yellow'} ${lineRef}${fileRef}`
   if (hlText) {
     if (hlText.includes('⟦')) {

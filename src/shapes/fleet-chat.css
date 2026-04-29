@@ -942,30 +942,27 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: rgba(150, 150, 200, 0.4);
   font-size: 12px;
 }
-/* Thread messages — look like normal chat lines */
+/* Thread messages — rendered like live chat lines inside a subtle frame */
 .fleet-chat-shape .tool-pretty-thread {
   border-left: 2px solid var(--accent, #7a9ec8);
-  padding-left: 6px;
+  border-radius: 4px;
+  background: rgba(100, 140, 200, 0.02);
+  padding: 2px 0;
 }
-.fleet-chat-shape .pretty-thread-msg {
-  padding: 2px 4px;
+.fleet-chat-shape .tool-pretty-thread .chat-line {
+  /* Thread messages inherit normal chat-line styling */
 }
-.fleet-chat-shape .pretty-thread-msg + .pretty-thread-msg {
-  border-top: 1px solid var(--glass-2, rgba(128,128,128,0.06));
+.fleet-chat-shape .pretty-msg-body {
+  font-size: 11px;
+  margin-top: 1px;
 }
-.fleet-chat-shape .pretty-msg-header {
-  font-size: 10px;
-  margin-bottom: 1px;
-}
-.fleet-chat-shape .pretty-ts {
-  color: var(--text-dim);
+.fleet-chat-shape .pretty-ver {
+  font-family: var(--mono);
   font-size: 9px;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
+  color: var(--accent, #7a9ec8);
+  opacity: 0.6;
+  margin-left: 2px;
 }
-.fleet-chat-shape .pretty-arrow { color: var(--text-dim); margin: 0 2px; font-size: 9px; }
-.fleet-chat-shape .pretty-msg-body { font-size: 11px; }
 /* Search results — alternating stripes with clear separation */
 .fleet-chat-shape .tool-pretty-search {
   border-left: 2px solid var(--yellow, #c8b060);

@@ -799,6 +799,237 @@ async function generateSourceMap(ctx) {
   }
 }
 
+/** Summarize a git diff into a structural change outline.
+ *  Groups changes by section/subsection and identifies formal results (theorems, lemmas, etc.)
+ *  and their proofs. Returns a markdown-formatted summary or null if no meaningful changes.
+ */
+function summarizeDiff(diffText, projectName) {
+  const projDir = projectDir(projectName)
+  const outDir = outputDir(projectName)
+
+  // 1. Parse diff hunks: extract file, old/new line ranges, and +/- counts
+  const hunks = parseDiffHunks(diffText)
+  if (hunks.length === 0) return null
+
+  // 2. Build section tree from tex source in shadow repo
+  const shadowDir = join(projDir, 'shadow-repo')
+  const project = readProject(projectName)
+  const mainFile = project?.mainFile || ''
+  const texPath = join(shadowDir, mainFile)
+  let texLines = []
+  try { texLines = readFileSync(texPath, 'utf8').split('\n') } catch { return null }
+  const sections = buildSectionTree(texLines)
+
+  // 3. Load proof-info.json for result/proof line ranges
+  let proofPairs = []
+  try {
+    const pi = JSON.parse(readFileSync(join(outDir, 'proof-info.json'), 'utf8'))
+    proofPairs = pi.pairs || pi
+  } catch {}
+
+  // 4. Load source-map.json labels for numbering
+  const labelNumbers = new Map()
+  try {
+    const sm = JSON.parse(readFileSync(join(outDir, 'source-map.json'), 'utf8'))
+    for (const l of sm.labels || []) {
+      labelNumbers.set(l.label, l.number)
+    }
+  } catch {}
+
+  // 5. Parse result titles from tex source (the [...] optional argument)
+  const resultTitles = new Map()
+  for (const pair of proofPairs) {
+    const startLine = pair.statementLines?.[0]
+    if (startLine && startLine <= texLines.length) {
+      const line = texLines[startLine - 1]
+      const titleMatch = line.match(/\\begin\{(?:theorem|lemma|proposition|corollary|definition)\}\[([^\]]*)\]/)
+      if (titleMatch) {
+        // Strip \cite/\citep/\citet commands to get clean title
+        let title = titleMatch[1].replace(/\\(?:cite[pt]?)\{[^}]*\}/g, '').replace(/[{}]/g, '').trim()
+        // Check if it's a borrowed result (had a citation)
+        const isBorrowed = /\\(?:cite[pt]?)\{/.test(titleMatch[1])
+        resultTitles.set(pair.id, { title, isBorrowed })
+      }
+    }
+  }
+
+  // 6. Classify each hunk
+  const changes = []
+  for (const hunk of hunks) {
+    // Find containing section/subsection
+    const section = findContainingSection(sections, hunk.newStart)
+
+    // Check if hunk overlaps any formal result statement or proof
+    let resultHit = null
+    for (const pair of proofPairs) {
+      const [stmtStart, stmtEnd] = pair.statementLines || [0, 0]
+      const [proofStart, proofEnd] = pair.proofLines || [0, 0]
+
+      if (hunkOverlaps(hunk, stmtStart, stmtEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'statement', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+      if (hunkOverlaps(hunk, proofStart, proofEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'proof', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+    }
+
+    changes.push({ section, result: resultHit, added: hunk.added, deleted: hunk.deleted, file: hunk.file })
+  }
+
+  // 7. Aggregate by section, then by result
+  return formatChangeSummary(changes, labelNumbers)
+}
+
+function parseDiffHunks(diffText) {
+  const hunks = []
+  let currentFile = null
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const m = line.match(/^diff --git a\/(.+?) b\//)
+      if (m) currentFile = m[1]
+      continue
+    }
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+    if (hunkMatch) {
+      hunks.push({
+        file: currentFile,
+        oldStart: parseInt(hunkMatch[1]),
+        oldCount: parseInt(hunkMatch[2] || '1'),
+        newStart: parseInt(hunkMatch[3]),
+        newCount: parseInt(hunkMatch[4] || '1'),
+        added: 0,
+        deleted: 0,
+      })
+      continue
+    }
+    if (hunks.length > 0) {
+      if (line.startsWith('+') && !line.startsWith('+++')) hunks[hunks.length - 1].added++
+      if (line.startsWith('-') && !line.startsWith('---')) hunks[hunks.length - 1].deleted++
+    }
+  }
+  return hunks
+}
+
+function buildSectionTree(texLines) {
+  const sections = []
+  for (let i = 0; i < texLines.length; i++) {
+    const m = texLines[i].match(/\\(section|subsection|subsubsection)\{(.+?)\}/)
+    if (m) {
+      const title = m[2].replace(/\\[a-zA-Z]+\{[^}]*\}/g, '').replace(/[{}\\]/g, '').trim()
+      // Check next few lines for \label{sec:...} (may not be immediately after)
+      let label = null
+      for (let k = 1; k <= 3 && i + k < texLines.length; k++) {
+        const labelMatch = texLines[i + k].match(/\\label\{(sec:[^}]+)\}/)
+        if (labelMatch) { label = labelMatch[1]; break }
+        // Stop if we hit another sectioning command or begin/end
+        if (texLines[i + k].match(/\\(?:section|subsection|begin|end)\{/)) break
+      }
+      sections.push({ level: m[1], title, line: i + 1, label })
+    }
+  }
+  // Assign end lines (each section ends where the next same-or-higher level section begins)
+  for (let i = 0; i < sections.length; i++) {
+    const levelRank = { section: 0, subsection: 1, subsubsection: 2 }
+    const myRank = levelRank[sections[i].level] ?? 0
+    let endLine = texLines.length
+    for (let j = i + 1; j < sections.length; j++) {
+      const nextRank = levelRank[sections[j].level] ?? 0
+      if (nextRank <= myRank) { endLine = sections[j].line - 1; break }
+    }
+    sections[i].endLine = endLine
+  }
+  return sections
+}
+
+function findContainingSection(sections, line) {
+  // Find the deepest (most specific) section containing this line
+  let best = null
+  for (const s of sections) {
+    if (line >= s.line && line <= s.endLine) {
+      if (!best || ({ section: 0, subsection: 1, subsubsection: 2 }[s.level] ?? 0) > ({ section: 0, subsection: 1, subsubsection: 2 }[best.level] ?? 0)) {
+        best = s
+      }
+    }
+  }
+  return best
+}
+
+function hunkOverlaps(hunk, startLine, endLine) {
+  if (!startLine || !endLine) return false
+  const hunkEnd = hunk.newStart + hunk.newCount - 1
+  return hunk.newStart <= endLine && hunkEnd >= startLine
+}
+
+function formatChangeSummary(changes, labelNumbers) {
+  // Group by section title, then by result
+  const groups = new Map()
+  for (const c of changes) {
+    const secKey = c.section ? (c.section.label || c.section.title) : '(preamble)'
+    if (!groups.has(secKey)) groups.set(secKey, { section: c.section, items: [] })
+    groups.get(secKey).items.push(c)
+  }
+
+  const lines = []
+  for (const [secKey, group] of groups) {
+    let sectionLabel
+    if (!group.section) {
+      sectionLabel = '**Preamble**'
+    } else {
+      const num = group.section.label ? labelNumbers?.get(group.section.label) : null
+      const prefix = num ? `§${num}` : '§'
+      sectionLabel = `**${prefix} "${group.section.title}"**`
+    }
+    lines.push(sectionLabel)
+
+    // Sub-group by result
+    const resultItems = new Map()
+    const textItems = []
+    for (const item of group.items) {
+      if (item.result) {
+        const rKey = `${item.result.id}:${item.result.type}`
+        if (!resultItems.has(rKey)) resultItems.set(rKey, { result: item.result, added: 0, deleted: 0 })
+        const r = resultItems.get(rKey)
+        r.added += item.added
+        r.deleted += item.deleted
+      } else {
+        textItems.push(item)
+      }
+    }
+
+    for (const [, r] of resultItems) {
+      const { result, added, deleted } = r
+      const numStr = result.number ? ` ${result.number}` : ''
+      const titleStr = result.title ? ` (${result.title})` : ''
+      const locStr = result.type === 'proof' ? 'proof' : 'statement'
+      const countStr = formatCounts(added, deleted)
+      lines.push(`  - ${result.resultType}${numStr}${titleStr} ${locStr}: ${countStr}`)
+    }
+
+    if (textItems.length > 0) {
+      const totalAdded = textItems.reduce((s, i) => s + i.added, 0)
+      const totalDeleted = textItems.reduce((s, i) => s + i.deleted, 0)
+      lines.push(`  - text: ${formatCounts(totalAdded, totalDeleted)}`)
+    }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null
+}
+
+function formatCounts(added, deleted) {
+  const parts = []
+  if (added > 0) parts.push(`+${added}`)
+  if (deleted > 0) parts.push(`-${deleted}`)
+  return parts.join(' / ') || 'modified'
+}
+
 /** Phase 6: Generate theorem-map.json from .aux file. */
 async function generateTheoremMap(ctx) {
   const { texBase, texDir, srcDir, buildDir, outDir, addLog } = ctx
@@ -1133,14 +1364,13 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
     emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
-    // Update doc-version sentinel shape with source git commit hash (non-blocking)
-    updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
-      ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
-    })
-
     // Commit source snapshot to shadow repo (non-blocking)
-    commitSnapshot(name).then(result => {
+    commitSnapshot(name).then(async result => {
       if (result) {
+        // Update doc-version sentinel with shadow hash (the build's version identity)
+        updateDocVersionSentinel(name, result.hash).catch(e => {
+          ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+        })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
         // Commit + tag the source repo so shadow/<hash> points to the exact
@@ -1157,6 +1387,34 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             execSync(`git tag -f "${tag}"`, { cwd, stdio: 'pipe', timeout: 5000 })
           }
         } catch {}
+        // Build change summary: diff against previous shadow commit
+        try {
+          const shadowDir = join(projDir, 'shadow-repo')
+          const diffOutput = execSync(
+            `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
+            { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
+          )
+          if (diffOutput.trim()) {
+            const summary = summarizeDiff(diffOutput, name)
+            console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+            if (summary) {
+              // Emit as global event — unified-server.mjs routes to fleet chat
+              emitGlobalEvent('build-chat', {
+                name,
+                hash: result.hash.slice(0, 7),
+                text: `**Build ${result.hash.slice(0, 7)}:**\n${summary}`,
+              })
+              // Also broadcast as a signal for the viewer
+              broadcastSignal(`doc-${name}`, 'signal:build-summary', {
+                hash: result.hash.slice(0, 7),
+                summary,
+                timestamp: Date.now(),
+              })
+            }
+          } else {
+            console.log(`[build:${name}] No tex diff between shadow commits`)
+          }
+        } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
@@ -1236,16 +1494,8 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, srcDir) {
-  let commitHash = 'unknown'
-  if (srcDir && existsSync(srcDir)) {
-    try {
-      const { stdout } = await execAsync('git rev-parse HEAD', { cwd: srcDir, timeout: 5000 })
-      commitHash = stdout.trim()
-    } catch {
-      // Not a git repo, or no commits yet — leave as 'unknown'
-    }
-  }
+async function updateDocVersionSentinel(name, shadowHash) {
+  const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
   const sentinel = {

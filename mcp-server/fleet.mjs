@@ -784,6 +784,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp.' },
+          doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
     },
@@ -911,11 +912,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Wiretap ----
     {
       name: 'wiretap',
-      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels.',
+      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
       inputSchema: {
         type: 'object',
         properties: {
           filter: { type: 'array', description: 'DNF of [role, label] tuples. E.g. [[["to","skip"],["from","math"]],[["to","apps"]]]' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Event types to listen for. E.g. ["chat"] for chat only, ["chat","delegate"] for chat + delegations. Omit for all types.' },
           remove: { description: 'true to remove all wiretaps, or a wiretap ID to remove one.' },
         },
       },
@@ -2438,9 +2440,14 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const fromLabel = m.metadata?.fromLabel || m.from;
         const replyHint = ` (reply with chat(to: "${m.from}"))`;
         const ctx = m.metadata?.context;
-        const docHint = ctx?.doc
-          ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
-          : '';
+        let docHint = '';
+        if (ctx?.doc) {
+          if (ctx.compareRef) {
+            docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
+          } else {
+            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
+          }
+        }
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
         images.push(...chipImages)
@@ -2980,6 +2987,30 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       header = `${filtered.length} messages${rangeStr}`;
     }
 
+    // Fetch shadow commit log if doc parameter provided
+    let shadowCommits = [];
+    if (args.doc) {
+      try {
+        const dashPort = process.env.FLEET_DASH_PORT || 5176;
+        const sRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          shadowCommits = (sData.commits || []).map(c => ({ ...c, ms: new Date(c.timestamp).getTime() }));
+        }
+      } catch {}
+    }
+
+    // Binary search: find latest shadow commit at or before a given timestamp
+    const versionAt = (tsStr) => {
+      if (!shadowCommits.length || !tsStr) return null;
+      const ms = new Date(tsStr).getTime();
+      // Commits are newest-first from git log
+      for (const c of shadowCommits) {
+        if (c.ms <= ms) return c.hash;
+      }
+      return null;
+    };
+
     // Format as readable thread
     const lines = filtered.map(m => {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
@@ -2987,7 +3018,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const from = fromAgent?.friendly_name || m.from?.slice?.(0, 8) || m.from;
       const toAgent = getAgent(state, m.to);
       const to = toAgent?.friendly_name || m.to?.slice?.(0, 8) || m.to;
-      return `[${ts}] ${from} → ${to}\n${m.text}`;
+      const ver = args.doc ? versionAt(m.timestamp) : null;
+      const verStr = ver ? ` @${ver}` : '';
+      return `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
     });
 
     return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n\n---\n\n')}` }] };
@@ -3391,13 +3424,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
     }
 
+    const body = { agent: myId, filter: args.filter }
+    if (args.types && args.types.length > 0) body.types = args.types
     const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: myId, filter: args.filter }),
+      body: JSON.stringify(body),
     });
     const tap = await res.json();
-    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}` }] };
+    const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
+    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
   }
 
   // ---- timer (non-blocking) ----
@@ -3807,9 +3843,14 @@ async function handleChannelMessage(msg) {
       const rawText = data.text || data.message || '';
       const preview = previewOf(rawText);
       const ctx = data.metadata?.context;
-      const docHint = ctx?.doc
-        ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
-        : '';
+      let docHint = '';
+      if (ctx?.doc) {
+        if (ctx.compareRef) {
+          docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
+        } else {
+          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
+        }
+      }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
       content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
     } else if (eventType === 'task_done') {

@@ -753,26 +753,49 @@ function syncSourceWatchers(projectList) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, polledFiles: [] }
+
+    // Handler shared by both fs.watch and fs.watchFile
+    const onFileChange = (filename, fromPoll) => {
+      if (!filename) return
+      if (watchSet.size > 0) {
+        if (!watchSet.has(filename)) return
+      } else {
+        if (!isSourceFile(filename)) return
+      }
+      state.pending.add(filename)
+      if (state.debounce) clearTimeout(state.debounce)
+      state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
+      // If the polling backup caught this, fs.watch is stale — recreate it
+      if (fromPoll) {
+        console.warn(`[daemon] fs.watch stale for ${p.name} — recreating`)
+        try { state.watcher?.close() } catch {}
+        try {
+          state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
+        } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
+      }
+    }
+
     try {
-      state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => {
-        if (!filename) return
-        // Only react to files in the watch set, or any .tex/.bib if no
-        // watch set (bootstrapping — first build hasn't happened yet).
-        if (watchSet.size > 0) {
-          if (!watchSet.has(filename)) return
-        } else {
-          if (!isSourceFile(filename)) return
-        }
-        state.pending.add(filename)
-        if (state.debounce) clearTimeout(state.debounce)
-        state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
-      })
+      // Primary: fs.watch (instant, kernel events — can go stale on macOS)
+      state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => onFileChange(filename, false))
+
+      // Backup: fs.watchFile on each watched file (polling, never goes stale)
+      const filesToPoll = watchSet.size > 0 ? [...watchSet] : (p.mainFile ? [p.mainFile] : [])
+      for (const rel of filesToPoll) {
+        const full = path.join(p.sourceDir, rel)
+        if (!fs.existsSync(full)) continue
+        fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
+          if (curr.mtimeMs === prev.mtimeMs) return
+          onFileChange(rel, true)
+        })
+        state.polledFiles.push(full)
+      }
+
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched files)`)
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched, ${state.polledFiles.length} polled)`)
 
       // On connect, push only the watched files (not the whole directory).
-      // This is a tiny payload — usually 2-5 text files.
       pushWatchedFiles(p.name, p.sourceDir, watchSet)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
@@ -781,7 +804,8 @@ function syncSourceWatchers(projectList) {
   // Stop watching projects we no longer own.
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
-      try { state.watcher.close() } catch {}
+      try { state.watcher?.close() } catch {}
+      for (const f of (state.polledFiles || [])) fs.unwatchFile(f)
       sourceWatchers.delete(name)
     }
   }
