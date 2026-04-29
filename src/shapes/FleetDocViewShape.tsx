@@ -87,7 +87,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref","proof"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
   }
 
   component(shape: any) {
@@ -278,22 +278,25 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     // otherwise falls back to the last ref click
     if (sources.includes('proof') && proofInfo?.pairs && mainViewportY > 0) {
       for (const pair of proofInfo.pairs) {
-        // proof-info.json uses arrays (proofRegions/statementRegions).
-        // For multi-page statements, the first region can be a useless sliver
-        // (yTop < 0). Pick the largest region by height instead.
-        const proofRegion = pair.proofRegions?.[0] || pair.proofRegion
+        // Check ALL proof regions — multi-page proofs span several pages
+        const proofRegions = pair.proofRegions || (pair.proofRegion ? [pair.proofRegion] : [])
         const stmtRegions = pair.statementRegions || (pair.statementRegion ? [pair.statementRegion] : [])
         const statementRegion = stmtRegions.length > 1
           ? stmtRegions.reduce((best: any, r: any) => (!best || (r.yBottom - r.yTop) > (best.yBottom - best.yTop)) ? r : best, null)
           : stmtRegions[0]
-        if (!proofRegion || !statementRegion) continue
-        const proofPageIdx = proofRegion.page - 1
-        if (proofPageIdx < 0 || proofPageIdx >= doc.pages.length) continue
-        const proofPageBounds = doc.pages[proofPageIdx].bounds
-        const scale = proofPageBounds.height / PDF_HEIGHT
-        const proofTop = proofPageBounds.y + (proofRegion.yTop || 0) * scale
-        const proofBottom = proofPageBounds.y + (proofRegion.yBottom || PDF_HEIGHT) * scale
-        if (mainViewportY >= proofTop && mainViewportY <= proofBottom) {
+        if (!proofRegions.length || !statementRegion) continue
+
+        let inProof = false
+        for (const proofRegion of proofRegions) {
+          const proofPageIdx = proofRegion.page - 1
+          if (proofPageIdx < 0 || proofPageIdx >= doc.pages.length) continue
+          const proofPageBounds = doc.pages[proofPageIdx].bounds
+          const scale = proofPageBounds.height / PDF_HEIGHT
+          const proofTop = proofPageBounds.y + (proofRegion.yTop || 0) * scale
+          const proofBottom = proofPageBounds.y + (proofRegion.yBottom || PDF_HEIGHT) * scale
+          if (mainViewportY >= proofTop && mainViewportY <= proofBottom) { inProof = true; break }
+        }
+        if (inProof) {
           const stmtPageIdx = statementRegion.page - 1
           if (stmtPageIdx < 0 || stmtPageIdx >= doc.pages.length) continue
           const stmtPageBounds = doc.pages[stmtPageIdx].bounds
