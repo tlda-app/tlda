@@ -1328,17 +1328,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Chase the scroll: virtualizer measures asynchronously, so a single
-      // scrollToIndex lands short. Multiple fallbacks catch delayed measurements.
-      const chase = () => {
+      // Diagnostic: log scroll state after scrollToIndex to find why it misses
+      requestAnimationFrame(() => {
         const el = chatLogRef.current
-        if (!el || userScrolledUp.current || autoscrollPausedRef.current) return
+        if (!el) return
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+        if (dist > 5) {
+          console.warn(`[chat-scroll] missed bottom by ${dist.toFixed(0)}px — scrollHeight=${el.scrollHeight} scrollTop=${el.scrollTop.toFixed(0)} clientHeight=${el.clientHeight} items=${rawItems.length} totalSize=${virtualizer.getTotalSize()}`)
+        }
+        // Still chase — but we're logging the miss to find the root cause
         el.scrollTop = el.scrollHeight
         lastScrollTopRef.current = el.scrollTop
-      }
-      requestAnimationFrame(chase)
-      requestAnimationFrame(() => requestAnimationFrame(chase))
-      setTimeout(chase, 100)
+      })
     }
   // rawItems identity changes whenever any message content changes (not just length),
   // so this fires for growing activity cards and in-place updates too.
