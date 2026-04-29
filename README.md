@@ -20,24 +20,20 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 
 ## What it looks like
 
-**The document** occupies the main canvas — pages stacked vertically, rendered from your LaTeX source via `latexmk` → `dvisvgm`. It rebuilds live when you save.
-
-**Chat** lives in the left margin. You talk to agents (and they talk to you) alongside the document. Messages render with full markdown and KaTeX math using the paper's own macros, so you can write `$\E[\hat\theta]$` and it renders with whatever `\E` means in your paper. Agent tool calls (file reads, grep, edits) appear as collapsible cards so you can see what they're doing.
+Your paper renders as high-fidelity SVG pages on the main canvas. It rebuilds live when you save. Chat, notes, and agent activity live on the same canvas — position them wherever you want.
 
 <img src="docs/images/tlda-chat-and-proofs.png" alt="Agent chat alongside proofs" width="100%">
 
-**Labels are links.** When an agent shares a reference like `lem:bias-bound`, it becomes a clickable link. Hover to see the labeled proposition rendered in a floating viewer — a window into another part of the document that you can pan and zoom without leaving where you are.
+**Labels are links.** Hover a reference to preview the result in a floating viewer. Click to open it. Navigate to the target page, then return.
 
-<img src="docs/images/tlda-ref-1-hover.png" alt="Hover a label to preview the referenced result" width="100%">
-<img src="docs/images/tlda-ref-2-click.png" alt="Click to open the floating viewer" width="100%">
-<img src="docs/images/tlda-ref-3-go.png" alt="Navigate to the referenced page" width="100%">
-<img src="docs/images/tlda-ref-4-return.png" alt="Return to where you were" width="100%">
+<img src="docs/images/tlda-ref-1-hover.png" alt="1. Hover a label" width="49%"> <img src="docs/images/tlda-ref-2-click.png" alt="2. Click to open" width="49%">
+<img src="docs/images/tlda-ref-3-go.png" alt="3. Go to the page" width="49%"> <img src="docs/images/tlda-ref-4-return.png" alt="4. Return" width="49%">
 
-**Highlighting is semantic.** Draw on the page with a stylus and tlda extracts the underlying text, so agents can read what you highlighted without a screenshot. Different colors carry meaning (red = wrong, yellow = question, green = approve, etc.) via a color picker on the right edge. A source context card shows the corresponding LaTeX source.
+**Highlighting is semantic.** Draw on the page and agents read the text under your stroke. A source context card shows the LaTeX source.
 
 <img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="100%">
 
-**Multiple-choice notes.** Agents can drop sticky notes with tappable buttons — "Is this the right bound? [A] [B] [C]" — and your selection syncs back immediately.
+**Multiple-choice notes.** Agents drop questions with tappable options — your selection syncs back immediately.
 
 <img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
 
