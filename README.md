@@ -188,7 +188,7 @@ Click any older timestamp to open a history column to the right of your document
 
 <img src="docs/images/tlda-compare-mode.png" alt="Side-by-side version comparison" width="100%">
 
-A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them. Word-by-word diffs are highlighted inline — additions in green, deletions in red.
+A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them.
 
 Click the current (top) timestamp to dismiss the history column.
 
