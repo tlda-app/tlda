@@ -104,6 +104,8 @@ This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in
 
 Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
+<img src="docs/images/tlda-full-workspace.png" alt="Full workspace — Claude Code, tlda viewer, and fleet agents" width="100%">
+
 ## Sharing
 
 `tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost. If neither is set up, it explains how to get there.
