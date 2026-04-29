@@ -1371,6 +1371,42 @@ async function cmdDeploy() {
   console.log(green(bold('Deploy complete.')))
 }
 
+// ---- setup: one-time setup tasks ----
+async function cmdSetup() {
+  const sub = process.argv[3]
+  if (!sub || sub === '--help') {
+    console.log(`tlda setup — one-time setup tasks
+
+Subcommands:
+  editor [--editor CMD]   Install the texsync:// URL handler so Cmd-click
+                          opens source in your editor (default: zed)
+                          Supported: zed, code, cursor, codium, nvim, vim, sublime
+
+Example:
+  tlda setup editor                # set up for Zed
+  tlda setup editor --editor code  # set up for VS Code
+`)
+    return
+  }
+
+  if (sub === 'editor') {
+    const { spawn: cpSpawn } = await import('child_process')
+    const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'install-texsync.sh')
+    if (!existsSync(script)) {
+      console.error(red(`install-texsync.sh not found: ${script}`))
+      process.exit(1)
+    }
+    const args = process.argv.slice(4) // everything after "tlda setup editor"
+    const child = cpSpawn('bash', [script, ...args], { stdio: 'inherit' })
+    child.on('exit', (code) => process.exit(code ?? 0))
+    await new Promise(() => {})
+  } else {
+    console.error(red(`Unknown setup subcommand: ${sub}`))
+    console.error('Run "tlda setup" for available options.')
+    process.exit(1)
+  }
+}
+
 // ---- spawn: forward to bin/fleet-spawn.py ----
 async function cmdSpawn() {
   const { spawn: cpSpawn } = await import('child_process')
@@ -2329,6 +2365,7 @@ async function main() {
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
+      case 'setup': await cmdSetup(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
@@ -2358,6 +2395,7 @@ Commands:
   preview <name> [page ...]  Rasterize SVG pages to PNG
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
+  setup          One-time setup [editor]
   deploy         Build, restart server, verify SPA renders
   mcp-setup      Write .mcp.json for Claude Code integration (current directory)
   doctor         Check setup (--fix to auto-repair)

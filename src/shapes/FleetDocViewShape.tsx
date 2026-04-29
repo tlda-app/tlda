@@ -35,6 +35,7 @@ import { PDF_HEIGHT } from '../layoutConstants'
 import { onBuildStatusSignal, type BuildError } from '../useYjsSync'
 import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
+import { getSvgText, setSvgText } from '../stores/svgTextStore'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -210,6 +211,29 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       .catch(() => {})
   }, [doc?.docName])
 
+  // Track main editor viewport for proof source — useValue can't track cross-editor
+  // reactive reads, so poll the main editor's viewport on camera changes.
+  const [mainViewportY, setMainViewportY] = useState(0)
+  useEffect(() => {
+    if (!sources.includes('proof') || !mainEditor) return
+    const update = () => {
+      const vp = mainEditor.getViewportPageBounds()
+      setMainViewportY(vp.y + vp.h / 2)
+    }
+    update()
+    // Listen for ANY store change and check if camera moved —
+    // camera record keys vary across tldraw versions
+    let lastCamY = mainEditor.getCamera().y
+    const unsub = mainEditor.store.listen(() => {
+      const cam = mainEditor.getCamera()
+      if (cam.y !== lastCamY) {
+        lastCamY = cam.y
+        update()
+      }
+    })
+    return unsub
+  }, [mainEditor, sourcesRaw])
+
   // --- Compute display bounds (priority: errors > ref > proof) ---
   const bounds = useValue('docview-bounds', (): ClipBounds | null => {
     if (!doc?.pages?.length) return null
@@ -221,6 +245,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     }
 
     // Ref: pinned region from last click
+    let refBounds: ClipBounds | null = null
     if (sources.includes('ref') && proofInfo?.labelRegions && label) {
       const region = proofInfo.labelRegions[label]
       if (region) {
@@ -231,16 +256,16 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           const canvasYTop = pageBounds.y + (region.yTop || 0) * scale
           const canvasYBottom = pageBounds.y + (region.yBottom || pageBounds.height / scale) * scale
           const regionH = Math.max(canvasYBottom - canvasYTop, pageBounds.height * 0.15)
-          return { x: pageBounds.x, y: canvasYTop - 20, w: pageBounds.width, h: regionH + 40 }
+          refBounds = { x: pageBounds.x, y: canvasYTop - 20, w: pageBounds.width, h: regionH + 40 }
         }
       }
     }
-    if (sources.includes('ref') && page > 0) {
+    if (!refBounds && sources.includes('ref') && page > 0) {
       const pageIdx = page - 1
       if (pageIdx >= 0 && pageIdx < doc.pages.length) {
         const pageBounds = doc.pages[pageIdx].bounds
         const scale = pageBounds.height / PDF_HEIGHT
-        return {
+        refBounds = {
           x: pageBounds.x,
           y: pageBounds.y + (yTop || 0) * scale,
           w: pageBounds.width,
@@ -249,25 +274,32 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       }
     }
 
-    // Proof: background auto-track from viewport
-    if (sources.includes('proof') && proofInfo?.proofPairs && mainEditor) {
-      const viewport = mainEditor.getViewportPageBounds()
-      const viewCenterY = viewport.y + viewport.h / 2
-      for (const pair of proofInfo.proofPairs) {
-        if (!pair.proofRegion || !pair.statementRegion) continue
-        const proofPageIdx = pair.proofRegion.page - 1
+    // Proof: auto-track from viewport — takes priority when actively in a proof,
+    // otherwise falls back to the last ref click
+    if (sources.includes('proof') && proofInfo?.pairs && mainViewportY > 0) {
+      for (const pair of proofInfo.pairs) {
+        // proof-info.json uses arrays (proofRegions/statementRegions).
+        // For multi-page statements, the first region can be a useless sliver
+        // (yTop < 0). Pick the largest region by height instead.
+        const proofRegion = pair.proofRegions?.[0] || pair.proofRegion
+        const stmtRegions = pair.statementRegions || (pair.statementRegion ? [pair.statementRegion] : [])
+        const statementRegion = stmtRegions.length > 1
+          ? stmtRegions.reduce((best: any, r: any) => (!best || (r.yBottom - r.yTop) > (best.yBottom - best.yTop)) ? r : best, null)
+          : stmtRegions[0]
+        if (!proofRegion || !statementRegion) continue
+        const proofPageIdx = proofRegion.page - 1
         if (proofPageIdx < 0 || proofPageIdx >= doc.pages.length) continue
         const proofPageBounds = doc.pages[proofPageIdx].bounds
         const scale = proofPageBounds.height / PDF_HEIGHT
-        const proofTop = proofPageBounds.y + (pair.proofRegion.yTop || 0) * scale
-        const proofBottom = proofPageBounds.y + (pair.proofRegion.yBottom || PDF_HEIGHT) * scale
-        if (viewCenterY >= proofTop && viewCenterY <= proofBottom) {
-          const stmtPageIdx = pair.statementRegion.page - 1
+        const proofTop = proofPageBounds.y + (proofRegion.yTop || 0) * scale
+        const proofBottom = proofPageBounds.y + (proofRegion.yBottom || PDF_HEIGHT) * scale
+        if (mainViewportY >= proofTop && mainViewportY <= proofBottom) {
+          const stmtPageIdx = statementRegion.page - 1
           if (stmtPageIdx < 0 || stmtPageIdx >= doc.pages.length) continue
           const stmtPageBounds = doc.pages[stmtPageIdx].bounds
           const stmtScale = stmtPageBounds.height / PDF_HEIGHT
-          const stmtTop = stmtPageBounds.y + (pair.statementRegion.yTop || 0) * stmtScale
-          const stmtBottom = stmtPageBounds.y + (pair.statementRegion.yBottom || PDF_HEIGHT) * stmtScale
+          const stmtTop = stmtPageBounds.y + (statementRegion.yTop || 0) * stmtScale
+          const stmtBottom = stmtPageBounds.y + (statementRegion.yBottom || PDF_HEIGHT) * stmtScale
           return {
             x: stmtPageBounds.x,
             y: stmtTop - 10,
@@ -276,11 +308,48 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           }
         }
       }
-      return null
+      // Not in a proof — fall back to ref if available
+      return refBounds
     }
 
-    return null
-  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, resolvedErrors, errorIndex])
+    // Only ref, no proof source
+    return refBounds
+  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex])
+
+  // Prefetch SVG for the page the bounds point to — the clip panel needs it
+  // loaded in svgTextStore even if the page is outside the main viewport.
+  // Track readiness as state so the clip panel doesn't mount until the SVG is available.
+  const [svgReady, setSvgReady] = useState(false)
+  const boundsPageIdx = useMemo(() => {
+    if (!bounds || !doc?.pages?.length) return -1
+    const centerY = bounds.y + bounds.h / 2
+    for (let i = 0; i < doc.pages.length; i++) {
+      const p = doc.pages[i]
+      if (centerY >= p.bounds.y && centerY <= p.bounds.y + p.bounds.height) return i
+    }
+    return -1
+  }, [bounds, doc])
+
+  useEffect(() => {
+    if (boundsPageIdx < 0 || !doc?.pages?.length || !doc?.docName) { setSvgReady(false); return }
+    const p = doc.pages[boundsPageIdx]
+    const sid = p.shapeId as string
+    if (!sid) { setSvgReady(false); return }
+    if (getSvgText(sid)) { setSvgReady(true); return }
+    // Not loaded — fetch and set ready when done
+    setSvgReady(false)
+    const pageNum = boundsPageIdx + 1
+    const url = `/docs/${doc.docName}/page-${pageNum}.svg`
+    fetch(url)
+      .then(r => r.ok ? r.text() : null)
+      .then(text => {
+        if (text) {
+          setSvgText(sid, text)
+          setSvgReady(true)
+        }
+      })
+      .catch(() => {})
+  }, [boundsPageIdx, doc])
 
   const activeSource: Source | null =
     (sources.includes('errors') && resolvedErrors.length > 0) ? 'errors' :
@@ -320,12 +389,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         <div className="docview-sources-overlay" onPointerDown={(e: any) => e.stopPropagation()}>
           <div className="docview-sources-header">
             <span>Sources</span>
-            <button
-              className="fleet-layout-btn"
-              style={{ marginLeft: 'auto' }}
-              onPointerUp={(e: any) => { e.stopPropagation(); setShowSources(false) }}
-              title="Back"
-            >←</button>
           </div>
           {ALL_SOURCES.map(src => (
             <label key={src} className="docview-source-row" onPointerDown={(e: any) => e.stopPropagation()}>
@@ -358,8 +421,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         <button
           className={`fleet-layout-btn${showSources ? ' active' : ''}`}
           onPointerUp={(e: any) => { e.stopPropagation(); setShowSources(v => !v) }}
-          title="Configure sources"
-        >⊛</button>
+          title={showSources ? 'Back to viewer' : 'Configure sources'}
+        >{showSources ? '▢' : '⊛'}</button>
         <button
           className="fleet-layout-btn"
           onPointerUp={(e: any) => {
@@ -500,7 +563,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: currentError ? h - errorHeaderH : h }}
       >
-        {bounds && mainEditor ? (
+        {bounds && mainEditor && svgReady ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -510,6 +573,17 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             panelWidth={w}
             maxHeightFraction={1}
             readOnly
+            cameraOverride={(() => {
+              // Zoom to fit page width, center bounds region vertically
+              const pageIdx = boundsPageIdx >= 0 ? boundsPageIdx : 0
+              const pg = doc?.pages?.[pageIdx]
+              if (!pg) return undefined
+              const zoom = w / pg.bounds.width
+              const boundsCenter = bounds.y + bounds.h / 2
+              const panelH = currentError ? h - errorHeaderH : h
+              const camY = -(boundsCenter - (panelH / zoom) / 2)
+              return { x: -pg.bounds.x, y: camY, z: zoom }
+            })()}
           />
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>

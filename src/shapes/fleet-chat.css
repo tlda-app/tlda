@@ -2233,11 +2233,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-docview-body {
   position: relative;
+  width: 100%;
+  height: 100%;
 }
 .fleet-docview .clip-panel {
   border: none;
   border-radius: 0;
   background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+.fleet-docview .clip-panel-canvas {
+  height: 100% !important;
+}
+.fleet-docview .fleet-btn-group,
+.fleet-docview .fleet-btn-group.fleet-btn-group-topright {
+  z-index: 100;
 }
 .fleet-docview-nav {
   display: flex;
@@ -2276,7 +2287,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .docview-sources-overlay {
   position: absolute;
   inset: 0;
-  background: var(--bg-panel, #1e1e2e);
+  background: rgba(255, 255, 255, 0.95);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -2284,18 +2295,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 8px;
   gap: 4px;
 }
+.tl-theme__dark .docview-sources-overlay {
+  background: rgba(30, 30, 46, 0.95);
+}
 .docview-sources-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-dim);
+  color: #666;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding-bottom: 4px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid rgba(0,0,0,0.08);
   margin-bottom: 2px;
+}
+.tl-theme__dark .docview-sources-header {
+  color: var(--text-dim);
+  border-bottom-color: rgba(255,255,255,0.08);
 }
 .docview-sources-back {
   font-size: 11px;
@@ -2315,13 +2333,17 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   border-radius: 3px;
 }
-.docview-source-row:hover { background: rgba(255,255,255,0.05); }
+.docview-source-row:hover { background: rgba(0,0,0,0.05); }
+.tl-theme__dark .docview-source-row:hover { background: rgba(255,255,255,0.05); }
 .docview-source-row input[type="checkbox"] {
   margin: 0;
   cursor: pointer;
 }
 .docview-source-label {
   flex: 1;
+  color: #333;
+}
+.tl-theme__dark .docview-source-label {
   color: var(--text, #cdd6f4);
 }
 .docview-source-desc {
