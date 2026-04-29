@@ -137,8 +137,11 @@ export function FleetHUD({
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
   // cameraYRef (Y): set once, never updated by shape moves.
-  const panOffsetRef = useRef<number | null>(null)
-  const cameraYRef = useRef<number | null>(null)
+  // Persisted in localStorage so panning survives browser reloads.
+  const storedPan = localStorage.getItem('fleet-hud-panOffset')
+  const storedCamY = localStorage.getItem('fleet-hud-cameraY')
+  const panOffsetRef = useRef<number | null>(storedPan !== null ? parseFloat(storedPan) : null)
+  const cameraYRef = useRef<number | null>(storedCamY !== null ? parseFloat(storedCamY) : null)
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -210,7 +213,7 @@ export function FleetHUD({
         r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
       if (hasPage) {
         setDocShapesReady(true)
-        panOffsetRef.current = null  // recompute with real bounds
+        panOffsetRef.current = null; localStorage.removeItem('fleet-hud-panOffset')  // recompute with real bounds
       }
     }, { source: 'all', scope: 'document' })
     return unsub
@@ -266,6 +269,7 @@ export function FleetHUD({
         if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
+          localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
         }
         lastCamX = cam.x
         lastCamZ = cam.z
@@ -418,6 +422,8 @@ export function FleetHUD({
     const onReset = () => {
       panOffsetRef.current = null
       cameraYRef.current = null
+      localStorage.removeItem('fleet-hud-panOffset')
+      localStorage.removeItem('fleet-hud-cameraY')
       setFleetBounds(getFleetBounds(mainEditor))
     }
     // Toggle: FleetIconPill click dispatches fleet-hud-toggle
@@ -488,6 +494,8 @@ export function FleetHUD({
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
+    localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
+    localStorage.setItem('fleet-hud-cameraY', String(cameraYRef.current))
   }
 
   const overlayCam = {
