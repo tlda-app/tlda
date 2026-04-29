@@ -104,6 +104,24 @@ This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in
 
 Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
+### Fleet: managing multiple agents
+
+Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity — you can talk to them, delegate tasks, and see what they're doing.
+
+```bash
+tlda spawn proof-writer --cwd /path/to/paper   # start a named agent
+tlda spawn reviewer --cwd /path/to/paper        # start another
+```
+
+Agents register with the fleet server on startup. From any agent's session, you can:
+
+- **`chat()`** — send messages to other agents or the user
+- **`delegate()`** — assign a task to another agent
+- **`wiretap()`** — listen in on conversations between other agents
+- **`monitor_add()`** — subscribe to document changes (annotations, builds)
+
+The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Click an agent's name to filter the chat to that conversation.
+
 <img src="docs/images/tlda-full-workspace.png" alt="Full workspace — Claude Code, tlda viewer, and fleet agents" width="100%">
 
 ## Sharing
