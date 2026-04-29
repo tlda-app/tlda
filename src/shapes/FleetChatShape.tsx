@@ -1244,6 +1244,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const autoscrollPausedRef = useRef(false)
   useEffect(() => { autoscrollPausedRef.current = autoscrollPaused }, [autoscrollPaused])
   const lastScrollTopRef = useRef(0)
+  // Timestamp of last programmatic scroll — suppress scroll-up detection briefly after
+  // to avoid virtualizer re-measurements falsely triggering pause.
+  const lastAutoScrollRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
@@ -1266,7 +1269,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Detect scroll-up: scrollTop decreased AND we're far from bottom.
       // This catches Magic Mouse / trackpad gestures that send tiny deltaY
       // values the wheel handler misses.
-      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current) {
+      // Guard: ignore for 500ms after programmatic auto-scroll — virtualizer
+      // re-measurements can decrease scrollTop briefly, falsely triggering pause.
+      const timeSinceAutoScroll = Date.now() - lastAutoScrollRef.current
+      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current && timeSinceAutoScroll > 500) {
         setAutoscrollPaused(true)
         userScrolledUp.current = true
         setShowScrollBtn(true)
@@ -1315,6 +1321,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!el) return
     const ro = new ResizeObserver(() => {
       if (userScrolledUp.current || autoscrollPausedRef.current) return
+      lastAutoScrollRef.current = Date.now()
       el.scrollTop = el.scrollHeight
       lastScrollTopRef.current = el.scrollTop
     })
@@ -1327,16 +1334,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
     if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
+      lastAutoScrollRef.current = Date.now()
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Diagnostic: log scroll state after scrollToIndex to find why it misses
       requestAnimationFrame(() => {
         const el = chatLogRef.current
         if (!el) return
-        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (dist > 5) {
-          console.warn(`[chat-scroll] missed bottom by ${dist.toFixed(0)}px — scrollHeight=${el.scrollHeight} scrollTop=${el.scrollTop.toFixed(0)} clientHeight=${el.clientHeight} items=${rawItems.length} totalSize=${virtualizer.getTotalSize()}`)
-        }
-        // Still chase — but we're logging the miss to find the root cause
+        lastAutoScrollRef.current = Date.now()
         el.scrollTop = el.scrollHeight
         lastScrollTopRef.current = el.scrollTop
       })
@@ -1357,6 +1360,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
     if (dist > 1) {
+      lastAutoScrollRef.current = Date.now()
       el.scrollTop = el.scrollHeight
       lastScrollTopRef.current = el.scrollTop
     }
