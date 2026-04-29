@@ -28,6 +28,11 @@ The canvas is shared. Collaborators and agents see each other's annotations as t
 
 **Labels are links.** When an agent shares a reference like `lem:bias-bound`, it becomes a clickable link. Hover to see the labeled proposition rendered in a floating viewer — a window into another part of the document that you can pan and zoom without leaving where you are.
 
+<img src="docs/images/tlda-ref-1-hover.png" alt="Hover a label to preview the referenced result" width="100%">
+<img src="docs/images/tlda-ref-2-click.png" alt="Click to open the floating viewer" width="100%">
+<img src="docs/images/tlda-ref-3-go.png" alt="Navigate to the referenced page" width="100%">
+<img src="docs/images/tlda-ref-4-return.png" alt="Return to where you were" width="100%">
+
 **Highlighting is semantic.** Draw on the page with a stylus and tlda extracts the underlying text, so agents can read what you highlighted without a screenshot. Different colors carry meaning (red = wrong, yellow = question, green = approve, etc.) via a color picker on the right edge. A source context card shows the corresponding LaTeX source.
 
 <img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="100%">
