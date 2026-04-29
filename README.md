@@ -10,8 +10,6 @@ A collaborative workspace for reading and writing LaTeX documents with AI agents
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
-**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time.
-
 ## Why this exists
 
 When an AI agent writes faster than you can read, the bottleneck isn't production — it's verification. You need to stay oriented in a document that changes between readings, verify proofs that reference equations scattered across 40 pages, and communicate with agents about specific passages without losing your place.
