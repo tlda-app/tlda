@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
+import { onReloadSignal } from '../useYjsSync'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
@@ -410,6 +411,15 @@ export function FleetHUD({
   const aliveCount = useMemo(() => {
     return agents.filter((a: any) => !a.dead && !a.human).length
   }, [agents])
+
+  // Reset camera on build reload — page bounds may have changed
+  useEffect(() => {
+    return onReloadSignal(() => {
+      panOffsetRef.current = null
+      cameraYRef.current = null
+      setFleetBounds(getFleetBounds(mainEditor))
+    })
+  }, [mainEditor])
 
   // Emergency reset: when the Fleet button in the TOC is clicked, it
   // recreates the fleet shapes AND fires a `fleet-hud-reset` event.
