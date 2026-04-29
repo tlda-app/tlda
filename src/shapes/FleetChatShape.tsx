@@ -1328,16 +1328,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Fallback: direct scrollTop in case scrollToIndex fires before the container
-      // has a stable height (e.g. initial mount before virtualizer measures the element),
-      // or when an existing item grows (activity cards, etc.) without adding new items.
-      requestAnimationFrame(() => {
+      // Chase the scroll: virtualizer measures asynchronously, so a single
+      // scrollToIndex lands short. Multiple fallbacks catch delayed measurements.
+      const chase = () => {
         const el = chatLogRef.current
-        if (el) {
-          el.scrollTop = el.scrollHeight
-          lastScrollTopRef.current = el.scrollTop
-        }
-      })
+        if (!el || userScrolledUp.current || autoscrollPausedRef.current) return
+        el.scrollTop = el.scrollHeight
+        lastScrollTopRef.current = el.scrollTop
+      }
+      requestAnimationFrame(chase)
+      requestAnimationFrame(() => requestAnimationFrame(chase))
+      setTimeout(chase, 100)
     }
   // rawItems identity changes whenever any message content changes (not just length),
   // so this fires for growing activity cards and in-place updates too.

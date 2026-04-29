@@ -525,7 +525,7 @@ function syncSessionWatchers(agentList) {
     // Strip worktree suffixes so the project hash matches where Claude Code
     // stores the JSONL (at the original project root, not the worktree).
     const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
-    const projectHash = canonicalCwd.replace(/\//g, '-')
+    const projectHash = canonicalCwd.replace(/[/.]/g, '-')
 
     // Pick the freshest JSONL across all session_ids for this agent.
     // We must skip any session_id that's claimed by *another* live agent's
