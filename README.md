@@ -116,6 +116,7 @@ The primary interface is touch/stylus — keyboard shortcuts exist but aren't re
 
 **Highlighter** — 11-color slider on the right edge. On iPad, double-tap with stylus to switch colors. On desktop, click the dots.
 
+<img src="docs/images/tlda-highlighter-toolbar.png" alt="Selecting the highlighter tool from the toolbar" width="100%">
 <img src="docs/images/tlda-color-picker.png" alt="Highlighter color picker on the right edge" width="100%">
 
 **Panel** — expandable side panel (top-right) with table of contents and notes list.
