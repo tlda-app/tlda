@@ -197,7 +197,9 @@ Every successful build is automatically committed to a per-project git repositor
 
 The version history UI reads from the shadow repo. When you click an older timestamp, tlda checks out that commit's SVGs and shows them side by side with the current version.
 
-**Mirroring** (optional): on the project's index page, you can enable mirroring to have each successful build automatically synced to your working copy. When enabled, tlda fetches the shadow commit, stashes your local changes, checks out the shadow state on a `tlda-shadow/main` branch, commits, and unstashes — so your working copy always has a git history of every build.
+Chat messages in fleet are tagged with the shadow version you're viewing, so agents always know which version of the document you're looking at.
+
+**Mirroring** (optional): on the project's index page, you can enable mirroring to have each successful build automatically synced to your working copy. When enabled, tlda fetches the shadow commit, stashes your local changes, checks out the shadow state on a `tlda-shadow/main` branch, commits, and unstashes — so your working copy always has a git history of every build. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
 
 ## Voice input
 
