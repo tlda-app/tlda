@@ -100,7 +100,6 @@ npm install -g github:qtm285/tlda
 tlda config init                                   # generate auth tokens (one time)
 tlda server start                                  # start the server
 tlda create my-paper --dir /path/to/paper --main paper.tex
-tlda watch-all start                               # live rebuild on save
 tlda open my-paper                                 # open the viewer for this doc
 tlda open                                          # open the index (lists all docs)
 ```
