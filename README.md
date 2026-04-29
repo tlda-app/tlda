@@ -191,6 +191,14 @@ A gray divider bar appears between the two columns. Drag it left or right to mov
 
 Click the current (top) timestamp to dismiss the history column.
 
+### How it works: the shadow repo
+
+Every successful build is automatically committed to a per-project git repository (the "shadow repo") at `server/projects/{name}/shadow-repo/`. This is internal to tlda — nobody should touch it directly. Each commit captures the source snapshot at that build, so the full history of your document is preserved regardless of your own git habits.
+
+The version history UI reads from the shadow repo. When you click an older timestamp, tlda checks out that commit's SVGs and shows them side by side with the current version.
+
+**Mirroring** (optional): on the project's index page, you can enable mirroring to have each successful build automatically synced to your working copy. When enabled, tlda fetches the shadow commit, stashes your local changes, checks out the shadow state on a `tlda-shadow/main` branch, commits, and unstashes — so your working copy always has a git history of every build.
+
 ## Voice input
 
 Dictate into chat instead of typing. **Right Shift** toggles recording on/off. Say "send" to dispatch the message. Say "right chat" or "left chat" to switch between chat panels.
