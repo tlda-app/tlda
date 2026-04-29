@@ -26,16 +26,20 @@ Chat, notes, and agent activity live on the same canvas as your paper. Everythin
 
 ### Labels are links
 
-Hover any `\ref` or `\eqref` to preview the target. Click to open it, navigate to that page, then return.
+When an agent mentions a label in chat, it renders as a clickable link. Hover to see a preview of the target. Click to pin the preview in place — arrow buttons appear so you can navigate to the target page and back.
 
 <img src="docs/images/tlda-ref-1-hover.png" alt="1. Hover a label to preview" width="49%"> <img src="docs/images/tlda-ref-2-click.png" alt="2. Click to open the viewer" width="49%">
 <img src="docs/images/tlda-ref-3-go.png" alt="3. Navigate to the target page" width="49%"> <img src="docs/images/tlda-ref-4-return.png" alt="4. Return to where you were" width="49%">
 
 ### Highlighting is semantic
 
-Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source, and a chip appears in chat so agents can see what you're pointing at.
+To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
 
-<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-source-card.png" alt="Source context card showing LaTeX source for a highlight" width="49%">
+<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
+
+Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe to highlight notifications to see them automatically.
+
+<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
 
 ### Multiple-choice notes
 
@@ -158,10 +162,6 @@ Each shape has a resize/move handle — click it to enter layout mode, then drag
 The primary interface is touch/stylus — keyboard shortcuts exist but aren't required.
 
 **Ping** — tap the small circle in the bottom-right corner to get an agent's attention. Captures a screenshot and your viewport.
-
-**Highlighter** — 11-color slider on the right edge. On iPad, double-tap with stylus to switch colors. On desktop, click the dots.
-
-<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter color dots on the right edge of the canvas" width="100%">
 
 **Panel** — expandable side panel (top-right) with table of contents and notes list.
 
