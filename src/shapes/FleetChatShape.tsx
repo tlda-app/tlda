@@ -1512,17 +1512,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When the textarea resizes (voice dictation), the sticky container grows,
-  // which increases scrollHeight. Scroll to stay at bottom if we were there.
-  // No container shrinking → no bounce feedback loop.
+  // When the textarea GROWS (not collapses), scroll to stay at bottom.
+  // The onInput handler does height=auto→height=scrollHeight, causing a
+  // brief collapse on every whisper chunk. Only scroll when the final
+  // height is LARGER than the previous stable height — skip the collapse.
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
+    let stableH = ta.offsetHeight
     const ro = new ResizeObserver(() => {
-      if (wasNearBottomRef.current) {
+      const h = ta.offsetHeight
+      if (h > stableH && wasNearBottomRef.current) {
         const log = chatLogRef.current
         if (log) log.scrollTop = log.scrollHeight
       }
+      // Only update stable height when height increases or settles
+      // (skip the brief collapse to height:auto which is ~0)
+      if (h > 20) stableH = h
     })
     ro.observe(ta)
     return () => ro.disconnect()
