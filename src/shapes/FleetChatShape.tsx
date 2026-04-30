@@ -1349,7 +1349,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const nearBottom = dist < SCROLL_THRESHOLD
       // Don't flip wasNearBottomRef during textarea resizes — the chat log
       // shrinks (increasing dist) but the user didn't scroll up.
-      if (!textareaResizingRef.current) wasNearBottomRef.current = nearBottom
+      wasNearBottomRef.current = nearBottom
       if (nearBottom) {
         if (autoscrollPausedRef.current) {
           setAutoscrollPaused(false)
@@ -1371,7 +1371,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (textareaResizingRef.current) return
       if (wasNearBottomRef.current) scrollToBottom()
     })
     ro.observe(el)
@@ -1393,10 +1392,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [rawItems])
 
   // Chase virtualizer size changes (items measured taller than estimate).
-  // Suppressed during textarea resizes.
+  // Chase virtualizer size changes.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (textareaResizingRef.current) return
     if (wasNearBottomRef.current) scrollToBottom()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
@@ -1513,37 +1511,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea resizes (voice dictation), the chat log shrinks (flex).
-  // This increases distFromBottom, which would flip wasNearBottomRef false.
-  // Fix: suppress onScroll's wasNearBottomRef update during textarea resizes
-  // so the ref stays true if it was true before the resize started.
-  const textareaResizingRef = useRef(false)
+  // When the textarea resizes (voice dictation), the sticky container grows,
+  // which increases scrollHeight. Scroll to stay at bottom if we were there.
+  // No container shrinking → no bounce feedback loop.
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
-    let prevTaH = ta.offsetHeight
-    let clearTimer: ReturnType<typeof setTimeout> | null = null
-    let scrollRaf = 0
     const ro = new ResizeObserver(() => {
-      const newTaH = ta.offsetHeight
-      if (newTaH === prevTaH) return
-      prevTaH = newTaH
-      // Mark as resizing — suppresses other scroll triggers from firing
-      textareaResizingRef.current = true
-      if (clearTimer) clearTimeout(clearTimer)
-      clearTimer = setTimeout(() => { textareaResizingRef.current = false }, 200)
-      // Keep chat at bottom during resize — coalesced via rAF to avoid
-      // micro-loop (scrollTop → scroll event → re-layout → ResizeObserver)
       if (wasNearBottomRef.current) {
-        cancelAnimationFrame(scrollRaf)
-        scrollRaf = requestAnimationFrame(() => {
-          const log = chatLogRef.current
-          if (log) log.scrollTop = log.scrollHeight
-        })
+        const log = chatLogRef.current
+        if (log) log.scrollTop = log.scrollHeight
       }
     })
     ro.observe(ta)
-    return () => { ro.disconnect(); if (clearTimer) clearTimeout(clearTimer) }
+    return () => ro.disconnect()
   }, [])
 
   const agentNames = useMemo(() => {
@@ -2265,8 +2246,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           {/* Thinking/compacting — inside scroll container as a normal line.
               When thinking stops, text fades but space stays until next message. */}
           <ThinkingStatus thinkingAgents={thinkingAgents} compactingAgents={compactingAgents} ctx={ctx} rawItemsLength={rawItems.length} />
-        </div>
 
+        {/* Sticky bottom section — stays pinned to scroll viewport bottom.
+            Textarea grows INTO the scroll content, pushing messages up via scroll.
+            Container height never changes → no bounce from flex resize. */}
+        <div style={{ position: 'sticky', bottom: 0, zIndex: 10, background: 'var(--bg, #0f0f1a)' }}>
         {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
         <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
           {/* Pause/play toggle — always visible */}
@@ -2340,13 +2324,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Input */}
+        {/* Input — inside sticky container */}
         <div
           className="fleet-chat-input-area"
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
-            flexShrink: 0,
             position: 'relative',
           }}
         >
@@ -2754,6 +2737,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
           </div>
         </div>
+        </div>{/* close sticky */}
+        </div>{/* close scroll container (chatLogRef) */}
       </div>
     </HTMLContainer>
   )
