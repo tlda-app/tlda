@@ -2314,7 +2314,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 padding: 4,
                 position: 'sticky',
                 bottom: 0,
-                background: 'var(--color-background, #1d1d1d)',
+                background: 'inherit',
                 zIndex: 5,
               }}
             >
