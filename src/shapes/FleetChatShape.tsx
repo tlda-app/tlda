@@ -1293,7 +1293,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onScroll = () => {
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight
       const nearBottom = dist < SCROLL_THRESHOLD
-      wasNearBottomRef.current = nearBottom
+      // Don't flip wasNearBottomRef during textarea resizes — the chat log
+      // shrinks (increasing dist) but the user didn't scroll up.
+      if (!textareaResizingRef.current) wasNearBottomRef.current = nearBottom
       if (nearBottom) {
         if (autoscrollPausedRef.current) {
           setAutoscrollPaused(false)
@@ -1452,32 +1454,27 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea resizes, compensate scrollTop so the chat log doesn't shift.
-  // The textarea and chat log share a flex column — as the textarea grows,
-  // clientHeight shrinks, increasing distFromBottom. The onScroll handler
-  // would then flip wasNearBottomRef to false. We prevent this by adjusting
-  // scrollTop to compensate for the height change BEFORE onScroll fires.
+  // When textarea resizes (voice dictation), the chat log shrinks (flex).
+  // This increases distFromBottom, which would flip wasNearBottomRef false.
+  // Fix: suppress onScroll's wasNearBottomRef update during textarea resizes
+  // so the ref stays true if it was true before the resize started.
+  const textareaResizingRef = useRef(false)
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
-    const log = chatLogRef.current
-    if (!ta || !log) return
+    if (!ta) return
     let prevTaH = ta.offsetHeight
+    let clearTimer: ReturnType<typeof setTimeout> | null = null
     const ro = new ResizeObserver(() => {
       const newTaH = ta.offsetHeight
-      const delta = newTaH - prevTaH
-      if (delta === 0) return
+      if (newTaH === prevTaH) return
       prevTaH = newTaH
-      // If we were at/near bottom before the resize, stay at bottom.
-      // Check BEFORE the resize's scroll event fires — distFromBottom
-      // is still based on the pre-resize clientHeight.
-      const dist = log.scrollHeight - log.scrollTop - log.clientHeight
-      if (dist < SCROLL_THRESHOLD + Math.abs(delta) + 10) {
-        log.scrollTop = log.scrollHeight
-        wasNearBottomRef.current = true
-      }
+      // Mark as resizing — suppresses onScroll from flipping wasNearBottomRef
+      textareaResizingRef.current = true
+      if (clearTimer) clearTimeout(clearTimer)
+      clearTimer = setTimeout(() => { textareaResizingRef.current = false }, 200)
     })
     ro.observe(ta)
-    return () => ro.disconnect()
+    return () => { ro.disconnect(); if (clearTimer) clearTimeout(clearTimer) }
   }, [])
 
   const agentNames = useMemo(() => {
