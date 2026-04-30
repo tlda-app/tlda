@@ -1348,8 +1348,13 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  // ONE scroll trigger: when rawItems change, scroll to bottom IF near bottom.
-  // On initial load, always scroll to bottom.
+  // ONE scroll trigger: when rawItems change OR thinking state changes,
+  // scroll to bottom IF near bottom. On initial load, always scroll.
+  // Thinking state is included because ThinkingStatus renders inside the
+  // scroll container — when it appears, scrollHeight grows, and dist
+  // increases past the threshold. Without this, the agent's response
+  // wouldn't auto-scroll because dist > 80 from the thinking indicator.
+  const thinkingCount = thinkingAgents.size + compactingAgents.size
   useEffect(() => {
     if (rawItems.length === 0) return
     const el = chatLogRef.current
@@ -1360,7 +1365,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       el.scrollTop = el.scrollHeight
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems])
+  }, [rawItems, thinkingCount])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
