@@ -304,8 +304,8 @@ function ElapsedTime({ startMs }: { startMs: number }) {
 }
 
 /**
- * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
- * When thinking stops, the text fades out but the space remains.
+ * ThinkingStatus — inside the scroll container as a normal chat line.
+ * When thinking stops, the text fades out but the space stays.
  * When the next message arrives (rawItemsLength changes), the space collapses.
  */
 function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
@@ -315,26 +315,22 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
   rawItemsLength: number
 }) {
   const hasActive = thinkingAgents.size > 0 || compactingAgents.size > 0
-  // Track "recently stopped" — keep the space until rawItems changes
   const prevActiveRef = useRef(hasActive)
-  const [ghost, setGhost] = useState(false) // true = text hidden, space kept
+  const [ghost, setGhost] = useState(false)
   const ghostRawItemsRef = useRef(rawItemsLength)
 
-  // Transition: active → ghost (text fades, space stays)
   if (prevActiveRef.current && !hasActive && !ghost) {
     setGhost(true)
     ghostRawItemsRef.current = rawItemsLength
   }
   prevActiveRef.current = hasActive
 
-  // Clear ghost when new messages arrive
   useEffect(() => {
     if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
       setGhost(false)
     }
   }, [ghost, rawItemsLength])
 
-  // Also clear ghost after a timeout in case no message comes
   useEffect(() => {
     if (!ghost) return
     const t = setTimeout(() => setGhost(false), 3000)
@@ -344,14 +340,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
   if (!hasActive && !ghost) return null
 
   return (
-    <div style={{
-      padding: '0 8px',
-      fontSize: 11,
-      flexShrink: 0,
-      // Ghost: text invisible, space preserved
-      opacity: ghost ? 0 : 0.6,
-      transition: 'opacity 0.2s',
-    }}>
+    <div style={{ padding: '0 8px', fontSize: 11, opacity: ghost ? 0 : 0.6, transition: 'opacity 0.2s' }}>
       {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
         <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
           <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
@@ -366,8 +355,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
           {' '}<ElapsedTime startMs={startTs} />
         </div>
       ))}
-      {/* Ghost placeholder — invisible but same height */}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
+      {ghost && <div style={{ padding: '2px 0', height: 20 }} />}
     </div>
   )
 }
@@ -788,9 +776,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, imageSrcs, editor])
 
-  // Virtualizer for DOM performance — only renders visible messages.
-  // Scroll-to-bottom uses plain scrollTop (not scrollToIndex) to avoid
-  // the double-scroll bounce from scrollToIndex + rAF.
+  // Virtual scroll — only mount DOM nodes for visible messages.
+  // Placed after rawItems so count is always defined.
+  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
+  // A close estimate prevents the "scrolled to middle" bug where setting
+  // scrollTop = estimated-total puts you far from the actual bottom.
   const virtualizer = useVirtualizer({
     count: rawItems.length,
     getScrollElement: () => chatLogRef.current,
@@ -1334,7 +1324,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // already include the new content's height).
   const wasNearBottomRef = useRef(true)
 
-  // Scroll to bottom — single rAF-coalesced scrollTop assignment.
+  // Scroll to bottom — rAF-coalesced scrollTop assignment.
+  // Does NOT use virtualizer.scrollToIndex (caused double-scroll bounce).
   const scrollRafRef = useRef<number>(0)
   const scrollToBottom = useCallback(() => {
     const el = chatLogRef.current
@@ -1382,36 +1373,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (textareaResizingRef.current) return
       if (wasNearBottomRef.current) scrollToBottom()
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [scrollToBottom])
 
-  // On initial mount, scroll to bottom after a short delay so the virtualizer
-  // has time to measure items and set scrollHeight correctly.
-  const initialScrollDone = useRef(false)
-  useEffect(() => {
-    if (initialScrollDone.current || rawItems.length === 0) return
-    initialScrollDone.current = true
-    // Double-rAF: first rAF lets virtualizer render, second rAF scrolls after measurement
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (chatLogRef.current) {
-          chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-          wasNearBottomRef.current = true
-        }
-      })
-    })
-  }, [rawItems.length])
-
   // Scroll to bottom when new messages arrive — only if we were near the bottom
-  // BEFORE the new content arrived. Suppressed during textarea resizes to avoid
-  // bounce (textarea resize changes container height → virtualizer recalculates
-  // → totalSize changes → this fires → scrollToBottom fights with resize).
+  // BEFORE the new content arrived. Check both the ref (set by onScroll) and
+  // current position (catches the race where scrollTop was set programmatically
+  // but onScroll hasn't fired yet).
   useEffect(() => {
-    if (rawItems.length === 0 || textareaResizingRef.current) return
+    if (rawItems.length === 0) return
     const el = chatLogRef.current
     const currentlyNear = el ? (el.scrollHeight - el.scrollTop - el.clientHeight) < SCROLL_THRESHOLD : true
     if (wasNearBottomRef.current || currentlyNear) {
@@ -1420,12 +1393,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
-  // Chase virtualizer size changes — items measured taller than the 65px
-  // estimate increase totalSize after the initial scroll.
-  // Suppressed during textarea resizes.
+  // Chase virtualizer size changes (items measured taller than estimate).
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (textareaResizingRef.current) return
     if (wasNearBottomRef.current) scrollToBottom()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
@@ -2238,7 +2208,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           className="fleet-chat-log"
           style={{
             flex: 1,
-            minHeight: 0, // crucial: allows flex item to shrink below content height
+            minHeight: 0,
             overflowY: 'auto',
             overflowX: 'hidden',
             padding: '4px 0',
@@ -2281,14 +2251,10 @@ function FleetChatInner({ shape }: { shape: any }) {
               onDismiss={() => closeTerminal(agentId)}
             />
           ))}
+          {/* Thinking/compacting — inside scroll container as a normal line.
+              When thinking stops, text fades but space stays until next message. */}
+          <ThinkingStatus thinkingAgents={thinkingAgents} compactingAgents={compactingAgents} ctx={ctx} rawItemsLength={rawItems.length} />
         </div>
-
-        {/* Thinking/compacting indicators — rendered OUTSIDE the scroll container
-            so they don't change scrollHeight and cause jarring scroll shifts. */}
-        {/* Thinking/compacting status — takes up space like a chat line.
-            When thinking stops, the text fades out but the space remains until
-            the next message arrives (rawItems changes), preventing layout jerk. */}
-        <ThinkingStatus thinkingAgents={thinkingAgents} compactingAgents={compactingAgents} ctx={ctx} rawItemsLength={rawItems.length} />
 
         {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
         <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
