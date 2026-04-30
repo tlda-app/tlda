@@ -1251,8 +1251,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [autoscrollPaused, setAutoscrollPaused] = useState(false)
+  const [autoscrollPaused, _setAutoscrollPaused] = useState(false)
   const autoscrollPausedRef = useRef(false)
+  // Wrap setter with logging — diagnose every state change
+  const setAutoscrollPaused = useCallback((v: boolean | ((p: boolean) => boolean)) => {
+    _setAutoscrollPaused(prev => {
+      const next = typeof v === 'function' ? v(prev) : v
+      if (next !== prev) {
+        const el = chatLogRef.current
+        const dist = el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : -1
+        console.log(`[chat-scroll] autoscroll ${next ? 'PAUSED' : 'RESUMED'} distFromBottom=${dist} trigger=${new Error().stack?.split('\n')[3]?.trim() || '?'}`)
+      }
+      return next
+    })
+  }, [])
   useEffect(() => { autoscrollPausedRef.current = autoscrollPaused }, [autoscrollPaused])
   const lastScrollTopRef = useRef(0)
   useEffect(() => {
@@ -1338,8 +1350,14 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (el) {
           el.scrollTop = el.scrollHeight
           lastScrollTopRef.current = el.scrollTop
+          const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+          if (dist > 1) console.log(`[chat-scroll] scroll-to-bottom MISSED by ${Math.round(dist)}px after rAF (scrollH=${el.scrollHeight} clientH=${el.clientHeight})`)
         }
       })
+    } else if (rawItems.length > 0) {
+      const el = chatLogRef.current
+      const dist = el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : -1
+      console.log(`[chat-scroll] new message arrived but SKIPPED scroll: paused=${autoscrollPausedRef.current} scrolledUp=${userScrolledUp.current} distBottom=${dist}`)
     }
   // rawItems identity changes whenever any message content changes (not just length),
   // so this fires for growing activity cards and in-place updates too.
