@@ -9,6 +9,8 @@ import {
   HTMLContainer,
   T,
   createShapeId,
+  useEditor,
+  useValue,
 } from 'tldraw'
 import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
@@ -16,6 +18,67 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
+const CHAT_W = 400
+const CHAT_H = 600
+const SNAP_THRESHOLD = 20 // px distance for edge snapping
+const SNAP_GAP = 10 // gap between shapes when snapped
+
+const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+/**
+ * Snap a drop point (top-left of new 400×600 chat) to nearby fleet shape edges.
+ * Snaps X to right-edge alignment (new chat sits right of existing shape)
+ * and Y to top-edge or bottom-edge alignment.
+ */
+function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number } {
+  const fleetShapes = editor.getCurrentPageShapes()
+    .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== excludeId)
+  if (fleetShapes.length === 0) return point
+
+  let { x, y } = point
+  const newRight = x + CHAT_W
+  const newBottom = y + CHAT_H
+
+  // Collect edges from all fleet shapes
+  const edges: { type: string; val: number; shapeEdge: string }[] = []
+  for (const s of fleetShapes) {
+    const b = editor.getShapePageBounds(s.id)
+    if (!b) continue
+    // X edges: snap new chat's left to existing right (with gap), or right to existing left
+    edges.push({ type: 'x-left-to-right', val: b.x + b.w + SNAP_GAP, shapeEdge: 'right' })
+    edges.push({ type: 'x-right-to-left', val: b.x - SNAP_GAP - CHAT_W, shapeEdge: 'left' })
+    edges.push({ type: 'x-left-to-left', val: b.x, shapeEdge: 'left-align' })
+    // Y edges: snap top-to-top, top-to-bottom, bottom-to-top
+    edges.push({ type: 'y-top-to-top', val: b.y, shapeEdge: 'top-align' })
+    edges.push({ type: 'y-top-to-bottom', val: b.y + b.h + SNAP_GAP, shapeEdge: 'below' })
+    edges.push({ type: 'y-bottom-to-top', val: b.y - SNAP_GAP - CHAT_H, shapeEdge: 'above' })
+  }
+
+  // Find closest X snap
+  let bestXDist = SNAP_THRESHOLD
+  for (const e of edges) {
+    if (!e.type.startsWith('x-')) continue
+    const dist = Math.abs(e.val - x)
+    if (dist < bestXDist) { bestXDist = dist; x = e.val }
+  }
+  // Also snap right edge
+  for (const e of edges) {
+    if (!e.type.startsWith('x-')) continue
+    const dist = Math.abs(e.val - (x + CHAT_W))
+    // Only snap right edge if it's closer than the left-edge snap we already found
+    if (dist < bestXDist) { bestXDist = dist; /* don't move — right edge snap is implicit */ }
+  }
+
+  // Find closest Y snap
+  let bestYDist = SNAP_THRESHOLD
+  for (const e of edges) {
+    if (!e.type.startsWith('y-')) continue
+    const dist = Math.abs(e.val - y)
+    if (dist < bestYDist) { bestYDist = dist; y = e.val }
+  }
+
+  return { x, y }
+}
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
@@ -350,6 +413,13 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint = mainEditor.screenToPage(screenPoint)
     }
 
+    // Snap the drop point to nearby fleet shape edges (for agent/label pills creating new chats)
+    const pillType = pill.props?.pillType
+    if (pillType === 'agent' || pillType === 'label') {
+      const hitEditor = mainEditor || editor
+      dropPoint = snapDropPoint(hitEditor, dropPoint, pill.id)
+    }
+
     dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
 
     // Ephemeral: delete after drop
@@ -357,10 +427,25 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   component(shape: any) {
+    const editor = useEditor()
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
     const isAgentPill = pillType === 'agent' || pillType === 'label'
+
+    // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
+    const overFleetShape = useValue('pill-over-fleet', () => {
+      if (!isAgentPill) return false
+      const bounds = editor.getShapePageBounds(shape.id)
+      if (!bounds) return false
+      const cx = bounds.x + bounds.w / 2
+      const cy = bounds.y + bounds.h / 2
+      return editor.getCurrentPageShapes().some(s => {
+        if (s.id === shape.id || !FLEET_TYPES.includes(s.type as string)) return false
+        const sb = editor.getShapePageBounds(s.id)
+        return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
+      })
+    }, [editor, shape.id, isAgentPill])
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
@@ -418,9 +503,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
           </span>
         </div>
         {/* Ghost: show where a new chat will be created when dropping an agent/label pill.
+            Hidden when over an existing fleet shape (drop = filter update, not new chat).
             Chat is created at the pill's center (PILL_W/2, PILL_H/2), so the ghost's
             top-left starts there. Styled to match an actual fleet-chat shape. */}
-        {isAgentPill && (
+        {isAgentPill && !overFleetShape && (
           <div
             className="fleet-chat-shape"
             style={{
