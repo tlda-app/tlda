@@ -33,6 +33,7 @@ const _snapState = {
   lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
   active: false, // true during drag
   expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
+  prevSnapMode: undefined as boolean | undefined,
 }
 
 /**
@@ -391,6 +392,14 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     if (timerId) clearTimeout(timerId)
     _snapState.active = true
     _snapState.expanded = false
+
+    // Enable snap mode during pill drag so TLDraw shows native snap guides.
+    // Save previous state to restore on translate end.
+    const pill = shape as any
+    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
+      _snapState.prevSnapMode = this.editor.getInstanceState().isSnapMode
+      this.editor.updateInstanceState({ isSnapMode: true })
+    }
   }
 
   // During drag: expand pill to chat dimensions when over empty canvas,
@@ -477,8 +486,13 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint.x -= CHAT_W / 2
       dropPoint.y -= CHAT_H / 2
     }
+    // Restore snap mode
+    if (_snapState.prevSnapMode !== undefined) {
+      this.editor.updateInstanceState({ isSnapMode: _snapState.prevSnapMode })
+    }
     _snapState.active = false
     _snapState.expanded = false
+    _snapState.prevSnapMode = undefined
     _snapState.deltaX = 0
     _snapState.deltaY = 0
     _snapState.lines = []
