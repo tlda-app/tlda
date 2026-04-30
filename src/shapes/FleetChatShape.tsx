@@ -1324,23 +1324,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // already include the new content's height).
   const wasNearBottomRef = useRef(true)
 
-  // Scroll to bottom — rAF-coalesced scrollTop assignment.
-  // Does NOT use virtualizer.scrollToIndex (caused double-scroll bounce).
-  const scrollRafRef = useRef<number>(0)
+  // Scroll to bottom via virtualizer.scrollToIndex — positions the viewport
+  // at the last item accurately (unlike scrollTop = scrollHeight which
+  // depends on estimated sizes). No rAF followup to avoid double-scroll.
   const scrollToBottom = useCallback(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    cancelAnimationFrame(scrollRafRef.current)
-    scrollRafRef.current = requestAnimationFrame(() => {
-      if (chatLogRef.current) {
-        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-      }
-    })
+    if (rawItems.length > 0) {
+      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+    }
     wasNearBottomRef.current = true
     userScrolledUp.current = false
     setShowScrollBtn(false)
     setAutoscrollPaused(false)
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawItems.length])
 
   // Track scroll position continuously via onScroll.
   // This fires for both user scrolls AND programmatic scrolls, but that's fine —
