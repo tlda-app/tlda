@@ -28,11 +28,11 @@ const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docvie
 // Module-level snap state — written by onTranslate, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
 const _snapState = {
-  deltaX: 0, // offset to apply to the ghost from its natural position
+  deltaX: 0,
   deltaY: 0,
-  // Snap lines for visual feedback: arrays of { axis, pos } in page coords
   lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
   active: false, // true during drag
+  expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
 }
 
 /**
@@ -379,7 +379,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => false
   override canBind = () => false
-  override canSnap = () => false
+  override canSnap = (shape: any) => shape.props?.pillType === 'agent' || shape.props?.pillType === 'label'
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
@@ -390,10 +390,12 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
     if (timerId) clearTimeout(timerId)
     _snapState.active = true
+    _snapState.expanded = false
   }
 
-  // Compute snap during drag — updates the module-level _snapState so the
-  // ghost component can offset itself and show snap lines.
+  // During drag: expand pill to chat dimensions when over empty canvas,
+  // collapse back when over a fleet shape. TLDraw's native snap handles
+  // the expanded pill like any other shape.
   override onTranslate = (_initial: TLShape, current: TLShape) => {
     const pill = current as any
     if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
@@ -402,76 +404,39 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
     const hitEditor = mainEditor || editor
 
-    // Get the pill center in main editor page space
+    // Check if pill center is over an existing fleet shape
     const bounds = editor.getShapePageBounds(pill.id)
-    let cx = bounds ? bounds.x + bounds.w / 2 : pill.x + PILL_W / 2
-    let cy = bounds ? bounds.y + bounds.h / 2 : pill.y + PILL_H / 2
-    if (mainEditor && mainEditor !== editor) {
-      const sp = editor.pageToScreen({ x: cx, y: cy })
-      const mp = mainEditor.screenToPage(sp)
-      cx = mp.x; cy = mp.y
-    }
+    const cx = bounds ? bounds.x + bounds.w / 2 : pill.x + (pill.props.w || PILL_W) / 2
+    const cy = bounds ? bounds.y + bounds.h / 2 : pill.y + (pill.props.h || PILL_H) / 2
 
-    // Ghost top-left = pill center (that's where the chat would be created)
-    const ghostX = cx
-    const ghostY = cy
-    const ghostRight = ghostX + CHAT_W
-    const ghostBottom = ghostY + CHAT_H
-
-    // Collect snap candidates from fleet shapes
-    const fleetShapes = hitEditor.getCurrentPageShapes()
+    let overFleet = false
+    const allFleet = hitEditor.getCurrentPageShapes()
       .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
-
-    let bestDX = 0, bestDY = 0
-    let bestDXDist = SNAP_THRESHOLD, bestDYDist = SNAP_THRESHOLD
-    const lines: typeof _snapState.lines = []
-
-    for (const s of fleetShapes) {
-      const b = hitEditor.getShapePageBounds(s.id)
-      if (!b) continue
-
-      // X snaps: ghost left → shape right+gap, ghost left → shape left, ghost right → shape left-gap, ghost right → shape right
-      const xSnaps = [
-        { ghostEdge: ghostX, target: b.x + b.w + SNAP_GAP, linePos: b.x + b.w + SNAP_GAP / 2 },
-        { ghostEdge: ghostX, target: b.x, linePos: b.x },
-        { ghostEdge: ghostRight, target: b.x - SNAP_GAP, linePos: b.x - SNAP_GAP / 2 },
-        { ghostEdge: ghostRight, target: b.x + b.w, linePos: b.x + b.w },
-      ]
-      for (const snap of xSnaps) {
-        const delta = snap.target - snap.ghostEdge
-        const dist = Math.abs(delta)
-        if (dist < bestDXDist) {
-          bestDXDist = dist
-          bestDX = delta
-          lines.push({ axis: 'x', pos: snap.linePos })
-        }
-      }
-
-      // Y snaps: ghost top → shape top, ghost top → shape bottom+gap, ghost bottom → shape top-gap, ghost bottom → shape bottom
-      const ySnaps = [
-        { ghostEdge: ghostY, target: b.y, linePos: b.y },
-        { ghostEdge: ghostY, target: b.y + b.h + SNAP_GAP, linePos: b.y + b.h + SNAP_GAP / 2 },
-        { ghostEdge: ghostBottom, target: b.y - SNAP_GAP, linePos: b.y - SNAP_GAP / 2 },
-        { ghostEdge: ghostBottom, target: b.y + b.h, linePos: b.y + b.h },
-      ]
-      for (const snap of ySnaps) {
-        const delta = snap.target - snap.ghostEdge
-        const dist = Math.abs(delta)
-        if (dist < bestDYDist) {
-          bestDYDist = dist
-          bestDY = delta
-          lines.push({ axis: 'y', pos: snap.linePos })
-        }
+    for (const s of allFleet) {
+      const sb = hitEditor.getShapePageBounds(s.id)
+      if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
+        overFleet = true
+        break
       }
     }
 
-    // Only keep lines for the winning snap
-    _snapState.deltaX = bestDXDist < SNAP_THRESHOLD ? bestDX : 0
-    _snapState.deltaY = bestDYDist < SNAP_THRESHOLD ? bestDY : 0
-    _snapState.lines = lines.filter(l =>
-      (l.axis === 'x' && bestDXDist < SNAP_THRESHOLD) ||
-      (l.axis === 'y' && bestDYDist < SNAP_THRESHOLD)
-    ).slice(-2) // keep at most 2 lines (one X, one Y)
+    // Expand to chat dimensions when over empty canvas, collapse when over fleet shape
+    const shouldExpand = !overFleet
+    if (shouldExpand && !_snapState.expanded) {
+      _snapState.expanded = true
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: CHAT_W, h: CHAT_H },
+      })
+    } else if (!shouldExpand && _snapState.expanded) {
+      _snapState.expanded = false
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: PILL_W, h: PILL_H },
+      })
+    }
   }
 
   onCreate = (shape: TLShape) => {
@@ -506,13 +471,14 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint = mainEditor.screenToPage(screenPoint)
     }
 
-    // Apply snap delta from the visual snap computed during drag
-    const pillType = pill.props?.pillType
-    if ((pillType === 'agent' || pillType === 'label') && _snapState.active) {
-      dropPoint.x += _snapState.deltaX
-      dropPoint.y += _snapState.deltaY
+    // When expanded (pill was 400×600), the drop point is already the
+    // pill's center which = the chat's center. Adjust to top-left.
+    if (_snapState.expanded) {
+      dropPoint.x -= CHAT_W / 2
+      dropPoint.y -= CHAT_H / 2
     }
     _snapState.active = false
+    _snapState.expanded = false
     _snapState.deltaX = 0
     _snapState.deltaY = 0
     _snapState.lines = []
@@ -599,60 +565,45 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
-        {/* Ghost: show where a new chat will be created when dropping an agent/label pill.
-            Hidden when over an existing fleet shape (drop = filter update, not new chat).
-            Chat is created at the pill's center (PILL_W/2, PILL_H/2), so the ghost's
-            top-left starts there. Snap delta offsets the ghost during drag. */}
+        {/* Ghost: show where a new chat will be created.
+            When expanded (pill is 400×600), the ghost fills the pill bounds.
+            When collapsed (pill is 70×18), ghost is offset from pill center.
+            Hidden when over an existing fleet shape. */}
         {isAgentPill && !overFleetShape && (
-          <>
-            <div
-              className="fleet-chat-shape"
-              style={{
-                position: 'absolute',
-                top: PILL_H / 2 + _snapState.deltaY,
-                left: PILL_W / 2 + _snapState.deltaX,
-                width: CHAT_W,
-                height: CHAT_H,
-                opacity: 0.5,
-                pointerEvents: 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                transition: _snapState.deltaX || _snapState.deltaY ? 'none' : 'top 0.1s, left 0.1s',
-              }}
-            >
-              <div style={{
-                padding: '4px 8px',
-                fontSize: 10,
-                borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
-                color: 'var(--text-dim)',
-                fontFamily: "'SF Mono', Menlo, Consolas, monospace",
-              }}>
-                → {displayName}
-              </div>
-              <div style={{ flex: 1 }} />
-              <div style={{
-                height: 28,
-                borderTop: '1px solid rgba(128, 128, 128, 0.1)',
-                margin: '0 4px 4px',
-                borderRadius: 4,
-                background: 'rgba(128, 128, 128, 0.05)',
-              }} />
+          <div
+            className="fleet-chat-shape"
+            style={{
+              position: 'absolute',
+              // When expanded, ghost fills the pill's own bounds (0,0).
+              // When collapsed, offset to pill center.
+              top: _snapState.expanded ? 0 : PILL_H / 2,
+              left: _snapState.expanded ? 0 : PILL_W / 2,
+              width: CHAT_W,
+              height: CHAT_H,
+              opacity: 0.5,
+              pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <div style={{
+              padding: '4px 8px',
+              fontSize: 10,
+              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+              color: 'var(--text-dim)',
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+            }}>
+              → {displayName}
             </div>
-            {/* Snap indicator — subtle border highlight when snapped */}
-            {(_snapState.deltaX !== 0 || _snapState.deltaY !== 0) && (
-              <div style={{
-                position: 'absolute',
-                top: PILL_H / 2 + _snapState.deltaY - 1,
-                left: PILL_W / 2 + _snapState.deltaX - 1,
-                width: CHAT_W + 2,
-                height: CHAT_H + 2,
-                border: '1px solid #4dabf7',
-                borderRadius: 9,
-                pointerEvents: 'none',
-                opacity: 0.4,
-              }} />
-            )}
-          </>
+            <div style={{ flex: 1 }} />
+            <div style={{
+              height: 28,
+              borderTop: '1px solid rgba(128, 128, 128, 0.1)',
+              margin: '0 4px 4px',
+              borderRadius: 4,
+              background: 'rgba(128, 128, 128, 0.05)',
+            }} />
+          </div>
         )}
       </HTMLContainer>
     )
