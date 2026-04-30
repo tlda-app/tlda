@@ -1365,10 +1365,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [showScrollBtn])
 
   // When the chat log resizes, scroll to bottom if we were following.
+  // Suppressed during textarea resizes — the chat log shrinks when the
+  // textarea grows, and scrolling during that causes bounce.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
+      if (textareaResizingRef.current) return
       if (wasNearBottomRef.current) scrollToBottom()
     })
     ro.observe(el)
@@ -1390,8 +1393,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [rawItems])
 
   // Chase virtualizer size changes (items measured taller than estimate).
+  // Suppressed during textarea resizes.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
+    if (textareaResizingRef.current) return
     if (wasNearBottomRef.current) scrollToBottom()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
