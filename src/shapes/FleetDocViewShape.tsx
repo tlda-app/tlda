@@ -32,7 +32,7 @@ import { createPortal } from 'react-dom'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { onBuildStatusSignal, type BuildError } from '../useYjsSync'
+import { onBuildStatusSignal, type BuildError, onSharedDocSignal, type SharedDocSignal } from '../useYjsSync'
 import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
@@ -40,7 +40,7 @@ import { getSvgText, setSvgText } from '../stores/svgTextStore'
 const DEFAULT_W = 300
 const DEFAULT_H = 250
 
-const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
+const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 type Source = typeof ALL_SOURCES[number]
 
 function parseSources(s: string | undefined): Source[] {
@@ -48,7 +48,7 @@ function parseSources(s: string | undefined): Source[] {
     const arr = JSON.parse(s ?? 'null')
     if (Array.isArray(arr)) return arr.filter((x): x is Source => ALL_SOURCES.includes(x as Source))
   } catch {}
-  return ['ref']
+  return ['ref', 'shared']
 }
 
 interface ResolvedErrorBounds {
@@ -181,6 +181,16 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     return () => { cancelled = true }
   }, [buildErrors, doc])
 
+  // --- Shared doc source ---
+  const [sharedShapeId, setSharedShapeId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!sources.includes('shared')) return
+    return onSharedDocSignal((signal: SharedDocSignal) => {
+      setSharedShapeId(signal.shapeId)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourcesRaw])
+
   // --- Ref navigation history ---
   const [history, setHistory] = useState<NavEntry[]>([])
   const [historyIdx, setHistoryIdx] = useState(-1)
@@ -236,13 +246,26 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   // --- Compute display bounds (priority: errors > ref > proof) ---
   const bounds = useValue('docview-bounds', (): ClipBounds | null => {
-    if (!doc?.pages?.length) return null
-
     // Errors: highest priority when active
-    if (sources.includes('errors') && resolvedErrors.length > 0) {
+    if (doc?.pages?.length && sources.includes('errors') && resolvedErrors.length > 0) {
       const item = resolvedErrors[Math.min(errorIndex, resolvedErrors.length - 1)]
       return item?.bounds ?? null
     }
+
+    // Shared doc: show the sticky shape's region (doesn't require doc pages)
+    if (sources.includes('shared') && sharedShapeId && mainEditor) {
+      const shapeBounds = mainEditor.getShapePageBounds(sharedShapeId as any)
+      if (shapeBounds) {
+        return {
+          x: shapeBounds.x - 10,
+          y: shapeBounds.y - 10,
+          w: shapeBounds.w + 20,
+          h: shapeBounds.h + 20,
+        }
+      }
+    }
+
+    if (!doc?.pages?.length) return null
 
     // Ref: pinned region from last click
     let refBounds: ClipBounds | null = null
@@ -317,7 +340,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
     // Only ref, no proof source
     return refBounds
-  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex])
+  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex, sharedShapeId])
 
   // Prefetch SVG for the page the bounds point to — the clip panel needs it
   // loaded in svgTextStore even if the page is outside the main viewport.
@@ -356,6 +379,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   const activeSource: Source | null =
     (sources.includes('errors') && resolvedErrors.length > 0) ? 'errors' :
+    (sources.includes('shared') && sharedShapeId) ? 'shared' :
     (sources.includes('ref') && (label || page > 0)) ? 'ref' :
     sources.includes('proof') ? 'proof' : null
 
@@ -412,7 +436,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 }}
               />
               <span>
-                {src === 'ref' ? 'References' : src === 'proof' ? 'Proof tracker' : 'Build errors'}
+                {src === 'ref' ? 'References' : src === 'proof' ? 'Proof tracker' : src === 'shared' ? 'Shared docs' : 'Build errors'}
               </span>
             </label>
           ))}
@@ -566,7 +590,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: currentError ? h - errorHeaderH : h }}
       >
-        {bounds && mainEditor && svgReady ? (
+        {bounds && mainEditor && (svgReady || activeSource === 'shared') ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -577,6 +601,13 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             maxHeightFraction={1}
             readOnly
             cameraOverride={(() => {
+              // Shared doc: zoom to fit the sticky's width
+              if (activeSource === 'shared' && bounds) {
+                const zoom = w / bounds.w
+                const panelH = currentError ? h - errorHeaderH : h
+                const camY = -(bounds.y - (panelH / zoom - bounds.h) / 2)
+                return { x: -bounds.x, y: camY, z: zoom }
+              }
               // Zoom to fit page width, center bounds region vertically
               const pageIdx = boundsPageIdx >= 0 ? boundsPageIdx : 0
               const pg = doc?.pages?.[pageIdx]
@@ -592,6 +623,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>
             {activeSource === 'proof' ? 'scroll to a proof' :
              activeSource === 'ref' ? 'click a ref' :
+             activeSource === 'shared' ? 'waiting for shared doc…' :
              sources.length === 0 ? 'no sources' : 'waiting…'}
           </div>
         )}

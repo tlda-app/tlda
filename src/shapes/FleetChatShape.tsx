@@ -40,6 +40,7 @@ import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { useIsInViewport } from './useIsInViewport'
+import { broadcastSharedDoc } from '../useYjsSync'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -1386,6 +1387,116 @@ function FleetChatInner({ shape }: { shape: any }) {
     logEl.addEventListener('load', onImgLoad, true)
     return () => logEl.removeEventListener('load', onImgLoad, true)
   }, [])
+
+  // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
+  // Track which messages we've already processed to avoid duplicates.
+  const sharedDocProcessed = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (chatMessages.length === 0) return
+    const mainEditor = (window as any).__tldraw_editor__ as any
+    if (!mainEditor) return
+
+    // Only process the last few messages to avoid re-processing old history
+    const recentMessages = chatMessages.slice(-3)
+    for (const m of recentMessages) {
+      const msgKey = `${m.timestamp}:${m.from}`
+      if (sharedDocProcessed.current.has(msgKey)) continue
+      sharedDocProcessed.current.add(msgKey)
+
+      // Skip messages from the human user — only auto-display agent-shared files
+      if (m.from && !m.from.startsWith('fleet:')) continue
+
+      // Extract .md file paths from message text and inline attachments
+      const mdPaths: string[] = []
+
+      // Check inline attachments
+      if (m._inlineAttachments) {
+        for (const att of m._inlineAttachments) {
+          if (att?.path && /\.md$/i.test(att.path)) {
+            mdPaths.push(att.path)
+          }
+        }
+      }
+
+      // Check message text for absolute .md paths
+      const text = m.text || ''
+      const absPathMatches = text.match(/\/Users\/\w+\/[\w/._-]+\.md/g)
+      if (absPathMatches) {
+        for (const p of absPathMatches) {
+          if (!mdPaths.includes(p)) mdPaths.push(p)
+        }
+      }
+      // Check [file:/path.md] syntax
+      const fileRefMatches = text.match(/\[file:(\/[\w/._-]+\.md)\]/g)
+      if (fileRefMatches) {
+        for (const match of fileRefMatches) {
+          const p = match.slice(6, -1) // strip [file: and ]
+          if (!mdPaths.includes(p)) mdPaths.push(p)
+        }
+      }
+
+      if (mdPaths.length === 0) continue
+
+      // Create a sticky for each .md file found
+      for (const filePath of mdPaths) {
+        ;(async () => {
+          try {
+            const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`)
+            if (!res.ok) return
+            const content = await res.text()
+            if (!content.trim()) return
+
+            // Check if a shared sticky for this file already exists — update it instead
+            const allShapes = mainEditor.getCurrentPageShapes()
+            let existingId: string | null = null
+            for (const s of allShapes) {
+              if ((s as any).type === 'math-note' && (s as any).meta?.sharedDocPath === filePath) {
+                existingId = s.id
+                break
+              }
+            }
+
+            if (existingId) {
+              // Update existing sticky content
+              mainEditor.updateShape({
+                id: existingId,
+                type: 'math-note',
+                props: { text: content },
+              })
+              broadcastSharedDoc(existingId, filePath)
+            } else {
+              // Create new sticky off to the right of the document
+              const stickyId = createShapeId()
+              mainEditor.createShape({
+                id: stickyId,
+                type: 'math-note' as any,
+                x: 2000,
+                y: 100,
+                isLocked: false,
+                props: {
+                  w: 550,
+                  h: 400,
+                  text: content,
+                  color: 'light-violet',
+                  autoSize: true,
+                },
+                meta: {
+                  sharedDocPath: filePath,
+                  sharedDoc: true,
+                  fromAgent: m.from,
+                  createdAt: Date.now(),
+                },
+              })
+              broadcastSharedDoc(stickyId, filePath)
+            }
+          } catch (e) {
+            console.error('[fleet] Failed to create shared doc sticky:', e)
+          }
+        })()
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages])
 
   // Lightbox: click on chat-image opens full-size overlay
   useEffect(() => {
