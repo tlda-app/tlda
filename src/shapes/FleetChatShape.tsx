@@ -2523,10 +2523,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  if (!autoscrollPausedRef.current) {
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                  }
+                  // Don't force scroll on send — position-based auto-scroll
+                  // handles it via the rawItems effect.
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2562,10 +2560,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  if (!autoscrollPausedRef.current) {
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                  }
+                  // Don't force scroll on send — position-based auto-scroll
+                  // handles it via the rawItems effect.
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
