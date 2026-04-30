@@ -2474,11 +2474,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    // Scroll to bottom on send — the user just sent a message,
-                    // they want to see it and any replies.
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    setAutoscrollPaused(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    // Don't force scroll on send — if the user is scrolled up
+                    // reading, they want to stay there.
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
