@@ -580,7 +580,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             ...liveEvents.map((e: any) => e.id || e._tempId),
           ])
           const fresh = older.filter((e: any) => !existingIds.has(e.id))
-          return fresh.length > 0 ? [...fresh, ...prev] : prev
+          if (fresh.length > 0) {
+            // Reset initial scroll so the rawItems effect scrolls to bottom
+            // after the prepended history shifts the content
+            initialScrollDone.current = false
+            return [...fresh, ...prev]
+          }
+          return prev
         })
       }
     })
