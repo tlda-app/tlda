@@ -1523,6 +1523,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!ta) return
     let prevTaH = ta.offsetHeight
     let clearTimer: ReturnType<typeof setTimeout> | null = null
+    let scrollRaf = 0
     const ro = new ResizeObserver(() => {
       const newTaH = ta.offsetHeight
       if (newTaH === prevTaH) return
@@ -1531,11 +1532,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       textareaResizingRef.current = true
       if (clearTimer) clearTimeout(clearTimer)
       clearTimer = setTimeout(() => { textareaResizingRef.current = false }, 200)
-      // Keep chat at bottom during resize — direct scrollTop adjustment
-      // (the other scroll triggers are suppressed via textareaResizingRef)
-      const log = chatLogRef.current
-      if (log && wasNearBottomRef.current) {
-        log.scrollTop = log.scrollHeight
+      // Keep chat at bottom during resize — coalesced via rAF to avoid
+      // micro-loop (scrollTop → scroll event → re-layout → ResizeObserver)
+      if (wasNearBottomRef.current) {
+        cancelAnimationFrame(scrollRaf)
+        scrollRaf = requestAnimationFrame(() => {
+          const log = chatLogRef.current
+          if (log) log.scrollTop = log.scrollHeight
+        })
       }
     })
     ro.observe(ta)
