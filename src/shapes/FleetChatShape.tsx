@@ -2196,24 +2196,33 @@ function FleetChatInner({ shape }: { shape: any }) {
 
         {/* Thinking/compacting indicators — rendered OUTSIDE the scroll container
             so they don't change scrollHeight and cause jarring scroll shifts. */}
-        {(thinkingAgents.size > 0 || compactingAgents.size > 0) && (
-          <div style={{ padding: '0 8px', fontSize: 11, opacity: 0.6, flexShrink: 0 }}>
-            {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">thinking…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
-            {[...compactingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">compacting…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Thinking/compacting status — always rendered to prevent layout shift.
+            Empty when no agents are thinking; content fades in/out. */}
+        <div style={{
+          padding: thinkingAgents.size > 0 || compactingAgents.size > 0 ? '0 8px' : 0,
+          fontSize: 11,
+          opacity: 0.6,
+          flexShrink: 0,
+          overflow: 'hidden',
+          // Reserve 20px when active, collapse smoothly when not
+          maxHeight: thinkingAgents.size > 0 || compactingAgents.size > 0 ? 60 : 0,
+          transition: 'max-height 0.3s ease, padding 0.3s ease',
+        }}>
+          {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
+            <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+              {' '}<span className="thinking-text">thinking…</span>
+              {' '}<ElapsedTime startMs={startTs} />
+            </div>
+          ))}
+          {[...compactingAgents.entries()].map(([agentId, startTs]) => (
+            <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+              {' '}<span className="thinking-text">compacting…</span>
+              {' '}<ElapsedTime startMs={startTs} />
+            </div>
+          ))}
+        </div>
 
         {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
         <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
