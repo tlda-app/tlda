@@ -304,6 +304,73 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
+/**
+ * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
+ * When thinking stops, the text fades out but the space remains.
+ * When the next message arrives (rawItemsLength changes), the space collapses.
+ */
+function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
+  thinkingAgents: Map<string, number>
+  compactingAgents: Map<string, number>
+  ctx: any
+  rawItemsLength: number
+}) {
+  const hasActive = thinkingAgents.size > 0 || compactingAgents.size > 0
+  // Track "recently stopped" — keep the space until rawItems changes
+  const prevActiveRef = useRef(hasActive)
+  const [ghost, setGhost] = useState(false) // true = text hidden, space kept
+  const ghostRawItemsRef = useRef(rawItemsLength)
+
+  // Transition: active → ghost (text fades, space stays)
+  if (prevActiveRef.current && !hasActive && !ghost) {
+    setGhost(true)
+    ghostRawItemsRef.current = rawItemsLength
+  }
+  prevActiveRef.current = hasActive
+
+  // Clear ghost when new messages arrive
+  useEffect(() => {
+    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
+      setGhost(false)
+    }
+  }, [ghost, rawItemsLength])
+
+  // Also clear ghost after a timeout in case no message comes
+  useEffect(() => {
+    if (!ghost) return
+    const t = setTimeout(() => setGhost(false), 3000)
+    return () => clearTimeout(t)
+  }, [ghost])
+
+  if (!hasActive && !ghost) return null
+
+  return (
+    <div style={{
+      padding: '0 8px',
+      fontSize: 11,
+      flexShrink: 0,
+      opacity: ghost ? 0 : 0.6,
+      transition: 'opacity 0.2s',
+    }}>
+      {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
+        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+          {' '}<span className="thinking-text">thinking…</span>
+          {' '}<ElapsedTime startMs={startTs} />
+        </div>
+      ))}
+      {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
+        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+          {' '}<span className="thinking-text">compacting…</span>
+          {' '}<ElapsedTime startMs={startTs} />
+        </div>
+      ))}
+      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
+    </div>
+  )
+}
+
 // --- Nick color system (matches dashboard) ---
 
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
@@ -2217,20 +2284,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                   ))}
                 </div>
               )}
-              {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
-                  <div key={agentId} className="chat-line chat-thinking">
-                    <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                    {' '}<span className="thinking-text">thinking…</span>
-                    {' '}<ElapsedTime startMs={startTs} />
-                  </div>
-                ))}
-              {[...compactingAgents.entries()].map(([agentId, startTs]) => (
-                  <div key={`compact-${agentId}`} className="chat-line chat-thinking">
-                    <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                    {' '}<span className="thinking-text">compacting…</span>
-                    {' '}<ElapsedTime startMs={startTs} />
-                  </div>
-                ))}
+              <ThinkingStatus
+                thinkingAgents={thinkingAgents}
+                compactingAgents={compactingAgents}
+                ctx={ctx}
+                rawItemsLength={rawItems.length}
+              />
               {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
               {[...terminalCards].map(agentId => (
                 <TerminalCard
