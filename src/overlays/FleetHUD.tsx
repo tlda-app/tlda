@@ -205,7 +205,8 @@ export function FleetHUD({
   }, [mainEditor])
 
   // Watch for SVG/HTML page shapes to arrive (async on browser restore).
-  // Resets panOffset so it recomputes with real shape bounds rather than fallback.
+  // If no saved panOffset exists, reset so it recomputes with real shape bounds.
+  // If a saved panOffset exists (from a previous session), keep it — that's the user's position.
   useEffect(() => {
     if (docShapesReady) return
     const unsub = mainEditor.store.listen(({ changes }) => {
@@ -213,7 +214,10 @@ export function FleetHUD({
         r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
       if (hasPage) {
         setDocShapesReady(true)
-        panOffsetRef.current = null; localStorage.removeItem('fleet-hud-panOffset')  // recompute with real bounds
+        // Only force recompute if we don't have a saved position
+        if (localStorage.getItem('fleet-hud-panOffset') === null) {
+          panOffsetRef.current = null
+        }
       }
     }, { source: 'all', scope: 'document' })
     return unsub
