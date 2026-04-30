@@ -25,6 +25,16 @@ const SNAP_GAP = 10 // gap between shapes when snapped
 
 const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
+// Module-level snap state — written by onTranslate, read by the component.
+// The component re-renders on every translate frame, so it picks up changes.
+const _snapState = {
+  deltaX: 0, // offset to apply to the ghost from its natural position
+  deltaY: 0,
+  // Snap lines for visual feedback: arrays of { axis, pos } in page coords
+  lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
+  active: false, // true during drag
+}
+
 /**
  * Snap a drop point (top-left of new 400×600 chat) to nearby fleet shape edges.
  * Snaps X to right-edge alignment (new chat sits right of existing shape)
@@ -379,6 +389,89 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     // Clear any pending auto-delete since the user is actively dragging
     const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
     if (timerId) clearTimeout(timerId)
+    _snapState.active = true
+  }
+
+  // Compute snap during drag — updates the module-level _snapState so the
+  // ghost component can offset itself and show snap lines.
+  override onTranslate = (_initial: TLShape, current: TLShape) => {
+    const pill = current as any
+    if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
+
+    const editor = this.editor
+    const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+    const hitEditor = mainEditor || editor
+
+    // Get the pill center in main editor page space
+    const bounds = editor.getShapePageBounds(pill.id)
+    let cx = bounds ? bounds.x + bounds.w / 2 : pill.x + PILL_W / 2
+    let cy = bounds ? bounds.y + bounds.h / 2 : pill.y + PILL_H / 2
+    if (mainEditor && mainEditor !== editor) {
+      const sp = editor.pageToScreen({ x: cx, y: cy })
+      const mp = mainEditor.screenToPage(sp)
+      cx = mp.x; cy = mp.y
+    }
+
+    // Ghost top-left = pill center (that's where the chat would be created)
+    const ghostX = cx
+    const ghostY = cy
+    const ghostRight = ghostX + CHAT_W
+    const ghostBottom = ghostY + CHAT_H
+
+    // Collect snap candidates from fleet shapes
+    const fleetShapes = hitEditor.getCurrentPageShapes()
+      .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
+
+    let bestDX = 0, bestDY = 0
+    let bestDXDist = SNAP_THRESHOLD, bestDYDist = SNAP_THRESHOLD
+    const lines: typeof _snapState.lines = []
+
+    for (const s of fleetShapes) {
+      const b = hitEditor.getShapePageBounds(s.id)
+      if (!b) continue
+
+      // X snaps: ghost left → shape right+gap, ghost left → shape left, ghost right → shape left-gap, ghost right → shape right
+      const xSnaps = [
+        { ghostEdge: ghostX, target: b.x + b.w + SNAP_GAP, linePos: b.x + b.w + SNAP_GAP / 2 },
+        { ghostEdge: ghostX, target: b.x, linePos: b.x },
+        { ghostEdge: ghostRight, target: b.x - SNAP_GAP, linePos: b.x - SNAP_GAP / 2 },
+        { ghostEdge: ghostRight, target: b.x + b.w, linePos: b.x + b.w },
+      ]
+      for (const snap of xSnaps) {
+        const delta = snap.target - snap.ghostEdge
+        const dist = Math.abs(delta)
+        if (dist < bestDXDist) {
+          bestDXDist = dist
+          bestDX = delta
+          lines.push({ axis: 'x', pos: snap.linePos })
+        }
+      }
+
+      // Y snaps: ghost top → shape top, ghost top → shape bottom+gap, ghost bottom → shape top-gap, ghost bottom → shape bottom
+      const ySnaps = [
+        { ghostEdge: ghostY, target: b.y, linePos: b.y },
+        { ghostEdge: ghostY, target: b.y + b.h + SNAP_GAP, linePos: b.y + b.h + SNAP_GAP / 2 },
+        { ghostEdge: ghostBottom, target: b.y - SNAP_GAP, linePos: b.y - SNAP_GAP / 2 },
+        { ghostEdge: ghostBottom, target: b.y + b.h, linePos: b.y + b.h },
+      ]
+      for (const snap of ySnaps) {
+        const delta = snap.target - snap.ghostEdge
+        const dist = Math.abs(delta)
+        if (dist < bestDYDist) {
+          bestDYDist = dist
+          bestDY = delta
+          lines.push({ axis: 'y', pos: snap.linePos })
+        }
+      }
+    }
+
+    // Only keep lines for the winning snap
+    _snapState.deltaX = bestDXDist < SNAP_THRESHOLD ? bestDX : 0
+    _snapState.deltaY = bestDYDist < SNAP_THRESHOLD ? bestDY : 0
+    _snapState.lines = lines.filter(l =>
+      (l.axis === 'x' && bestDXDist < SNAP_THRESHOLD) ||
+      (l.axis === 'y' && bestDYDist < SNAP_THRESHOLD)
+    ).slice(-2) // keep at most 2 lines (one X, one Y)
   }
 
   onCreate = (shape: TLShape) => {
@@ -413,12 +506,16 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint = mainEditor.screenToPage(screenPoint)
     }
 
-    // Snap the drop point to nearby fleet shape edges (for agent/label pills creating new chats)
+    // Apply snap delta from the visual snap computed during drag
     const pillType = pill.props?.pillType
-    if (pillType === 'agent' || pillType === 'label') {
-      const hitEditor = mainEditor || editor
-      dropPoint = snapDropPoint(hitEditor, dropPoint, pill.id)
+    if ((pillType === 'agent' || pillType === 'label') && _snapState.active) {
+      dropPoint.x += _snapState.deltaX
+      dropPoint.y += _snapState.deltaY
     }
+    _snapState.active = false
+    _snapState.deltaX = 0
+    _snapState.deltaY = 0
+    _snapState.lines = []
 
     dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
 
@@ -505,43 +602,57 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         {/* Ghost: show where a new chat will be created when dropping an agent/label pill.
             Hidden when over an existing fleet shape (drop = filter update, not new chat).
             Chat is created at the pill's center (PILL_W/2, PILL_H/2), so the ghost's
-            top-left starts there. Styled to match an actual fleet-chat shape. */}
+            top-left starts there. Snap delta offsets the ghost during drag. */}
         {isAgentPill && !overFleetShape && (
-          <div
-            className="fleet-chat-shape"
-            style={{
-              position: 'absolute',
-              top: PILL_H / 2,
-              left: PILL_W / 2,
-              width: 400,
-              height: 600,
-              opacity: 0.5,
-              pointerEvents: 'none',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {/* Header bar mimicking the chat header */}
-            <div style={{
-              padding: '4px 8px',
-              fontSize: 10,
-              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
-              color: 'var(--text-dim)',
-              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
-            }}>
-              → {displayName}
+          <>
+            <div
+              className="fleet-chat-shape"
+              style={{
+                position: 'absolute',
+                top: PILL_H / 2 + _snapState.deltaY,
+                left: PILL_W / 2 + _snapState.deltaX,
+                width: CHAT_W,
+                height: CHAT_H,
+                opacity: 0.5,
+                pointerEvents: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                transition: _snapState.deltaX || _snapState.deltaY ? 'none' : 'top 0.1s, left 0.1s',
+              }}
+            >
+              <div style={{
+                padding: '4px 8px',
+                fontSize: 10,
+                borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+                color: 'var(--text-dim)',
+                fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+              }}>
+                → {displayName}
+              </div>
+              <div style={{ flex: 1 }} />
+              <div style={{
+                height: 28,
+                borderTop: '1px solid rgba(128, 128, 128, 0.1)',
+                margin: '0 4px 4px',
+                borderRadius: 4,
+                background: 'rgba(128, 128, 128, 0.05)',
+              }} />
             </div>
-            {/* Body area */}
-            <div style={{ flex: 1 }} />
-            {/* Input area at bottom */}
-            <div style={{
-              height: 28,
-              borderTop: '1px solid rgba(128, 128, 128, 0.1)',
-              margin: '0 4px 4px',
-              borderRadius: 4,
-              background: 'rgba(128, 128, 128, 0.05)',
-            }} />
-          </div>
+            {/* Snap indicator — subtle border highlight when snapped */}
+            {(_snapState.deltaX !== 0 || _snapState.deltaY !== 0) && (
+              <div style={{
+                position: 'absolute',
+                top: PILL_H / 2 + _snapState.deltaY - 1,
+                left: PILL_W / 2 + _snapState.deltaX - 1,
+                width: CHAT_W + 2,
+                height: CHAT_H + 2,
+                border: '1px solid #4dabf7',
+                borderRadius: 9,
+                pointerEvents: 'none',
+                opacity: 0.4,
+              }} />
+            )}
+          </>
         )}
       </HTMLContainer>
     )
