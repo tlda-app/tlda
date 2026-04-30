@@ -2518,9 +2518,17 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    if (!autoscrollPausedRef.current) {
-                      userScrolledUp.current = false; setShowScrollBtn(false)
-                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    // Only scroll to bottom on send if we were already near the bottom.
+                    // Don't use autoscrollPaused — it can be falsely reset by momentum
+                    // scroll briefly touching bottom. Check actual scroll position.
+                    if (chatLogRef.current) {
+                      const el = chatLogRef.current
+                      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+                      if (dist < 100) {
+                        userScrolledUp.current = false; setShowScrollBtn(false)
+                        setAutoscrollPaused(false)
+                        el.scrollTop = el.scrollHeight
+                      }
                     }
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
