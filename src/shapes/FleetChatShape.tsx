@@ -303,63 +303,6 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
-/**
- * ThinkingStatus — inside the scroll container as a normal chat line.
- * When thinking stops, the text fades out but the space stays.
- * When the next message arrives (rawItemsLength changes), the space collapses.
- */
-function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
-  thinkingAgents: Map<string, number>
-  compactingAgents: Map<string, number>
-  ctx: any
-  rawItemsLength: number
-}) {
-  const hasActive = thinkingAgents.size > 0 || compactingAgents.size > 0
-  const prevActiveRef = useRef(hasActive)
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
-
-  if (prevActiveRef.current && !hasActive && !ghost) {
-    setGhost(true)
-    ghostRawItemsRef.current = rawItemsLength
-  }
-  prevActiveRef.current = hasActive
-
-  useEffect(() => {
-    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
-      setGhost(false)
-    }
-  }, [ghost, rawItemsLength])
-
-  useEffect(() => {
-    if (!ghost) return
-    const t = setTimeout(() => setGhost(false), 3000)
-    return () => clearTimeout(t)
-  }, [ghost])
-
-  if (!hasActive && !ghost) return null
-
-  return (
-    <div style={{ padding: '0 8px', fontSize: 11, opacity: ghost ? 0 : 0.6, transition: 'opacity 0.2s' }}>
-      {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">thinking…</span>
-          {' '}<ElapsedTime startMs={startTs} />
-        </div>
-      ))}
-      {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">compacting…</span>
-          {' '}<ElapsedTime startMs={startTs} />
-        </div>
-      ))}
-      {ghost && <div style={{ padding: '2px 0', height: 20 }} />}
-    </div>
-  )
-}
-
 // --- Nick color system (matches dashboard) ---
 
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
@@ -540,7 +483,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
-  // Filters use friendly names but the DB stores fleet IDs.
   const resolveToFleetId = useCallback((label: string): string => {
     if (label.startsWith('fleet:')) return label
     const agent = agents.find((a: any) =>
@@ -554,7 +496,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (liveEvents.length > 0 || olderEvents.length > 0) return
     if (!dnfFilter || dnfFilter.length === 0) return
-    // Derive agent from filter for loadBefore — resolve friendly name to fleet ID
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel || autoLoadedRef.current === filterKey) return
     autoLoadedRef.current = filterKey
@@ -778,14 +719,13 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Placed after rawItems so count is always defined.
-  // estimateSize: 200px — intentionally overestimates so that when items
-  // measure shorter than the estimate, the virtualizer adjusts by shifting
-  // content UP (invisible at the bottom). Underestimating caused visible
-  // downward bounce when items measured taller than expected.
+  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
+  // A close estimate prevents the "scrolled to middle" bug where setting
+  // scrollTop = estimated-total puts you far from the actual bottom.
   const virtualizer = useVirtualizer({
     count: rawItems.length,
     getScrollElement: () => chatLogRef.current,
-    estimateSize: () => 200,
+    estimateSize: () => 65,
     overscan: 8,
   })
 
@@ -1302,112 +1242,145 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // --- Auto-scroll: position-based, no event flags ---
-  //
-  // Previous approach used userScrolledUp/autoscrollPaused flags set by wheel/touch
-  // events. This was fundamentally broken: inside the FleetHUD overlay (CanvasClipPanel),
-  // TLDraw intercepts wheel events before they reach the chat log. The flags never got
-  // set, so every rawItems change scrolled to bottom even while the user was reading.
-  //
-  // New approach: check actual scroll position before every scroll-to-bottom attempt.
-  // If the user is more than SCROLL_THRESHOLD px from the bottom, they're reading —
-  // don't interrupt. No flags, no event detection, just measure the DOM.
-  const SCROLL_THRESHOLD = 80
-  const userScrolledUp = useRef(false) // kept for the scroll-to-bottom button visibility
+  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
+  // Key distinction: only set userScrolledUp when scrollTop actually decreases (user scrolled up),
+  // NOT when scrollTop stays the same but scrollHeight grew (content pushed them away from bottom).
+  // The old autoScrollingRef approach was racy — virtualizer fires scroll events after the rAF
+  // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
+  const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [autoscrollPaused, setAutoscrollPaused] = useState(false)
   const autoscrollPausedRef = useRef(false)
   useEffect(() => { autoscrollPausedRef.current = autoscrollPaused }, [autoscrollPaused])
-
-  // Track whether the user was near the bottom BEFORE new content arrived.
-  // Updated by onScroll — always reflects the last user-visible scroll position.
-  // When new messages arrive, we check this ref (not current position, which may
-  // already include the new content's height).
-  const wasNearBottomRef = useRef(true)
-
-  // Scroll to bottom via virtualizer.scrollToIndex — positions the viewport
-  // at the last item accurately (unlike scrollTop = scrollHeight which
-  // depends on estimated sizes). No rAF followup to avoid double-scroll.
-  const scrollToBottom = useCallback(() => {
-    if (rawItems.length > 0) {
-      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-    }
-    wasNearBottomRef.current = true
-    userScrolledUp.current = false
-    setShowScrollBtn(false)
-    setAutoscrollPaused(false)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems.length])
-
-  // Track scroll position continuously via onScroll.
-  // This fires for both user scrolls AND programmatic scrolls, but that's fine —
-  // we only use it to detect "near bottom" state, not scroll direction.
+  const lastScrollTopRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
+
+    // Scroll event: only used to RESET userScrolledUp when the user comes back
+    // to the bottom. Never used to SET it — that's the job of wheel/touch handlers
+    // below. Programmatic scrollTop changes (virtualizer corrections, textarea
+    // collapse clamping) fire scroll events too; using those to set userScrolledUp
+    // caused false positives that permanently suppressed auto-scroll.
     const onScroll = () => {
-      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-      const nearBottom = dist < SCROLL_THRESHOLD
-      // Don't flip wasNearBottomRef during textarea resizes — the chat log
-      // shrinks (increasing dist) but the user didn't scroll up.
-      wasNearBottomRef.current = nearBottom
-      if (nearBottom) {
-        if (autoscrollPausedRef.current) {
-          setAutoscrollPaused(false)
-          userScrolledUp.current = false
-          setShowScrollBtn(false)
-        }
-      } else {
-        if (!showScrollBtn) setShowScrollBtn(true)
+      const prevTop = lastScrollTopRef.current
+      lastScrollTopRef.current = el.scrollTop
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      // Resume auto-scroll when user reaches the bottom
+      if (distFromBottom <= 10 && autoscrollPausedRef.current) {
+        setAutoscrollPaused(false)
+        userScrolledUp.current = false
+        setShowScrollBtn(false)
+      }
+      // Detect scroll-up: scrollTop decreased AND we're far from bottom.
+      // This catches Magic Mouse / trackpad gestures that send tiny deltaY
+      // values the wheel handler misses.
+      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
+        userScrolledUp.current = true
+        setShowScrollBtn(true)
       }
     }
-    el.addEventListener('scroll', onScroll)
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [showScrollBtn])
 
-  // When the chat log resizes, scroll to bottom if we were following.
-  // Suppressed during textarea resizes — the chat log shrinks when the
-  // textarea grows, and scrolling during that causes bounce.
+    // Wheel event: belt-and-suspenders with onScroll above.
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
+        userScrolledUp.current = true
+        setShowScrollBtn(true)
+      }
+    }
+
+    // Touch events: wheel doesn't fire on iOS/iPad for touch scrolling.
+    // Track swipe direction via touchstart/touchmove.
+    let touchStartY = 0
+    const onTouchStart = (e: TouchEvent) => { touchStartY = e.touches[0].clientY }
+    const onTouchMove = (e: TouchEvent) => {
+      // Finger moves DOWN the screen → content scrolls UP → user reading old messages
+      if (e.touches[0].clientY - touchStartY > 10 && !autoscrollPausedRef.current) {
+        setAutoscrollPaused(true)
+        userScrolledUp.current = true
+        setShowScrollBtn(true)
+      }
+    }
+
+    el.addEventListener('scroll', onScroll)
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+    }
+  }, [])
+
+  // When the chat log's own height changes (e.g. the textarea grows and eats into
+  // the available space, or the user resizes the shape), scroll to bottom so the
+  // last message stays visible — unless the user has intentionally scrolled up.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (wasNearBottomRef.current) scrollToBottom()
+      if (userScrolledUp.current || autoscrollPausedRef.current) return
+      el.scrollTop = el.scrollHeight
+      lastScrollTopRef.current = el.scrollTop
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [scrollToBottom])
+  }, [autoscrollPaused])
 
-  // Scroll to bottom when new messages arrive — only if we were near the bottom
-  // BEFORE the new content arrived. Check both the ref (set by onScroll) and
-  // current position (catches the race where scrollTop was set programmatically
-  // but onScroll hasn't fired yet).
+  // Scroll to last item when new messages arrive (virtualizer-aware).
+  // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
+  // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
-    if (rawItems.length === 0) return
-    const el = chatLogRef.current
-    const currentlyNear = el ? (el.scrollHeight - el.scrollTop - el.clientHeight) < SCROLL_THRESHOLD : true
-    if (wasNearBottomRef.current || currentlyNear) {
-      scrollToBottom()
+    if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
+      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+      // Fallback: direct scrollTop in case scrollToIndex fires before the container
+      // has a stable height (e.g. initial mount before virtualizer measures the element),
+      // or when an existing item grows (activity cards, etc.) without adding new items.
+      requestAnimationFrame(() => {
+        const el = chatLogRef.current
+        if (el) {
+          el.scrollTop = el.scrollHeight
+          lastScrollTopRef.current = el.scrollTop
+        }
+      })
     }
+  // rawItems identity changes whenever any message content changes (not just length),
+  // so this fires for growing activity cards and in-place updates too.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
-  // Chase virtualizer size changes (items measured taller than estimate).
-  // Chase virtualizer size changes.
+  // When the virtualizer measures items taller than the initial estimate (65px),
+  // getTotalSize() grows AFTER the rawItems effect already fired — so the initial
+  // scroll lands short of the true bottom. Chase it by scrolling whenever totalSize
+  // changes and the user hasn't intentionally scrolled up.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (wasNearBottomRef.current) scrollToBottom()
+    if (userScrolledUp.current || autoscrollPausedRef.current) return
+    const el = chatLogRef.current
+    if (!el) return
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (dist > 1) {
+      el.scrollTop = el.scrollHeight
+      lastScrollTopRef.current = el.scrollTop
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
 
-  // After images load, scroll if we were near the bottom.
+  // After images inside the log load, they expand the scroll height. Scroll to
+  // bottom if we were close enough that we should follow new content.
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (wasNearBottomRef.current || (logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight) < 600) {
-        logEl.scrollTop = logEl.scrollHeight
+      if (userScrolledUp.current || autoscrollPausedRef.current) return
+      const el = logEl!
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
+        el.scrollTop = el.scrollHeight
       }
     }
     logEl.addEventListener('load', onImgLoad, true)
@@ -1512,23 +1485,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When the textarea GROWS (not collapses), scroll to stay at bottom.
-  // The onInput handler does height=auto→height=scrollHeight, causing a
-  // brief collapse on every whisper chunk. Only scroll when the final
-  // height is LARGER than the previous stable height — skip the collapse.
+  // When textarea grows (multi-line input), keep chat scrolled to bottom
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
-    let stableH = ta.offsetHeight
+    let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
-      const h = ta.offsetHeight
-      if (h > stableH && wasNearBottomRef.current) {
-        const log = chatLogRef.current
-        if (log) log.scrollTop = log.scrollHeight
+      const newHeight = ta.offsetHeight
+      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current && !autoscrollPausedRef.current) {
+        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
       }
-      // Only update stable height when height increases or settles
-      // (skip the brief collapse to height:auto which is ~0)
-      if (h > 20) stableH = h
+      prevHeight = newHeight
     })
     ro.observe(ta)
     return () => ro.disconnect()
@@ -1611,7 +1578,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
   }, [filterKey, agents])
 
-  // Derive a loadBefore agent: use first agent in filter, resolved to fleet ID
+  // Derive a loadBefore agent: use first agent in filter
   const loadBeforeAgent = sendTargets[0] ? resolveToFleetId(sendTargets[0]) : undefined
 
   // Infinite scroll — load older messages
@@ -2207,7 +2174,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           className="fleet-chat-log"
           style={{
             flex: 1,
-            minHeight: 0,
             overflowY: 'auto',
             overflowX: 'hidden',
             padding: '4px 0',
@@ -2241,6 +2207,20 @@ function FleetChatInner({ shape }: { shape: any }) {
               ))}
             </div>
           )}
+          {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
+              <div key={agentId} className="chat-line chat-thinking">
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">thinking…</span>
+                {' '}<ElapsedTime startMs={startTs} />
+              </div>
+            ))}
+          {[...compactingAgents.entries()].map(([agentId, startTs]) => (
+              <div key={`compact-${agentId}`} className="chat-line chat-thinking">
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">compacting…</span>
+                {' '}<ElapsedTime startMs={startTs} />
+              </div>
+            ))}
           {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
           {[...terminalCards].map(agentId => (
             <TerminalCard
@@ -2250,14 +2230,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               onDismiss={() => closeTerminal(agentId)}
             />
           ))}
-          {/* Thinking/compacting — inside scroll container as a normal line.
-              When thinking stops, text fades but space stays until next message. */}
-          <ThinkingStatus thinkingAgents={thinkingAgents} compactingAgents={compactingAgents} ctx={ctx} rawItemsLength={rawItems.length} />
+        </div>
 
-        {/* Sticky bottom section — stays pinned to scroll viewport bottom.
-            Textarea grows INTO the scroll content, pushing messages up via scroll.
-            Container height never changes → no bounce from flex resize. */}
-        <div style={{ position: 'sticky', bottom: 0, zIndex: 10, background: 'var(--bg, #0f0f1a)' }}>
+
         {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
         <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
           {/* Pause/play toggle — always visible */}
@@ -2331,12 +2306,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Input — inside sticky container */}
+        {/* Input */}
         <div
           className="fleet-chat-input-area"
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
+            flexShrink: 0,
             position: 'relative',
           }}
         >
@@ -2531,8 +2507,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    // Don't force scroll on send — if the user is scrolled up
-                    // reading, they want to stay there.
+                    if (!autoscrollPausedRef.current) {
+                      userScrolledUp.current = false; setShowScrollBtn(false)
+                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                    }
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2590,8 +2568,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // Don't force scroll on send — position-based auto-scroll
-                  // handles it via the rawItems effect.
+                  if (!autoscrollPausedRef.current) {
+                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  }
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2627,8 +2607,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // Don't force scroll on send — position-based auto-scroll
-                  // handles it via the rawItems effect.
+                  if (!autoscrollPausedRef.current) {
+                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+                  }
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2744,8 +2726,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
           </div>
         </div>
-        </div>{/* close sticky */}
-        </div>{/* close scroll container (chatLogRef) */}
       </div>
     </HTMLContainer>
   )
