@@ -1452,22 +1452,29 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea grows (multi-line input), keep the chat at the bottom
-  // IF the user was already there. The textarea and chat log share a flex
-  // column — as the textarea grows, clientHeight shrinks, increasing
-  // distFromBottom. Without this, wasNearBottomRef flips false and the
-  // rawItems effect won't scroll after send.
+  // When textarea resizes, compensate scrollTop so the chat log doesn't shift.
+  // The textarea and chat log share a flex column — as the textarea grows,
+  // clientHeight shrinks, increasing distFromBottom. The onScroll handler
+  // would then flip wasNearBottomRef to false. We prevent this by adjusting
+  // scrollTop to compensate for the height change BEFORE onScroll fires.
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
-    if (!ta) return
-    let prevHeight = ta.offsetHeight
+    const log = chatLogRef.current
+    if (!ta || !log) return
+    let prevTaH = ta.offsetHeight
     const ro = new ResizeObserver(() => {
-      const newHeight = ta.offsetHeight
-      if (newHeight !== prevHeight && chatLogRef.current && wasNearBottomRef.current) {
-        // Textarea grew or shrank — keep chat at bottom
-        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+      const newTaH = ta.offsetHeight
+      const delta = newTaH - prevTaH
+      if (delta === 0) return
+      prevTaH = newTaH
+      // If we were at/near bottom before the resize, stay at bottom.
+      // Check BEFORE the resize's scroll event fires — distFromBottom
+      // is still based on the pre-resize clientHeight.
+      const dist = log.scrollHeight - log.scrollTop - log.clientHeight
+      if (dist < SCROLL_THRESHOLD + Math.abs(delta) + 10) {
+        log.scrollTop = log.scrollHeight
+        wasNearBottomRef.current = true
       }
-      prevHeight = newHeight
     })
     ro.observe(ta)
     return () => ro.disconnect()
