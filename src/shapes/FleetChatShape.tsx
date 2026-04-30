@@ -14,7 +14,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
-// virtualizer removed — caused scroll jitter, bounded by 500-event cap
+import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from '../fleet/chat-render.mjs'
@@ -788,10 +788,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, imageSrcs, editor])
 
-  // No virtualizer — render all messages directly. The virtualizer caused
-  // scroll jitter (double-scroll from scrollToIndex + rAF, re-measurement
-  // bounce) that was worse than any performance gain. With 500-event cap
-  // in fleet-data.mjs, the DOM size is bounded.
+  // Virtualizer for DOM performance — only renders visible messages.
+  // Scroll-to-bottom uses plain scrollTop (not scrollToIndex) to avoid
+  // the double-scroll bounce from scrollToIndex + rAF.
+  const virtualizer = useVirtualizer({
+    count: rawItems.length,
+    getScrollElement: () => chatLogRef.current,
+    estimateSize: () => 65,
+    overscan: 8,
+  })
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -1397,8 +1402,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
-  // No virtualizerTotalSize chaser needed — without virtualizer,
-  // scrollHeight is always correct after render.
+  // Chase virtualizer size changes — items measured taller than the 65px
+  // estimate increase totalSize after the initial scroll.
+  const virtualizerTotalSize = virtualizer.getTotalSize()
+  useEffect(() => {
+    if (wasNearBottomRef.current) scrollToBottom()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualizerTotalSize])
 
   // After images load, scroll if we were near the bottom.
   useEffect(() => {
@@ -2229,9 +2239,16 @@ function FleetChatInner({ shape }: { shape: any }) {
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
-            <div>
-              {rawItems.map((item, i) => (
-                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} />
+            <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+              {virtualizer.getVirtualItems().map(vItem => (
+                <div
+                  key={vItem.key}
+                  data-index={vItem.index}
+                  ref={virtualizer.measureElement}
+                  style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
+                >
+                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
+                </div>
               ))}
             </div>
           )}
