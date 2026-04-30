@@ -778,13 +778,14 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Placed after rawItems so count is always defined.
-  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
-  // A close estimate prevents the "scrolled to middle" bug where setting
-  // scrollTop = estimated-total puts you far from the actual bottom.
+  // estimateSize: 200px — intentionally overestimates so that when items
+  // measure shorter than the estimate, the virtualizer adjusts by shifting
+  // content UP (invisible at the bottom). Underestimating caused visible
+  // downward bounce when items measured taller than expected.
   const virtualizer = useVirtualizer({
     count: rawItems.length,
     getScrollElement: () => chatLogRef.current,
-    estimateSize: () => 65,
+    estimateSize: () => 200,
     overscan: 8,
   })
 
