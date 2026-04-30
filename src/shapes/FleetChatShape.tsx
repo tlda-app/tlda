@@ -493,19 +493,32 @@ function FleetChatInner({ shape }: { shape: any }) {
     return agent?.id || label
   }, [agents])
 
-  // Auto-load history when filter gives empty results (no live messages for this agent)
-  const autoLoadedRef = useRef<string | null>(null)
+  // Fetch per-agent history on mount / filter change.
+  // The global event buffer (MAX_EVENTS=150) is shared across all agents.
+  // A quiet agent's messages may not be in the buffer at all, making the
+  // chat appear empty. Fix: always fetch agent-specific history from the DB.
+  const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (liveEvents.length > 0 || olderEvents.length > 0) return
     if (!dnfFilter || dnfFilter.length === 0) return
     const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel || autoLoadedRef.current === filterKey) return
-    autoLoadedRef.current = filterKey
+    if (!firstLabel || historyLoadedRef.current === filterKey) return
+    historyLoadedRef.current = filterKey
     const fleetId = resolveToFleetId(firstLabel)
     loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
-      if (older.length > 0) setOlderEvents(older)
+      if (older.length > 0) {
+        // Deduplicate against live events already in the buffer
+        setOlderEvents(prev => {
+          const existingIds = new Set([
+            ...prev.map((e: any) => e.id || e._tempId),
+            ...liveEvents.map((e: any) => e.id || e._tempId),
+          ])
+          const fresh = older.filter((e: any) => !existingIds.has(e.id))
+          return fresh.length > 0 ? [...fresh, ...prev] : prev
+        })
+      }
     })
-  }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey, resolveToFleetId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dnfFilter, filterKey, resolveToFleetId])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
