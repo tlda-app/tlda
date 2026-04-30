@@ -2208,6 +2208,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           className="fleet-chat-log"
           style={{
             flex: 1,
+            minHeight: 0, // crucial: allows flex item to shrink below content height
             overflowY: 'auto',
             overflowX: 'hidden',
             padding: '4px 0',
