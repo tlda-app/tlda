@@ -418,31 +418,43 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
           </span>
         </div>
         {/* Ghost: show where a new chat will be created when dropping an agent/label pill.
-            Chat is created at the pill's center (PILL_W/2=35, PILL_H/2=9), so the ghost's
-            top-left starts there. */}
+            Chat is created at the pill's center (PILL_W/2, PILL_H/2), so the ghost's
+            top-left starts there. Styled to match an actual fleet-chat shape. */}
         {isAgentPill && (
           <div
+            className="fleet-chat-shape"
             style={{
               position: 'absolute',
               top: PILL_H / 2,
               left: PILL_W / 2,
               width: 400,
               height: 600,
-              border: `1.5px dashed ${color}50`,
-              borderRadius: 8,
-              background: `${color}06`,
+              opacity: 0.5,
               pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
             }}
           >
+            {/* Header bar mimicking the chat header */}
             <div style={{
-              padding: '8px 10px',
+              padding: '4px 8px',
               fontSize: 10,
-              opacity: 0.4,
-              color: color,
+              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+              color: 'var(--text-dim)',
               fontFamily: "'SF Mono', Menlo, Consolas, monospace",
             }}>
               → {displayName}
             </div>
+            {/* Body area */}
+            <div style={{ flex: 1 }} />
+            {/* Input area at bottom */}
+            <div style={{
+              height: 28,
+              borderTop: '1px solid rgba(128, 128, 128, 0.1)',
+              margin: '0 4px 4px',
+              borderRadius: 4,
+              background: 'rgba(128, 128, 128, 0.05)',
+            }} />
           </div>
         )}
       </HTMLContainer>
