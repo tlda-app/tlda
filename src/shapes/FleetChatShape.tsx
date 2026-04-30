@@ -1389,6 +1389,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ro.disconnect()
   }, [scrollToBottom])
 
+  // On initial mount, scroll to bottom after a short delay so the virtualizer
+  // has time to measure items and set scrollHeight correctly.
+  const initialScrollDone = useRef(false)
+  useEffect(() => {
+    if (initialScrollDone.current || rawItems.length === 0) return
+    initialScrollDone.current = true
+    // Double-rAF: first rAF lets virtualizer render, second rAF scrolls after measurement
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (chatLogRef.current) {
+          chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+          wasNearBottomRef.current = true
+        }
+      })
+    })
+  }, [rawItems.length])
+
   // Scroll to bottom when new messages arrive — only if we were near the bottom
   // BEFORE the new content arrived. Suppressed during textarea resizes to avoid
   // bounce (textarea resize changes container height → virtualizer recalculates
