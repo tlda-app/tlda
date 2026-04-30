@@ -417,25 +417,27 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
-        {/* Ghost: show where a new chat will be created when dropping an agent/label pill */}
+        {/* Ghost: show where a new chat will be created when dropping an agent/label pill.
+            Chat is created at the pill's center (PILL_W/2=35, PILL_H/2=9), so the ghost's
+            top-left starts there. */}
         {isAgentPill && (
           <div
             style={{
               position: 'absolute',
-              top: -9,
-              left: -35,
+              top: PILL_H / 2,
+              left: PILL_W / 2,
               width: 400,
               height: 600,
               border: `1.5px dashed ${color}50`,
               borderRadius: 8,
-              background: `${color}08`,
+              background: `${color}06`,
               pointerEvents: 'none',
             }}
           >
             <div style={{
               padding: '8px 10px',
               fontSize: 10,
-              opacity: 0.5,
+              opacity: 0.4,
               color: color,
               fontFamily: "'SF Mono', Menlo, Consolas, monospace",
             }}>
