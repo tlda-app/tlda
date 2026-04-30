@@ -2073,6 +2073,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           onScroll={handleScroll}
           onClick={handleDocLinkClick}
         >
+          {/* Inner flex column ensures sticky textarea stays at the bottom
+              even when message content is shorter than the viewport. */}
+          <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+          <div style={{ flex: 1 }}>
           {chatMessages.length === 0 ? (
             <div style={{
               padding: '20px 8px',
@@ -2123,6 +2127,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             />
           ))}
 
+        </div>{/* close flex:1 messages area */}
         {/* Sticky bottom: buttons + textarea stay pinned at scroll viewport bottom.
             Textarea grows INTO the scroll content, pushing messages up. Container
             height never changes — no flex resize bounce. */}
@@ -2579,6 +2584,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
         </div>{/* close sticky */}
+        </div>{/* close inner flex column */}
         </div>{/* close scroll container (chatLogRef) */}
       </div>
     </HTMLContainer>
