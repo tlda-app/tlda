@@ -1452,11 +1452,26 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea grows (multi-line input) — do NOT scroll the chat.
-  // The textarea and chat log share a flex column; the chat log shrinks
-  // as the textarea grows. This is handled by CSS flex layout, not by
-  // programmatic scrolling. Scrolling here would jerk the user to the
-  // bottom every time they type a multi-line message.
+  // When textarea grows (multi-line input), keep the chat at the bottom
+  // IF the user was already there. The textarea and chat log share a flex
+  // column — as the textarea grows, clientHeight shrinks, increasing
+  // distFromBottom. Without this, wasNearBottomRef flips false and the
+  // rawItems effect won't scroll after send.
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    let prevHeight = ta.offsetHeight
+    const ro = new ResizeObserver(() => {
+      const newHeight = ta.offsetHeight
+      if (newHeight !== prevHeight && chatLogRef.current && wasNearBottomRef.current) {
+        // Textarea grew or shrank — keep chat at bottom
+        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+      }
+      prevHeight = newHeight
+    })
+    ro.observe(ta)
+    return () => ro.disconnect()
+  }, [])
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
