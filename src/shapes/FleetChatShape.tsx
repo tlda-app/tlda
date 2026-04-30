@@ -14,7 +14,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+// virtualizer removed — caused scroll jitter, bounded by 500-event cap
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from '../fleet/chat-render.mjs'
@@ -788,17 +788,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, imageSrcs, editor])
 
-  // Virtual scroll — only mount DOM nodes for visible messages.
-  // Placed after rawItems so count is always defined.
-  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
-  // A close estimate prevents the "scrolled to middle" bug where setting
-  // scrollTop = estimated-total puts you far from the actual bottom.
-  const virtualizer = useVirtualizer({
-    count: rawItems.length,
-    getScrollElement: () => chatLogRef.current,
-    estimateSize: () => 65,
-    overscan: 8,
-  })
+  // No virtualizer — render all messages directly. The virtualizer caused
+  // scroll jitter (double-scroll from scrollToIndex + rAF, re-measurement
+  // bounce) that was worse than any performance gain. With 500-event cap
+  // in fleet-data.mjs, the DOM size is bounded.
 
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -1336,14 +1329,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   // already include the new content's height).
   const wasNearBottomRef = useRef(true)
 
-  // Scroll to bottom — single scrollTop assignment, no virtualizer.scrollToIndex
-  // which causes a double-scroll bounce (scrollToIndex triggers measurement +
-  // scroll, then rAF triggers another scroll = visual jitter).
+  // Scroll to bottom — single rAF-coalesced scrollTop assignment.
   const scrollRafRef = useRef<number>(0)
   const scrollToBottom = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
-    // Coalesce multiple calls within one frame
     cancelAnimationFrame(scrollRafRef.current)
     scrollRafRef.current = requestAnimationFrame(() => {
       if (chatLogRef.current) {
@@ -1354,8 +1344,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUp.current = false
     setShowScrollBtn(false)
     setAutoscrollPaused(false)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems.length])
+  }, [])
 
   // Track scroll position continuously via onScroll.
   // This fires for both user scrolls AND programmatic scrolls, but that's fine —
@@ -1408,12 +1397,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
-  // Chase virtualizer size changes (items measured taller than estimate).
-  const virtualizerTotalSize = virtualizer.getTotalSize()
-  useEffect(() => {
-    if (wasNearBottomRef.current) scrollToBottom()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [virtualizerTotalSize])
+  // No virtualizerTotalSize chaser needed — without virtualizer,
+  // scrollHeight is always correct after render.
 
   // After images load, scroll if we were near the bottom.
   useEffect(() => {
@@ -2243,16 +2228,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           ) : (
-            <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
-              {virtualizer.getVirtualItems().map(vItem => (
-                <div
-                  key={vItem.key}
-                  data-index={vItem.index}
-                  ref={virtualizer.measureElement}
-                  style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
-                >
-                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
-                </div>
+            <div>
+              {rawItems.map((item, i) => (
+                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} />
               ))}
             </div>
           )}
