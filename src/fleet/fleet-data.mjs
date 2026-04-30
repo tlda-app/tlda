@@ -24,7 +24,7 @@ const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(
 let _agents = []
 let _tasks = []
 let _events = []          // chat + lifecycle (delegate, task_done) — capped at MAX_EVENTS
-const MAX_EVENTS = 500    // keep only the most recent N events in memory; older events fetched from DB on scroll
+const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
@@ -454,7 +454,7 @@ export async function init() {
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
-    fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
+    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(() => ({ events: [] })),
   ])
 
   // Populate agents + tasks
