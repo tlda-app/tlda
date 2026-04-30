@@ -2164,20 +2164,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               ))}
             </div>
           )}
-          {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={agentId} className="chat-line chat-thinking">
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">thinking…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
-          {[...compactingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={`compact-${agentId}`} className="chat-line chat-thinking">
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">compacting…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
           {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
           {[...terminalCards].map(agentId => (
             <TerminalCard
@@ -2189,6 +2175,26 @@ function FleetChatInner({ shape }: { shape: any }) {
           ))}
         </div>
 
+        {/* Thinking/compacting indicators — rendered OUTSIDE the scroll container
+            so they don't change scrollHeight and cause jarring scroll shifts. */}
+        {(thinkingAgents.size > 0 || compactingAgents.size > 0) && (
+          <div style={{ padding: '0 8px', fontSize: 11, opacity: 0.6, flexShrink: 0 }}>
+            {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
+              <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">thinking…</span>
+                {' '}<ElapsedTime startMs={startTs} />
+              </div>
+            ))}
+            {[...compactingAgents.entries()].map(([agentId, startTs]) => (
+              <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+                {' '}<span className="thinking-text">compacting…</span>
+                {' '}<ElapsedTime startMs={startTs} />
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
         <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
