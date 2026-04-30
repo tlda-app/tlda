@@ -1336,12 +1336,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   // already include the new content's height).
   const wasNearBottomRef = useRef(true)
 
-  // Scroll to bottom unconditionally (used when we know we should follow)
+  // Scroll to bottom — single scrollTop assignment, no virtualizer.scrollToIndex
+  // which causes a double-scroll bounce (scrollToIndex triggers measurement +
+  // scroll, then rAF triggers another scroll = visual jitter).
+  const scrollRafRef = useRef<number>(0)
   const scrollToBottom = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
-    virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-    requestAnimationFrame(() => {
+    // Coalesce multiple calls within one frame
+    cancelAnimationFrame(scrollRafRef.current)
+    scrollRafRef.current = requestAnimationFrame(() => {
       if (chatLogRef.current) {
         chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
       }
