@@ -360,6 +360,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
+    const isAgentPill = pillType === 'agent' || pillType === 'label'
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
@@ -416,6 +417,32 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
+        {/* Ghost: show where a new chat will be created when dropping an agent/label pill */}
+        {isAgentPill && (
+          <div
+            style={{
+              position: 'absolute',
+              top: -9,
+              left: -35,
+              width: 400,
+              height: 600,
+              border: `1.5px dashed ${color}50`,
+              borderRadius: 8,
+              background: `${color}08`,
+              pointerEvents: 'none',
+            }}
+          >
+            <div style={{
+              padding: '8px 10px',
+              fontSize: 10,
+              opacity: 0.5,
+              color: color,
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+            }}>
+              → {displayName}
+            </div>
+          </div>
+        )}
       </HTMLContainer>
     )
   }
