@@ -547,7 +547,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    initialScrollDone.current = false
+    forceScrollRef.current = true
     setShowScrollBtn(false)
   }, [filterKey])
 
@@ -583,7 +583,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (fresh.length > 0) {
             // Reset initial scroll so the rawItems effect scrolls to bottom
             // after the prepended history shifts the content
-            initialScrollDone.current = false
+            forceScrollRef.current = true
             return [...fresh, ...prev]
           }
           return prev
@@ -1330,48 +1330,48 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // --- Scroll-to-bottom: ONE trigger, position-based, no event flags ---
+  // --- Scroll-to-bottom: ONE trigger, ref-based intent, no inline dist check ---
   // See scratch/scroll-plan.md for the full rationale.
   //
-  // Principle: check scroll position when deciding whether to scroll.
-  // No ResizeObservers, no virtualizerTotalSize chaser, no event-based flags.
-  // The textarea is inside the scroll container with position:sticky, so it
-  // doesn't resize the container or cause flex layout bounce.
-  const NEAR_BOTTOM_THRESHOLD = 80
+  // wasNearBottomRef captures the user's scroll INTENT on every scroll event.
+  // The scroll effect uses this ref — it doesn't check dist at decision time.
+  // This means anything that changes scrollHeight (thinking indicator, history
+  // prepend, virtualizer re-measurement) can't break auto-scroll: the ref
+  // records whether the user WAS near bottom, not whether they ARE right now.
+  const NEAR_BOTTOM_THRESHOLD = 150
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const initialScrollDone = useRef(false)
+  const wasNearBottomRef = useRef(true) // user scroll intent (updated by onScroll)
+  const forceScrollRef = useRef(true)   // programmatic intent (initial load, history prepend)
 
-  // Track scroll position for the scroll-to-bottom button visibility.
-  // This is the ONLY onScroll handler — no scroll-up detection, no flags.
+  // Track scroll position: update wasNearBottomRef and scroll button visibility.
+  // This only captures USER scroll intent. forceScrollRef is never touched here —
+  // it's set by code (initial load, history prepend) and cleared by the effect.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const onScroll = () => {
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      wasNearBottomRef.current = dist < NEAR_BOTTOM_THRESHOLD
       setShowScrollBtn(dist > 200)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  // ONE scroll trigger: when rawItems change OR thinking state changes,
-  // scroll to bottom IF near bottom. On initial load, always scroll.
-  // Thinking state is included because ThinkingStatus renders inside the
-  // scroll container — when it appears, scrollHeight grows, and dist
-  // increases past the threshold. Without this, the agent's response
-  // wouldn't auto-scroll because dist > 80 from the thinking indicator.
-  const thinkingCount = thinkingAgents.size + compactingAgents.size
+  // ONE scroll trigger: when rawItems change, scroll to bottom if EITHER:
+  // 1. forceScrollRef is true (programmatic: initial load, history prepend, filter change)
+  // 2. wasNearBottomRef is true (user was near bottom at last scroll event)
+  // Uses virtualizer.scrollToIndex instead of raw scrollTop because the
+  // virtualizer's estimated totalSize may be incomplete — scrollToIndex
+  // targets the actual last item regardless of measurement state.
   useEffect(() => {
     if (rawItems.length === 0) return
-    const el = chatLogRef.current
-    if (!el) return
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (!initialScrollDone.current || dist < NEAR_BOTTOM_THRESHOLD) {
-      initialScrollDone.current = true
-      el.scrollTop = el.scrollHeight
-    }
+    const shouldScroll = forceScrollRef.current || wasNearBottomRef.current
+    forceScrollRef.current = false
+    if (!shouldScroll) return
+    virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems, thinkingCount])
+  }, [rawItems])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
