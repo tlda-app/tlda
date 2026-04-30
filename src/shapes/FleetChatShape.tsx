@@ -1382,6 +1382,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
+      if (textareaResizingRef.current) return
       if (wasNearBottomRef.current) scrollToBottom()
     })
     ro.observe(el)
@@ -1389,11 +1390,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [scrollToBottom])
 
   // Scroll to bottom when new messages arrive — only if we were near the bottom
-  // BEFORE the new content arrived. Check both the ref (set by onScroll) and
-  // current position (catches the race where scrollTop was set programmatically
-  // but onScroll hasn't fired yet).
+  // BEFORE the new content arrived. Suppressed during textarea resizes to avoid
+  // bounce (textarea resize changes container height → virtualizer recalculates
+  // → totalSize changes → this fires → scrollToBottom fights with resize).
   useEffect(() => {
-    if (rawItems.length === 0) return
+    if (rawItems.length === 0 || textareaResizingRef.current) return
     const el = chatLogRef.current
     const currentlyNear = el ? (el.scrollHeight - el.scrollTop - el.clientHeight) < SCROLL_THRESHOLD : true
     if (wasNearBottomRef.current || currentlyNear) {
@@ -1404,8 +1405,10 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Chase virtualizer size changes — items measured taller than the 65px
   // estimate increase totalSize after the initial scroll.
+  // Suppressed during textarea resizes.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
+    if (textareaResizingRef.current) return
     if (wasNearBottomRef.current) scrollToBottom()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
