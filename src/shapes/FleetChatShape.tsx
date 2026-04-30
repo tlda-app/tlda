@@ -482,19 +482,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUp.current = false; setShowScrollBtn(false)
   }, [filterKey])
 
+  // Resolve a friendly name/label to a fleet ID for DB queries.
+  // Filters use friendly names but the DB stores fleet IDs.
+  const resolveToFleetId = useCallback((label: string): string => {
+    if (label.startsWith('fleet:')) return label
+    const agent = agents.find((a: any) =>
+      a.friendly_name === label || a.id === label || (a.labels || []).includes(label)
+    )
+    return agent?.id || label
+  }, [agents])
+
   // Auto-load history when filter gives empty results (no live messages for this agent)
   const autoLoadedRef = useRef<string | null>(null)
   useEffect(() => {
     if (liveEvents.length > 0 || olderEvents.length > 0) return
     if (!dnfFilter || dnfFilter.length === 0) return
-    // Derive agent name from filter for loadBefore
+    // Derive agent from filter for loadBefore — resolve friendly name to fleet ID
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel || autoLoadedRef.current === filterKey) return
     autoLoadedRef.current = filterKey
-    loadBefore(firstLabel, new Date().toISOString(), 50).then((older: any[]) => {
+    const fleetId = resolveToFleetId(firstLabel)
+    loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) setOlderEvents(older)
     })
-  }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey])
+  }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey, resolveToFleetId])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -1248,13 +1259,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
 
-    // Scroll event: only used to RESET userScrolledUp when the user comes back
-    // to the bottom. Never used to SET it — that's the job of wheel/touch handlers
-    // below. Programmatic scrollTop changes (virtualizer corrections, textarea
-    // collapse clamping) fire scroll events too; using those to set userScrolledUp
-    // caused false positives that permanently suppressed auto-scroll.
+    // Scroll event: ONLY used to resume auto-scroll when user reaches bottom.
+    // Never used to pause — that's the job of wheel/touch handlers below.
+    // Programmatic scrollTop changes (virtualizer re-measurement, resize observers,
+    // scrollToIndex) fire scroll events with decreased scrollTop. Using those to
+    // detect "user scrolled up" caused permanent false pauses.
     const onScroll = () => {
-      const prevTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       // Resume auto-scroll when user reaches the bottom
@@ -1262,14 +1272,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         setAutoscrollPaused(false)
         userScrolledUp.current = false
         setShowScrollBtn(false)
-      }
-      // Detect scroll-up: scrollTop decreased AND we're far from bottom.
-      // This catches Magic Mouse / trackpad gestures that send tiny deltaY
-      // values the wheel handler misses.
-      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current) {
-        setAutoscrollPaused(true)
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
       }
     }
 
@@ -1569,8 +1571,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
   }, [filterKey, agents])
 
-  // Derive a loadBefore agent: use first agent in filter
-  const loadBeforeAgent = sendTargets[0] ?? undefined
+  // Derive a loadBefore agent: use first agent in filter, resolved to fleet ID
+  const loadBeforeAgent = sendTargets[0] ? resolveToFleetId(sendTargets[0]) : undefined
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
