@@ -1598,8 +1598,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // Textarea resize: with sticky layout, textarea growth adds to scrollHeight
-  // instead of shrinking the container. No ResizeObserver chase needed.
+  // When textarea grows (multi-line input / voice), scroll chat up so the user
+  // can see what they were reading. Only scrolls when the user was near bottom
+  // (wasNearBottomRef) — if scrolled up reading old messages, don't disturb.
+  // Only fires on height INCREASE (not the height=auto collapse cycle).
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    let prevHeight = ta.offsetHeight
+    const ro = new ResizeObserver(() => {
+      const newHeight = ta.offsetHeight
+      if (newHeight > prevHeight && wasNearBottomRef.current) {
+        const el = chatLogRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      }
+      prevHeight = newHeight
+    })
+    ro.observe(ta)
+    return () => ro.disconnect()
+  }, [])
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}

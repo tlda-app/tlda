@@ -58,7 +58,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
     <g>
       <rect x={x} y={docY} width={docW} height={docH} stroke="currentColor" strokeWidth={0.5} fill="none" rx={r} />
       {[1,2,3,4,5].map(i => (
-        <line key={i} x1={x + docW*0.15} y1={docY + lineGap*i} x2={x + docW*0.85} y2={docY + lineGap*i} stroke="currentColor" strokeWidth={0.25} opacity={0.3} />
+        <line key={i} x1={x + docW*0.15} y1={docY + lineGap*i} x2={x + docW*0.85} y2={docY + lineGap*i} stroke="currentColor" strokeWidth={0.35} opacity={0.45} />
       ))}
     </g>
   )
