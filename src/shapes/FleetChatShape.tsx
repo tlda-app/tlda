@@ -1339,7 +1339,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This means anything that changes scrollHeight (thinking indicator, history
   // prepend, virtualizer re-measurement) can't break auto-scroll: the ref
   // records whether the user WAS near bottom, not whether they ARE right now.
-  const NEAR_BOTTOM_THRESHOLD = 150
+  // Must be larger than the max textarea height (200px) because textarea growth
+  // in the flex layout shrinks clientHeight, increasing dist even though the
+  // user hasn't scrolled. Without this margin, voice/multiline input makes
+  // wasNearBottomRef flip to false and auto-scroll stops.
+  const NEAR_BOTTOM_THRESHOLD = 300
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const wasNearBottomRef = useRef(true) // user scroll intent (updated by onScroll)
   const forceScrollRef = useRef(true)   // programmatic intent (initial load, history prepend)
