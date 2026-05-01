@@ -2501,3 +2501,43 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   vertical-align: middle;
   letter-spacing: 0.02em;
 }
+
+/* --- Doc Clip Shape --- */
+
+.doc-clip-shape {
+  background: var(--bg, #0f0f1a);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.doc-clip-label {
+  height: 20px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: rgba(200, 200, 200, 0.6);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-clip-actions {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 1;
+}
+
+.doc-clip-shape:hover .doc-clip-actions {
+  opacity: 0.6;
+}
+
+.doc-clip-body {
+  overflow: hidden;
+}

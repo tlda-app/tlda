@@ -227,6 +227,20 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'doc-clip': {
+    props: {
+      w: T.number,
+      h: T.number,
+      page: T.number,
+      yTop: T.number,
+      yBottom: T.number,
+      label: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.doc-clip',
+      sequence: [],
+    }),
+  },
   'inline-doc': {
     props: {
       w: T.number,
