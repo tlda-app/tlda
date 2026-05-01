@@ -1458,11 +1458,21 @@ function FleetChatInner({ shape }: { shape: any }) {
               broadcastSharedDoc(existingId, filePath)
             } else {
               // Create new sticky off to the right of the document
+              // Offset to avoid overlapping existing shared stickies
+              let newX = 2000
+              const sharedStickies = allShapes
+                .filter(s => (s as any).type === 'math-note' && (s as any).meta?.sharedDoc)
+              for (const s of sharedStickies) {
+                const sb = mainEditor.getShapePageBounds(s.id)
+                if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {
+                  newX = sb.x + sb.w + 30
+                }
+              }
               const stickyId = createShapeId()
               mainEditor.createShape({
                 id: stickyId,
                 type: 'math-note' as any,
-                x: 2000,
+                x: newX,
                 y: 100,
                 isLocked: false,
                 props: {
