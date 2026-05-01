@@ -1598,25 +1598,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea grows (multi-line input / voice), scroll chat up so the user
-  // can see what they were reading. Only scrolls when the user was near bottom
-  // (wasNearBottomRef) — if scrolled up reading old messages, don't disturb.
-  // Only fires on height INCREASE (not the height=auto collapse cycle).
-  useEffect(() => {
-    const ta = inputRef.current as HTMLTextAreaElement | null
-    if (!ta) return
-    let prevHeight = ta.offsetHeight
-    const ro = new ResizeObserver(() => {
-      const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && wasNearBottomRef.current) {
-        const el = chatLogRef.current
-        if (el) el.scrollTop = el.scrollHeight
-      }
-      prevHeight = newHeight
-    })
-    ro.observe(ta)
-    return () => ro.disconnect()
-  }, [])
+  // Textarea resize: no ResizeObserver. The height=auto cycle during onInput
+  // fires observers twice per keystroke, causing visible bounce. The flex layout
+  // handles textarea growth naturally — the chat log shrinks, content stays
+  // visible. Not ideal (can't see above the fold) but doesn't bounce.
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
