@@ -1369,6 +1369,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems, autoscrollPaused])
 
+  // Textarea growth: when the textarea gets taller (multiline voice input),
+  // the flex layout shrinks the chat log. Scroll to keep bottom visible.
+  useEffect(() => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    const ro = new ResizeObserver(() => {
+      if (autoscrollPaused) return
+      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+    })
+    ro.observe(ta)
+    return () => ro.disconnect()
+  }, [autoscrollPaused, rawItems.length, virtualizer])
+
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
   const sharedDocProcessed = useRef<Set<string>>(new Set())
