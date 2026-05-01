@@ -18,8 +18,8 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
-export const CHAT_W = 400
-export const CHAT_H = 600
+const CHAT_W = 400
+const CHAT_H = 600
 const SNAP_THRESHOLD = 20 // px distance for edge snapping
 const SNAP_GAP = 10 // gap between shapes when snapped
 
@@ -27,7 +27,7 @@ const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docvie
 
 // Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
-export const _snapState = {
+const _snapState = {
   deltaX: 0,
   deltaY: 0,
   lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
@@ -40,7 +40,7 @@ export const _snapState = {
  * Snap a point (top-left of new 400×600 chat) to nearby fleet shape edges.
  * Returns the snapped position and visual snap guide lines.
  */
-export function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number; lines: Array<{ axis: 'x' | 'y'; pos: number }> } {
+function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number; lines: Array<{ axis: 'x' | 'y'; pos: number }> } {
   const fleetShapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== excludeId)
   if (fleetShapes.length === 0) return { ...point, lines: [] }
@@ -332,13 +332,12 @@ export function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat at the snapped drop point.
-    const snapped = snapDropPoint(createEditor, pagePoint, pillId)
+    // Drop on empty canvas → create new fleet-chat at the drop point.
     createEditor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
-      x: snapped.x,
-      y: snapped.y,
+      x: pagePoint.x,
+      y: pagePoint.y,
       isLocked: false,
       props: {
         w: 400,
@@ -611,40 +610,6 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
               borderRadius: 4,
               background: 'rgba(128, 128, 128, 0.05)',
             }} />
-          </div>
-        )}
-        {/* Snap guide lines — rendered relative to pill position */}
-        {isAgentPill && _snapState.expanded && _snapState.lines.length > 0 && (
-          <div style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none', overflow: 'visible' }}>
-            {_snapState.lines.map((line, i) => {
-              const pillBounds = editor.getShapePageBounds(shape.id)
-              if (!pillBounds) return null
-              if (line.axis === 'x') {
-                // Vertical snap line at x position (relative to pill)
-                const relX = line.pos - pillBounds.x
-                return <div key={i} style={{
-                  position: 'absolute',
-                  left: relX,
-                  top: -2000,
-                  width: 1,
-                  height: 4000,
-                  background: '#4dabf7',
-                  opacity: 0.6,
-                }} />
-              } else {
-                // Horizontal snap line at y position (relative to pill)
-                const relY = line.pos - pillBounds.y
-                return <div key={i} style={{
-                  position: 'absolute',
-                  top: relY,
-                  left: -2000,
-                  width: 4000,
-                  height: 1,
-                  background: '#4dabf7',
-                  opacity: 0.6,
-                }} />
-              }
-            })}
           </div>
         )}
       </HTMLContainer>
