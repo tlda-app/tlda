@@ -1345,16 +1345,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   // wasNearBottomRef flip to false and auto-scroll stops.
   const NEAR_BOTTOM_THRESHOLD = 300
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const wasNearBottomRef = useRef(true) // user scroll intent (updated by onScroll)
-  const forceScrollRef = useRef(true)   // programmatic intent (initial load, history prepend)
+  const wasNearBottomRef = useRef(true)
+  const forceScrollRef = useRef(true)
+  // Suppress onScroll updates briefly after programmatic scrolls. Without this,
+  // scrollToIndex triggers scroll events that set wasNearBottomRef=false if the
+  // virtualizer hasn't settled yet (dist momentarily > 300).
+  const scrollSuppressUntil = useRef(0)
 
-  // Track scroll position: update wasNearBottomRef and scroll button visibility.
-  // This only captures USER scroll intent. forceScrollRef is never touched here —
-  // it's set by code (initial load, history prepend) and cleared by the effect.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const onScroll = () => {
+      if (Date.now() < scrollSuppressUntil.current) return
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight
       wasNearBottomRef.current = dist < NEAR_BOTTOM_THRESHOLD
       setShowScrollBtn(dist > 200)
@@ -1363,19 +1365,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  // Scroll to bottom when rawItems change, if EITHER:
-  // 1. forceScrollRef is true (programmatic: initial load, history prepend, filter change)
-  // 2. wasNearBottomRef is true (user was near bottom at last scroll event)
-  //
-  // Normal messages: scrollToIndex only (single clean scroll, no bounce).
-  // Force-scroll (initial load, history prepend): scrollToIndex + rAF scrollTop
-  // because the virtualizer may not have measured all items yet on first render.
   useEffect(() => {
     if (rawItems.length === 0) return
     const isForce = forceScrollRef.current
     const shouldScroll = isForce || wasNearBottomRef.current
     forceScrollRef.current = false
     if (!shouldScroll) return
+    // Suppress onScroll for 200ms so programmatic scroll events don't
+    // flip wasNearBottomRef during virtualizer settling
+    scrollSuppressUntil.current = Date.now() + 200
     virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
     if (isForce) {
       const el = chatLogRef.current
