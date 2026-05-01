@@ -47,13 +47,21 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   const sr = 'currentColor'  // search
   const dv = 'currentColor'  // docview
 
-  // Document: outlined rectangle, SAME size in every preset (it's always the same paper).
-  // Fixed at right side, consistent width and height across all layouts.
-  const doc = { stroke: 'currentColor', strokeWidth: 0.5, fill: 'none', rx: r }
-  const docW = s * 0.22  // consistent document width
-  const docX = s - docW  // flush right
+  // Document: outlined rectangle with horizontal lines (looks like paper).
+  // SAME size in every preset — fixed at right side.
+  const docW = s * 0.22
+  const docX = s - docW
   const docY = s * 0.05
   const docH = s * 0.9
+  const lineGap = docH / 6
+  const docEl = (x: number = docX) => (
+    <g>
+      <rect x={x} y={docY} width={docW} height={docH} stroke="currentColor" strokeWidth={0.5} fill="none" rx={r} />
+      {[1,2,3,4,5].map(i => (
+        <line key={i} x1={x + docW*0.15} y1={docY + lineGap*i} x2={x + docW*0.85} y2={docY + lineGap*i} stroke="currentColor" strokeWidth={0.25} opacity={0.3} />
+      ))}
+    </g>
+  )
 
   const layouts: Record<LayoutId, JSX.Element> = {
     '3col': (
@@ -64,7 +72,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         <rect x={s*0.16+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
         <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.7} rx={r} fill={ch} />
         <rect x={s*0.38+g} y={s*0.7+g} width={s*0.22-g} height={s*0.3-g} rx={r} fill={dv} />
-        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
+        {docEl()}
       </>
     ),
     '2col': (
@@ -73,7 +81,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
         <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s} rx={r} fill={ch} />
-        <rect x={s*0.4+g} y={docY} width={docW} height={docH} {...doc} />
+        {docEl(s*0.4+g)}
         <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
       </>
     ),
@@ -83,7 +91,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
         <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s} rx={r} fill={ch} />
-        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
+        {docEl()}
       </>
     ),
     'grid': (
@@ -95,7 +103,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
         <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
         <rect x={s*0.38+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
-        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
+        {docEl()}
       </>
     ),
   }
