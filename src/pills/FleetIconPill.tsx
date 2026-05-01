@@ -40,11 +40,12 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   const s = size
   const g = 1 // gap
   const r = 0.5 // corner radius
-  // Colors: agent panel = slightly brighter, chat = dimmer, doc margin = dimmest
-  const ap = 'rgba(255,255,255,0.5)'  // agents panel
-  const ch = 'rgba(255,255,255,0.35)' // chat
-  const sr = 'rgba(255,255,255,0.25)' // search
-  const dv = 'rgba(255,255,255,0.2)'  // docview
+  // All shapes use currentColor — opacity on the fan-item container handles visibility.
+  // Differentiate shape types by opacity within the icon.
+  const ap = 'currentColor'  // agents panel (full)
+  const ch = 'currentColor'  // chat (full)
+  const sr = 'currentColor'  // search
+  const dv = 'currentColor'  // docview
 
   const layouts: Record<LayoutId, JSX.Element> = {
     '3col': (
