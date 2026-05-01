@@ -47,50 +47,55 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   const sr = 'currentColor'  // search
   const dv = 'currentColor'  // docview
 
-  // Document: outlined rectangle (stroke only) to distinguish from solid fleet shapes
+  // Document: outlined rectangle, SAME size in every preset (it's always the same paper).
+  // Fixed at right side, consistent width and height across all layouts.
   const doc = { stroke: 'currentColor', strokeWidth: 0.5, fill: 'none', rx: r }
+  const docW = s * 0.22  // consistent document width
+  const docX = s - docW  // flush right
+  const docY = s * 0.05
+  const docH = s * 0.9
 
   const layouts: Record<LayoutId, JSX.Element> = {
     '3col': (
-      // [agents/search] [chat] | DOC | [chat+docview]
+      // [agents/search] [chat] [chat+docview] | DOC
       <>
-        <rect x={0} y={0} width={s*0.18} height={s*0.55} rx={r} fill={ap} />
-        <rect x={0} y={s*0.55+g} width={s*0.18} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.18+g} y={0} width={s*0.25-g} height={s} rx={r} fill={ch} />
-        <rect x={s*0.43+g} y={s*0.05} width={s*0.2-g*2} height={s*0.9} {...doc} />
-        <rect x={s*0.63+g} y={0} width={s*0.25-g} height={s*0.7} rx={r} fill={ch} />
-        <rect x={s*0.63+g} y={s*0.7+g} width={s*0.25-g} height={s*0.3-g} rx={r} fill={dv} />
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.7} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={s*0.7+g} width={s*0.22-g} height={s*0.3-g} rx={r} fill={dv} />
+        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
       </>
     ),
     '2col': (
       // [agents/search + chat] | DOC | [chat]
       <>
-        <rect x={0} y={0} width={s*0.18} height={s*0.55} rx={r} fill={ap} />
-        <rect x={0} y={s*0.55+g} width={s*0.18} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.18+g} y={0} width={s*0.27-g} height={s} rx={r} fill={ch} />
-        <rect x={s*0.45+g} y={s*0.05} width={s*0.18-g*2} height={s*0.9} {...doc} />
-        <rect x={s*0.63+g} y={0} width={s*0.37-g} height={s} rx={r} fill={ch} />
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.4+g} y={docY} width={docW} height={docH} {...doc} />
+        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
       </>
     ),
     'wide': (
-      // [agents/search] [wide chat] | DOC (to the right)
+      // [agents/search] [wide chat] | DOC
       <>
-        <rect x={0} y={0} width={s*0.18} height={s*0.55} rx={r} fill={ap} />
-        <rect x={0} y={s*0.55+g} width={s*0.18} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.18+g} y={0} width={s*0.5-g} height={s} rx={r} fill={ch} />
-        <rect x={s*0.68+g} y={s*0.05} width={s*0.32-g*2} height={s*0.9} {...doc} />
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s} rx={r} fill={ch} />
+        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
       </>
     ),
     'grid': (
-      // [agents/search] [2x2 chats] | DOC (to the right)
+      // [agents/search] [2x2 chats] | DOC
       <>
-        <rect x={0} y={0} width={s*0.18} height={s*0.55} rx={r} fill={ap} />
-        <rect x={0} y={s*0.55+g} width={s*0.18} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.18+g} y={0} width={s*0.25-g} height={s*0.5-g/2} rx={r} fill={ch} />
-        <rect x={s*0.43+g} y={0} width={s*0.25-g} height={s*0.5-g/2} rx={r} fill={ch} />
-        <rect x={s*0.18+g} y={s*0.5+g/2} width={s*0.25-g} height={s*0.5-g/2} rx={r} fill={ch} />
-        <rect x={s*0.43+g} y={s*0.5+g/2} width={s*0.25-g} height={s*0.5-g/2} rx={r} fill={ch} />
-        <rect x={s*0.68+g} y={s*0.05} width={s*0.32-g*2} height={s*0.9} {...doc} />
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={docX} y={docY} width={docW} height={docH} {...doc} />
       </>
     ),
   }
