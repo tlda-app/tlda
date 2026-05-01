@@ -698,6 +698,22 @@ function AgentRow({
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
+        {/* Kill/respawn — single button left of name, on hover. Live → ×, dead → ⟳ */}
+        {(agent.dead ? canRespawn : true) && (
+          <span
+            className={agent.dead ? 'fleet-agents-respawn-btn' : 'fleet-agents-kill-btn'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              if (agent.dead) respawnAgent(agent.id)
+              else killSession(agent.id)
+            }}
+            title={agent.dead ? 'Respawn agent' : 'Kill agent session'}
+          >
+            {agent.dead ? '⟳' : '×'}
+          </span>
+        )}
+
         {/* Agent name — draggable (drag to create pill filter). Stops row click via onStartDrag's stopEventPropagation */}
         <span
           className={`fleet-agents-col-name fleet-agents-pill`}
@@ -711,28 +727,6 @@ function AgentRow({
 
         <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}
-        </span>
-
-        {/* Action buttons — appear on hover */}
-        <span className="fleet-agents-action-btns" onPointerDown={(e) => e.stopPropagation()}>
-          {canRespawn && (
-            <span
-              className="fleet-agents-respawn-btn"
-              onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
-              title="Respawn agent"
-            >
-              ⟳
-            </span>
-          )}
-          {!agent.dead && (
-            <span
-              className="fleet-agents-kill-btn"
-              onPointerUp={(e) => { e.stopPropagation(); killSession(agent.id) }}
-              title="Kill agent session"
-            >
-              ×
-            </span>
-          )}
         </span>
 
         {/* Labels — draggable chips */}

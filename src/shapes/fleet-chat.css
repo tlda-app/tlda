@@ -1496,25 +1496,21 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: #7a9ec8;
 }
 
-/* --- Action buttons (respawn, kill) in row --- */
-
-.fleet-agents-shape .fleet-agents-action-btns {
-  display: flex;
-  gap: 2px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
+/* --- Kill/respawn button (left of agent name, on hover) --- */
 
 .fleet-agents-shape .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
 }
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 .fleet-agents-shape .fleet-agents-kill-btn:hover {
   opacity: 1 !important;
@@ -1529,7 +1525,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
 /* --- Spawn buttons --- */
