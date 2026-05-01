@@ -306,6 +306,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         let status = 'dead'
         if (heartbeat && tmuxUp !== false) status = 'alive'
         else if (heartbeat || tmuxUp) status = 'stale'
+        // Auto-mark dead: no heartbeat for >1h, tmux not alive, not human
+        if (status === 'dead' && !a.dead && !a.human && lastSeenMs > 60 * 60 * 1000) {
+          a.dead = true
+          try { fleetStore?.markDead(a.id) } catch {}
+        }
         return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
       const missing = roster.filter(r => !registryIds.has(r.fleet_id))
