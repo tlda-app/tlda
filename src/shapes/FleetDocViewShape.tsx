@@ -28,7 +28,6 @@ import {
 } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
@@ -632,71 +631,3 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   )
 }
 
-/**
- * DocViewPortal — renders a CanvasClipPanel via React portal outside the
- * tldraw tree, positioned to overlay the shape's screen location.
- * This avoids the nested-tldraw crash (React error #300).
- */
-export function DocViewPortal({
-  mainEditor, bounds, shapeUtils, licenseKey, panelWidth, panelHeight: _panelHeight, shapeId, editor: _editor,
-}: {
-  mainEditor: Editor
-  bounds: ClipBounds
-  shapeUtils: any[]
-  licenseKey: string
-  panelWidth: number
-  panelHeight: number
-  shapeId: string
-  editor: Editor
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
-
-  useEffect(() => {
-    const el = document.createElement('div')
-    el.className = 'fleet-docview-portal'
-    el.style.position = 'fixed'
-    el.style.zIndex = '99999'
-    el.style.pointerEvents = 'none'
-    document.body.appendChild(el)
-    containerRef.current = el
-    return () => { el.remove(); containerRef.current = null }
-  }, [])
-
-  useEffect(() => {
-    const update = () => {
-      const shapeEl = document.querySelector(`[data-shape-id="${shapeId}"]`)
-      if (!shapeEl) return
-      const bodyEl = shapeEl.querySelector('.fleet-docview-body')
-      if (!bodyEl) return
-      const rect = bodyEl.getBoundingClientRect()
-      setPos({ x: rect.left, y: rect.top })
-      if (containerRef.current) {
-        containerRef.current.style.left = rect.left + 'px'
-        containerRef.current.style.top = rect.top + 'px'
-        containerRef.current.style.width = rect.width + 'px'
-        containerRef.current.style.height = rect.height + 'px'
-        containerRef.current.style.pointerEvents = isSelected ? 'none' : 'auto'
-      }
-    }
-    update()
-    const interval = setInterval(update, 500)
-    return () => clearInterval(interval)
-  }, [shapeId, isSelected])
-
-  if (!containerRef.current || !pos) return null
-
-  return createPortal(
-    <CanvasClipPanel
-      mainEditor={mainEditor}
-      bounds={bounds}
-      shapeUtils={shapeUtils}
-      tools={[]}
-      licenseKey={licenseKey}
-      panelWidth={panelWidth}
-      maxHeightFraction={1}
-      readOnly
-    />,
-    containerRef.current,
-  )
-}

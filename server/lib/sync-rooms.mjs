@@ -214,7 +214,7 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      mode: T.string,
+      mode: T.optional(T.string),
       label: T.string,
       page: T.number,
       yTop: T.number,

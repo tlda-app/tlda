@@ -238,6 +238,14 @@ export async function kickAgent(id) {
   })
 }
 
+export async function killSession(id) {
+  return fetch(`${FLEET}/api/kill-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: id }),
+  })
+}
+
 export async function sendKey(session, key) {
   return fetch(`${FLEET}/api/send-key`, {
     method: 'POST',

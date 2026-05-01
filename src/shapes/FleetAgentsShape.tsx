@@ -16,8 +16,8 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
-import { dropPillOnTarget } from './FleetPillShape'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, killSession, spawnAgent } from '../fleet-data-adapter'
+import { dropPillOnTarget, snapDropPoint, _snapState, CHAT_W, CHAT_H } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -210,12 +210,57 @@ function usePillDrag() {
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
           const ph = pillShape?.props?.h || 18
+          let targetX = pagePos.x - pw / 2
+          let targetY = pagePos.y - ph / 2
+
+          // Check if over an existing fleet shape
+          const cx = pagePos.x
+          const cy = pagePos.y
+          const mainEditor = (window as any).__tldraw_editor__ as any
+          const hitEditor = mainEditor || editor
+          const allFleet = hitEditor.getCurrentPageShapes()
+            .filter((s: any) => ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'].includes(s.type) && s.id !== drag.pillId)
+          let overFleet = false
+          for (const s of allFleet) {
+            const sb = hitEditor.getShapePageBounds(s.id)
+            if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
+              overFleet = true
+              break
+            }
+          }
+
+          // Expand/collapse pill based on hover target
+          if (!overFleet && !_snapState.expanded) {
+            _snapState.expanded = true
+            _snapState.active = true
+            editor.run(() => {
+              editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, props: { w: CHAT_W, h: CHAT_H } })
+            }, { history: 'ignore' })
+          } else if (overFleet && _snapState.expanded) {
+            _snapState.expanded = false
+            _snapState.lines = []
+            editor.run(() => {
+              editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, props: { w: 70, h: 18 } })
+            }, { history: 'ignore' })
+          }
+
+          // Apply snap when expanded (creating a new chat on empty canvas)
+          if (_snapState.expanded && !overFleet) {
+            const dropPoint = { x: pagePos.x - CHAT_W / 2, y: pagePos.y - CHAT_H / 2 }
+            const snapped = snapDropPoint(hitEditor, dropPoint, drag.pillId as any)
+            targetX = snapped.x
+            targetY = snapped.y
+            _snapState.lines = snapped.lines
+          } else {
+            _snapState.lines = []
+          }
+
           editor.run(() => {
             editor.updateShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
-              x: pagePos.x - pw / 2,
-              y: pagePos.y - ph / 2,
+              x: targetX,
+              y: targetY,
             })
           }, { history: 'ignore' })
         }
@@ -225,6 +270,11 @@ function usePillDrag() {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
+
+        // Clean up snap state
+        _snapState.active = false
+        _snapState.expanded = false
+        _snapState.lines = []
 
         const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
@@ -663,17 +713,27 @@ function AgentRow({
           {taskDesc ? taskDesc.substring(0, 50) : ''}
         </span>
 
-        {/* Respawn button — its own action, not expand */}
-        {canRespawn && (
-          <span
-            className="fleet-agents-respawn-btn"
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
-            title="Respawn agent"
-          >
-            ⟳
-          </span>
-        )}
+        {/* Action buttons — appear on hover */}
+        <span className="fleet-agents-action-btns" onPointerDown={(e) => e.stopPropagation()}>
+          {canRespawn && (
+            <span
+              className="fleet-agents-respawn-btn"
+              onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
+              title="Respawn agent"
+            >
+              ⟳
+            </span>
+          )}
+          {!agent.dead && (
+            <span
+              className="fleet-agents-kill-btn"
+              onPointerUp={(e) => { e.stopPropagation(); killSession(agent.id) }}
+              title="Kill agent session"
+            >
+              ×
+            </span>
+          )}
+        </span>
 
         {/* Labels — draggable chips */}
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>

@@ -539,6 +539,21 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json(result)
   })
 
+  // --- POST /api/kill-session ---
+  // Kill the agent's tmux session outright. Marks agent dead.
+  router.post('/api/kill-session', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
+    const result = await rpcAgent(res, agent, 'kill-session', {
+      agent_id: agent.id, tmux_session: agent.tmux_session,
+    })
+    if (result === null) return
+    broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+  })
+
   // --- POST /api/interrupt ---
   // Two-phase: kick the agent immediately so the caller can move on, then
   // let the daemon do the polled re-interrupt loop in the background.

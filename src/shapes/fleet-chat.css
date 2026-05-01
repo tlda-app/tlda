@@ -1496,20 +1496,39 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: #7a9ec8;
 }
 
-/* --- Respawn button in row --- */
+/* --- Action buttons (respawn, kill) in row --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  margin-left: 4px;
+.fleet-agents-shape .fleet-agents-action-btns {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.fleet-agents-shape .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
+  cursor: pointer;
+  font-size: 12px;
 }
-.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
   opacity: 0.6;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-kill-btn:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  opacity: 1 !important;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
   opacity: 0;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
   opacity: 0.5;
 }
 

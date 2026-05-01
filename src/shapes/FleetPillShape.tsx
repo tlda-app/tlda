@@ -18,16 +18,16 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
-const CHAT_W = 400
-const CHAT_H = 600
+export const CHAT_W = 400
+export const CHAT_H = 600
 const SNAP_THRESHOLD = 20 // px distance for edge snapping
 const SNAP_GAP = 10 // gap between shapes when snapped
 
 const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
-// Module-level snap state — written by onTranslate, read by the component.
+// Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
-const _snapState = {
+export const _snapState = {
   deltaX: 0,
   deltaY: 0,
   lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
@@ -37,58 +37,51 @@ const _snapState = {
 }
 
 /**
- * Snap a drop point (top-left of new 400×600 chat) to nearby fleet shape edges.
- * Snaps X to right-edge alignment (new chat sits right of existing shape)
- * and Y to top-edge or bottom-edge alignment.
+ * Snap a point (top-left of new 400×600 chat) to nearby fleet shape edges.
+ * Returns the snapped position and visual snap guide lines.
  */
-function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number } {
+export function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number; lines: Array<{ axis: 'x' | 'y'; pos: number }> } {
   const fleetShapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== excludeId)
-  if (fleetShapes.length === 0) return point
+  if (fleetShapes.length === 0) return { ...point, lines: [] }
 
   let { x, y } = point
-  const newRight = x + CHAT_W
-  const newBottom = y + CHAT_H
+  const lines: Array<{ axis: 'x' | 'y'; pos: number }> = []
 
   // Collect edges from all fleet shapes
-  const edges: { type: string; val: number; shapeEdge: string }[] = []
+  const edges: { type: string; val: number }[] = []
   for (const s of fleetShapes) {
     const b = editor.getShapePageBounds(s.id)
     if (!b) continue
-    // X edges: snap new chat's left to existing right (with gap), or right to existing left
-    edges.push({ type: 'x-left-to-right', val: b.x + b.w + SNAP_GAP, shapeEdge: 'right' })
-    edges.push({ type: 'x-right-to-left', val: b.x - SNAP_GAP - CHAT_W, shapeEdge: 'left' })
-    edges.push({ type: 'x-left-to-left', val: b.x, shapeEdge: 'left-align' })
-    // Y edges: snap top-to-top, top-to-bottom, bottom-to-top
-    edges.push({ type: 'y-top-to-top', val: b.y, shapeEdge: 'top-align' })
-    edges.push({ type: 'y-top-to-bottom', val: b.y + b.h + SNAP_GAP, shapeEdge: 'below' })
-    edges.push({ type: 'y-bottom-to-top', val: b.y - SNAP_GAP - CHAT_H, shapeEdge: 'above' })
+    edges.push({ type: 'x-left-to-right', val: b.x + b.w + SNAP_GAP })
+    edges.push({ type: 'x-right-to-left', val: b.x - SNAP_GAP - CHAT_W })
+    edges.push({ type: 'x-left-to-left', val: b.x })
+    edges.push({ type: 'y-top-to-top', val: b.y })
+    edges.push({ type: 'y-top-to-bottom', val: b.y + b.h + SNAP_GAP })
+    edges.push({ type: 'y-bottom-to-top', val: b.y - SNAP_GAP - CHAT_H })
   }
 
   // Find closest X snap
   let bestXDist = SNAP_THRESHOLD
+  let snappedX = false
   for (const e of edges) {
     if (!e.type.startsWith('x-')) continue
     const dist = Math.abs(e.val - x)
-    if (dist < bestXDist) { bestXDist = dist; x = e.val }
+    if (dist < bestXDist) { bestXDist = dist; x = e.val; snappedX = true }
   }
-  // Also snap right edge
-  for (const e of edges) {
-    if (!e.type.startsWith('x-')) continue
-    const dist = Math.abs(e.val - (x + CHAT_W))
-    // Only snap right edge if it's closer than the left-edge snap we already found
-    if (dist < bestXDist) { bestXDist = dist; /* don't move — right edge snap is implicit */ }
-  }
+  if (snappedX) lines.push({ axis: 'x', pos: x })
 
   // Find closest Y snap
   let bestYDist = SNAP_THRESHOLD
+  let snappedY = false
   for (const e of edges) {
     if (!e.type.startsWith('y-')) continue
     const dist = Math.abs(e.val - y)
-    if (dist < bestYDist) { bestYDist = dist; y = e.val }
+    if (dist < bestYDist) { bestYDist = dist; y = e.val; snappedY = true }
   }
+  if (snappedY) lines.push({ axis: 'y', pos: y })
 
-  return { x, y }
+  return { x, y, lines }
 }
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
@@ -339,12 +332,13 @@ export function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat at the drop point.
+    // Drop on empty canvas → create new fleet-chat at the snapped drop point.
+    const snapped = snapDropPoint(createEditor, pagePoint, pillId)
     createEditor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
-      x: pagePoint.x,
-      y: pagePoint.y,
+      x: snapped.x,
+      y: snapped.y,
       isLocked: false,
       props: {
         w: 400,
@@ -617,6 +611,40 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
               borderRadius: 4,
               background: 'rgba(128, 128, 128, 0.05)',
             }} />
+          </div>
+        )}
+        {/* Snap guide lines — rendered relative to pill position */}
+        {isAgentPill && _snapState.expanded && _snapState.lines.length > 0 && (
+          <div style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none', overflow: 'visible' }}>
+            {_snapState.lines.map((line, i) => {
+              const pillBounds = editor.getShapePageBounds(shape.id)
+              if (!pillBounds) return null
+              if (line.axis === 'x') {
+                // Vertical snap line at x position (relative to pill)
+                const relX = line.pos - pillBounds.x
+                return <div key={i} style={{
+                  position: 'absolute',
+                  left: relX,
+                  top: -2000,
+                  width: 1,
+                  height: 4000,
+                  background: '#4dabf7',
+                  opacity: 0.6,
+                }} />
+              } else {
+                // Horizontal snap line at y position (relative to pill)
+                const relY = line.pos - pillBounds.y
+                return <div key={i} style={{
+                  position: 'absolute',
+                  top: relY,
+                  left: -2000,
+                  width: 4000,
+                  height: 1,
+                  background: '#4dabf7',
+                  opacity: 0.6,
+                }} />
+              }
+            })}
           </div>
         )}
       </HTMLContainer>
