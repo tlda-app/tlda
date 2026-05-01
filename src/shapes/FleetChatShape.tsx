@@ -1608,21 +1608,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea grows (multi-line input), keep chat scrolled to bottom
-  useEffect(() => {
-    const ta = inputRef.current as HTMLTextAreaElement | null
-    if (!ta) return
-    let prevHeight = ta.offsetHeight
-    const ro = new ResizeObserver(() => {
-      const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && rawItemsLenRef.current > 0) {
-        virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
-      }
-      prevHeight = newHeight
-    })
-    ro.observe(ta)
-    return () => ro.disconnect()
-  }, [])
+  // Textarea resize is handled by CSS field-sizing: content.
+  // The chat log ResizeObserver catches the container shrink and scrolls to bottom.
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -2199,8 +2186,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const after = ta.value.slice(pos)
       const insert = (before && !before.endsWith('\n') ? '\n' : '') + text + (after && !after.startsWith('\n') ? '\n' : '')
       ta.value = before + insert + after
-      ta.style.height = 'auto'
-      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+      // field-sizing: content handles auto-resize
       ta.focus()
     }
     const filterHandler = (e: Event) => {
@@ -2386,7 +2372,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   e.preventDefault()
                   if (ta.value !== '') {
                     ta.value = ''
-                    ta.style.height = 'auto'
+                    // field-sizing: content auto-shrinks
                     return
                   }
                   const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
@@ -2409,8 +2395,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (nextIdx < history.length) {
                     historyIndexRef.current = nextIdx
                     ta.value = history[history.length - 1 - nextIdx]
-                    ta.style.height = 'auto'
-                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    // field-sizing: content handles auto-resize
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2422,12 +2407,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                   historyIndexRef.current = nextIdx
                   if (nextIdx < 0) {
                     ta.value = ''
-                    ta.style.height = 'auto'
+                    // field-sizing: content auto-shrinks
                   } else {
                     const history = sentHistoryRef.current
                     ta.value = history[history.length - 1 - nextIdx]
-                    ta.style.height = 'auto'
-                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    // field-sizing: content handles auto-resize
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2456,7 +2440,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (targetId) {
                       openTerminal(targetId)
                       ta.value = ''
-                      ta.style.height = 'auto'
+                      // field-sizing: content auto-shrinks
                     }
                     return
                   }
@@ -2543,7 +2527,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       read: true,
                     })
                     ta.value = ''
-                    ta.style.height = 'auto'
+                    // field-sizing: content auto-shrinks
                     resetTranscript()
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
@@ -2583,11 +2567,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   }
                 }
               }}
-              onInput={(e) => {
-                // Auto-resize
-                const ta = e.currentTarget
-                ta.style.height = 'auto'
-                ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+              onInput={() => {
+                // field-sizing: content handles auto-resize natively.
+                // Chat log ResizeObserver handles scroll-to-bottom.
               }}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
@@ -2677,7 +2659,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 fontFamily: 'inherit',
                 position: 'relative',
                 zIndex: 1,
-              }}
+                fieldSizing: 'content',
+                maxHeight: 200,
+              } as any}
               onDrop={async (e) => {
                 e.preventDefault()
                 e.stopPropagation()
