@@ -69,9 +69,11 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 const TLDA_PORT = 5176;
 const TLDA_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json');
 let _tldaToken = null;
+let _chatReminder = '';
 try {
   const cfg = JSON.parse(fs.readFileSync(TLDA_CONFIG, 'utf8'));
   _tldaToken = cfg.tokenRw || cfg.tokenRead || null;
+  _chatReminder = cfg.chatReminder || '';
 } catch (e) {
   if (e.code !== 'ENOENT') process.stderr.write(`[fleet] tlda config read failed: ${e.message}\n`);
 }
@@ -2454,7 +2456,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
-      text += `\n\n📬 Messages:\n\n${formatted}`;
+      // Append chat reminder if any messages are from humans
+      const hasHumanMsg = unread.some(m => {
+        const fid = m.from || '';
+        return fid && !/^fleet:[0-9a-f]{6,}/.test(fid);
+      });
+      const reminderNote = hasHumanMsg && _chatReminder ? `\n\n${_chatReminder}` : '';
+      text += `\n\n📬 Messages:\n\n${formatted}${reminderNote}`;
       // Collect all images from all messages
       const allImages = msgResults.flatMap(r => r.images);
       if (allImages.length > 0) {
@@ -3852,7 +3860,10 @@ async function handleChannelMessage(msg) {
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
+      // Prepend configurable chat reminder for messages from humans (non-UUID fleet IDs)
+      const isFromHuman = fromId && !/^fleet:[0-9a-f]{6,}/.test(fromId);
+      const reminder = isFromHuman && _chatReminder ? `\n${_chatReminder}` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
       content = `📬 Task update. Call my_task() to see details.`;
     }
