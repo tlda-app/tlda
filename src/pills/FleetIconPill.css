@@ -53,10 +53,16 @@
   color: rgba(0, 0, 0, 0.35);
   white-space: nowrap;
   pointer-events: none;
+  background: rgba(240, 240, 240, 0.9);
+  border-radius: 3px;
+  padding: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
 }
 
 .fleet-icon-pill-fan-item.hovered {
   color: rgba(0, 0, 0, 0.8);
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(0, 0, 0, 0.3);
 }
 
 /* ── Dark mode ─────────────────────────────────────────────────────────────── */
@@ -67,8 +73,12 @@ html[data-theme="dark"] .fleet-icon-pill-badge {
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item {
   color: rgba(255, 255, 255, 0.7);
+  background: rgba(30, 30, 30, 0.9);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item.hovered {
   color: rgba(255, 255, 255, 1);
+  background: rgba(50, 50, 50, 0.95);
+  border-color: rgba(255, 255, 255, 0.35);
 }
