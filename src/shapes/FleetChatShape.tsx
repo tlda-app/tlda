@@ -1368,8 +1368,21 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (rawItems.length === 0) return
     const isForce = forceScrollRef.current
-    const shouldScroll = isForce || wasNearBottomRef.current
     forceScrollRef.current = false
+    // Primary: forceScroll or wasNearBottom ref
+    let shouldScroll = isForce || wasNearBottomRef.current
+    // Fallback: if the ref says "scrolled up" but we're actually near bottom,
+    // scroll anyway. This catches cases where wasNearBottomRef got stuck false
+    // (e.g., virtualizer measurement glitch set dist > 300 for one frame).
+    // Without this fallback, auto-scroll is permanently broken once the ref
+    // flips false until the user manually scrolls to bottom.
+    if (!shouldScroll) {
+      const el = chatLogRef.current
+      if (el) {
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+        if (dist < NEAR_BOTTOM_THRESHOLD) shouldScroll = true
+      }
+    }
     if (!shouldScroll) return
     // Suppress onScroll for 200ms so programmatic scroll events don't
     // flip wasNearBottomRef during virtualizer settling

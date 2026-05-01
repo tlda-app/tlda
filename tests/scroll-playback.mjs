@@ -355,6 +355,109 @@ await test('No message overlap when scrolled to middle', async () => {
   } catch { return { pass: false, detail: 'parse error' } }
 })
 
+// Test L: Textarea grows via REAL keyboard input → message arrives → should auto-scroll
+// Uses playwright keyboard.type to trigger the actual onInput handler's
+// height=auto → height=scrollHeight cycle — the real source of the bug.
+console.log('\n--- Test L: Real keyboard multiline + message arrival ---')
+// Start at bottom
+pwEval(`(function(){var els=document.querySelectorAll(".fleet-chat-log");var el=els.length>1?els[els.length-1]:els[0];el.scrollTop=el.scrollHeight;return "ok"})()`)
+await delay(300)
+// Focus textarea and type multiline via real keyboard (triggers onInput resize)
+pwEval(`(function(){var ta=document.querySelector(".fleet-chat-input-area textarea");if(ta){ta.focus();ta.click()}return "focused"})()`)
+await delay(200)
+// Type multiple lines with real Enter keys (Shift+Enter for newlines)
+pw(`type "line1"`)
+await delay(100)
+// Use Shift+Enter for newlines in textarea
+for (let line = 2; line <= 8; line++) {
+  pwEval(`(function(){
+    var ta=document.querySelector(".fleet-chat-input-area textarea");
+    var pos=ta.selectionStart;
+    ta.value=ta.value.slice(0,pos)+"\\n"+"line${line}"+ta.value.slice(pos);
+    ta.selectionStart=ta.selectionEnd=pos+1+("line${line}").length;
+    ta.style.height="auto";
+    ta.style.height=Math.min(ta.scrollHeight,200)+"px";
+    ta.dispatchEvent(new Event("input",{bubbles:true}));
+    return "line ${line} added, h="+ta.offsetHeight;
+  })()`)
+  await delay(100)
+}
+await delay(500)
+// Check textarea actually grew
+const taHeight = pwEval(`(function(){var ta=document.querySelector(".fleet-chat-input-area textarea");return ""+ta.offsetHeight})()`)
+const taH = parseInt((taHeight.match(/\d+/) || ['0'])[0])
+console.log(`  textarea height: ${taH}px`)
+// Now inject a message while textarea is tall
+const lBody = JSON.stringify({ from: agentId, to: 'fleet:skip', message: 'Message arriving while textarea is multiline — should auto-scroll' })
+try { execSync(`curl -s -X POST "http://localhost:${port}/api/chat" -H "Content-Type: application/json" -d '${lBody.replace(/'/g, "'\\''")}'`, { timeout: 5000 }) } catch {}
+await delay(1500)
+await test('Auto-scroll works with real multiline textarea', async () => {
+  const s = getScrollState()
+  if (!s) return { pass: false, detail: 'no scroll element' }
+  // If textarea didn't grow (taH <= 30), the test isn't meaningful
+  if (taH <= 30) return { pass: false, detail: `textarea didn't grow (h=${taH}) — test not exercised` }
+  return { pass: s.dist < 300, detail: `dist=${s.dist}, textarea h=${taH}` }
+})
+// Clear textarea
+pwEval(`(function(){var ta=document.querySelector(".fleet-chat-input-area textarea");if(ta){ta.value="";ta.style.height="auto"}return "ok"})()`)
+
+// Test M: Multiple messages while textarea is tall
+console.log('\n--- Test M: Multiple messages with tall textarea ---')
+pwEval(`(function(){var els=document.querySelectorAll(".fleet-chat-log");var el=els.length>1?els[els.length-1]:els[0];el.scrollTop=el.scrollHeight;return "ok"})()`)
+await delay(300)
+pwEval(`(function(){
+  var ta=document.querySelector(".fleet-chat-input-area textarea");
+  if(!ta)return "no ta";
+  ta.value="typing while agents respond\\nline2\\nline3\\nline4\\nline5";
+  ta.style.height="auto";
+  ta.style.height=Math.min(ta.scrollHeight,200)+"px";
+  return "ok";
+})()`)
+await delay(300)
+for (let i = 50; i < 55 && i < events.length; i++) {
+  const e = events[i]
+  const body = JSON.stringify({ from: e.from_id, to: e.to_id || agentId, message: e.text || `msg-during-typing ${i}` })
+  try { execSync(`curl -s -X POST "http://localhost:${port}/api/chat" -H "Content-Type: application/json" -d '${body.replace(/'/g, "'\\''")}'`, { timeout: 5000 }) } catch {}
+  await delay(300) // realistic pacing
+}
+await delay(1000)
+await test('Auto-scroll works during typing + messages', async () => {
+  const s = getScrollState()
+  if (!s) return { pass: false, detail: 'no scroll element' }
+  return { pass: s.dist < 300, detail: `dist=${s.dist}` }
+})
+pwEval(`(function(){var ta=document.querySelector(".fleet-chat-input-area textarea");if(ta){ta.value="";ta.style.height="auto"}return "ok"})()`)
+
+// Test N: Send message while textarea is multiline at bottom
+console.log('\n--- Test N: Send with multiline textarea at bottom ---')
+pwEval(`(function(){var els=document.querySelectorAll(".fleet-chat-log");var el=els.length>1?els[els.length-1]:els[0];el.scrollTop=el.scrollHeight;return "ok"})()`)
+await delay(300)
+const distBeforeSend = getScrollState()?.dist ?? -1
+// Type multiline then "send" (clear textarea, inject optimistic)
+pwEval(`(function(){
+  var ta=document.querySelector(".fleet-chat-input-area textarea");
+  if(!ta)return "no ta";
+  ta.value="sending multiline\\nline2\\nline3";
+  ta.style.height="auto";
+  ta.style.height=Math.min(ta.scrollHeight,200)+"px";
+  return "typed";
+})()`)
+await delay(300)
+// Simulate send: clear textarea and inject message
+pwEval(`(function(){
+  var ta=document.querySelector(".fleet-chat-input-area textarea");
+  ta.value="";ta.style.height="auto";
+  return "cleared";
+})()`)
+const sendBody = JSON.stringify({ from: 'fleet:skip', to: agentId, message: 'sent message after multiline clear' })
+try { execSync(`curl -s -X POST "http://localhost:${port}/api/chat" -H "Content-Type: application/json" -d '${sendBody.replace(/'/g, "'\\''")}'`, { timeout: 5000 }) } catch {}
+await delay(1500)
+await test('At bottom after multiline send', async () => {
+  const s = getScrollState()
+  if (!s) return { pass: false, detail: 'no scroll element' }
+  return { pass: s.dist < 300, detail: `dist=${s.dist} (was ${distBeforeSend} before send)` }
+})
+
 // Summary
 console.log('\n=== Results ===')
 const passed = results.filter(r => r.pass).length
