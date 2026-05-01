@@ -1362,20 +1362,21 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Scroll to bottom when rawItems change, if EITHER:
   // 1. forceScrollRef is true (programmatic: initial load, history prepend, filter change)
   // 2. wasNearBottomRef is true (user was near bottom at last scroll event)
-  // Uses scrollToIndex + rAF scrollTop belt-and-suspenders: scrollToIndex
-  // targets the correct item but may land short if the virtualizer hasn't
-  // measured yet. The rAF scrollTop catches the final measured height.
+  //
+  // Normal messages: scrollToIndex only (single clean scroll, no bounce).
+  // Force-scroll (initial load, history prepend): scrollToIndex + rAF scrollTop
+  // because the virtualizer may not have measured all items yet on first render.
   useEffect(() => {
     if (rawItems.length === 0) return
-    const shouldScroll = forceScrollRef.current || wasNearBottomRef.current
+    const isForce = forceScrollRef.current
+    const shouldScroll = isForce || wasNearBottomRef.current
     forceScrollRef.current = false
     if (!shouldScroll) return
-    const el = chatLogRef.current
-    if (!el) return
     virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
+    if (isForce) {
+      const el = chatLogRef.current
+      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
