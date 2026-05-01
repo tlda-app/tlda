@@ -1345,50 +1345,23 @@ function FleetChatInner({ shape }: { shape: any }) {
   rawItemsLenRef.current = rawItems.length
   const virtualizerRef = useRef(virtualizer)
   virtualizerRef.current = virtualizer
+  // Single rAF loop keeps scroll at bottom every frame. No ResizeObserver
+  // (fires after paint = 1 frame bounce), no separate effects for rawItems/
+  // totalSize/images/resize. One mechanism, zero bounce.
   useEffect(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      // Use raw scrollTop for container resize (textarea growth/shrink).
-      // scrollToIndex causes virtualizer re-measurement bounce here.
-      el.scrollTop = el.scrollHeight
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  // Scroll to last item when new messages arrive (virtualizer-aware).
-  useEffect(() => {
-    if (rawItems.length > 0) {
-      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems])
-
-  // Chase virtualizer totalSize growth — when items measure taller than
-  // the 65px estimate, scrollToIndex lands short. Re-scroll when totalSize changes.
-  const virtualizerTotalSize = virtualizer.getTotalSize()
-  useEffect(() => {
-    if (rawItemsLenRef.current === 0) return
-    virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [virtualizerTotalSize])
-
-  // After images inside the log load, they expand the scroll height. Scroll to
-  // bottom if we were close enough that we should follow new content.
-  useEffect(() => {
-    const logEl = chatLogRef.current
-    if (!logEl) return
-    function onImgLoad(e: Event) {
-      if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (rawItemsLenRef.current === 0) return
-      const el = logEl!
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
-        virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
+    let rafId: number
+    const tick = () => {
+      const el = chatLogRef.current
+      if (el && rawItemsLenRef.current > 0) {
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+        if (dist > 1) {
+          el.scrollTop = el.scrollHeight
+        }
       }
+      rafId = requestAnimationFrame(tick)
     }
-    logEl.addEventListener('load', onImgLoad, true)
-    return () => logEl.removeEventListener('load', onImgLoad, true)
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
   }, [])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
