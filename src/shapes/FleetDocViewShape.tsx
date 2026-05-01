@@ -552,15 +552,25 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 const startX = e.clientX
                 const startY = e.clientY
                 let dragged = false
+                let ghost: HTMLDivElement | null = null
 
                 const onMove = (ev: PointerEvent) => {
-                  if (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5) {
+                  if (!dragged && (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5)) {
                     dragged = true
+                    // Create ghost preview
+                    ghost = document.createElement('div')
+                    ghost.style.cssText = 'position:fixed;width:400px;height:300px;border:2px solid rgba(128,128,128,0.4);border-radius:2px;background:rgba(255,255,255,0.05);pointer-events:none;z-index:99999;'
+                    document.body.appendChild(ghost)
+                  }
+                  if (ghost) {
+                    ghost.style.left = (ev.clientX - 200) + 'px'
+                    ghost.style.top = (ev.clientY - 150) + 'px'
                   }
                 }
                 const onUp = (ev: PointerEvent) => {
                   window.removeEventListener('pointermove', onMove)
                   window.removeEventListener('pointerup', onUp)
+                  if (ghost) { ghost.remove(); ghost = null }
 
                   if (dragged) {
                     // Drag → peel off doc-clip at drop point

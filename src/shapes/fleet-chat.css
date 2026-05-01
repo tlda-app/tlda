@@ -2510,6 +2510,42 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 2px;
 }
 
+.doc-clip-bar {
+  height: 8px;
+  background: rgba(128, 128, 128, 0.08);
+  cursor: grab;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.doc-clip-bar:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.doc-clip-close {
+  position: absolute;
+  right: 2px;
+  top: -1px;
+  font-size: 10px;
+  line-height: 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  padding: 0 2px;
+}
+
+.doc-clip-shape:hover .doc-clip-close {
+  opacity: 0.5;
+}
+
+.doc-clip-close:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+
 .doc-clip-shape .clip-panel {
   border: none;
   border-radius: 0;
@@ -2520,21 +2556,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 .doc-clip-shape .clip-panel-canvas {
   height: 100% !important;
-}
-
-.doc-clip-actions {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  display: flex;
-  gap: 2px;
-  opacity: 0;
-  transition: opacity 0.2s;
-  z-index: 1;
-}
-
-.doc-clip-shape:hover .doc-clip-actions {
-  opacity: 0.6;
 }
 
 .doc-clip-body {

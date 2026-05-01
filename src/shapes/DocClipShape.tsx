@@ -4,6 +4,10 @@
  * Created by "peeling" a region from the doc viewer. Unlike fleet-docview
  * (which is a HUD shape that dynamically follows signals), this is a static
  * canvas shape positioned near the document pages. Persists in Yjs.
+ *
+ * Interaction: thin top bar is the grab handle — click to select (shows
+ * tldraw resize handles), drag to move. Content area is a pannable
+ * CanvasClipPanel. × close on hover.
  */
 import {
   BaseBoxShapeUtil,
@@ -11,14 +15,15 @@ import {
   T,
   stopEventPropagation,
   useEditor,
-  useValue,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
+
+const BAR_H = 8
 
 export class DocClipShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'doc-clip' as const
@@ -53,7 +58,8 @@ function DocClipComponent({ shape }: { shape: any }) {
   const doc = useContext(DocContext)
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
 
-  const { w, h, page, yTop, yBottom, label } = shape.props
+  const { w, h, page, yTop, yBottom } = shape.props
+  const contentH = h - BAR_H
 
   // Compute clip bounds from page/yTop/yBottom
   const bounds = useMemo((): ClipBounds | null => {
@@ -98,8 +104,8 @@ function DocClipComponent({ shape }: { shape: any }) {
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-pill', 'doc-clip'])
-    return all.filter((u: any) => !FLEET_TYPES.has(u.type))
+    const EXCLUDE = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-pill', 'doc-clip'])
+    return all.filter((u: any) => !EXCLUDE.has(u.type))
   }, [])
 
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
@@ -109,7 +115,6 @@ function DocClipComponent({ shape }: { shape: any }) {
       <div
         className="doc-clip-shape"
         style={{ width: w, height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3, fontSize: 11 }}
-        onPointerDown={stopEventPropagation}
       >
         {!doc ? 'No document' : !bounds ? 'Invalid region' : 'Loading…'}
       </div>
@@ -121,25 +126,31 @@ function DocClipComponent({ shape }: { shape: any }) {
   const pg = doc.pages[pageIdx]
   const zoom = pg ? w / pg.bounds.width : 1
   const boundsCenter = bounds.y + bounds.h / 2
-  const camY = -(boundsCenter - (h / zoom) / 2)
+  const camY = -(boundsCenter - (contentH / zoom) / 2)
   const cameraOverride = pg ? { x: -pg.bounds.x, y: camY, z: zoom } : undefined
 
   return (
     <div
       className="doc-clip-shape"
       style={{ width: w, height: h, position: 'relative' }}
-      onPointerDown={stopEventPropagation}
     >
-      {/* Close button — hover only */}
-      <div className="doc-clip-actions" onPointerDown={(e: any) => e.stopPropagation()}>
+      {/* Top bar — drag handle. Does NOT stopEventPropagation so tldraw
+          handles selection and translate natively. */}
+      <div className="doc-clip-bar">
+        {/* × close — hover only */}
         <button
-          className="fleet-close-btn"
+          className="doc-clip-close"
+          onPointerDown={(e: any) => stopEventPropagation(e)}
           onPointerUp={(e: any) => { e.stopPropagation(); editor.deleteShapes([shape.id]) }}
         >×</button>
       </div>
 
-      {/* Canvas clip panel — full shape area, no title bar */}
-      <div className="doc-clip-body" style={{ height: h }}>
+      {/* Content area — CanvasClipPanel captures pointer events for panning */}
+      <div
+        className="doc-clip-body"
+        style={{ height: contentH }}
+        onPointerDown={stopEventPropagation}
+      >
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={bounds}
