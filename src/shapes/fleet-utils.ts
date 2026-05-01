@@ -22,7 +22,7 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  *
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' = '3col') {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
   // Preserve existing chat filters before nuking — so Fleet button restores geometry
   // without losing filters the user has set by dragging agents.
   const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
@@ -111,7 +111,55 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       props: { w: leftW, h: searchH },
     },
   ]
-  if (variant === '3col') {
+  // Resolve up to 4 filters for grid layout
+  const filter3: [string, string][][] = existingChatFilters[2] ?? []
+  const filter4: [string, string][][] = existingChatFilters[3] ?? []
+
+  if (variant === 'wide') {
+    // Agents+search left, one wide chat right
+    const chatWide = Math.round(chatW3 * 2)
+    shapes.push({
+      id: createShapeId(),
+      type: 'fleet-chat' as any,
+      x: anchorX + leftW + gap, y: anchorY,
+      isLocked: false,
+      props: { w: chatWide, h: totalH, filter: filter1 },
+    })
+  } else if (variant === 'grid') {
+    // Agents+search left, 2x2 chat grid right
+    const gridChatW = chatW3
+    const gridChatH = Math.round((totalH - gap) / 2)
+    shapes.push(
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter1 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + gridChatW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter2 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY + gridChatH + gap,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter3 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter4 },
+      },
+    )
+  } else if (variant === '3col') {
     // Full-height chat (middle) + 75%-height chat (right) + docview (bottom-right)
     shapes.push(
       {

@@ -267,10 +267,16 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
+    // Skip the first camera change — it's camera restoration from SvgDocument,
+    // not a user pan. Without this, the delta between default camera and
+    // restored camera gets added to panOffset, corrupting the saved position.
+    let skipFirst = true
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (cam.z === lastCamZ && panOffsetRef.current !== null) {
+        if (skipFirst) {
+          skipFirst = false
+        } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
           localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
