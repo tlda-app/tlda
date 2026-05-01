@@ -596,8 +596,15 @@ export async function fetchHistory(agentId, limit = 200) {
 }
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  // Use WebSocket for history to avoid racing with live events.
+  // Falls back to HTTP if WS is not connected.
+  let res
+  if (_ws && _ws.readyState === 1) {
+    res = await wsSend({ type: 'load-history', agent: agentId || null, before: beforeTs, limit: count })
+  } else {
+    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  }
 
   const events = (res.events || [])
     .filter(e => {
