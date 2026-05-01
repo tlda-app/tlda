@@ -1465,21 +1465,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Respawn button --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  background: none;
-  border: 1px solid rgba(128,128,128,0.2);
-  border-radius: 3px;
-  color: rgba(128,128,128,0.5);
-  font-size: 10px;
-  padding: 0 4px;
-  cursor: pointer;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-.fleet-agents-shape .fleet-agents-respawn-btn:hover {
-  border-color: rgba(128,128,128,0.4);
-  color: rgba(128,128,128,0.7);
-}
 
 /* --- Unread dot --- */
 
@@ -1507,6 +1492,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   flex-shrink: 0;
   width: 12px;
   text-align: center;
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(128, 128, 128, 0.7);
 }
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
