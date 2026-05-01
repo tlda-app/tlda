@@ -1330,64 +1330,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
-  // Key distinction: only set userScrolledUp when scrollTop actually decreases (user scrolled up),
-  // NOT when scrollTop stays the same but scrollHeight grew (content pushed them away from bottom).
-  // The old autoScrollingRef approach was racy — virtualizer fires scroll events after the rAF
-  // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
+  // Auto-scroll to bottom — always on. No scroll-up detection because
+  // CanvasClipPanel intercepts wheel events in capture phase, making
+  // wheel/touch handlers unreliable (false positives that suppress scroll).
+  // userScrolledUp is kept as a ref but never set to true — all guards
+  // are no-ops. showScrollBtn is kept for the ▼ button but never shown.
   const userScrolledUp = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const lastScrollTopRef = useRef(0)
-  useEffect(() => {
-    const el = chatLogRef.current
-    if (!el) return
-
-    // Scroll event: only used to RESET userScrolledUp when the user comes back
-    // to the bottom. Never used to SET it — that's the job of wheel/touch handlers
-    // below. Programmatic scrollTop changes (virtualizer corrections, textarea
-    // collapse clamping) fire scroll events too; using those to set userScrolledUp
-    // caused false positives that permanently suppressed auto-scroll.
-    const onScroll = () => {
-      lastScrollTopRef.current = el.scrollTop
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distFromBottom <= 10 && userScrolledUp.current) {
-        userScrolledUp.current = false
-        setShowScrollBtn(false)
-      }
-    }
-
-    // Wheel event: fires only on genuine user scroll gestures. Upward wheel =
-    // user is reading old messages → suppress auto-scroll.
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < -3 && !userScrolledUp.current) {
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
-      }
-    }
-
-    // Touch events: wheel doesn't fire on iOS/iPad for touch scrolling.
-    // Track swipe direction via touchstart/touchmove.
-    let touchStartY = 0
-    const onTouchStart = (e: TouchEvent) => { touchStartY = e.touches[0].clientY }
-    const onTouchMove = (e: TouchEvent) => {
-      // Finger moves DOWN the screen → content scrolls UP → user reading old messages
-      if (e.touches[0].clientY - touchStartY > 10 && !userScrolledUp.current) {
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
-      }
-    }
-
-    el.addEventListener('scroll', onScroll)
-    el.addEventListener('wheel', onWheel, { passive: true })
-    el.addEventListener('touchstart', onTouchStart, { passive: true })
-    el.addEventListener('touchmove', onTouchMove, { passive: true })
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchmove', onTouchMove)
-    }
-  }, [])
 
   // When the chat log's own height changes (e.g. the textarea grows and eats into
   // the available space, or the user resizes the shape), scroll to bottom so the
