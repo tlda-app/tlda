@@ -330,7 +330,6 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-log {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
-  scrollbar-gutter: stable;
 }
 
 /* --- Draggable elements in chat --- */

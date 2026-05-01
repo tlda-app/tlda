@@ -547,7 +547,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    // scroll state reset (auto-scroll always on)
+    forceScrollRef.current = true
+    setShowScrollBtn(false)
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -567,13 +568,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
     const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel) return
+    if (!firstLabel || historyLoadedRef.current === filterKey) return
+    historyLoadedRef.current = filterKey
     const fleetId = resolveToFleetId(firstLabel)
-    // Include the resolved fleet ID in the guard key so we re-fetch
-    // when the agents list populates and resolution changes
-    const loadKey = `${filterKey}:${fleetId}`
-    if (historyLoadedRef.current === loadKey) return
-    historyLoadedRef.current = loadKey
     loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) {
         // Deduplicate against live events already in the buffer.
@@ -585,9 +582,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           ])
           const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
           if (fresh.length > 0) {
-            // Reset scroll state so the rawItems effect scrolls to bottom
+            // Reset initial scroll so the rawItems effect scrolls to bottom
             // after the prepended history shifts the content
-            // scroll state reset (auto-scroll always on)
+            forceScrollRef.current = true
             return [...fresh, ...prev]
           }
           return prev
@@ -1334,35 +1331,69 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom — always on. No scroll-up detection because
-  // CanvasClipPanel intercepts wheel events in capture phase, making
-  // wheel/touch handlers unreliable (false positives that suppress scroll).
+  // --- Scroll-to-bottom: ONE trigger, ref-based intent, no inline dist check ---
+  // See scratch/scroll-plan.md for the full rationale.
+  //
+  // wasNearBottomRef captures the user's scroll INTENT on every scroll event.
+  // The scroll effect uses this ref — it doesn't check dist at decision time.
+  // This means anything that changes scrollHeight (thinking indicator, history
+  // prepend, virtualizer re-measurement) can't break auto-scroll: the ref
+  // records whether the user WAS near bottom, not whether they ARE right now.
+  // Must be larger than the max textarea height (200px) because textarea growth
+  // in the flex layout shrinks clientHeight, increasing dist even though the
+  // user hasn't scrolled. Without this margin, voice/multiline input makes
+  // wasNearBottomRef flip to false and auto-scroll stops.
+  const NEAR_BOTTOM_THRESHOLD = 300
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const wasNearBottomRef = useRef(true)
+  const forceScrollRef = useRef(true)
+  // Suppress onScroll updates briefly after programmatic scrolls. Without this,
+  // scrollToIndex triggers scroll events that set wasNearBottomRef=false if the
+  // virtualizer hasn't settled yet (dist momentarily > 300).
+  const scrollSuppressUntil = useRef(0)
 
-  // When the chat log's own height changes (e.g. the textarea grows and eats into
-  // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible.
-  const rawItemsLenRef = useRef(rawItems.length)
-  rawItemsLenRef.current = rawItems.length
-  const virtualizerRef = useRef(virtualizer)
-  virtualizerRef.current = virtualizer
-  // Single rAF loop keeps scroll at bottom every frame. No ResizeObserver
-  // (fires after paint = 1 frame bounce), no separate effects for rawItems/
-  // totalSize/images/resize. One mechanism, zero bounce.
   useEffect(() => {
-    let rafId: number
-    const tick = () => {
-      const el = chatLogRef.current
-      if (el && rawItemsLenRef.current > 0) {
-        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (dist > 1) {
-          el.scrollTop = el.scrollHeight
-        }
-      }
-      rafId = requestAnimationFrame(tick)
+    const el = chatLogRef.current
+    if (!el) return
+    const onScroll = () => {
+      if (Date.now() < scrollSuppressUntil.current) return
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      wasNearBottomRef.current = dist < NEAR_BOTTOM_THRESHOLD
+      setShowScrollBtn(dist > 200)
     }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
   }, [])
+
+  useEffect(() => {
+    if (rawItems.length === 0) return
+    const isForce = forceScrollRef.current
+    forceScrollRef.current = false
+    // Primary: forceScroll or wasNearBottom ref
+    let shouldScroll = isForce || wasNearBottomRef.current
+    // Fallback: if the ref says "scrolled up" but we're actually near bottom,
+    // scroll anyway. This catches cases where wasNearBottomRef got stuck false
+    // (e.g., virtualizer measurement glitch set dist > 300 for one frame).
+    // Without this fallback, auto-scroll is permanently broken once the ref
+    // flips false until the user manually scrolls to bottom.
+    if (!shouldScroll) {
+      const el = chatLogRef.current
+      if (el) {
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+        if (dist < NEAR_BOTTOM_THRESHOLD) shouldScroll = true
+      }
+    }
+    if (!shouldScroll) return
+    // Suppress onScroll for 200ms so programmatic scroll events don't
+    // flip wasNearBottomRef during virtualizer settling
+    scrollSuppressUntil.current = Date.now() + 200
+    virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+    if (isForce) {
+      const el = chatLogRef.current
+      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawItems])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
@@ -1582,8 +1613,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // Textarea resize is handled by CSS field-sizing: content.
-  // The chat log ResizeObserver catches the container shrink and scrolls to bottom.
+  // Textarea resize: no ResizeObserver. The height=auto cycle during onInput
+  // fires observers twice per keystroke, causing visible bounce. The flex layout
+  // handles textarea growth naturally — the chat log shrinks, content stays
+  // visible. Not ideal (can't see above the fold) but doesn't bounce.
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -2160,7 +2193,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       const after = ta.value.slice(pos)
       const insert = (before && !before.endsWith('\n') ? '\n' : '') + text + (after && !after.startsWith('\n') ? '\n' : '')
       ta.value = before + insert + after
-      // field-sizing: content handles auto-resize
+      ta.style.height = 'auto'
+      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
       ta.focus()
     }
     const filterHandler = (e: Event) => {
@@ -2257,7 +2291,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           className="fleet-chat-log"
           style={{
             flex: 1,
-            minHeight: 0,  // Allow flex item to shrink below content height
             overflowY: 'auto',
             overflowX: 'hidden',
             padding: '4px 0',
@@ -2347,7 +2380,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   e.preventDefault()
                   if (ta.value !== '') {
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.style.height = 'auto'
                     return
                   }
                   const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
@@ -2370,7 +2403,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (nextIdx < history.length) {
                     historyIndexRef.current = nextIdx
                     ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
+                    ta.style.height = 'auto'
+                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2382,11 +2416,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                   historyIndexRef.current = nextIdx
                   if (nextIdx < 0) {
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.style.height = 'auto'
                   } else {
                     const history = sentHistoryRef.current
                     ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
+                    ta.style.height = 'auto'
+                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2415,7 +2450,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (targetId) {
                       openTerminal(targetId)
                       ta.value = ''
-                      // field-sizing: content auto-shrinks
+                      ta.style.height = 'auto'
                     }
                     return
                   }
@@ -2502,12 +2537,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                       read: true,
                     })
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.style.height = 'auto'
                     resetTranscript()
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    // scroll state reset (auto-scroll always on)
+                    // Don't force scroll to bottom on send — respect the user's
+                    // current scroll position. The rawItems effect will scroll
+                    // if the user was near bottom.
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2542,9 +2579,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                   }
                 }
               }}
-              onInput={() => {
-                // field-sizing: content handles auto-resize natively.
-                // Chat log ResizeObserver handles scroll-to-bottom.
+              onInput={(e) => {
+                // Auto-resize
+                const ta = e.currentTarget
+                ta.style.height = 'auto'
+                ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
               }}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
@@ -2563,7 +2602,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // scroll state reset (auto-scroll always on)
+                  // Don't force scroll on send — rawItems effect handles it
+                  // based on current scroll position
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2599,7 +2639,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // scroll state reset (auto-scroll always on)
+                  // Don't force scroll on send — rawItems effect handles it
+                  // based on current scroll position
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2634,9 +2675,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 fontFamily: 'inherit',
                 position: 'relative',
                 zIndex: 1,
-                fieldSizing: 'content',
-                maxHeight: 200,
-              } as any}
+              }}
               onDrop={async (e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -2718,7 +2757,45 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Auto-scroll is always on — no scroll-to-bottom button needed */}
+        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
+        {showScrollBtn && (
+          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+            <button
+              className="fleet-scroll-bottom-btn"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                const el = chatLogRef.current
+                if (el) el.scrollTop = el.scrollHeight
+                setShowScrollBtn(false)
+              }}
+              style={{
+                position: 'absolute',
+                right: 8,
+                bottom: 4,
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                border: 'none',
+                background: 'transparent',
+                color: 'rgba(200, 200, 200, 1)',
+                opacity: 0.35,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                fontWeight: 'bold',
+                lineHeight: 1,
+                padding: 0,
+                transition: 'opacity 0.2s',
+              }}
+              title="Scroll to bottom"
+            >
+              ▼
+            </button>
+          </div>
+        )}
       </div>
     </HTMLContainer>
   )
