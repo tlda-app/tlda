@@ -1349,8 +1349,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (rawItemsLenRef.current === 0) return
-      virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
+      // Use raw scrollTop for container resize (textarea growth/shrink).
+      // scrollToIndex causes virtualizer re-measurement bounce here.
+      el.scrollTop = el.scrollHeight
     })
     ro.observe(el)
     return () => ro.disconnect()
