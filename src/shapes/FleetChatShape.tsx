@@ -547,7 +547,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    userScrolledUp.current = false; setShowScrollBtn(false)
+    // scroll state reset (auto-scroll always on)
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -583,7 +583,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (fresh.length > 0) {
             // Reset scroll state so the rawItems effect scrolls to bottom
             // after the prepended history shifts the content
-            userScrolledUp.current = false
+            // scroll state reset (auto-scroll always on)
             return [...fresh, ...prev]
           }
           return prev
@@ -1333,63 +1333,39 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Auto-scroll to bottom — always on. No scroll-up detection because
   // CanvasClipPanel intercepts wheel events in capture phase, making
   // wheel/touch handlers unreliable (false positives that suppress scroll).
-  // userScrolledUp is kept as a ref but never set to true — all guards
-  // are no-ops. showScrollBtn is kept for the ▼ button but never shown.
-  const userScrolledUp = useRef(false)
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const lastScrollTopRef = useRef(0)
 
   // When the chat log's own height changes (e.g. the textarea grows and eats into
   // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible — unless the user has intentionally scrolled up.
+  // last message stays visible.
+  const rawItemsLenRef = useRef(rawItems.length)
+  rawItemsLenRef.current = rawItems.length
+  const virtualizerRef = useRef(virtualizer)
+  virtualizerRef.current = virtualizer
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (userScrolledUp.current) return
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
+      if (rawItemsLenRef.current === 0) return
+      virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
   // Scroll to last item when new messages arrive (virtualizer-aware).
-  // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
-  // would land at the estimated position, not the actual bottom after measurement.
   useEffect(() => {
-    if (!userScrolledUp.current && rawItems.length > 0) {
+    if (rawItems.length > 0) {
       virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Fallback: direct scrollTop in case scrollToIndex fires before the container
-      // has a stable height (e.g. initial mount before virtualizer measures the element),
-      // or when an existing item grows (activity cards, etc.) without adding new items.
-      requestAnimationFrame(() => {
-        const el = chatLogRef.current
-        if (el) {
-          el.scrollTop = el.scrollHeight
-          lastScrollTopRef.current = el.scrollTop
-        }
-      })
     }
-  // rawItems identity changes whenever any message content changes (not just length),
-  // so this fires for growing activity cards and in-place updates too.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
-  // When the virtualizer measures items taller than the initial estimate (65px),
-  // getTotalSize() grows AFTER the rawItems effect already fired — so the initial
-  // scroll lands short of the true bottom. Chase it by scrolling whenever totalSize
-  // changes and the user hasn't intentionally scrolled up.
+  // Chase virtualizer totalSize growth — when items measure taller than
+  // the 65px estimate, scrollToIndex lands short. Re-scroll when totalSize changes.
   const virtualizerTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (userScrolledUp.current) return
-    const el = chatLogRef.current
-    if (!el) return
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (dist > 1) {
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
-    }
+    if (rawItemsLenRef.current === 0) return
+    virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizerTotalSize])
 
@@ -1400,10 +1376,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!logEl) return
     function onImgLoad(e: Event) {
       if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (userScrolledUp.current) return
+      if (rawItemsLenRef.current === 0) return
       const el = logEl!
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
-        el.scrollTop = el.scrollHeight
+        virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
       }
     }
     logEl.addEventListener('load', onImgLoad, true)
@@ -1635,8 +1611,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     let prevHeight = ta.offsetHeight
     const ro = new ResizeObserver(() => {
       const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current) {
-        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
+      if (newHeight > prevHeight && rawItemsLenRef.current > 0) {
+        virtualizerRef.current.scrollToIndex(rawItemsLenRef.current - 1, { align: 'end', behavior: 'auto' })
       }
       prevHeight = newHeight
     })
@@ -2568,7 +2544,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    userScrolledUp.current = false; setShowScrollBtn(false)
+                    // scroll state reset (auto-scroll always on)
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2626,7 +2602,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  // scroll state reset (auto-scroll always on)
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2662,7 +2638,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  userScrolledUp.current = false; setShowScrollBtn(false)
+                  // scroll state reset (auto-scroll always on)
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2779,45 +2755,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Scroll-to-bottom button — appears when user has scrolled up */}
-        {showScrollBtn && (
-          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
-            <button
-              className="fleet-scroll-bottom-btn"
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                stopEventPropagation(e)
-                const el = chatLogRef.current
-                if (el) el.scrollTop = el.scrollHeight
-                userScrolledUp.current = false; setShowScrollBtn(false)
-              }}
-              style={{
-                position: 'absolute',
-                right: 8,
-                bottom: 4,
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                border: 'none',
-                background: 'transparent',
-                color: 'rgba(200, 200, 200, 1)',
-                opacity: 0.35,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                fontWeight: 'bold',
-                lineHeight: 1,
-                padding: 0,
-                transition: 'opacity 0.2s',
-              }}
-              title="Scroll to bottom"
-            >
-              ▼
-            </button>
-          </div>
-        )}
+        {/* Auto-scroll is always on — no scroll-to-bottom button needed */}
       </div>
     </HTMLContainer>
   )
