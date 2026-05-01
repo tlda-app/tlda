@@ -547,8 +547,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    forceScrollRef.current = true
-    setShowScrollBtn(false)
+    setAutoscrollPaused(false)
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -582,9 +581,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           ])
           const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
           if (fresh.length > 0) {
-            // Reset initial scroll so the rawItems effect scrolls to bottom
+            // Resume autoscroll so the rawItems effect scrolls to bottom
             // after the prepended history shifts the content
-            forceScrollRef.current = true
+            setAutoscrollPaused(false)
             return [...fresh, ...prev]
           }
           return prev
@@ -1331,25 +1330,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // --- Scroll-to-bottom: ONE trigger, ref-based intent, no inline dist check ---
-  // See scratch/scroll-plan.md for the full rationale.
+  // --- Scroll-to-bottom v2: visible mode toggle, unconditional scrolling ---
+  // See scratch/scroll-plan-v2.md for the full rationale.
   //
-  // wasNearBottomRef captures the user's scroll INTENT on every scroll event.
-  // The scroll effect uses this ref — it doesn't check dist at decision time.
-  // This means anything that changes scrollHeight (thinking indicator, history
-  // prepend, virtualizer re-measurement) can't break auto-scroll: the ref
-  // records whether the user WAS near bottom, not whether they ARE right now.
-  // Must be larger than the max textarea height (200px) because textarea growth
-  // in the flex layout shrinks clientHeight, increasing dist even though the
-  // user hasn't scrolled. Without this margin, voice/multiline input makes
-  // wasNearBottomRef flip to false and auto-scroll stops.
-  const NEAR_BOTTOM_THRESHOLD = 300
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const wasNearBottomRef = useRef(true)
-  const forceScrollRef = useRef(true)
-  // Suppress onScroll updates briefly after programmatic scrolls. Without this,
-  // scrollToIndex triggers scroll events that set wasNearBottomRef=false if the
-  // virtualizer hasn't settled yet (dist momentarily > 300).
+  // Two completely separate concerns:
+  // 1. SCROLLING: when autoscrollPaused=false, scroll to bottom on every
+  //    rawItems change. Unconditionally. No dist check, no ref, nothing.
+  // 2. DETECTION: onScroll only detects mode transitions (pause/resume).
+  //    False triggers are visible (button changes) and recoverable (click).
+  const RESUME_THRESHOLD = 150
+  const [autoscrollPaused, setAutoscrollPaused] = useState(false)
+  // Suppress onScroll briefly after programmatic scrolls so virtualizer
+  // settling events don't false-trigger a pause.
   const scrollSuppressUntil = useRef(0)
 
   useEffect(() => {
@@ -1358,42 +1350,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onScroll = () => {
       if (Date.now() < scrollSuppressUntil.current) return
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-      wasNearBottomRef.current = dist < NEAR_BOTTOM_THRESHOLD
-      setShowScrollBtn(dist > 200)
+      if (dist < RESUME_THRESHOLD) {
+        // User scrolled to bottom → resume autoscroll
+        setAutoscrollPaused(false)
+      } else if (dist > RESUME_THRESHOLD) {
+        // User scrolled up → pause autoscroll
+        setAutoscrollPaused(true)
+      }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
   useEffect(() => {
-    if (rawItems.length === 0) return
-    const isForce = forceScrollRef.current
-    forceScrollRef.current = false
-    // Primary: forceScroll or wasNearBottom ref
-    let shouldScroll = isForce || wasNearBottomRef.current
-    // Fallback: if the ref says "scrolled up" but we're actually near bottom,
-    // scroll anyway. This catches cases where wasNearBottomRef got stuck false
-    // (e.g., virtualizer measurement glitch set dist > 300 for one frame).
-    // Without this fallback, auto-scroll is permanently broken once the ref
-    // flips false until the user manually scrolls to bottom.
-    if (!shouldScroll) {
-      const el = chatLogRef.current
-      if (el) {
-        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (dist < NEAR_BOTTOM_THRESHOLD) shouldScroll = true
-      }
-    }
-    if (!shouldScroll) return
-    // Suppress onScroll for 200ms so programmatic scroll events don't
-    // flip wasNearBottomRef during virtualizer settling
+    if (rawItems.length === 0 || autoscrollPaused) return
     scrollSuppressUntil.current = Date.now() + 200
     virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-    if (isForce) {
-      const el = chatLogRef.current
-      if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
-    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems])
+  }, [rawItems, autoscrollPaused])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
@@ -2757,17 +2731,15 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
-        {showScrollBtn && (
+        {/* Scroll-to-bottom button — visible when autoscroll is paused */}
+        {autoscrollPaused && (
           <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
             <button
               className="fleet-scroll-bottom-btn"
               onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 stopEventPropagation(e)
-                const el = chatLogRef.current
-                if (el) el.scrollTop = el.scrollHeight
-                setShowScrollBtn(false)
+                setAutoscrollPaused(false)
               }}
               style={{
                 position: 'absolute',
@@ -2790,7 +2762,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 padding: 0,
                 transition: 'opacity 0.2s',
               }}
-              title="Scroll to bottom"
+              title="Resume auto-scroll"
             >
               ▼
             </button>
