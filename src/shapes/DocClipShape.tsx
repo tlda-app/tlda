@@ -130,36 +130,16 @@ function DocClipComponent({ shape }: { shape: any }) {
       style={{ width: w, height: h, position: 'relative' }}
       onPointerDown={stopEventPropagation}
     >
-      {/* Label bar */}
-      {label && (
-        <div className="doc-clip-label" onPointerDown={(e: any) => e.stopPropagation()}>
-          <span>{label}</span>
-        </div>
-      )}
-
-      {/* Action buttons */}
+      {/* Close button — hover only */}
       <div className="doc-clip-actions" onPointerDown={(e: any) => e.stopPropagation()}>
-        <button
-          className="fleet-layout-btn"
-          onPointerUp={(e: any) => {
-            e.stopPropagation()
-            if (!mainEditor || !bounds) return
-            const vp = mainEditor.getViewportPageBounds()
-            mainEditor.centerOnPoint(
-              { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
-              { animation: { duration: 300 } }
-            )
-          }}
-          title="Go to location"
-        >↗</button>
         <button
           className="fleet-close-btn"
           onPointerUp={(e: any) => { e.stopPropagation(); editor.deleteShapes([shape.id]) }}
         >×</button>
       </div>
 
-      {/* Canvas clip panel */}
-      <div className="doc-clip-body" style={{ height: label ? h - 20 : h }}>
+      {/* Canvas clip panel — full shape area, no title bar */}
+      <div className="doc-clip-body" style={{ height: h }}>
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={bounds}

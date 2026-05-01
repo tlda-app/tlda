@@ -546,65 +546,73 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             >→</button>
             <button
               className="fleet-layout-btn"
-              onPointerUp={(e: any) => {
+              onPointerDown={(e: any) => {
                 e.stopPropagation()
                 if (!mainEditor || !bounds) return
-                // Save current camera position for Return
-                const cam = mainEditor.getCamera()
-                setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
-                const vp = mainEditor.getViewportPageBounds()
-                mainEditor.centerOnPoint(
-                  { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
-                  { animation: { duration: 300 } }
-                )
-              }}
-              title="Go to location"
-            >↗</button>
-            <button
-              className="fleet-layout-btn"
-              onPointerUp={(e: any) => {
-                e.stopPropagation()
-                if (!mainEditor || !bounds) return
-                // Determine page and PDF coords from current bounds
-                let clipPage = 0
-                let clipYTop = 0
-                let clipYBottom = 300
-                if (doc?.pages?.length) {
-                  const centerY = bounds.y + bounds.h / 2
-                  for (let i = 0; i < doc.pages.length; i++) {
-                    const pb = doc.pages[i].bounds
-                    if (centerY >= pb.y && centerY <= pb.y + pb.height) {
-                      clipPage = i + 1
-                      const scale = pb.height / PDF_HEIGHT
-                      clipYTop = Math.max(0, (bounds.y - pb.y) / scale)
-                      clipYBottom = Math.min(PDF_HEIGHT, (bounds.y + bounds.h - pb.y) / scale)
-                      break
-                    }
+                const startX = e.clientX
+                const startY = e.clientY
+                let dragged = false
+
+                const onMove = (ev: PointerEvent) => {
+                  if (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5) {
+                    dragged = true
                   }
                 }
-                if (clipPage <= 0) return
-                // Place the clip shape near the page, offset to the right
-                const pg = doc!.pages[clipPage - 1]
-                const clipX = pg.bounds.x + pg.bounds.width + 30
-                const clipY = bounds.y
-                mainEditor.createShape({
-                  id: createShapeId(),
-                  type: 'doc-clip' as any,
-                  x: clipX,
-                  y: clipY,
-                  isLocked: false,
-                  props: {
-                    w: 400,
-                    h: 300,
-                    page: clipPage,
-                    yTop: Math.round(clipYTop),
-                    yBottom: Math.round(clipYBottom),
-                    label: title || label || '',
-                  },
-                })
+                const onUp = (ev: PointerEvent) => {
+                  window.removeEventListener('pointermove', onMove)
+                  window.removeEventListener('pointerup', onUp)
+
+                  if (dragged) {
+                    // Drag → peel off doc-clip at drop point
+                    let clipPage = 0
+                    let clipYTop = 0
+                    let clipYBottom = 300
+                    if (doc?.pages?.length) {
+                      const centerY = bounds.y + bounds.h / 2
+                      for (let i = 0; i < doc.pages.length; i++) {
+                        const pb = doc.pages[i].bounds
+                        if (centerY >= pb.y && centerY <= pb.y + pb.height) {
+                          clipPage = i + 1
+                          const scale = pb.height / PDF_HEIGHT
+                          clipYTop = Math.max(0, (bounds.y - pb.y) / scale)
+                          clipYBottom = Math.min(PDF_HEIGHT, (bounds.y + bounds.h - pb.y) / scale)
+                          break
+                        }
+                      }
+                    }
+                    if (clipPage <= 0) return
+                    const dropPage = mainEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+                    mainEditor.createShape({
+                      id: createShapeId(),
+                      type: 'doc-clip' as any,
+                      x: dropPage.x - 200,
+                      y: dropPage.y - 150,
+                      isLocked: false,
+                      props: {
+                        w: 400,
+                        h: 300,
+                        page: clipPage,
+                        yTop: Math.round(clipYTop),
+                        yBottom: Math.round(clipYBottom),
+                        label: title || label || '',
+                      },
+                    })
+                  } else {
+                    // Click → navigate to location
+                    const cam = mainEditor.getCamera()
+                    setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
+                    const vp = mainEditor.getViewportPageBounds()
+                    mainEditor.centerOnPoint(
+                      { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
+                      { animation: { duration: 300 } }
+                    )
+                  }
+                }
+                window.addEventListener('pointermove', onMove)
+                window.addEventListener('pointerup', onUp)
               }}
-              title="Peel off to canvas"
-            >⊡</button>
+              title="Click: go to location. Drag: peel off to canvas."
+            >↗</button>
             {savedCamera && (
               <button
                 className="fleet-layout-btn"
