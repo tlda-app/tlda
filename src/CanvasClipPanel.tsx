@@ -706,9 +706,10 @@ export function CanvasClipPanel({
         // returns null — use elementFromPoint instead.
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
           const target = document.elementFromPoint(e.clientX, e.clientY)
-          const chatLog = (target?.closest('[data-shape-id]')
-            ?.querySelector('.fleet-chat-log') ?? null) as HTMLElement | null
-          if (chatLog) chatLog.scrollTop += e.deltaY
+          const shapeEl = target?.closest('[data-shape-id]')
+          const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
+            shapeEl?.querySelector('.fleet-agents-body') ?? null) as HTMLElement | null
+          if (scrollable) scrollable.scrollTop += e.deltaY
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
         if (Math.abs(e.deltaX) > 0) {
