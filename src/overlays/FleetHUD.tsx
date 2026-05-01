@@ -267,15 +267,17 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
-    // Skip the first camera change — it's camera restoration from SvgDocument,
-    // not a user pan. Without this, the delta between default camera and
-    // restored camera gets added to panOffset, corrupting the saved position.
-    let skipFirst = true
+    // Skip camera changes during the first 2s after mount — these are camera
+    // restoration and page-shape-driven adjustments, not user pans. Without
+    // this, the deltas get added to panOffset, corrupting the saved position.
+    // A single skipFirst wasn't enough: there can be multiple camera changes
+    // during load (default → restored → page-shape adjustment).
+    const mountTime = Date.now()
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (skipFirst) {
-          skipFirst = false
+        if (Date.now() - mountTime < 2000) {
+          // Settling period — don't update panOffset
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
