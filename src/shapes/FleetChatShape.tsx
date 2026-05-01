@@ -567,9 +567,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
     const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel || historyLoadedRef.current === filterKey) return
-    historyLoadedRef.current = filterKey
+    if (!firstLabel) return
     const fleetId = resolveToFleetId(firstLabel)
+    // Include the resolved fleet ID in the guard key so we re-fetch
+    // when the agents list populates and resolution changes
+    const loadKey = `${filterKey}:${fleetId}`
+    if (historyLoadedRef.current === loadKey) return
+    historyLoadedRef.current = loadKey
     loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) {
         // Deduplicate against live events already in the buffer.
