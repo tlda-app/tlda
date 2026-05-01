@@ -1358,18 +1358,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  // ONE scroll trigger: when rawItems change, scroll to bottom if EITHER:
+  // Scroll to bottom when rawItems change, if EITHER:
   // 1. forceScrollRef is true (programmatic: initial load, history prepend, filter change)
   // 2. wasNearBottomRef is true (user was near bottom at last scroll event)
-  // Uses virtualizer.scrollToIndex instead of raw scrollTop because the
-  // virtualizer's estimated totalSize may be incomplete — scrollToIndex
-  // targets the actual last item regardless of measurement state.
+  // Uses scrollToIndex + rAF scrollTop belt-and-suspenders: scrollToIndex
+  // targets the correct item but may land short if the virtualizer hasn't
+  // measured yet. The rAF scrollTop catches the final measured height.
   useEffect(() => {
     if (rawItems.length === 0) return
     const shouldScroll = forceScrollRef.current || wasNearBottomRef.current
     forceScrollRef.current = false
     if (!shouldScroll) return
+    const el = chatLogRef.current
+    if (!el) return
     virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawItems])
 
