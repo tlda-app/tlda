@@ -573,13 +573,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     const fleetId = resolveToFleetId(firstLabel)
     loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
       if (older.length > 0) {
-        // Deduplicate against live events already in the buffer
+        // Deduplicate against live events already in the buffer.
+        // convertChatEvent stores DB id in _dbId, not id.
         setOlderEvents(prev => {
           const existingIds = new Set([
-            ...prev.map((e: any) => e.id || e._tempId),
-            ...liveEvents.map((e: any) => e.id || e._tempId),
+            ...prev.map((e: any) => e._dbId || e._tempId),
+            ...liveEvents.map((e: any) => e._dbId || e._tempId),
           ])
-          const fresh = older.filter((e: any) => !existingIds.has(e.id))
+          const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
           if (fresh.length > 0) {
             // Reset initial scroll so the rawItems effect scrolls to bottom
             // after the prepended history shifts the content
