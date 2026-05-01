@@ -2256,9 +2256,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages + Input: textarea inside scroll container with sticky positioning.
-            This prevents flex layout bounce — textarea growth adds to scrollHeight,
-            not shrinks the chat log container. See scratch/scroll-plan.md. */}
+        {/* Messages — scroll container. Textarea is OUTSIDE (flex sibling). */}
         <div
           ref={chatLogRef}
           className="fleet-chat-log"
@@ -2266,69 +2264,64 @@ function FleetChatInner({ shape }: { shape: any }) {
             flex: 1,
             overflowY: 'auto',
             overflowX: 'hidden',
-            position: 'relative',
+            padding: '4px 0',
           }}
           onScroll={handleScroll}
           onClick={handleDocLinkClick}
         >
-          {/* Inner wrapper: min-height pushes sticky textarea to bottom for short/empty chats */}
-          <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, padding: '4px 0' }}>
-              {chatMessages.length === 0 ? (
-                <div style={{
-                  padding: '20px 8px',
-                  opacity: isImpossibleFilter ? 0.6 : 0.3,
-                  textAlign: 'center',
-                  fontSize: 10,
-                  color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-                }}>
-                  {isImpossibleFilter
-                    ? '⚠ Filter matches no known agents'
-                    : filter.length > 0 ? 'No messages' : 'No filter set'}
+          {chatMessages.length === 0 ? (
+            <div style={{
+              padding: '20px 8px',
+              opacity: isImpossibleFilter ? 0.6 : 0.3,
+              textAlign: 'center',
+              fontSize: 10,
+              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+            }}>
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
+            </div>
+          ) : (
+            <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+              {virtualizer.getVirtualItems().map(vItem => (
+                <div
+                  key={vItem.key}
+                  data-index={vItem.index}
+                  ref={virtualizer.measureElement}
+                  style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
+                >
+                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
                 </div>
-              ) : (
-                <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
-                  {virtualizer.getVirtualItems().map(vItem => (
-                    <div
-                      key={vItem.key}
-                      data-index={vItem.index}
-                      ref={virtualizer.measureElement}
-                      style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
-                    >
-                      <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              <ThinkingStatus
-                thinkingAgents={thinkingAgents}
-                compactingAgents={compactingAgents}
-                ctx={ctx}
-                rawItemsLength={rawItems.length}
-              />
-              {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
-              {[...terminalCards].map(agentId => (
-                <TerminalCard
-                  key={`terminal-${agentId}`}
-                  agentId={agentId}
-                  agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
-                  onDismiss={() => closeTerminal(agentId)}
-                />
               ))}
             </div>
+          )}
+          <ThinkingStatus
+            thinkingAgents={thinkingAgents}
+            compactingAgents={compactingAgents}
+            ctx={ctx}
+            rawItemsLength={rawItems.length}
+          />
+          {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
+          {[...terminalCards].map(agentId => (
+            <TerminalCard
+              key={`terminal-${agentId}`}
+              agentId={agentId}
+              agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
+              onDismiss={() => closeTerminal(agentId)}
+            />
+          ))}
+        </div>
 
-            {/* Input — sticky at bottom of scroll container */}
-            <div
-              className="fleet-chat-input-area"
-              style={{
-                borderTop: '1px solid rgba(128, 128, 128, 0.15)',
-                padding: 4,
-                position: 'sticky',
-                bottom: 0,
-                background: '#1e1e1e',
-                zIndex: 5,
-              }}
-            >
+        {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
+        <div
+          className="fleet-chat-input-area"
+          style={{
+            borderTop: '1px solid rgba(128, 128, 128, 0.15)',
+            padding: 4,
+            flexShrink: 0,
+            position: 'relative',
+          }}
+        >
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
@@ -2734,8 +2727,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
           </div>
         </div>
-          </div>{/* end inner flex wrapper */}
-        </div>{/* end scroll container (fleet-chat-log) */}
 
         {/* Scroll-to-bottom button — floats over the bottom of the chat */}
         {showScrollBtn && (
