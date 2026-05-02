@@ -1335,35 +1335,73 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom — always on. No scroll-up detection because
-  // CanvasClipPanel intercepts wheel events in capture phase, making
-  // wheel/touch handlers unreliable (false positives that suppress scroll).
-
-  // When the chat log's own height changes (e.g. the textarea grows and eats into
-  // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible.
+  // Auto-scroll to bottom — event-driven, not every frame.
+  // CanvasClipPanel already routes wheel events to .fleet-chat-log via
+  // scrollable.scrollTop += e.deltaY, so we must NOT fight it with a
+  // continuous rAF loop. Instead: scroll to bottom when new content arrives
+  // or the container resizes, but only if the user hasn't scrolled up.
+  const isAtBottomRef = useRef(true)
+  const prevItemsLenRef = useRef(0)
   const rawItemsLenRef = useRef(rawItems.length)
   rawItemsLenRef.current = rawItems.length
   const virtualizerRef = useRef(virtualizer)
   virtualizerRef.current = virtualizer
-  // Single rAF loop keeps scroll at bottom every frame. No ResizeObserver
-  // (fires after paint = 1 frame bounce), no separate effects for rawItems/
-  // totalSize/images/resize. One mechanism, zero bounce.
-  useEffect(() => {
-    let rafId: number
-    const tick = () => {
-      const el = chatLogRef.current
-      if (el && rawItemsLenRef.current > 0) {
-        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (dist > 1) {
-          el.scrollTop = el.scrollHeight
-        }
-      }
-      rafId = requestAnimationFrame(tick)
-    }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
+
+  // scrollToBottom sets scrollTop and suppresses the scroll listener briefly
+  // so layout jitter doesn't falsely set isAtBottom = false.
+  const scrollSuppressUntilRef = useRef(0)
+  const scrollToBottom = useCallback(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    // Suppress scroll listener for 100ms to let layout settle
+    scrollSuppressUntilRef.current = Date.now() + 100
+    isAtBottomRef.current = true
   }, [])
+
+  // Track whether user is at bottom (within 30px threshold).
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const onScroll = () => {
+      if (Date.now() < scrollSuppressUntilRef.current) return
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      isAtBottomRef.current = dist < 30
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Scroll to bottom when new messages arrive.
+  // Always scroll on first load (prevLen was 0). After that, only if at bottom.
+  useEffect(() => {
+    const prevLen = prevItemsLenRef.current
+    prevItemsLenRef.current = rawItems.length
+    if (rawItems.length === 0) return
+    if (prevLen === 0) {
+      // First load — messages may still be rendering. Scroll repeatedly
+      // for 500ms to catch late layout changes.
+      scrollToBottom()
+      const id = setInterval(scrollToBottom, 50)
+      setTimeout(() => clearInterval(id), 500)
+    } else if (isAtBottomRef.current) {
+      scrollToBottom()
+      requestAnimationFrame(scrollToBottom)
+    }
+  }, [rawItems.length, scrollToBottom])
+
+  // ResizeObserver: scroll to bottom on container resize (textarea grow/shrink, shape resize)
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) {
+        requestAnimationFrame(scrollToBottom)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollToBottom])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
