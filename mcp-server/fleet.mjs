@@ -2451,7 +2451,8 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
         images.push(...chipImages)
-        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
+        const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
+        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
@@ -3852,7 +3853,8 @@ async function handleChannelMessage(msg) {
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
+      const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
       content = `📬 Task update. Call my_task() to see details.`;
     }

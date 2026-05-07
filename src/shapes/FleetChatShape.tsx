@@ -523,6 +523,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const historyIndexRef = useRef<number>(-1)
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const lastEscRef = useRef<number>(0)
+  const escCountRef = useRef<number>(0)
   // Keep sendTargets accessible from native event listener without re-registering
   const sendTargetsRef = useRef<string[]>([])
 
@@ -1557,6 +1558,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
   // synthetic keydown for Escape, so we attach directly at the target element.
+  // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
+  // 3×Esc = kill session (tmux kill-session, agent dies immediately).
+  // No thinkingAgents dependency — if you're mashing Escape at an agent, you mean it.
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
@@ -1569,12 +1573,22 @@ function FleetChatInner({ shape }: { shape: any }) {
       const now = Date.now()
       const agent = targets[0]
       if (now - lastEscRef.current < 500) {
-        // Hard interrupt: Esc twice within 500ms
+        escCountRef.current++
+      } else {
+        escCountRef.current = 1
+      }
+      lastEscRef.current = now
+      const count = escCountRef.current
+      if (count >= 3) {
+        // Kill session: 3×Esc — tmux kill-session, agent dies immediately
+        escCountRef.current = 0
         lastEscRef.current = 0
+        fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+      } else if (count === 2) {
+        // Hard interrupt: 2×Esc — Escape+poll loop
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
       } else {
-        // Soft interrupt: single Esc
-        lastEscRef.current = now
+        // Soft interrupt: 1×Esc — single Escape to tmux
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
       }
     }
@@ -2350,9 +2364,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                     // field-sizing: content auto-shrinks
                     return
                   }
-                  const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
-                  if (thinkingTargets.length === 0) return
-                  for (const target of thinkingTargets) {
+                  // Interrupt all targeted agents — no thinkingAgents filter.
+                  // The native handler (useEffect above) handles the 3-tier
+                  // escalation (soft/hard/kill). This is the backup path.
+                  if (sendTargets.length === 0) return
+                  for (const target of sendTargets) {
                     fetch(`${FLEET_API}/api/interrupt`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },

@@ -408,6 +408,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (fleetStore) {
       // Suppress SSE echo to the sending browser connection (optimistic send dedup)
       if (suppress_echo && suppressEchoFor) suppressEchoFor(suppress_echo)
+      // Attach sender's chatReminder if set (from agent metadata)
+      const senderAgent = fleetStore.getAgent(sender)
+      const chatReminder = senderAgent?.metadata?.chatReminder || undefined
       const event = fleetStore.share({
         type: 'chat',
         from: sender,
@@ -419,6 +422,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           inline_attachments: inline_attachments || undefined,
           wiretap_cc: wiretapRecipients.length ? wiretapRecipients : undefined,
           context: context || undefined,
+          chatReminder,
         },
       })
       // _suppressEchoWs is cleared by broadcastFleet having run synchronously above
@@ -605,6 +609,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (fleetStore) fleetStore.upsertAgent(agent)
     broadcastState()
     res.json({ ok: true, agent: agent.id, labels })
+  })
+
+  // --- POST /api/set-metadata ---
+  // Merge key/value pairs into an agent's metadata JSON.
+  router.post('/api/set-metadata', (req, res) => {
+    const { agent: agentQuery, ...fields } = req.body || {}
+    if (!agentQuery) { res.status(400).json({ error: 'agent required' }); return }
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    const meta = { ...(agent.metadata || {}), ...fields }
+    agent.metadata = meta
+    if (fleetStore) fleetStore.upsertAgent(agent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.id, metadata: meta })
   })
 
   // --- POST /api/send-key ---
