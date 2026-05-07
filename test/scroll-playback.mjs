@@ -32,9 +32,14 @@ async function sendChat(from, to, text) {
   const res = await fetch(`${FLEET_API}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: text, from, to: 'fleet:skip' })
+    body: JSON.stringify({ message: text, from, to })
   })
   return res.json()
+}
+
+// Send a message that matches the chat filter (from/to tlda-ops)
+async function sendTestMessage(text) {
+  return sendChat('fleet:scroll-test-agent', 'fleet:cf397d07', text)
 }
 
 async function getScrollState(page) {
@@ -135,17 +140,30 @@ async function run() {
         const b = editor.getShapePageBounds(pages[0].id)
         if (b) { ax = b.x - chatW * 2 - agentsW - gap * 3; ay = b.y }
       }
+      // Use a real filter — empty filter shows nothing
+      const testFilter = [[['from', 'tlda-ops']], [['to', 'tlda-ops']]]
       editor.createShapes([
         { id: 'shape:fleet-agents-test', type: 'fleet-agents', x: ax, y: ay, props: { w: agentsW, h: agentsH } },
-        { id: 'shape:fleet-chat-1', type: 'fleet-chat', x: ax + agentsW + gap, y: ay, props: { w: chatW, h: chatH, filter: [] } },
-        { id: 'shape:fleet-chat-2', type: 'fleet-chat', x: ax + agentsW + gap + chatW + gap, y: ay, props: { w: chatW, h: chatH, filter: [] } },
+        { id: 'shape:fleet-chat-1', type: 'fleet-chat', x: ax + agentsW + gap, y: ay, props: { w: chatW, h: chatH, filter: testFilter } },
       ])
       localStorage.setItem('fleet-hud-expanded', '1')
       window.dispatchEvent(new CustomEvent('fleet-hud-toggle'))
     })
     await sleep(3000)
   }
-  console.log('Fleet layout ready')
+  // Pan camera to show fleet shapes (they're positioned to the left of the document)
+  await page.evaluate(() => {
+    const editor = window.__tldraw_editor__
+    if (!editor) return
+    const fleetShapes = editor.getCurrentPageShapes().filter(s => ['fleet-chat','fleet-agents'].includes(s.type))
+    if (fleetShapes.length === 0) return
+    const bounds = fleetShapes.map(s => editor.getShapePageBounds(s.id)).filter(Boolean)
+    const minX = Math.min(...bounds.map(b => b.x))
+    const minY = Math.min(...bounds.map(b => b.y))
+    editor.setCamera({ x: -minX + 50, y: -minY + 50, z: 1 })
+  })
+  await sleep(1000)
+  console.log('Fleet layout ready — camera panned to fleet shapes')
 
   // Wait for fleet-chat-log to appear (use 'attached' — HUD renders may not be 'visible' by playwright's definition)
   console.log('Waiting for chat log...')
@@ -154,6 +172,7 @@ async function run() {
 
   // --- Test 1: Initial load scrolls to bottom ---
   console.log('\n[Test 1] Initial load scrolls to bottom')
+  await page.screenshot({ path: 'scratch/scroll-step-1-initial.png' })
   let state = await getScrollState(page)
   assert('chat log exists', state !== null)
   if (state) {
@@ -165,12 +184,13 @@ async function run() {
   console.log('\n[Test 2] New messages auto-scroll to bottom')
   const beforeCount = state?.msgCount || 0
   for (let i = 0; i < 5; i++) {
-    await sendChat('fleet:scroll-test-agent', 'fleet:skip', `Test message ${i + 1} - ${Date.now()}`)
+    await sendTestMessage(`Test message ${i + 1} - ${Date.now()}`)
     await sleep(500)
   }
   state = await waitForMsgCount(page, beforeCount + 5)
   assert('messages arrived', state && state.msgCount >= beforeCount + 5,
     `expected >=${beforeCount + 5}, got ${state?.msgCount}`)
+  await page.screenshot({ path: 'scratch/scroll-step-2-new-messages.png' })
   assert('still at bottom after new messages', state && state.distFromBottom < 30,
     `dist=${state?.distFromBottom}`)
 
@@ -179,6 +199,7 @@ async function run() {
   await scrollUp(page, 300)
   await sleep(500)
   state = await getScrollState(page)
+  await page.screenshot({ path: 'scratch/scroll-step-3-scrolled-up.png' })
   assert('scrolled up successfully', state && state.distFromBottom > 100,
     `dist=${state?.distFromBottom}`)
 
@@ -186,11 +207,12 @@ async function run() {
   console.log('\n[Test 4] New messages while scrolled up preserve position')
   const scrollPosBefore = state?.scrollTop
   for (let i = 0; i < 3; i++) {
-    await sendChat('fleet:scroll-test-agent', 'fleet:skip', `Message while scrolled up ${i + 1}`)
+    await sendTestMessage(`Message while scrolled up ${i + 1}`)
     await sleep(500)
   }
   await sleep(1000)
   state = await getScrollState(page)
+  await page.screenshot({ path: 'scratch/scroll-step-4-preserved.png' })
   assert('scroll position preserved while scrolled up',
     state && state.distFromBottom > 50,
     `dist=${state?.distFromBottom}, scrollTop before=${scrollPosBefore} after=${state?.scrollTop}`)
@@ -205,11 +227,12 @@ async function run() {
 
   // Send more messages — should auto-scroll
   for (let i = 0; i < 3; i++) {
-    await sendChat('fleet:scroll-test-agent', 'fleet:skip', `Post-scroll-back message ${i + 1}`)
+    await sendTestMessage(`Post-scroll-back message ${i + 1}`)
     await sleep(500)
   }
   await sleep(1000)
   state = await getScrollState(page)
+  await page.screenshot({ path: 'scratch/scroll-step-5-resumed.png' })
   assert('auto-scroll resumed after returning to bottom', state && state.distFromBottom < 30,
     `dist=${state?.distFromBottom}`)
 

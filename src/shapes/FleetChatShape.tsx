@@ -1342,19 +1342,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
   const prevItemsLenRef = useRef(0)
-  const rawItemsLenRef = useRef(rawItems.length)
-  rawItemsLenRef.current = rawItems.length
-  const virtualizerRef = useRef(virtualizer)
-  virtualizerRef.current = virtualizer
-
-  // scrollToBottom sets scrollTop and suppresses the scroll listener briefly
-  // so layout jitter doesn't falsely set isAtBottom = false.
+  // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
+  // virtualizer's inner div calls it again after measurement, catching the
+  // race where scrollHeight grows after the initial scroll.
   const scrollSuppressUntilRef = useRef(0)
   const scrollToBottom = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-    // Suppress scroll listener for 100ms to let layout settle
     scrollSuppressUntilRef.current = Date.now() + 100
     isAtBottomRef.current = true
   }, [])
@@ -1390,7 +1385,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [rawItems.length, scrollToBottom])
 
-  // ResizeObserver: scroll to bottom on container resize (textarea grow/shrink, shape resize)
+  // ResizeObserver on the inner content div (virtualizer total-size container).
+  // When the virtualizer measures a new item, this div's height changes, which
+  // updates scrollHeight. We scroll to bottom at that point if we should be
+  // pinned there. Observing the outer scroll container wouldn't work — its
+  // visible size is fixed, only scrollHeight changes.
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
@@ -1399,7 +1398,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         requestAnimationFrame(scrollToBottom)
       }
     })
+    // Observe both the scroll container AND its first child (the virtualizer
+    // total-size div). The container catches shape resizes; the child catches
+    // virtualizer measurement updates.
     ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
     return () => ro.disconnect()
   }, [scrollToBottom])
 
