@@ -65,6 +65,60 @@ function shadowRepoDir(name) {
 }
 
 /**
+ * Initialize a shadow repo by filtering an existing project repo down to
+ * paper-scope paths only. The filter operation is the canonical way to bring
+ * an extant project repo into tlda's world: take its full git history,
+ * keep only paths that pdflatex actually opened (plus bibtex + svg
+ * augmentation per writeRelevantFiles), drop everything else.
+ *
+ * Existing dirty shadows are reset by the same operation: caller renames
+ * the dirty shadow out of the way (e.g. shadow-repo-dirty), then calls this
+ * to produce a clean shadow from the project's working-copy git.
+ *
+ * Requires `git-filter-repo` on PATH. paperScope is the list of paths
+ * (relative to the project repo's root) to keep.
+ *
+ * Throws on failure. Returns the path of the new shadow repo.
+ */
+export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {
+  if (!existsSync(join(projectRepoPath, '.git'))) {
+    throw new Error(`Project repo has no .git: ${projectRepoPath}`)
+  }
+  if (!Array.isArray(paperScope) || paperScope.length === 0) {
+    throw new Error('paperScope must be a non-empty list of paths')
+  }
+  const repoDir = shadowRepoDir(name)
+  if (existsSync(repoDir)) {
+    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
+  }
+
+  // Clone the project repo to the shadow location (file:// transport copies
+  // history; --no-local would skip hardlinks but we don't need that).
+  await execAsync(
+    `git clone --no-local "${projectRepoPath}" "${repoDir}"`,
+    { timeout: 120000 }
+  )
+
+  // Filter the clone to keep only paper-scope paths. git-filter-repo refuses
+  // to run on a non-fresh clone by default — pass --force.
+  const pathArgs = paperScope.map(p => `--path "${p.replace(/"/g, '\\"')}"`).join(' ')
+  await execAsync(
+    `git-filter-repo ${pathArgs} --force`,
+    { cwd: repoDir, timeout: 600000 }
+  )
+
+  // Set local identity so subsequent commitSnapshot calls work.
+  await execAsync('git config user.email "tlda@local"', { cwd: repoDir, timeout: 5000 })
+  await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
+
+  // Drop the origin remote that filter-repo leaves behind — the shadow
+  // shouldn't track upstream.
+  try { await execAsync('git remote remove origin', { cwd: repoDir, timeout: 5000 }) } catch {}
+
+  return repoDir
+}
+
+/**
  * Initialize shadow repo for a project (git init if needed).
  */
 export async function initShadowRepo(name) {
@@ -87,9 +141,48 @@ export async function initShadowRepo(name) {
 }
 
 /**
- * Commit current source files to shadow repo. Returns { hash, timestamp }.
- * Copies source files from server/projects/{name}/source/ into the shadow repo,
- * git add -A, git commit. Returns null if nothing changed.
+ * Read the paper-scope set from output/relevant-files.json.
+ * Returns paths relative to srcDir, or null if relevant-files.json doesn't
+ * exist or yields no files inside srcDir (callers should treat as bootstrap).
+ *
+ * The set is whatever pdflatex actually opened during the build (via the
+ * .fls recorder), augmented in writeRelevantFiles() with bibtex inputs
+ * (.bib/.bst) and svg siblings of pdf figures. Build artifacts are
+ * filtered here.
+ */
+const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
+
+function readPaperScope(name) {
+  const relPath = join(outputDir(name), 'relevant-files.json')
+  if (!existsSync(relPath)) return null
+  let parsed
+  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return null }
+  const files = Array.isArray(parsed?.files) ? parsed.files : []
+  const srcDir = sourceDir(name)
+  const out = new Set()
+  for (const p of files) {
+    if (typeof p !== 'string') continue
+    if (!p.startsWith(srcDir + '/')) continue
+    const rel = p.slice(srcDir.length + 1)
+    if (BUILD_ARTIFACT_RE.test(rel)) continue
+    if (existsSync(join(srcDir, rel))) out.add(rel)
+  }
+  return out.size === 0 ? null : [...out].sort()
+}
+
+/**
+ * Commit paper-scope source files to shadow repo. Returns { hash, timestamp }.
+ *
+ * What "paper-scope" means: the files pdflatex actually opened during the
+ * build (from the .fls recorder), augmented with bibtex inputs and svg
+ * figure sources. Build artifacts (.aux/.log/etc.) are filtered out.
+ *
+ * Source of truth: output/relevant-files.json (written by writeRelevantFiles
+ * in build-runner.mjs at the end of every successful build). If that file
+ * is missing — first build hasn't completed, or relevant-files generation
+ * failed — we skip the snapshot rather than fall back to copy-everything.
+ *
+ * Returns null if nothing changed or paper-scope is unavailable.
  */
 export async function commitSnapshot(name) {
   const repoDir = await initShadowRepo(name)
@@ -99,8 +192,17 @@ export async function commitSnapshot(name) {
     throw new Error(`Source directory not found: ${srcDir}`)
   }
 
-  // Clear existing files in shadow repo (except .git and .gitignore).
-  // Async fs avoids blocking the event loop on large source trees (was 700ms+).
+  const scope = readPaperScope(name)
+  if (!scope) {
+    // No paper-scope yet — first build hasn't produced relevant-files.json,
+    // or augmentation failed. Skip rather than fall back to copy-everything
+    // (which would re-introduce the bug class this whole change is fixing).
+    return null
+  }
+
+  // Clear existing non-.git, non-.gitignore content from the shadow repo.
+  // We rebuild from scope to handle removals, renames, etc. uniformly.
+  // Async fs avoids blocking the event loop on large source trees.
   const repoEntries = await readdirAsync(repoDir)
   await Promise.all(
     repoEntries
@@ -108,36 +210,31 @@ export async function commitSnapshot(name) {
       .map((entry) => rmAsync(join(repoDir, entry), { recursive: true, force: true })),
   )
 
-  // Copy source files in.
-  const srcEntries = await readdirAsync(srcDir)
+  // Copy each paper-scope file from src into the shadow repo, preserving
+  // directory structure. mkdir each dirname first since cp is per-file.
   await Promise.all(
-    srcEntries.map((entry) =>
-      cpAsync(join(srcDir, entry), join(repoDir, entry), { recursive: true }),
-    ),
+    scope.map(async (rel) => {
+      const from = join(srcDir, rel)
+      const to = join(repoDir, rel)
+      mkdirSync(dirname(to), { recursive: true })
+      await cpAsync(from, to)
+    }),
   )
 
-  // Stage everything
+  // Step 3: stage all changes (additions, modifications, deletions).
   await execAsync('git add -A', { cwd: repoDir, timeout: 10000 })
 
-  // Check if there are changes to commit
+  // Nothing changed? Don't make an empty commit.
   try {
     const { stdout: status } = await execAsync('git status --porcelain', { cwd: repoDir, timeout: 5000 })
-    if (!status.trim()) {
-      // Nothing changed
-      return null
-    }
-  } catch {
-    // If status fails, try to commit anyway
-  }
+    if (!status.trim()) return null
+  } catch {}
 
   const timestamp = new Date().toISOString()
   const message = `Build at ${timestamp}`
-
   await execAsync(`git commit -m "${message}"`, { cwd: repoDir, timeout: 15000 })
 
-  // Get the commit hash
   const { stdout: hash } = await execAsync('git rev-parse HEAD', { cwd: repoDir, timeout: 5000 })
-
   return { hash: hash.trim(), timestamp }
 }
 
