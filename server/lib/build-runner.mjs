@@ -1413,6 +1413,35 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
                 summary,
                 timestamp: Date.now(),
               })
+              // Lint: agent-parentheticals
+              try {
+                const { lintDiff } = await import('./lint-parens.mjs')
+                const findings = lintDiff(diffOutput, (file) => {
+                  try {
+                    return readFileSync(join(shadowDir, file), 'utf8')
+                  } catch { return null }
+                })
+                if (findings.length > 0) {
+                  const grouped = new Map()
+                  for (const f of findings) {
+                    if (!grouped.has(f.file)) grouped.set(f.file, [])
+                    grouped.get(f.file).push(f)
+                  }
+                  const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
+                  for (const [file, items] of grouped) {
+                    lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
+                  }
+                  lines.push('Agent-written parentheticals are usually fig leaves for weak structure — see `~/work/dot-claude/spellbook/math/writing/SKILL.md`. Skip writes them freely; this only flags ones added in build diffs.')
+                  emitGlobalEvent('build-chat', {
+                    name,
+                    hash: result.hash.slice(0, 7),
+                    text: lines.join('\n'),
+                  })
+                  console.log(`[build:${name}] Parens lint: ${findings.length} findings`)
+                }
+              } catch (lintErr) {
+                console.error(`[build:${name}] Parens lint failed:`, lintErr.message)
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
