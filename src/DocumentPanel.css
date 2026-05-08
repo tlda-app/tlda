@@ -364,6 +364,86 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
+/* Gear tab — narrower, icon-only */
+.doc-panel-tab--gear {
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Preferences panel */
+.prefs-tab {
+  padding: 10px 12px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.7);
+}
+.prefs-section {
+  margin-bottom: 12px;
+}
+.prefs-section-label {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(0, 0, 0, 0.4);
+  margin-bottom: 6px;
+}
+.prefs-source-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.prefs-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.prefs-check input {
+  margin: 0;
+  cursor: pointer;
+}
+.prefs-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.prefs-color-label {
+  width: 40px;
+  font-size: 11px;
+}
+.prefs-select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  background: white;
+}
+.prefs-color-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode */
+[data-theme="dark"] .prefs-tab {
+  color: rgba(255, 255, 255, 0.7);
+}
+[data-theme="dark"] .prefs-section-label {
+  color: rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .prefs-select {
+  background: #2a2a2a;
+  border-color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+}
+[data-theme="dark"] .prefs-color-swatch {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
 /* Pen double-tap zones — fixed squares at bottom-right (touch devices only) */
 .tool-toggle-zones {
   display: none;

@@ -35,6 +35,7 @@ import { onBuildStatusSignal, type BuildError, onSharedDocSignal, type SharedDoc
 import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
+import { getPref } from '../preferences'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -86,7 +87,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
   }
 
   component(shape: any) {
