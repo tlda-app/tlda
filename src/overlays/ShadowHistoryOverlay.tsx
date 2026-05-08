@@ -11,25 +11,11 @@
  * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
  */
 
-import { useCallback, useRef, useState, useMemo } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
 import './ShadowHistoryOverlay.css'
 
 const SLIDER_STEPS = 1000  // resolution of the time-axis slider
-
-// Event types and colors (matches TimelineOverlayShape)
-const EVENT_COLORS: Record<string, string> = {
-  build: '#f59e0b',       // amber — builds
-  annotation: '#6366f1',  // indigo — annotations
-  highlight: '#10b981',   // emerald — highlights
-  comment: '#8b5cf6',     // violet — comments/notes
-}
-
-export interface TimelineDot {
-  timestamp: number
-  type: 'build' | 'annotation' | 'highlight' | 'comment'
-  label?: string
-}
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
@@ -69,11 +55,9 @@ interface Props {
   onStep: (dir: 'older' | 'newer') => void
   onClose: () => void
   onRealign?: () => void
-  /** Timeline event dots to render along the slider track */
-  timelineDots?: TimelineDot[]
 }
 
-export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, timelineDots }: Props) {
+export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign }: Props) {
   const resolvedSliderVal = activeVersion
     ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
     : SLIDER_STEPS  // rightmost = current
@@ -107,19 +91,6 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
   const isCurrent = activeVersion === null
   const isAtOldest = activeVersion?.hash === timeBounds.oldest.hash
 
-  // Compute dot positions as percentages along the slider track
-  const dotPositions = useMemo(() => {
-    if (!timelineDots || timelineDots.length === 0) return []
-    const span = timeBounds.newest.timestamp - timeBounds.oldest.timestamp
-    if (span === 0) return []
-    return timelineDots.map(dot => ({
-      pct: Math.max(0, Math.min(100, ((dot.timestamp - timeBounds.oldest.timestamp) / span) * 100)),
-      color: EVENT_COLORS[dot.type] || EVENT_COLORS.build,
-      label: dot.label,
-      type: dot.type,
-    }))
-  }, [timelineDots, timeBounds])
-
   // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
   const isHidden = isCurrent
 
@@ -152,32 +123,15 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
         title="Older (one build)"
       >‹</button>
 
-      <div className="shadow-scrubber-track-wrap">
-        {dotPositions.length > 0 && (
-          <div className="shadow-scrubber-dots" aria-hidden="true">
-            {dotPositions.map((d, i) => (
-              <span
-                key={i}
-                className="shadow-scrubber-dot"
-                style={{
-                  left: `${d.pct}%`,
-                  backgroundColor: d.color,
-                }}
-                title={d.label || d.type}
-              />
-            ))}
-          </div>
-        )}
-        <input
-          type="range"
-          className="shadow-scrubber-range"
-          min={0}
-          max={SLIDER_STEPS}
-          value={sliderVal}
-          onChange={handleRange}
-          title="Drag to scrub history by time — right = current, left = older"
-        />
-      </div>
+      <input
+        type="range"
+        className="shadow-scrubber-range"
+        min={0}
+        max={SLIDER_STEPS}
+        value={sliderVal}
+        onChange={handleRange}
+        title="Drag to scrub history by time — right = current, left = older"
+      />
 
       {/* Newer — step to the build just after, or back to current */}
       <button

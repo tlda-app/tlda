@@ -13,9 +13,8 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { TLShapeId, Editor } from 'tldraw'
-import { fetchShadowTimeBounds, fetchAdjacentShadowVersion, fetchShadowMeta, versionAtTime, fetchHistory, fetchShadowVersions } from '../historyStore'
+import { fetchShadowTimeBounds, fetchAdjacentShadowVersion, fetchShadowMeta, versionAtTime } from '../historyStore'
 import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
-import type { TimelineDot } from '../overlays/ShadowHistoryOverlay'
 import type { SvgDocument } from '../svgDocumentLoader'
 
 import { usePageColumn } from './usePageColumn'
@@ -88,9 +87,6 @@ export function useShadowOverlay(
   const documentRef = useRef(document)
   documentRef.current = document
 
-  // Timeline dots — build/annotation events shown along the scrubber track
-  const [timelineDots, setTimelineDots] = useState<TimelineDot[]>([])
-
   // Fetch time bounds on mount and after new builds
   const fetchBounds = useCallback(async () => {
     const bounds = await fetchShadowTimeBounds(docName)
@@ -99,42 +95,6 @@ export function useShadowOverlay(
   }, [docName])
 
   useEffect(() => { fetchBounds() }, [fetchBounds])
-
-  // Fetch timeline dots when scrubber becomes visible
-  useEffect(() => {
-    if (!visible) return
-    let cancelled = false
-    ;(async () => {
-      // Fetch shadow versions (builds) and history entries (git + build) concurrently
-      const [versions, history] = await Promise.all([
-        fetchShadowVersions(docName, 9999),
-        fetchHistory(docName),
-      ])
-      if (cancelled) return
-      const dots: TimelineDot[] = []
-      // Shadow versions → build dots
-      for (const v of versions) {
-        dots.push({
-          timestamp: v.timestamp,
-          type: 'build',
-          label: v.message ? `Build: ${v.message.slice(0, 40)}` : `Build ${v.hash.slice(0, 7)}`,
-        })
-      }
-      // History entries that are git commits (not duplicated by shadow versions)
-      const shadowTimes = new Set(versions.map(v => v.timestamp))
-      for (const e of history) {
-        if (e.type === 'git' && !shadowTimes.has(e.timestamp)) {
-          dots.push({
-            timestamp: e.timestamp,
-            type: 'build',
-            label: e.commitMessage ? `Commit: ${e.commitMessage.slice(0, 40)}` : 'Git commit',
-          })
-        }
-      }
-      setTimelineDots(dots)
-    })()
-    return () => { cancelled = true }
-  }, [visible, docName])
 
   // Startup cleanup: sweep orphan shadow shapes left over from previous sessions.
   // Runs 1.5s after mount to ensure Yjs has synced and the editor is available.
@@ -387,6 +347,5 @@ export function useShadowOverlay(
     handleShadowScrubVersion: handleScrubVersion,
     refreshShadowTimeBounds: fetchBounds,
     realignShadow,
-    shadowTimelineDots: timelineDots,
   }
 }
