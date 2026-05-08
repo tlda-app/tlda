@@ -561,7 +561,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     setOlderEvents([])
     isAtBottomRef.current = true
     setShowScrollBtn(false)
-    prevItemsLenRef.current = 0
+    prevTotalSizeRef.current = 0
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -1347,7 +1347,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const prevItemsLenRef = useRef(0)
   // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
   // virtualizer's inner div calls it again after measurement, catching the
   // race where scrollHeight grows after the initial scroll.
@@ -1386,23 +1385,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [scrollToBottom])
 
-  // Scroll to bottom when new messages arrive.
-  // Always scroll on first load (prevLen was 0). After that, only if at bottom.
+  // Scroll to bottom when new messages arrive or activity cards grow.
+  //
+  // rawItems.length alone is not enough: activity messages from the same
+  // agent merge into a single rawItem, so a burst of tool-call events can
+  // make scrollHeight grow by hundreds of px without changing rawItems.length.
+  // Tracking getTotalSize() catches both new items AND measurement updates.
+  const virtualizerTotalSize = virtualizer.getTotalSize()
+  const prevTotalSizeRef = useRef(0)
   useEffect(() => {
-    const prevLen = prevItemsLenRef.current
-    prevItemsLenRef.current = rawItems.length
-    if (rawItems.length === 0) return
-    if (prevLen === 0) {
-      // First load — messages may still be rendering. Scroll repeatedly
-      // for 500ms to catch late layout changes.
-      scrollToBottom()
-      const id = setInterval(scrollToBottom, 50)
-      setTimeout(() => clearInterval(id), 500)
-    } else if (isAtBottomRef.current) {
+    if (virtualizerTotalSize === 0) return
+    const firstLoad = prevTotalSizeRef.current === 0
+    prevTotalSizeRef.current = virtualizerTotalSize
+    if (firstLoad || isAtBottomRef.current) {
       scrollToBottom()
       requestAnimationFrame(scrollToBottom)
     }
-  }, [rawItems.length, scrollToBottom])
+  }, [virtualizerTotalSize, scrollToBottom])
+
+  // rawItems.length effect: reset prevTotalSizeRef on filter change / target switch
+  // so the next load is treated as a first load. (filterKey effect handles this
+  // for the target-switch case; this handles in-flight rawItems resets.)
+  useEffect(() => {
+    if (rawItems.length === 0) prevTotalSizeRef.current = 0
+  }, [rawItems.length])
 
   // ResizeObserver on the inner content div (virtualizer total-size container).
   // When the virtualizer measures a new item, this div's height changes, which
@@ -1423,9 +1429,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         requestAnimationFrame(scrollToBottom)
       }
     })
-    // Observe both the scroll container AND its first child (the virtualizer
-    // total-size div). The container catches shape resizes; the child catches
-    // virtualizer measurement updates.
     ro.observe(el)
     if (el.firstElementChild) ro.observe(el.firstElementChild)
     return () => ro.disconnect()
