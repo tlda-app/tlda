@@ -678,6 +678,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This replaces the old joined renderedHtml string and enables virtualization.
   type RawItem = { key: string; html: string }
   const rawItems = useMemo(() => {
+    // Extend ctx with thinking state so renderChatLine can apply queued styling
+    const renderCtx = { ...ctx, thinkingAgents }
     const items: RawItem[] = []
     let activityGroup: any[] = []
     function flushActivity() {
@@ -685,7 +687,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
       items.push({
         key,
-        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`,
+        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
       })
       activityGroup = []
     }
@@ -698,10 +700,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       } else if (m.metadata?.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
-        const agentObjs: any[] = ctx.getAgents()
+        const agentObjs: any[] = renderCtx.getAgents()
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
         const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
-        const planBodyHtml = ctx.renderMarkdown(esc(m.text || ''))
+        const planBodyHtml = renderCtx.renderMarkdown(esc(m.text || ''))
         const html = `<div class="plan-card" data-agent-id="${esc(agentId)}">` +
           `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
           `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
@@ -713,7 +715,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
       } else {
         flushActivity()
-        const html = renderChatLine(m, ctx)
+        const html = renderChatLine(m, renderCtx)
         if (html) {
           items.push({ key: `${m.timestamp}:${m.from}`, html })
         }
@@ -722,7 +724,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx])
+  }, [chatMessages, ctx, thinkingAgents])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only

@@ -5,7 +5,7 @@
  * Mounted at / (routes are already prefixed with /api/).
  *
  * createFleetRouter(deps) — factory that returns an Express router.
- * deps: { fleetStore, broadcastEvent, broadcastState, preambleStore }
+ * deps: { fleetStore, broadcastEvent, broadcastState, clearEphemeralState, ... }
  */
 
 import { Router } from 'express'
@@ -70,7 +70,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -178,6 +178,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
       fleetStore.markDead(req.params.id)
+      clearEphemeralState?.(req.params.id)
       broadcastState()
       res.json({ ok: true })
     } catch (e) { res.status(500).json({ error: e.message }) }
@@ -309,7 +310,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         // Auto-mark dead: no heartbeat for >1h, tmux not alive, not human
         if (status === 'dead' && !a.dead && !a.human && lastSeenMs > 60 * 60 * 1000) {
           a.dead = true
-          try { fleetStore?.markDead(a.id) } catch {}
+          try { fleetStore?.markDead(a.id); clearEphemeralState?.(a.id) } catch {}
         }
         return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
