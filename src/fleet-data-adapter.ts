@@ -371,9 +371,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
-      if (cancelled || !filter) return
+      if (cancelled) return
 
+      // null filter = all agents; non-null = only agents matching the current chat filter
       function inFilter(agentId: string): boolean {
+        if (!filter) return true
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
