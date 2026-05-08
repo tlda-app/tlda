@@ -34,7 +34,7 @@ MODEL_ALIASES = {
     "opus46": "claude-opus-4-6[1m]",    # explicit
     "opus47": "claude-opus-4-7[1m]",    # opt-in for the latest opus
     "sonnet": "claude-sonnet-4-6",
-    "haiku": "claude-haiku-4-5-20251001",
+    "haiku": "claude-haiku-4-5",
 }
 
 def resolve_model(model):
