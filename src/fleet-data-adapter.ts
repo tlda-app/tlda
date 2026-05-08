@@ -29,6 +29,7 @@ import {
   injectOptimisticEvent as _injectOptimisticEvent,
   updateOptimisticEvent as _updateOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
+  fleetWS as _fleetWS,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -652,4 +653,5 @@ export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
+export const fleetWS = _fleetWS
 export { loadBefore, fetchHistory }
