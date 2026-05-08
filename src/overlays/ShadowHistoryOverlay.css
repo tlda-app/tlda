@@ -209,10 +209,18 @@
 
 /* ─── Space-time dots panel ────────────────────────────────────── */
 
+/* Hidden by default, appears on hover over the container */
 .spacetime-panel {
   display: flex;
   height: 160px;
   margin-bottom: 4px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.shadow-scrubber-container:hover .spacetime-panel {
+  opacity: 1;
+  pointer-events: all;
 }
 
 /* Y axis labels column */
@@ -247,23 +255,23 @@
 /* Individual dot */
 .spacetime-dot {
   position: absolute;
-  width: 5px;
-  height: 5px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
-  background: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.6);
   transform: translate(-50%, -50%);
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
 }
 .spacetime-dot.multi {
-  width: 6px;
-  height: 6px;
-  background: rgba(245, 158, 11, 0.65);
+  width: 4px;
+  height: 4px;
+  background: rgba(245, 158, 11, 0.7);
 }
 .spacetime-dot:hover {
   background: rgba(245, 158, 11, 1);
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
-  transform: translate(-50%, -50%) scale(1.6);
+  box-shadow: 0 0 5px rgba(245, 158, 11, 0.5);
+  transform: translate(-50%, -50%) scale(2);
   z-index: 10;
 }
 
