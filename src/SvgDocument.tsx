@@ -493,7 +493,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Shadow history scrubber
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
-    shadowColumnX, shadowYOffset,
+    shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
@@ -1074,6 +1074,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onStep={handleShadowStep}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
+          changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}
       <div className="build-pills-row">
