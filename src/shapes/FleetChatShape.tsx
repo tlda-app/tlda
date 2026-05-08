@@ -561,6 +561,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     setOlderEvents([])
     isAtBottomRef.current = true
     setShowScrollBtn(false)
+    prevItemsLenRef.current = 0
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
