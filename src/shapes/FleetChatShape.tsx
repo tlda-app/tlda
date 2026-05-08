@@ -548,7 +548,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    // scroll state reset (auto-scroll always on)
+    isAtBottomRef.current = true
+    setShowScrollBtn(false)
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -586,9 +587,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           ])
           const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
           if (fresh.length > 0) {
-            // Reset scroll state so the rawItems effect scrolls to bottom
-            // after the prepended history shifts the content
-            // scroll state reset (auto-scroll always on)
+            isAtBottomRef.current = true
+            setShowScrollBtn(false)
             return [...fresh, ...prev]
           }
           return prev
@@ -1356,19 +1356,30 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [])
 
   // Track whether user is at bottom (within 30px threshold).
+  // Also detect container resizes (e.g. textarea growing via field-sizing: content)
+  // which shrink the chat log without the user scrolling.
+  const prevClientHeightRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
+    prevClientHeightRef.current = el.clientHeight
     const onScroll = () => {
       if (Date.now() < scrollSuppressUntilRef.current) return
-      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      const ch = el.clientHeight
+      const resized = ch !== prevClientHeightRef.current
+      prevClientHeightRef.current = ch
+      const dist = el.scrollHeight - el.scrollTop - ch
       const atBottom = dist < 30
+      if (resized && isAtBottomRef.current && !atBottom) {
+        scrollToBottom()
+        return
+      }
       isAtBottomRef.current = atBottom
       setShowScrollBtn(!atBottom)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [scrollToBottom])
 
   // Scroll to bottom when new messages arrive.
   // Always scroll on first load (prevLen was 0). After that, only if at bottom.
@@ -2562,12 +2573,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                       read: true,
                     })
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.dispatchEvent(new Event('input', { bubbles: true }))
                     resetTranscript()
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    // scroll state reset (auto-scroll always on)
+                    isAtBottomRef.current = true
+                    setShowScrollBtn(false)
+                    requestAnimationFrame(() => scrollToBottom())
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2623,7 +2636,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // scroll state reset (auto-scroll always on)
+                  isAtBottomRef.current = true
+                  setShowScrollBtn(false)
+                  requestAnimationFrame(() => scrollToBottom())
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2659,7 +2674,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  // scroll state reset (auto-scroll always on)
+                  isAtBottomRef.current = true
+                  setShowScrollBtn(false)
+                  requestAnimationFrame(() => scrollToBottom())
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
