@@ -1025,6 +1025,35 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.7;
 }
 .fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+/* Schedule / timer cards */
+.fleet-chat-shape .tool-pretty-schedule {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(120, 180, 120, 0.5);
+  background: rgba(120, 180, 120, 0.04);
+  border-radius: 3px;
+  flex-wrap: wrap;
+}
+.fleet-chat-shape .schedule-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .schedule-time {
+  font-weight: 600;
+  font-size: 11px;
+  color: rgba(140, 200, 140, 0.9);
+}
+.fleet-chat-shape .schedule-at {
+  font-size: 9px;
+  color: var(--text-dim);
+}
+.fleet-chat-shape .schedule-reason {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
 
 /* --- Activity cards --- */
 .fleet-chat-shape .chat-activity-inline-wrap {

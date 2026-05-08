@@ -271,7 +271,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot', 'ScheduleWakeup'])
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
@@ -305,7 +305,7 @@ function extractActivityEvents(events) {
         const input = block.input || {}
         const arg = input.file_path || input.path ||
           input.command || input.pattern || input.message ||
-          input.query || input.description || ''
+          input.query || input.description || input.reason || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
         if (Object.keys(input).length > 0) evt.input = input
         // Attach result for pretty-printed tools
@@ -653,6 +653,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     let parsed
     try { parsed = JSON.parse(line) } catch { continue }
     if (parsed.type !== 'user') continue
+    if (parsed.isMeta) continue
     const content = parsed.message?.content
     let text = ''
     if (typeof content === 'string') text = content

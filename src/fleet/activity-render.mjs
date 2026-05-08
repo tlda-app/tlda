@@ -43,7 +43,7 @@ export const CHAT_TOOLS = new Set([
 
 // --- Pretty-print tool results ---
 
-function renderPrettyResult(toolName, text, ctx) {
+function renderPrettyResult(toolName, text, ctx, input) {
   const tool = (toolName || '').toLowerCase()
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
@@ -54,9 +54,32 @@ function renderPrettyResult(toolName, text, ctx) {
   if (tool.includes('screenshot')) {
     return renderScreenshotResult(text)
   }
+  if (tool === 'schedulewakeup') {
+    return renderScheduleResult(text, input)
+  }
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
+}
+
+function renderScheduleResult(text, input) {
+  const timeMatch = text.match(/scheduled for ([\d:]+)\s*\(in (\d+)s\)/)
+  const fireTime = timeMatch ? timeMatch[1] : ''
+  const delaySec = timeMatch ? parseInt(timeMatch[2], 10) : 0
+  let relativeStr = ''
+  if (delaySec > 0) {
+    const min = Math.floor(delaySec / 60)
+    const sec = delaySec % 60
+    relativeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+  }
+  const timeLabel = relativeStr ? `in ${relativeStr}` : (fireTime || 'scheduled')
+  const reason = input?.reason || ''
+  return `<div class="tool-pretty-result tool-pretty-schedule">
+    <span class="schedule-icon">⏱</span>
+    <span class="schedule-time">${esc(timeLabel)}</span>
+    ${fireTime ? `<span class="schedule-at">@ ${esc(fireTime)}</span>` : ''}
+    ${reason ? `<span class="schedule-reason">— ${esc(reason)}</span>` : ''}
+  </div>`
 }
 
 function renderScreenshotResult(text) {
@@ -481,7 +504,7 @@ export function renderActivityGroup(group, ctx) {
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
       const prettyHtml = t._prettyResult
-        ? renderPrettyResult(t._toolName, t._prettyResult, ctx)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`
