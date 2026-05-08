@@ -1341,6 +1341,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // continuous rAF loop. Instead: scroll to bottom when new content arrives
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
   const prevItemsLenRef = useRef(0)
   // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
   // virtualizer's inner div calls it again after measurement, catching the
@@ -1361,7 +1362,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onScroll = () => {
       if (Date.now() < scrollSuppressUntilRef.current) return
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-      isAtBottomRef.current = dist < 30
+      const atBottom = dist < 30
+      isAtBottomRef.current = atBottom
+      setShowScrollBtn(!atBottom)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
@@ -2775,7 +2778,42 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Auto-scroll is always on — no scroll-to-bottom button needed */}
+        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
+        {showScrollBtn && (
+          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+            <button
+              className="fleet-scroll-bottom-btn"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                scrollToBottom()
+                setShowScrollBtn(false)
+              }}
+              style={{
+                position: 'absolute',
+                right: 8,
+                bottom: 4,
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                border: 'none',
+                background: 'transparent',
+                color: 'rgba(200, 200, 200, 1)',
+                opacity: 0.35,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                fontWeight: 'bold',
+                lineHeight: 1,
+                padding: 0,
+                transition: 'opacity 0.2s',
+              }}
+              title="Scroll to bottom"
+            >↓</button>
+          </div>
+        )}
       </div>
     </HTMLContainer>
   )
