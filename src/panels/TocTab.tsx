@@ -100,10 +100,24 @@ export function TocTab() {
     if (!doc) return
     const pos = pdfToCanvas(entry.page, entry.x, entry.y, doc.pages)
     if (!pos) return
-    const pageIndex = entry.page - 1
-    const page = doc.pages[pageIndex]
-    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
-    navigateTo(editor, pos.x, pos.y, pageCenterX)
+    // Preserve horizontal position — only move vertically
+    const vp = editor.getViewportPageBounds()
+    editor.centerOnPoint({ x: vp.x + vp.w / 2, y: pos.y }, { animation: { duration: 300 } })
+  }, [editor, doc])
+
+  const handleCenterHorizontally = useCallback(() => {
+    if (!doc || doc.pages.length === 0) return
+    const vp = editor.getViewportPageBounds()
+    const vpCenterY = vp.y + vp.h / 2
+    // Find which page the viewport center is in
+    let pageCenterX = doc.pages[0].bounds.x + doc.pages[0].bounds.width / 2
+    for (const page of doc.pages) {
+      if (vpCenterY >= page.bounds.y && vpCenterY <= page.bounds.y + page.bounds.height) {
+        pageCenterX = page.bounds.x + page.bounds.width / 2
+        break
+      }
+    }
+    editor.centerOnPoint({ x: pageCenterX, y: vpCenterY }, { animation: { duration: 300 } })
   }, [editor, doc])
 
   const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string) => {
@@ -567,7 +581,9 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      <FleetToggle />
+      <div className="toc-diff-hint" onClick={handleCenterHorizontally}>
+        <span className="toc-toggle-icon">{'\u2299'}</span> Center
+      </div>
       <DarkModeToggle />
       <VimModeToggle />
       <CameraLinkToggle />

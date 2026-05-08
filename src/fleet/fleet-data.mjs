@@ -24,7 +24,7 @@ const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(
 let _agents = []
 let _tasks = []
 let _events = []          // chat + lifecycle (delegate, task_done) — capped at MAX_EVENTS
-const MAX_EVENTS = 500    // keep only the most recent N events in memory; older events fetched from DB on scroll
+const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
@@ -57,6 +57,7 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
+  // System notifications from fleet:tlda show in the agent's chat view (not bypassed globally)
   // Terminal cards are filtered like regular chat — they show in chats
   // whose filter matches the agent that triggered them.
   return filter.some(clause =>
@@ -117,13 +118,26 @@ export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
 export function needsIdentity() { return !_humanId && _identifyPending }
 
-/** Claim a human identity. Called by the name picker UI. */
-export async function identify(name) {
-  const res = await wsSend({ type: 'identify', name })
+/** Log in as an existing agent. Used by returning users and ?name= auto-login. */
+export async function login(name) {
+  const res = await wsSend({ type: 'login', name })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
   localStorage.setItem('tlda-identity', res.name)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
+
+/** Register a new human agent. Used by the IdentityPicker for new users. */
+export async function registerHuman(name) {
+  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const humanId = `fleet:${sanitized}`
+  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  _humanId = res.agent?.id || humanId
+  _humanName = sanitized
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', sanitized)
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   return res
 }
@@ -146,16 +160,16 @@ export function getAgent(id) {
 // --- Write API (all go through server) ---
 
 export async function sendMessage(to, text, opts = {}) {
-  const body = { message: text, to }
-  // Include sender identity so the server attributes the message correctly
+  const body = { type: 'chat', message: text, to }
   if (_humanId) body.from = _humanId
+  if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
   try {
-    const d = await wsSend({ type: 'chat', ...body })
+    const d = await wsSend(body)
     console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
     return { ok: true, event_id: d.event_id }
   } catch (e) {
@@ -202,6 +216,10 @@ export function setAgentLabels(id, labels) {
 
 export function kickAgent(id) {
   return wsSend({ type: 'kick', agent: id })
+}
+
+export function killSession(id) {
+  return wsSend({ type: 'kill-session', agent: id })
 }
 
 export function sendKey(agent, key) {
@@ -254,15 +272,20 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Send identity if we have one stored
+    // Log in if we have a stored identity
     const storedName = localStorage.getItem('tlda-identity')
     if (storedName) {
-      wsSend({ type: 'identify', name: storedName }).then(res => {
+      wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
-      }).catch(() => { _identifyPending = false })
+      }).catch(() => {
+        // Login failed — agent may have been removed. Show picker.
+        _identifyPending = true
+        localStorage.removeItem('tlda-identity')
+        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      })
     } else {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
@@ -315,6 +338,12 @@ export function connect() {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
           _wsCallbacks.delete(msg.id)
+          // Reconcile optimistic events SYNCHRONOUSLY before resolving —
+          // the next WS message may be the echo, and _dbId must be set
+          // before the echo's dedup check runs.
+          if (msg.result && msg.result._tempId && msg.result.event_id) {
+            reconcileOptimistic(msg.result._tempId, msg.result.event_id)
+          }
           if (msg.error) cb.reject(new Error(msg.error))
           else cb.resolve(msg.result)
         }
@@ -393,14 +422,14 @@ export function connect() {
 
 // --- Initial load ---
 export async function init() {
-  // Human identity is established via WS 'identify' message on connect.
-  // If localStorage has a stored name, it's sent automatically.
-  // If not, the UI shows a name picker (subscribe to 'identity' channel).
+  // Human identity is established via WS 'login' on connect.
+  // If localStorage has a stored name, login is sent automatically.
+  // If not, the UI shows a picker with login/register options.
 
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
-    fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
+    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(() => ({ events: [] })),
   ])
 
   // Populate agents + tasks
@@ -494,7 +523,7 @@ export function convertChatEvent(e) {
   } else if (type === 'activity') {
     const tool = e.metadata?.tool || e.text
     msg._activity = true
-    msg._toolName = tool === '_text' ? null : tool
+    msg._toolName = tool === '_text' ? null : (tool === '_prettyResult' ? (e.metadata?.origTool || tool) : tool)
     msg._isText = tool === '_text'
     msg._text = tool === '_text' ? (e.metadata?.arg || e.text) : null
     msg._toolArg = e.metadata?.arg || ''
@@ -534,8 +563,15 @@ export async function fetchHistory(agentId, limit = 200) {
 }
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  // Use WebSocket for history to avoid racing with live events.
+  // Falls back to HTTP if WS is not connected.
+  let res
+  if (_ws && _ws.readyState === 1) {
+    res = await wsSend({ type: 'load-history', agent: agentId || null, before: beforeTs, limit: count })
+  } else {
+    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  }
 
   const events = (res.events || [])
     .filter(e => {

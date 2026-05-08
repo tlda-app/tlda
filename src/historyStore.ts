@@ -144,13 +144,72 @@ export function snapshotPageUrl(docName: string, snapshotId: string, page: numbe
 export interface ShadowVersion {
   hash: string
   timestamp: number
-  message: string
+  message?: string
+}
+
+/**
+ * Time bounds for the shadow repo — oldest and newest build timestamps.
+ */
+export interface ShadowTimeBounds {
+  oldest: ShadowVersion
+  newest: ShadowVersion
+}
+
+/**
+ * Fetch the build active at a given timestamp (nearest build at or before that time).
+ */
+export async function versionAtTime(docName: string, timestamp: number): Promise<ShadowVersion | null> {
+  try {
+    const res = await fetch(
+      `${serverBase}/api/projects/${docName}/history/shadow/at?time=${timestamp}`
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.version ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch the time bounds (oldest + newest build) for the shadow repo.
+ */
+export async function fetchShadowTimeBounds(docName: string): Promise<ShadowTimeBounds | null> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/bounds`)
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data.oldest || !data.newest) return null
+    return data as ShadowTimeBounds
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get the build immediately adjacent to a known hash.
+ */
+export async function fetchAdjacentShadowVersion(
+  docName: string,
+  hash: string,
+  dir: 'older' | 'newer',
+): Promise<ShadowVersion | null> {
+  try {
+    const res = await fetch(
+      `${serverBase}/api/projects/${docName}/history/shadow/adjacent?hash=${encodeURIComponent(hash)}&dir=${dir}`
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.version ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
  * Fetch shadow repo versions for a project. Returns newest-first.
  */
-export async function fetchShadowVersions(docName: string, limit = 50): Promise<ShadowVersion[]> {
+export async function fetchShadowVersions(docName: string, limit = 9999): Promise<ShadowVersion[]> {
   try {
     const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow?limit=${limit}`)
     if (!res.ok) return []
@@ -167,4 +226,36 @@ export async function fetchShadowVersions(docName: string, limit = 50): Promise<
  */
 export function shadowSnapshotPageUrl(docName: string, hash: string, page: number): string {
   return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/page-${page}.svg`
+}
+
+/**
+ * Fetch the space-time changelog: per-commit page-level changes.
+ * Returns { commits, totalPages } for the SpaceTimeDots overlay.
+ */
+export async function fetchShadowChangelog(
+  docName: string,
+  limit = 200,
+): Promise<{ commits: Array<{ hash: string; timestamp: number; changedPages: number[] }>; totalPages: number } | null> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/changelog?limit=${limit}`)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch page count for a shadow version.
+ * Returns null if not yet compiled.
+ */
+export async function fetchShadowMeta(docName: string, hash: string): Promise<{ pages: number | null }> {
+  try {
+    const hash7 = hash.slice(0, 7)
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/${hash7}/meta`)
+    if (!res.ok) return { pages: null }
+    return await res.json()
+  } catch {
+    return { pages: null }
+  }
 }

@@ -12,6 +12,7 @@
 
 import { createShapeId, type Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
+import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
 import { dragCoordinator } from './shapes/dragCoordinator'
 
@@ -278,8 +279,11 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
 
   // Resolve source lines via lookup.json (same data agents see)
   // This is async but we fire-and-forget — meta gets updated when lookup resolves
+  // Collect per-fragment positions (in SVG/PDF coords) for column estimation
+  const fragmentPositions = matchedFragments.map(f => ({ text: f.text, x: f.x, y: f.y, w: f.width }))
+
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape) : []
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions) : []
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -295,10 +299,32 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
       },
     } as any)
 
-    // Show source context card
-    showSourceContextCard(sourceLines, hlColor, bounds, editor)
+    // Check if calibration succeeded — any highlighted entry with a real range?
+    const hlEntries = sourceLines.filter(sl => sl.highlighted)
+    const hasGoodMatch = hlEntries.some(sl => sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart)
 
-    console.log(`[highlighter-snap] Matched ${lines.length} line(s), ${sourceLines.length} source line(s): "${matchedText.substring(0, 80)}..."`)
+    if (sourceLines.length > 0 && hasGoodMatch) {
+      showSourceContextCard(sourceLines, hlColor, bounds, editor, false, shape.id)
+    } else {
+      // Calibration failed — capture screenshot and store on shape meta
+      const screenshotDataUrl = captureHighlightRegion(bounds, editor, pageShape.id)
+      if (screenshotDataUrl) {
+        editor.updateShape({
+          id: shape.id,
+          type: shape.type,
+          meta: {
+            ...shape.meta,
+            highlightText: matchedText,
+            sourceLines,
+            screenshotDataUrl,
+            unresolved: true,
+          },
+        } as any)
+      }
+      showUnresolvedCard(matchedText, hlColor, bounds, editor, pageShape.id, shape.id)
+    }
+
+    console.log(`[highlighter-snap] Matched ${lines.length} line(s), ${sourceLines.length} source line(s), calibrated=${hasGoodMatch}: "${matchedText.substring(0, 80)}..."`)
   }
   // Defer slightly so flash isn't wiped by re-render
   setTimeout(resolveAndStore, 50)
@@ -441,7 +467,8 @@ async function findSourceLinesFromBounds(
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
   highlightText = '',
-  shape?: any
+  shape?: any,
+  fragments?: Array<{ text: string; x: number; y: number; w: number }>
 ): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
@@ -498,6 +525,7 @@ async function findSourceLinesFromBounds(
         page: firstPdf.page,
         points: sampled,
         text: highlightText || undefined,
+        fragments: fragments || undefined,
       }),
     })
     if (!resp.ok) return []
@@ -519,6 +547,155 @@ async function findSourceLinesFromBounds(
 }
 
 export function restoreHighlightsFromShapes(_editor: Editor) {}
+
+/**
+ * Capture a cropped screenshot of the highlight region from the rendered SVG page.
+ * Returns a data URL (image/png) or null if capture fails.
+ */
+function captureHighlightRegion(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  editor: Editor,
+  pageShapeId: string,
+): string | null {
+  try {
+    const pageEl = document.querySelector(`[data-shape-id="${pageShapeId}"]`) as HTMLElement | null
+    const svgEl = pageEl?.querySelector('svg')
+    if (!svgEl) return null
+    const pageBounds = editor.getShapePageBounds(pageShapeId as any)
+    if (!pageBounds) return null
+
+    const fx = (bounds.minX - pageBounds.x) / pageBounds.w
+    const fy = (bounds.minY - pageBounds.y) / pageBounds.h
+    const fw = (bounds.maxX - bounds.minX) / pageBounds.w
+    const fh = (bounds.maxY - bounds.minY) / pageBounds.h
+
+    const pad = 0.03
+    const cx = Math.max(0, fx - pad)
+    const cy = Math.max(0, fy - pad * 3)
+    const cw = Math.min(1 - cx, fw + pad * 2)
+    const ch = Math.min(1 - cy, fh + pad * 6)
+
+    const svgRect = svgEl.getBoundingClientRect()
+    const canvas = document.createElement('canvas')
+    const scale = 2
+    canvas.width = Math.round(svgRect.width * cw * scale)
+    canvas.height = Math.round(svgRect.height * ch * scale)
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.scale(scale, scale)
+    ctx.drawImage(
+      svgEl as unknown as CanvasImageSource,
+      svgRect.width * cx, svgRect.height * cy,
+      svgRect.width * cw, svgRect.height * ch,
+      0, 0,
+      svgRect.width * cw, svgRect.height * ch,
+    )
+    return canvas.toDataURL('image/png')
+  } catch (e) {
+    console.warn('[highlighter-snap] screenshot capture failed:', e)
+    return null
+  }
+}
+
+/**
+ * Show an "unresolved" card when synctex calibration fails.
+ * Displays the SVG-extracted text and a cropped screenshot of the highlighted region.
+ */
+function showUnresolvedCard(
+  highlightText: string,
+  hlColor: string,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  editor: Editor,
+  pageShapeId: string,
+  shapeId: string,
+) {
+  const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
+  const tintColor = TINT_COLORS[hlColor] || TINT_COLORS.yellow
+
+  const card = document.createElement('div')
+  card.className = 'hl-source-card'
+
+  // Header: "unresolved"
+  const header = document.createElement('div')
+  header.className = 'hl-source-card-header'
+  header.textContent = '⚠ unresolved'
+  header.style.color = '#e8a030'
+  card.appendChild(header)
+
+  // Body: show the SVG-extracted text
+  const body = document.createElement('div')
+  body.className = 'hl-source-card-body'
+  const hlSpan = document.createElement('span')
+  hlSpan.className = 'hl-source-card-match'
+  hlSpan.style.backgroundColor = tintColor + '40'
+  hlSpan.textContent = highlightText.length > 200 ? highlightText.slice(0, 197) + '...' : highlightText
+  body.appendChild(hlSpan)
+  card.appendChild(body)
+
+  // Screenshot: crop the region around the highlight from the page SVG
+  try {
+    const pageEl = document.querySelector(`[data-shape-id="${pageShapeId}"]`) as HTMLElement | null
+    const svgEl = pageEl?.querySelector('svg')
+    if (svgEl) {
+      const pageBounds = editor.getShapePageBounds(pageShapeId as any)
+      if (pageBounds) {
+        // Convert highlight bounds to SVG viewport fraction
+        const fx = (bounds.minX - pageBounds.x) / pageBounds.w
+        const fy = (bounds.minY - pageBounds.y) / pageBounds.h
+        const fw = (bounds.maxX - bounds.minX) / pageBounds.w
+        const fh = (bounds.maxY - bounds.minY) / pageBounds.h
+
+        // Pad the crop region
+        const pad = 0.03
+        const cx = Math.max(0, fx - pad)
+        const cy = Math.max(0, fy - pad * 3)
+        const cw = Math.min(1 - cx, fw + pad * 2)
+        const ch = Math.min(1 - cy, fh + pad * 6)
+
+        // Create a canvas and draw the cropped SVG region
+        const svgRect = svgEl.getBoundingClientRect()
+        const canvas = document.createElement('canvas')
+        const scale = 2 // retina
+        canvas.width = Math.round(svgRect.width * cw * scale)
+        canvas.height = Math.round(svgRect.height * ch * scale)
+        canvas.style.width = '100%'
+        canvas.style.maxWidth = '340px'
+        canvas.style.marginTop = '4px'
+        canvas.style.borderRadius = '3px'
+
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.scale(scale, scale)
+          ctx.drawImage(
+            svgEl as unknown as CanvasImageSource,
+            svgRect.width * cx, svgRect.height * cy,
+            svgRect.width * cw, svgRect.height * ch,
+            0, 0,
+            svgRect.width * cw, svgRect.height * ch,
+          )
+          card.appendChild(canvas)
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[highlighter-snap] screenshot fallback failed:', e)
+  }
+
+  // Position
+  const left = Math.min(screenPos.x + 12, window.innerWidth - 380)
+  const top = Math.max(screenPos.y - 10, 8)
+  Object.assign(card.style, {
+    position: 'fixed',
+    left: `${left}px`,
+    top: `${top}px`,
+    zIndex: '99999',
+  })
+
+  // Auto-dismiss after 8s
+  document.body.appendChild(card)
+  setTimeout(() => { try { card.remove() } catch {} }, 8000)
+}
 
 /** Toggle highlight debug mode (legacy — source context card replaces the debug toast). */
 export function toggleHighlightDebug(): boolean {
@@ -542,6 +719,9 @@ function showSourceContextCard(
 ): HTMLElement | null {
   if (sourceLines.length === 0) return null
 
+  // Remove any existing card before showing a new one
+  document.querySelectorAll('.hl-source-card').forEach(el => el.remove())
+
   const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
   const tintColor = TINT_COLORS[hlColor] || TINT_COLORS.yellow
 
@@ -561,7 +741,33 @@ function showSourceContextCard(
 
   const header = document.createElement('div')
   header.className = 'hl-source-card-header'
-  header.textContent = headerText
+  header.style.display = 'flex'
+  header.style.justifyContent = 'space-between'
+  header.style.alignItems = 'center'
+
+  const headerLabel = document.createElement('span')
+  headerLabel.textContent = headerText
+  header.appendChild(headerLabel)
+
+  // "Open in editor" button
+  if (file && first.line) {
+    const docName = new URLSearchParams(window.location.search).get('doc') || ''
+    const editBtn = document.createElement('button')
+    editBtn.textContent = '✎'
+    editBtn.title = 'Open in editor'
+    Object.assign(editBtn.style, {
+      background: 'none', border: 'none', cursor: 'pointer',
+      fontSize: '14px', opacity: '0.5', padding: '0 2px',
+    })
+    editBtn.addEventListener('pointerenter', () => { editBtn.style.opacity = '1' })
+    editBtn.addEventListener('pointerleave', () => { editBtn.style.opacity = '0.5' })
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      openInEditor(docName, file, first.line)
+    })
+    header.appendChild(editBtn)
+  }
+
   card.appendChild(header)
 
   // Render as continuous flowing text, not line-by-line
@@ -589,19 +795,10 @@ function showSourceContextCard(
     }
 
     if (hlRanges.length > 0) {
-      // Render passage with multiple non-contiguous highlights
-      const contextChars = 40
-      const firstHl = hlRanges[0].start
-      const lastHl = hlRanges[hlRanges.length - 1].end
-      const showStart = Math.max(0, firstHl - contextChars)
-      const showEnd = Math.min(passage.length, lastHl + contextChars)
-
-      if (showStart > 0) {
-        const ellipsis = document.createElement('span')
-        ellipsis.textContent = '...'
-        ellipsis.style.opacity = '0.3'
-        body.appendChild(ellipsis)
-      }
+      // Render the full passage — no truncation. The server already scoped
+      // context to the surrounding rendered lines; show all of it.
+      const showStart = 0
+      const showEnd = passage.length
 
       // Walk through the visible range, alternating between plain and highlighted
       let cursor = showStart
@@ -727,8 +924,6 @@ function showSourceContextCard(
         },
       )
     })
-    document.body.appendChild(card)
-    return card // skip the click-to-dismiss below
   }
 
   // Click to dismiss
@@ -740,9 +935,19 @@ function showSourceContextCard(
   document.body.appendChild(card)
 
   if (!persistent) {
-    // Auto-fade after 4 seconds
-    setTimeout(() => { card.style.opacity = '0' }, 4000)
-    setTimeout(() => { card.remove() }, 5000)
+    // Auto-fade after 4 seconds, but cancel if hovered (so user can drag it)
+    const fadeTimer = setTimeout(() => { card.style.opacity = '0' }, 4000)
+    const removeTimer = setTimeout(() => { card.remove() }, 5000)
+    card.addEventListener('pointerenter', () => {
+      clearTimeout(fadeTimer)
+      clearTimeout(removeTimer)
+      card.style.opacity = '1'
+    })
+    // Dismiss when pointer leaves the card (after hover kept it alive)
+    card.addEventListener('pointerleave', () => {
+      setTimeout(() => { card.style.opacity = '0' }, 1000)
+      setTimeout(() => { try { card.remove() } catch {} }, 1500)
+    })
   }
 
   return card

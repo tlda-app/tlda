@@ -203,63 +203,6 @@ export async function resolveAnchorStatic(
   return { page: entry.page, x: entry.x, y: entry.y }
 }
 
-export interface ReverseMatch {
-  file: string   // relative filename (e.g. "appendix.tex") or main file
-  line: number
-}
-
-/**
- * Build a reverse synctex index: given a page and y-coordinate, find the
- * closest source line and file. Returns a function that does the lookup.
- */
-export async function buildReverseIndex(docName: string): Promise<((page: number, y: number) => ReverseMatch | null) | null> {
-  const lookup = await loadLookup(docName)
-  if (!lookup) return null
-
-  const mainFile = lookup.meta?.texFile ?? ''
-
-  // Group entries by page, sorted by y
-  // For keys like "file.tex:42", extract the file and line portions
-  const byPage = new Map<number, { y: number; line: number; file: string }[]>()
-  for (const [key, entry] of Object.entries(lookup.lines)) {
-    const colonIdx = key.indexOf(':')
-    let file: string, line: number
-    if (colonIdx >= 0) {
-      file = key.slice(0, colonIdx)
-      line = parseInt(key.slice(colonIdx + 1))
-    } else {
-      file = mainFile
-      line = parseInt(key)
-    }
-    if (!byPage.has(entry.page)) byPage.set(entry.page, [])
-    byPage.get(entry.page)!.push({ y: entry.y, line, file })
-  }
-  for (const entries of byPage.values()) {
-    entries.sort((a, b) => a.y - b.y)
-  }
-
-  return (page: number, y: number): ReverseMatch | null => {
-    const entries = byPage.get(page)
-    if (!entries || entries.length === 0) return null
-
-    // Binary search for closest y
-    let lo = 0, hi = entries.length - 1
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (entries[mid].y < y) lo = mid + 1
-      else hi = mid
-    }
-    // Check lo and lo-1 for closest
-    let best = lo
-    if (lo > 0 && Math.abs(entries[lo - 1].y - y) < Math.abs(entries[lo].y - y)) {
-      best = lo - 1
-    }
-    // Only match if within ~30pt (about 2 lines of text)
-    if (Math.abs(entries[best].y - y) > 30) return null
-    return { file: entries[best].file, line: entries[best].line }
-  }
-}
-
 /**
  * Clear lookup cache (call after document rebuild)
  */

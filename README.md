@@ -4,129 +4,213 @@
 
 A collaborative workspace for reading and writing LaTeX documents with AI agents and human collaborators. Renders your compiled paper exactly as it would appear in published form, on a shared canvas where everyone — humans and agents — can annotate, highlight, chat, and point at things in real time.
 
-> **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
+<p align="center">
+  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with fleet chat" width="100%">
+</p>
 
-**[Live demo](https://qtm285.github.io/tlda/?doc=spinoff3)** — a live collaborative canvas. Draw on it, leave notes, and everyone sees each other's annotations in real time.
+> **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
 
 ## Why this exists
 
 When an AI agent writes faster than you can read, the bottleneck isn't production — it's verification. You need to stay oriented in a document that changes between readings, verify proofs that reference equations scattered across 40 pages, and communicate with agents about specific passages without losing your place.
 
-tlda puts everything in one space. Your paper renders as high-fidelity SVG pages on an infinite canvas. Chat with agents lives in the margin, right next to the text you're discussing. When an agent mentions an equation, you hover the label and see it rendered in a floating window — no page-flipping. When you highlight a passage, the agent reads the text under your stroke. When you want to see what changed, a timeline scrubber shows diffs with per-change triage (keep, revert, discuss).
+tlda puts everything in one space. Your paper renders as high-fidelity SVG pages on an infinite canvas. Chat lives alongside the text you're discussing. Hover a label to preview the target inline. Highlight a passage and agents read the text under your stroke. When you want to see what changed, a timeline scrubber shows diffs inline.
 
-The canvas is shared. Collaborators and agents see each other's annotations as they appear. No AI required — it works just as well for reading any paper with a friend. Most papers on arXiv have TeX source available.
+The canvas is shared — collaborators and agents see each other's annotations as they appear. No AI required; it works just as well for reading any paper with a friend. Most papers on arXiv have TeX source available.
 
 ## What it looks like
 
-**The document** occupies the main canvas — pages stacked vertically, rendered from your LaTeX source via `latexmk` → `dvisvgm`. It rebuilds live when you save.
+Chat, notes, and agent activity live on the same canvas as your paper. Everything rebuilds live when you save.
 
-**Chat** lives in the left margin. You talk to agents (and they talk to you) alongside the document. Messages render with full markdown and KaTeX math using the paper's own macros, so you can write `$\E[\hat\theta]$` and it renders with whatever `\E` means in your paper. Agent tool calls (file reads, grep, edits) appear as collapsible cards so you can see what they're doing.
+<img src="docs/images/tlda-chat-and-proofs.png" alt="Agent chat alongside proofs" width="100%">
 
-**Labels are links.** When an agent shares a reference like `lem:bias-bound`, it becomes a clickable link. Hover to see the labeled proposition rendered in a floating viewer — a window into another part of the document that you can pan and zoom without leaving where you are.
+### Labels are links
 
-**Highlighting is semantic.** Draw on the page with a stylus and tlda extracts the underlying text, so agents can read what you highlighted without a screenshot. Different colors carry meaning (red = wrong, yellow = question, green = approve, etc.) via a color picker on the right edge.
+When an agent mentions a label in chat, it renders as a clickable link. Hover to see a preview of the target. Click to pin the preview in place — arrow buttons appear so you can navigate to the target page and back.
 
-**Multiple-choice notes.** Agents can drop sticky notes with tappable buttons — "Is this the right bound? [A] [B] [C]" — and your selection syncs back immediately. Notes support threaded replies as stacked tabs.
+<img src="docs/images/tlda-ref-1-hover.png" alt="1. Hover a label to preview" width="49%"> <img src="docs/images/tlda-ref-2-click.png" alt="2. Click to open the viewer" width="49%">
+<img src="docs/images/tlda-ref-3-go.png" alt="3. Navigate to the target page" width="49%"> <img src="docs/images/tlda-ref-4-return.png" alt="4. Return to where you were" width="49%">
 
-## Key features
+### Highlighting is semantic
+
+To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
+
+<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
+
+Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe to highlight notifications to see them automatically.
+
+<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
+
+### Multiple-choice notes
+
+Agents drop questions with tappable KaTeX-rendered options. Your selection syncs back immediately.
+
+<img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
+
+### Math notes
+
+Click the note button in the toolbar to drop a sticky note on the canvas. Notes support KaTeX: `$x^2$` for inline math, `$$\int_0^1 f(x)\,dx$$` for display math. Custom macros from your paper's preamble are automatically available.
+
+When an agent shares a markdown file by saying its path (not in backticks — those are for quoting), you get a chip in chat that you can drag onto the canvas to create a math note. Notes appear in compact form as a dot — click the dot to see the full note, click the note to edit.
+
+<img src="docs/images/tlda-math-note-source.png" alt="Markdown source alongside the rendered math note" width="49%"> <img src="docs/images/tlda-math-note.png" alt="Rendered math note with KaTeX formulas on the canvas" width="49%">
+
+### Doc view
+
+A floating panel on the canvas that auto-shows relevant context from elsewhere in the document. Click a cross-reference and the panel shows the target — before and after:
+
+<img src="docs/images/tlda-doc-view-before.png" alt="Before clicking a reference" width="49%"> <img src="docs/images/tlda-doc-view-after.png" alt="After clicking — doc view shows the target" width="49%">
+
+The panel subscribes to configurable *sources*:
+
+- **ref** — click a `\ref` or `\eqref` and the panel shows the target (equation, theorem, figure) so you can read it without leaving the current page.
+- **proof** — scroll into a proof and the panel shows the theorem statement from wherever it appears in the document.
+- **errors** — when a build fails, the panel jumps to the error location.
+
+## More features
 
 - **Source-anchored annotations** — notes are tied to source lines via synctex, so they survive rebuilds and recompilations
-- **Reference viewer** — double-click any `\ref` or `\eqref` to see the target inline. Arrow buttons step through references; go-there jumps to the target page
-- **Proof reader** — scroll into a proof and a panel shows the theorem statement, plus panels for referenced definitions and lemmas from other pages. No flipping back and forth
-- **Change review** — scrub a timeline of git history and builds, see old and new pages side by side, triage each change with status dots
-- **Build errors on the page** — LaTeX errors appear anchored to the source line where they occur, clickable to open in your editor
-- **Editor integration** — Cmd-click any rendered text to open the source at that line (Zed, VS Code, etc.)
-- **Voice input** — speak into chat; Chrome transcribes and fills the textarea. Domain-specific vocabulary (Greek letters, math terms, author names) is auto-corrected
+- **Build errors on the page** — errors appear anchored to the source line, clickable to open in your editor
+- **Editor integration** — Cmd-click any rendered text to open the source at that line (see [setup](#editor-integration) below)
 - **Real-time sync** — everything syncs over WebSocket. Open on your laptop and iPad simultaneously
-
-## Working with agents
-
-tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. Agents connect per-document and can:
-
-- See your highlights, pen strokes, and pings
-- Drop anchored notes and multiple-choice questions on the document
-- Read the text you're pointing at
-- Scroll the viewer to specific locations
-- Monitor for new annotations in the background
-- Read and edit your LaTeX source, run builds, do deep math checking
-
-Chat messages from agents appear in the margin alongside the document. You can talk to them via voice or text, and they respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
 ## Setup
 
-### Prerequisites
+### macOS (Homebrew)
 
-- [Node.js](https://nodejs.org/) (v18+)
-- A TeX distribution with `latexmk` and `dvisvgm` — [MacTeX](https://tug.org/mactex/) on macOS or [TeX Live](https://tug.org/texlive/) on Linux
+```bash
+brew tap qtm285/tlda
+brew install tlda
+brew install --cask mactex-no-gui   # LaTeX — skip if you already have it
+```
 
-### Install
+That's it. `tlda` is now on your path. Run `tlda doctor` to confirm everything is working.
+
+### Linux / manual
+
+Install [Node.js](https://nodejs.org/) (v18+) and a TeX distribution with `latexmk` and `dvisvgm` ([TeX Live](https://tug.org/texlive/)), then:
 
 ```bash
 npm install -g github:qtm285/tlda
 ```
 
-This installs the `tlda` command, builds the viewer, and you're ready to go.
-
-Or clone and link:
-
-```bash
-git clone https://github.com/qtm285/tlda.git
-cd tlda
-npm install
-npm link
-```
-
 ### Quick start
 
 ```bash
+tlda config init                                   # generate auth tokens (one time)
 tlda server start                                  # start the server
 tlda create my-paper --dir /path/to/paper --main paper.tex
-tlda watch-all start                               # live rebuild on save
-tlda open my-paper                                 # open in browser
+tlda open my-paper                                 # open the viewer for this doc
+tlda open                                          # open the index (lists all docs)
 ```
 
+`tlda config init` generates a read-write token (for you) and a read-only token (for sharing). Your tokens are stored in `~/.config/tlda/config.json` and used automatically.
+
+To share with a collaborator: `tlda share my-paper` prints a URL with the read-only token embedded. Anyone with that URL can annotate but cannot control the presentation.
+
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
+
+## Working with agents
+
+tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
+
+```bash
+tlda mcp-setup
+```
+
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
+
+You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
+
+### Fleet: managing multiple agents
+
+Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
+
+```bash
+tlda spawn proof-writer                            # respawn an existing agent (resume session)
+tlda spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
+tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
+```
+
+Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off.
+
+Agents coordinate using fleet MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
+
+The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
+
+<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
+
+<img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
+
+### Arranging the canvas
+
+Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
+
+<img src="docs/images/tlda-proof-reader.png" alt="Fleet button with layout picker showing two presets" width="100%">
+
+Each shape has a layout button — click it to get drag handles. With drag handles active, drag a box around multiple shapes to select them as a group. Drag the group to reposition all your shapes at once, or resize the bounding box to rescale them together. The presets are just a way to snap back to a known arrangement.
+
+<img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a fleet shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged across the canvas" width="49%">
+
+## Sharing
+
+`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
 
 ## Viewer controls
 
 The primary interface is touch/stylus — keyboard shortcuts exist but aren't required.
 
-**Ping** — tap the small circle in the bottom-right corner to get an agent's attention. Captures a screenshot and your viewport.
+**Panel** — expandable side panel (top-right) with table of contents and notes list.
 
-**Highlighter** — 11-color slider on the right edge. On iPad, double-tap with stylus to switch colors. On desktop, click the dots.
+## Editor integration
 
-**Panel** — expandable side panel (top-right) with table of contents, notes list, search, proof info, and change review.
+Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source file at that line in your editor. Highlight cards also have an edit button (✎) that does the same thing.
 
-**Keyboard shortcuts:**
+<img src="docs/images/tlda-open-in-editor.png" alt="Cmd-click to open source in editor" width="100%">
 
-| Key | Action |
-|-----|--------|
-| `m` | Create a math note |
-| `d` | Draw (pen) |
-| `e` | Eraser |
-| `t` | Text select |
-| `r` | Toggle proof reader |
-| `n`/`p` | Next/previous change |
+This works via a custom `texsync://` URL scheme. One-time setup:
+
+```bash
+tlda setup editor                  # Zed (default)
+tlda setup editor --editor code    # VS Code
+tlda setup editor --editor cursor  # Cursor
+tlda setup editor --editor nvim    # Neovim
+```
+
+This builds a lightweight macOS app (`~/Applications/texsync.app`) that routes `texsync://` URLs to your editor with the correct goto-line syntax. Supports Zed, VS Code/Cursor/Codium, Vim/Neovim, and Sublime.
+
+## Version history
+
+A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
+
+Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
+
+<img src="docs/images/tlda-compare-mode.png" alt="Side-by-side version comparison" width="100%">
+
+A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them.
+
+Click the current (top) timestamp to dismiss the history column.
+
+### How it works: the shadow repo
+
+Every successful build is automatically committed to a per-project git repository (the "shadow repo") at `server/projects/{name}/shadow-repo/`. This is internal to tlda — nobody should touch it directly. Each commit captures the source snapshot at that build, so the full history of your document is preserved regardless of your own git habits.
+
+The version history UI reads from the shadow repo. When you click an older timestamp, tlda checks out that commit's SVGs and shows them side by side with the current version.
+
+Chat messages in fleet are tagged with the shadow version you're viewing, so agents always know which version of the document you're looking at.
+
+**Mirroring** (optional): on the project's index page, you can enable mirroring to have each successful build automatically synced to your working copy. When enabled, tlda fetches the shadow commit, stashes your local changes, checks out the shadow state on a `tlda-shadow/main` branch, commits, and unstashes — so your working copy always has a git history of every build. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
 
 ## Voice input
 
-Voice lets you dictate into chat instead of typing. It uses Chrome's built-in Web Speech API — no external services, no API keys.
+Dictate into chat instead of typing. **Right Shift** toggles recording on/off. Say "send" to dispatch the message. Say "right chat" or "left chat" to switch between chat panels.
 
-**Right Shift** controls everything:
+Uses [whisper-stream](https://github.com/ggerganov/whisper.cpp) for local transcription (auto-starts with `tlda server start`), falling back to Chrome's Web Speech API. Domain-specific vocabulary — Greek letters, author names, math terms — is auto-corrected. Add custom replacements with `addVocabReplacement(pattern, replacement)`.
 
-| Taps | Action |
-|------|--------|
-| 1 | Toggle recording on/off |
-| 2 (quick) | Soft reset — restart the speech engine |
-| 3 (quick) | Nuclear reset — restart Chrome entirely |
+**Voice notes:** While recording, tap the voice note button in the toolbar to drop a note on the canvas. The note shows the live transcript as you speak — drag to position, tap to commit. The note stays in edit mode so you can keep speaking.
 
-A small dot appears next to the HUD status text while recording: green means audio is flowing, amber means no audio is detected (the system is auto-recovering in the background).
-
-**Voice commands:** Say "send" at the end of a message to send it automatically. Say "right chat" or "left chat" to switch between visible chat panels.
-
-**Vocabulary:** Chrome's speech recognition doesn't know math terminology, so voice.mjs post-processes the transcript. Greek letters ("phi", "theta"), author names ("Donoho", "Sobolev", "Bregman"), and domain terms ("RKHS", "AMLE", "estimand") are auto-corrected from Chrome's guesses. You can add custom replacements with `addVocabReplacement(pattern, replacement)`.
-
-**Browser support:** Chrome is required — it's the only browser with a usable Web Speech API implementation. Safari's support exists but is unreliable.
+<img src="docs/images/tlda-voice-note-recording.png" alt="1. Voice recording active — note appears on canvas" width="49%"> <img src="docs/images/tlda-voice-note-editing.png" alt="2. Speaking into the note — live transcript fills in" width="49%">
+<img src="docs/images/tlda-voice-note-result.png" alt="3. Finished voice note placed next to a math note" width="100%">
 
 ## Figures
 
@@ -140,17 +224,21 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 
 | Command | What it does |
 |---------|-------------|
+| `tlda config init` | Generate auth tokens (run once) |
 | `tlda server start` | Start the server (port 5176) |
 | `tlda server stop` | Stop the server |
 | `tlda create <name> --dir /path` | Create a project, push files, build |
 | `tlda push [name]` | Push source files, trigger rebuild |
-| `tlda watch-all start` | Watch all projects for changes |
-| `tlda open [name]` | Open viewer in browser |
+| `tlda watch-all start` | Watch all projects for changes, auto-rebuild on save |
+| `tlda open [name]` | Open viewer for a doc; omit name to open the index |
 | `tlda list` | List projects |
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
+| `tlda spawn <name>` | Spawn or resume a fleet agent in tmux |
+| `tlda setup editor` | Install editor integration (Cmd-click → open source) |
+| `tlda share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
+| `tlda mcp-setup` | Write `.mcp.json` for Claude Code integration |
 | `tlda doctor` | Health check + dependency verification |
-| `tlda share [name]` | Print read-only viewer URL |
 | `tlda config set <key> <val>` | Persistent configuration |
 | `tlda delete <name>` | Delete a project |
 

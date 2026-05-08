@@ -36,7 +36,7 @@ function linkifyCodeUrls(html) {
 export function timeShort(ts) {
   if (!ts) return ''
   const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
 // --- Main renderer ---

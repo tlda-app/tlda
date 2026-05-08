@@ -209,8 +209,11 @@ if (!appendixLine) {
 }
 
 // Build output with content snippets
+const LOOKUP_VERSION = 2
+
 const lookup = {
   meta: {
+    version: LOOKUP_VERSION,
     texFile: basename(texPath),
     generated: new Date().toISOString(),
     totalLines: texLines.length,

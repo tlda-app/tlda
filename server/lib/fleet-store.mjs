@@ -118,6 +118,7 @@ export class FleetStore {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent_id TEXT NOT NULL,          -- who is listening
         filter TEXT NOT NULL,            -- JSON object: { from?: string[][], to?: string[][] }
+        types TEXT,                      -- JSON array of event types to filter (null = all)
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -293,7 +294,7 @@ export class FleetStore {
     this._getAllSharedDocs = this.db.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC');
 
     // Wiretap queries
-    this._addWiretap = this.db.prepare('INSERT INTO wiretaps (agent_id, filter) VALUES (?, ?)');
+    this._addWiretap = this.db.prepare('INSERT INTO wiretaps (agent_id, filter, types) VALUES (?, ?, ?)');
     this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps');
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
@@ -408,6 +409,15 @@ export class FleetStore {
       agent_id: event.agentId || null,
       read: false,
     };
+
+    // Resolve wiretaps for ALL event types (not just chat)
+    if (inserted.from_id && inserted.to_id) {
+      const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id, inserted.type)
+      if (wiretapAgents.length > 0) {
+        inserted.metadata = inserted.metadata || {}
+        inserted.metadata.wiretap_cc = wiretapAgents
+      }
+    }
 
     // Notify listeners (SSE broadcast)
     for (const fn of this._listeners) {
@@ -667,9 +677,9 @@ export class FleetStore {
 
   // ---- Wiretap management ----
 
-  addWiretap(agentId, filter) {
-    const info = this._addWiretap.run(agentId, JSON.stringify(filter));
-    return { id: info.lastInsertRowid, agent_id: agentId, filter };
+  addWiretap(agentId, filter, types) {
+    const info = this._addWiretap.run(agentId, JSON.stringify(filter), types ? JSON.stringify(types) : null);
+    return { id: info.lastInsertRowid, agent_id: agentId, filter, types: types || null };
   }
 
   getWiretaps() {
@@ -690,7 +700,7 @@ export class FleetStore {
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
   // Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math
-  resolveWiretaps(senderId, recipientId) {
+  resolveWiretaps(senderId, recipientId, eventType) {
     const taps = this.getWiretaps();
     if (taps.length === 0) return [];
     const agents = this.getAllAgents();
@@ -702,6 +712,8 @@ export class FleetStore {
 
     for (const tap of taps) {
       if (tap.agent_id === senderId || tap.agent_id === recipientId) continue;
+      // Type filter: if wiretap specifies types, skip events that don't match
+      if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
       // DNF: any clause matches → wiretap fires
       const matches = tap.filter.some(clause =>
         clause.every(([role, label]) => {
@@ -722,7 +734,7 @@ export class FleetStore {
   }
 
   _hydrateWiretap(row) {
-    return { ...row, filter: JSON.parse(row.filter) };
+    return { ...row, filter: JSON.parse(row.filter), types: row.types ? JSON.parse(row.types) : null };
   }
 
   // ---- QA system ----

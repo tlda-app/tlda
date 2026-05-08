@@ -130,6 +130,87 @@ function scheduleCursorSave() {
   _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
 }
 
+// ---------- Qualification checking ----------
+// Detects agents editing files without having read required reference docs.
+// Config: ~/.claude/qualifications.json — array of { edit: glob, requires: [paths] }
+
+const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
+let _qualRules = []
+// Per-agent read tracking: agentId → Set of resolved file paths they've Read
+const _agentReads = new Map()
+// Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
+const _agentWarned = new Map()
+
+function loadQualifications() {
+  try {
+    if (!fs.existsSync(QUALIFICATIONS_FILE)) return
+    const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
+    _qualRules = (data.rules || []).map(r => ({
+      editPattern: r.edit,
+      editRe: globToRegex(r.edit),
+      requires: r.requires || [],
+    }))
+    console.log(`[daemon] loaded ${_qualRules.length} qualification rules`)
+  } catch (e) {
+    console.error(`[daemon] failed to load qualifications: ${e.message}`)
+  }
+}
+
+function globToRegex(glob) {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
+    .replace(/\*/g, '[^/]*')
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/\?/g, '[^/]')
+  // Handle {a,b} alternation
+  const withAlts = escaped.replace(/\\\{([^}]+)\\\}/g, (_, inner) =>
+    '(' + inner.split(',').join('|') + ')')
+  return new RegExp('^' + withAlts + '$')
+}
+
+function checkQualification(agentId, toolName, filePath) {
+  if (!filePath || _qualRules.length === 0) return
+  if (toolName !== 'Edit' && toolName !== 'Write') return
+
+  // Normalize path for matching — strip leading home dir for glob matching
+  const home = os.homedir()
+  const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
+  // Also try matching against the full path
+  const reads = _agentReads.get(agentId) || new Set()
+  const warned = _agentWarned.get(agentId) || new Set()
+
+  for (const rule of _qualRules) {
+    if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
+    for (const req of rule.requires) {
+      const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
+      if (reads.has(resolvedReq)) continue
+      const warnKey = `${filePath}:${resolvedReq}`
+      if (warned.has(warnKey)) continue
+      warned.add(warnKey)
+      if (!_agentWarned.has(agentId)) _agentWarned.set(agentId, warned)
+      // Fire warning
+      const reqShort = req.startsWith('~/') ? req : path.basename(req)
+      const fileShort = path.basename(filePath)
+      sendMsg({
+        type: 'qualification-warning',
+        agent_id: agentId,
+        file: filePath,
+        required: resolvedReq,
+        message: `⚠ ${agentId} edited ${fileShort} without reading \`${reqShort}\``,
+      })
+    }
+  }
+}
+
+function trackRead(agentId, filePath) {
+  if (!filePath) return
+  if (!_agentReads.has(agentId)) _agentReads.set(agentId, new Set())
+  _agentReads.get(agentId).add(filePath)
+}
+
+loadQualifications()
+
 // ---------- JSONL parsing (mirrors fleet/dashboard/search-index.mjs) ----------
 
 function parseSessionLine(jsonStr) {
@@ -190,7 +271,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot'])
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
@@ -250,7 +331,7 @@ function extractActivityEvents(events) {
     if (pending) {
       pendingPrettyPrint.delete(id)
       const capped = resultText.length > 5000 ? resultText.slice(0, 5000) + '\n\n… (truncated)' : resultText
-      result.push({ ...pending.evt, tool: '_prettyResult', prettyResult: capped })
+      result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
     }
   }
   // Expire old pending entries
@@ -426,6 +507,7 @@ function bufferActivity(agentId, evts) {
           ts: evt.ts,
           ...(evt.usage ? { usage: evt.usage } : {}),
           ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
+          ...(evt.origTool ? { origTool: evt.origTool } : {}),
         })
       }
     }
@@ -443,7 +525,7 @@ function syncSessionWatchers(agentList) {
     // Strip worktree suffixes so the project hash matches where Claude Code
     // stores the JSONL (at the original project root, not the worktree).
     const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
-    const projectHash = canonicalCwd.replace(/\//g, '-')
+    const projectHash = canonicalCwd.replace(/[/.]/g, '-')
 
     // Pick the freshest JSONL across all session_ids for this agent.
     // We must skip any session_id that's claimed by *another* live agent's
@@ -595,6 +677,20 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     const activity = extractActivityEvents(parsedEvents)
     if (activity.length > 0) bufferActivity(agentId, activity)
 
+    // Qualification checking: track reads, check edits/writes
+    for (const ev of parsedEvents) {
+      if (!ev.blocks) continue
+      for (const block of ev.blocks) {
+        if (block.type !== 'tool_use') continue
+        const input = block.input || {}
+        const filePath = input.file_path || input.path || ''
+        if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+        if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
+          checkQualification(agentId, block.name, filePath)
+        }
+      }
+    }
+
     // If Claude just emitted an assistant text block, schedule a terminal
     // capture to check for a plan-mode approval prompt.
     const hasAssistantText = parsedEvents.some(ev =>
@@ -657,26 +753,49 @@ function syncSourceWatchers(projectList) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, polledFiles: [] }
+
+    // Handler shared by both fs.watch and fs.watchFile
+    const onFileChange = (filename, fromPoll) => {
+      if (!filename) return
+      if (watchSet.size > 0) {
+        if (!watchSet.has(filename)) return
+      } else {
+        if (!isSourceFile(filename)) return
+      }
+      state.pending.add(filename)
+      if (state.debounce) clearTimeout(state.debounce)
+      state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
+      // If the polling backup caught this, fs.watch is stale — recreate it
+      if (fromPoll) {
+        console.warn(`[daemon] fs.watch stale for ${p.name} — recreating`)
+        try { state.watcher?.close() } catch {}
+        try {
+          state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
+        } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
+      }
+    }
+
     try {
-      state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => {
-        if (!filename) return
-        // Only react to files in the watch set, or any .tex/.bib if no
-        // watch set (bootstrapping — first build hasn't happened yet).
-        if (watchSet.size > 0) {
-          if (!watchSet.has(filename)) return
-        } else {
-          if (!isSourceFile(filename)) return
-        }
-        state.pending.add(filename)
-        if (state.debounce) clearTimeout(state.debounce)
-        state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
-      })
+      // Primary: fs.watch (instant, kernel events — can go stale on macOS)
+      state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => onFileChange(filename, false))
+
+      // Backup: fs.watchFile on each watched file (polling, never goes stale)
+      const filesToPoll = watchSet.size > 0 ? [...watchSet] : (p.mainFile ? [p.mainFile] : [])
+      for (const rel of filesToPoll) {
+        const full = path.join(p.sourceDir, rel)
+        if (!fs.existsSync(full)) continue
+        fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
+          if (curr.mtimeMs === prev.mtimeMs) return
+          onFileChange(rel, true)
+        })
+        state.polledFiles.push(full)
+      }
+
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched files)`)
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched, ${state.polledFiles.length} polled)`)
 
       // On connect, push only the watched files (not the whole directory).
-      // This is a tiny payload — usually 2-5 text files.
       pushWatchedFiles(p.name, p.sourceDir, watchSet)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
@@ -685,7 +804,8 @@ function syncSourceWatchers(projectList) {
   // Stop watching projects we no longer own.
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
-      try { state.watcher.close() } catch {}
+      try { state.watcher?.close() } catch {}
+      for (const f of (state.polledFiles || [])) fs.unwatchFile(f)
       sourceWatchers.delete(name)
     }
   }
@@ -850,27 +970,20 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
-async function rpcRestartMcp({ tmux_session, skipPreflight }) {
+async function rpcKillSession({ tmux_session, agent_id }) {
+  if (!tmux_session) throw new Error('missing tmux_session')
   checkSession(tmux_session)
-  // Verify session exists first so we return a clean error.
-  try { await execFileP('tmux', ['has-session', '-t', tmux_session], { timeout: 3000 }) }
-  catch { throw new Error(`tmux session not found: ${tmux_session}`) }
-  // Delegate to fleet-mcp-restart, which navigates the /mcp interactive
-  // menu (server list → fleet → Reconnect). Sending /mcp + Enter alone is
-  // not enough — the menu requires cursor navigation.
-  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-mcp-restart')
-  const args = [script, tmux_session]
-  if (skipPreflight) args.push('--skip-preflight')
-  try {
-    // 30s: the script itself may spend up to 10s interrupting a mid-
-    // operation agent (BUSY_TIMEOUT in fleet-mcp-restart) + up to 20s
-    // across the four state-driven navigation steps. 15s was too tight
-    // once the mid-operation handling landed.
-    const { stdout, stderr } = await execFileP('bash', args, { timeout: 30000 })
-    return { ok: true, tmux_session, stdout: stdout.trim(), stderr: stderr.trim() }
-  } catch (e) {
-    throw new Error(`fleet-mcp-restart failed: ${e.stderr || e.message}`)
+  await tmux('kill-session', '-t', tmux_session)
+  if (agent_id) {
+    try { await fetch(`${SERVER}/api/agents/${agent_id}/mark-dead`, { method: 'POST' }).catch(() => {}) } catch {}
   }
+  return { ok: true, tmux_session }
+}
+
+async function rpcRestartMcp({ tmux_session, skipPreflight }) {
+  // No-op: the fleet MCP reconnects automatically via WS retry logic.
+  // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
+  return { ok: true, tmux_session, noop: true }
 }
 
 // Live terminal-card watching. The server tracks per-browser interest
@@ -1008,6 +1121,7 @@ const RPC_HANDLERS = {
   'interrupt': rpcInterrupt,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
+  'kill-session': rpcKillSession,
   'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
@@ -1058,8 +1172,6 @@ function teardownWatchers() {
   terminalWatchTimers.clear()
 }
 
-let evicted = false
-
 function connect() {
   const wsUrl = SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
     (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
@@ -1088,10 +1200,6 @@ function connect() {
   })
 
   ws.on('close', (code, reason) => {
-    if (evicted) {
-      console.log(`[daemon] WS closed after eviction; exiting`)
-      process.exit(0)
-    }
     console.log(`[daemon] WS closed (${code} ${reason || ''}); will reconnect`)
     teardownWatchers()
     scheduleReconnect()
@@ -1151,11 +1259,13 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'daemon-evict') {
-    evicted = true
     const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
-    console.error(`[daemon] EVICTED: ${msg.reason || 'unknown'}${replacedBy}`)
+    console.warn(`[daemon] evicted: ${msg.reason || 'unknown'}${replacedBy} — will reconnect`)
     teardownWatchers()
     try { ws.close() } catch {}
+    // Don't exit — reconnect. Server restarts cause transient evictions;
+    // the daemon should survive and re-register when the server is back.
+    scheduleReconnect()
     return
   }
   if (msg.type === 'rpc') {

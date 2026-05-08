@@ -9,10 +9,23 @@
 
 import { exec as execCb } from 'child_process'
 import { promisify } from 'util'
-const execAsync = promisify(execCb)
+const _execAsyncRaw = promisify(execCb)
+const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, rmSync, symlinkSync, lstatSync } from 'fs'
-import { join, relative } from 'path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
+import { join, relative, basename, dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts')
+
+// Ensure TeX binaries are on PATH (launchd doesn't inherit shell PATH).
+for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64-linux', '/usr/local/texlive/2025/bin/x86_64-linux']) {
+  try {
+    if (!process.env.PATH?.includes(texbin) && statSync(texbin).isDirectory()) {
+      process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
+    }
+  } catch {}
+}
 
 // Protected compare refs — exempt from pruning while a compare is active.
 // Set by the MCP doc_compare handler, cleared when compare is dismissed.
@@ -23,7 +36,7 @@ export function setCompareRef(projectName, hash7) {
 }
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
-import { projectDir, sourceDir, outputDir } from './project-store.mjs'
+import { projectDir, sourceDir, outputDir, readProject } from './project-store.mjs'
 
 const GITIGNORE_CONTENT = `# Build artifacts
 *.aux
@@ -154,6 +167,89 @@ export async function versionAt(name, time) {
       timestamp: parseInt(unixTime, 10) * 1000,
       message: msgParts.join(' '),
     }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get the oldest and newest build timestamps. Used to set the time-axis
+ * range for the history scrubber without transferring the full version list.
+ */
+export async function getTimeBounds(name) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+
+  try {
+    // Newest: most recent commit (default git log order)
+    // Oldest: root commit — use rev-list with --max-parents=0 to find the
+    // initial commit, since `git log --reverse -n 1` selects before reversing
+    // and still returns the newest commit.
+    const newestResult = await execAsync(
+      `git log --format="%H %at" -n 1`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const rootHashResult = await execAsync(
+      `git rev-list --max-parents=0 HEAD`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const rootHash = rootHashResult.stdout.trim().split('\n')[0]
+    const oldestResult = rootHash
+      ? await execAsync(`git log --format="%H %at" -n 1 "${rootHash}"`, { cwd: repoDir, timeout: 10000 })
+      : newestResult
+
+    const parseEntry = (stdout) => {
+      const line = stdout.trim()
+      if (!line) return null
+      const [hash, unixTime] = line.split(' ')
+      return { hash, timestamp: parseInt(unixTime, 10) * 1000 }
+    }
+    const newest = parseEntry(newestResult.stdout)
+    const oldest = parseEntry(oldestResult.stdout)
+    if (!newest || !oldest) return null
+    return { newest, oldest }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get the build immediately adjacent to a known hash.
+ * dir='older' → the build just before this one in time.
+ * dir='newer' → the build just after this one in time.
+ * Returns null if already at the boundary.
+ */
+export async function adjacentVersion(name, hash, dir) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+
+  try {
+    const { stdout: tsOut } = await execAsync(
+      `git log --format="%at" -n 1 "${hash}"`,
+      { cwd: repoDir, timeout: 10000 },
+    )
+    const ts = parseInt(tsOut.trim(), 10)
+    if (isNaN(ts)) return null
+
+    let result
+    if (dir === 'older') {
+      const before = new Date((ts - 1) * 1000).toISOString()
+      result = await execAsync(
+        `git log --format="%H %at" --before="${before}" -n 1`,
+        { cwd: repoDir, timeout: 10000 },
+      )
+    } else {
+      const after = new Date((ts + 1) * 1000).toISOString()
+      result = await execAsync(
+        `git log --format="%H %at" --after="${after}" --reverse -n 1`,
+        { cwd: repoDir, timeout: 10000 },
+      )
+    }
+
+    const line = result.stdout.trim()
+    if (!line) return null
+    const [adjHash, adjTs] = line.split(' ')
+    return { hash: adjHash, timestamp: parseInt(adjTs, 10) * 1000 }
   } catch {
     return null
   }
@@ -339,4 +435,110 @@ function pruneShadowCache(name) {
  */
 export function getShadowRepoDir(name) {
   return shadowRepoDir(name)
+}
+
+// ── On-demand shadow page generation ─────────────────────────────────────────
+
+// Active DVI compiles: "name:hash7" → Promise<void>
+// First request for a hash7 starts the compile; all subsequent requests wait on the same promise.
+const _activeDviBuilds = new Map()
+
+const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+
+/**
+ * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
+ * No-op if DVI already exists. Serializes concurrent callers for the same hash7.
+ */
+export async function ensureShadowDvi(name, hash7) {
+  const cacheDir = join(historyDir(name), `shadow-${hash7}`)
+  const dviFile = join(cacheDir, 'main.dvi')
+  if (existsSync(dviFile)) return
+
+  const key = `${name}:${hash7}`
+  if (!_activeDviBuilds.has(key)) {
+    const promise = (async () => {
+      // Re-check under lock
+      if (existsSync(dviFile)) return
+
+      const project = readProject(name)
+      const mainFile = project?.mainFile || 'main.tex'
+      const texBase = basename(mainFile, '.tex')
+
+      console.log(`[shadow] Compiling ${name}@${hash7}...`)
+      const tmpSrc = await checkoutSource(name, hash7)
+      try {
+        mkdirSync(cacheDir, { recursive: true })
+        // latexmk -dvi with draft graphicx (no figure loading), synctex for lookup
+        try {
+          await execAsync(
+            `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
+            { cwd: tmpSrc, timeout: 180000 },
+          )
+        } catch { /* check for DVI below */ }
+
+        const srcDvi = join(tmpSrc, `${texBase}.dvi`)
+        if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${name}@${hash7}`)
+        copyFileSync(srcDvi, dviFile)
+
+        // Extract page count from log and save to meta.json
+        let pages = null
+        const logPath = join(tmpSrc, `${texBase}.log`)
+        if (existsSync(logPath)) {
+          const m = readFileSync(logPath, 'utf8').match(/Output written on .+?\((\d+) pages?\)/)
+          if (m) pages = parseInt(m[1], 10)
+        }
+        writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
+        console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
+
+        // Generate lookup.json from synctex for label-based alignment
+        const project = readProject(name)
+        const mainFile = project?.mainFile || 'main.tex'
+        const synctexFile = join(tmpSrc, `${texBase}.synctex.gz`)
+        const lookupPath = join(cacheDir, 'lookup.json')
+        if (existsSync(synctexFile) && !existsSync(lookupPath)) {
+          try {
+            // extract-synctex-lookup.mjs finds synctex.gz next to the tex file
+            const texFilePath = join(tmpSrc, mainFile)
+            // If mainFile has a subdir, synctex.gz is in tmpSrc root — copy it alongside the tex
+            const synctexDest = join(tmpSrc, dirname(mainFile), `${texBase}.synctex.gz`)
+            if (synctexFile !== synctexDest && !existsSync(synctexDest)) {
+              copyFileSync(synctexFile, synctexDest)
+            }
+            await execAsync(
+              `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texFilePath}" "${lookupPath}"`,
+              { timeout: 30000 },
+            )
+            console.log(`[shadow] lookup.json ready for ${name}@${hash7}`)
+          } catch (e) {
+            console.warn(`[shadow] lookup.json generation failed for ${name}@${hash7}:`, e.message)
+          }
+        }
+      } finally {
+        rmSync(tmpSrc, { recursive: true, force: true })
+      }
+    })()
+    _activeDviBuilds.set(key, promise)
+    promise.finally(() => {
+      if (_activeDviBuilds.get(key) === promise) _activeDviBuilds.delete(key)
+    })
+  }
+
+  await _activeDviBuilds.get(key)
+}
+
+/**
+ * Build and return the path to a shadow history page SVG.
+ * Cascade: cached SVG → generate from cached DVI → compile DVI then generate.
+ * Throws if the page cannot be produced.
+ */
+export async function buildShadowPage(name, hash7, pageNum) {
+  const { ensure, historicalCtx } = await import('./ensure.mjs')
+  const ctx = historicalCtx(name, hash7)
+  return ensure(ctx, `page-${pageNum}.svg`)
+}
+
+export async function buildCurrentPage(name, pageNum) {
+  const { ensure, currentCtx } = await import('./ensure.mjs')
+  const ctx = currentCtx(name)
+  return ensure(ctx, `page-${pageNum}.svg`)
 }

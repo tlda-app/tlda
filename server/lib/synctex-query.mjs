@@ -96,6 +96,58 @@ export async function loadSynctex(projectName) {
     records.push({ inputId, line: lineNum, page: currentPage, x, y, w, h: h2, d })
   }
 
+  // --- Construct bounding boxes from adjacent records ---
+  // Most synctex records have w=0, h=0. Build boxes from the sequence:
+  // - Horizontal: each record extends from its x to the next record's x on the same baseline
+  // - Vertical: each baseline extends halfway to the adjacent baselines above and below
+
+  // Group records by page
+  const byPage = new Map()
+  for (const r of records) {
+    if (!byPage.has(r.page)) byPage.set(r.page, [])
+    byPage.get(r.page).push(r)
+  }
+
+  for (const [, pageRecs] of byPage) {
+    // Cluster baselines: records within 1pt vertically are on the same rendered line
+    const baselineY = new Map() // rounded y → [records]
+    for (const r of pageRecs) {
+      const key = Math.round(r.y * 2) / 2 // 0.5pt granularity
+      if (!baselineY.has(key)) baselineY.set(key, [])
+      baselineY.get(key).push(r)
+    }
+
+    // Sort baseline keys to compute vertical extents
+    const sortedBaselines = [...baselineY.keys()].sort((a, b) => a - b)
+    const baselineHalfGaps = new Map() // baseline y → { top, bottom } half-gaps
+    for (let i = 0; i < sortedBaselines.length; i++) {
+      const y = sortedBaselines[i]
+      const gapAbove = i > 0 ? (y - sortedBaselines[i - 1]) / 2 : 6
+      const gapBelow = i < sortedBaselines.length - 1 ? (sortedBaselines[i + 1] - y) / 2 : 6
+      baselineHalfGaps.set(y, { top: Math.min(gapAbove, 8), bottom: Math.min(gapBelow, 8) })
+    }
+
+    // For each baseline cluster, sort by x and assign horizontal extents
+    for (const [y, recs] of baselineY) {
+      recs.sort((a, b) => a.x - b.x)
+      const gaps = baselineHalfGaps.get(y) || { top: 6, bottom: 6 }
+
+      for (let i = 0; i < recs.length; i++) {
+        const r = recs[i]
+        // Only construct boxes for records that lack real dimensions
+        if (r.w > 0 && r.h > 0) continue
+
+        // Horizontal: extends to next record's x, or add a small default for last record
+        r.w = i < recs.length - 1 ? recs[i + 1].x - r.x : 5
+        if (r.w <= 0) r.w = 2 // safety: overlapping records
+
+        // Vertical: use half-gaps to adjacent baselines
+        r.h = gaps.top    // height above baseline
+        r.d = gaps.bottom // depth below baseline
+      }
+    }
+  }
+
   const result = { records, inputMap, unit, magnification }
   cache.set(projectName, result)
   return result
@@ -118,7 +170,7 @@ export function clearSynctexCache(projectName) {
  * @param {Array<{x: number, y: number}>} points - PDF coordinates along the path
  * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
  */
-export async function getSourceFromPath(projectName, page, points, highlightText = '') {
+export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = []) {
   const data = await loadSynctex(projectName)
   if (!data || points.length === 0) return null
 
@@ -132,23 +184,31 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   const pageRecords = data.records.filter(r => r.page === page && sourceFileIds.has(r.inputId))
   if (pageRecords.length === 0) return null
 
-  // For each path point, find the nearest synctex record
-  // Only consider records within ~6pt vertically (half a line height)
+  // For each path point, collect synctex records whose bounding box contains it.
+  // Synctex coords: x = left edge, y = baseline, w = width, h = height above baseline, d = depth below.
+  // Bounding box: x to x+w horizontally, y-h to y+d vertically.
   const hitRecords = new Set()
   for (const pt of points) {
-    let bestDist = Infinity
-    let best = null
     for (const r of pageRecords) {
-      const yDist = Math.abs(r.y - pt.y)
-      if (yDist > 10) continue // must be on the same rendered line (~12pt spacing)
-      const dist = yDist + Math.abs(r.x - pt.x) * 0.1
-      if (dist < bestDist) {
-        bestDist = dist
-        best = r
+      const top = r.y - (r.h || 0)
+      const bottom = r.y + (r.d || 0)
+      const left = r.x
+      const right = r.x + (r.w || 0)
+      if (pt.x >= left && pt.x <= right && pt.y >= top && pt.y <= bottom) {
+        hitRecords.add(r)
       }
     }
-    if (best) {
-      hitRecords.add(best)
+    // Fallback: if no box contains this point, use nearest within ~6pt vertically
+    if (hitRecords.size === 0) {
+      let bestDist = Infinity
+      let best = null
+      for (const r of pageRecords) {
+        const yDist = Math.abs(r.y - pt.y)
+        if (yDist > 6) continue
+        const dist = yDist + Math.abs(r.x - pt.x) * 0.1
+        if (dist < bestDist) { bestDist = dist; best = r }
+      }
+      if (best) hitRecords.add(best)
     }
   }
 
@@ -185,11 +245,35 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     }
   }
 
-  // Build output: full contiguous range with context, but only mark
-  // path-hit lines as highlighted (non-hit lines between are shown but not highlighted)
-  const contextPad = 1
-  const from = Math.max(1, startLine - contextPad)
-  const to = Math.min(allLines.length, endLine + contextPad)
+  // Context: find rendered baselines above and below the highlight, and include
+  // the source text for those baselines. This gives context that matches what
+  // the user sees on the page, not arbitrary source file entries.
+  const CONTEXT_RENDERED_LINES = 5 // rendered lines above/below the highlight
+  const hitYs = [...hitRecords].map(r => r.y)
+  const hitYMin = Math.min(...hitYs)
+  const hitYMax = Math.max(...hitYs)
+
+  // Collect all unique baselines on this page, sorted by y
+  const allBaselines = [...new Set(pageRecords.map(r => Math.round(r.y * 2) / 2))].sort((a, b) => a - b)
+  const hitBaselineIdx = allBaselines.findIndex(y => y >= hitYMin - 1)
+  const hitBaselineEndIdx = allBaselines.findIndex(y => y > hitYMax + 1)
+  const contextStartIdx = Math.max(0, (hitBaselineIdx >= 0 ? hitBaselineIdx : 0) - CONTEXT_RENDERED_LINES)
+  const contextEndIdx = Math.min(allBaselines.length, (hitBaselineEndIdx >= 0 ? hitBaselineEndIdx : allBaselines.length) + CONTEXT_RENDERED_LINES)
+
+  // Find which source lines correspond to the context baselines
+  const contextSourceLines = new Set()
+  for (let i = contextStartIdx; i < contextEndIdx; i++) {
+    const y = allBaselines[i]
+    for (const r of pageRecords) {
+      if (Math.abs(r.y - y) < 1) contextSourceLines.add(r.line)
+    }
+  }
+  // Also include the hit lines themselves
+  for (const ln of hitLines.keys()) contextSourceLines.add(ln)
+
+  const sortedContext = [...contextSourceLines].sort((a, b) => a - b)
+  const from = sortedContext.length > 0 ? sortedContext[0] : startLine
+  const to = sortedContext.length > 0 ? sortedContext[sortedContext.length - 1] : endLine
 
   const lines = []
   for (let lineNum = from; lineNum <= to; lineNum++) {
@@ -197,43 +281,52 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation for hit lines — use record indices, not x fractions
+    // Column estimation: synctex gives LINE but not column.
+    // Use tspan-anchored matching if fragment data is available.
     if (isHit) {
-      const hitRange = hitLines.get(lineNum)
-      const lineRecs = allRecordsByLine.get(lineNum) || []
-      if (lineRecs.length >= 2) {
-        // Sort records in source order (y asc, x asc) — NOT just by x
-        const inOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
-        const N = inOrder.length
-
-        // Find the record indices closest to the hit x-range
-        let startIdx = 0, endIdx = N - 1
-        let bestStartDist = Infinity, bestEndDist = Infinity
-        for (let j = 0; j < N; j++) {
-          const dStart = Math.abs(inOrder[j].x - hitRange.minX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.minX) < 20)?.y || inOrder[j].y)) * 0.5
-          const dEnd = Math.abs(inOrder[j].x - hitRange.maxX) + Math.abs(inOrder[j].y - (inOrder.find(r => Math.abs(r.x - hitRange.maxX) < 20)?.y || inOrder[j].y)) * 0.5
-          if (dStart < bestStartDist) { bestStartDist = dStart; startIdx = j }
-          if (dEnd < bestEndDist) { bestEndDist = dEnd; endIdx = j }
-        }
-
-        // Ensure endIdx >= startIdx
-        if (endIdx < startIdx) [startIdx, endIdx] = [endIdx, startIdx]
-        // Expand by 1 record on each side if single record hit
-        if (endIdx === startIdx && N > 1) {
-          startIdx = Math.max(0, startIdx - 1)
-          endIdx = Math.min(N - 1, endIdx + 1)
-        }
-
-        // Map record indices to character positions (records are in source order)
-        const srcLine = allLines[i]
-        const stripped = srcLine.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1').replace(/\\[a-zA-Z]+/g, '').replace(/[{}$^_~]/g, '').replace(/\s+/g, ' ').trim()
-        const strippedLen = stripped.length || 1
-        entry.hlStart = Math.max(0, Math.round((startIdx / (N - 1)) * srcLine.length))
-        entry.hlEnd = Math.min(srcLine.length, Math.round((endIdx / (N - 1)) * srcLine.length))
-      }
+      entry.hlStart = 0
+      entry.hlEnd = allLines[i].length
     }
 
     lines.push(entry)
+  }
+
+  // --- Tspan-anchored column estimation ---
+  // Each fragment is a rendered text span with (x, y, text) in PDF coords.
+  // Match fragment positions to synctex records to assign fragments to source lines.
+  // Then search for fragment text in the source line to find exact column positions.
+  if (fragments.length > 0) {
+    // Assign each fragment to the nearest synctex record's source line
+    const fragsByLine = new Map() // lineNum → [fragment texts in order]
+    for (const frag of fragments) {
+      let bestDist = Infinity
+      let bestLine = null
+      for (const r of pageRecords) {
+        const dy = Math.abs(r.y - frag.y)
+        if (dy > 15) continue // must be on same rendered line
+        const dx = Math.abs(r.x - frag.x)
+        const dist = dy * 10 + dx // weight y heavily
+        if (dist < bestDist) { bestDist = dist; bestLine = r.line }
+      }
+      if (bestLine != null && hitLines.has(bestLine)) {
+        if (!fragsByLine.has(bestLine)) fragsByLine.set(bestLine, [])
+        fragsByLine.get(bestLine).push(frag.text)
+      }
+    }
+
+    // For each highlighted line, find column range by searching for anchor words
+    for (const entry of lines) {
+      if (!entry.highlighted) continue
+      const frags = fragsByLine.get(entry.line)
+      if (!frags || frags.length === 0) continue
+
+      const src = entry.content
+      const result = anchorMatch(src, frags)
+      if (result) {
+        entry.hlStart = result.start
+        entry.hlEnd = result.end
+      }
+    }
   }
 
   // Derive relative file name
@@ -458,6 +551,93 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 }
 
 /** Strip tex commands to get approximate plain text. */
+/**
+ * Anchor matching: find where rendered text fragments appear in a source line.
+ *
+ * Fragments are individual rendered words/characters from the SVG (in order).
+ * Some match the source literally (plain text), some don't (TeX expansions).
+ * The first and last matched fragments bracket the highlighted region.
+ * Unmatched fragments (TeX commands that expanded) are between the anchors.
+ *
+ * For edge cases where no fragments match at all (all TeX/math), returns null
+ * and the caller falls back to full-line highlighting.
+ */
+function anchorMatch(sourceLine, fragmentTexts) {
+  let firstAnchorPos = -1
+  let lastAnchorEnd = -1
+  let searchFrom = 0
+
+  for (const frag of fragmentTexts) {
+    if (frag.length === 0) continue
+    // Search for this fragment literally in the source, starting from searchFrom
+    const idx = sourceLine.indexOf(frag, searchFrom)
+    if (idx >= 0) {
+      if (firstAnchorPos < 0) firstAnchorPos = idx
+      lastAnchorEnd = idx + frag.length
+      searchFrom = idx + frag.length
+    }
+    // If not found, try single characters (math variables like x, y, z)
+    else if (frag.length === 1) {
+      const idx2 = sourceLine.indexOf(frag, searchFrom)
+      if (idx2 >= 0) {
+        if (firstAnchorPos < 0) firstAnchorPos = idx2
+        lastAnchorEnd = idx2 + 1
+        searchFrom = idx2 + 1
+      }
+    }
+  }
+
+  if (firstAnchorPos < 0) return null // no anchors found
+
+  // Expand to include TeX commands at the boundaries
+  // Walk backward from firstAnchorPos to include preceding command
+  let start = firstAnchorPos
+  if (start > 0) {
+    // If there are unmatched fragments before the first anchor,
+    // walk back to include the TeX command that produced them
+    let i = start - 1
+    // Skip whitespace
+    while (i >= 0 && sourceLine[i] === ' ') i--
+    // If we hit a }, walk back to the matching { and the \command before it
+    if (i >= 0 && sourceLine[i] === '}') {
+      let depth = 1
+      i--
+      while (i >= 0 && depth > 0) {
+        if (sourceLine[i] === '}') depth++
+        if (sourceLine[i] === '{') depth--
+        i--
+      }
+      // Now walk back past the \command
+      while (i >= 0 && sourceLine[i] !== '\\' && sourceLine[i] !== ' ' && sourceLine[i] !== '$') i--
+      if (i >= 0 && sourceLine[i] === '\\') start = i
+      else if (i >= 0 && sourceLine[i] === '$') start = i
+    }
+  }
+
+  // Walk forward from lastAnchorEnd to include trailing command
+  let end = lastAnchorEnd
+  if (end < sourceLine.length) {
+    let i = end
+    while (i < sourceLine.length && sourceLine[i] === ' ') i++
+    if (i < sourceLine.length && sourceLine[i] === '\\') {
+      // Walk forward past the command and its argument
+      while (i < sourceLine.length && sourceLine[i] !== ' ' && sourceLine[i] !== '{') i++
+      if (i < sourceLine.length && sourceLine[i] === '{') {
+        let depth = 1
+        i++
+        while (i < sourceLine.length && depth > 0) {
+          if (sourceLine[i] === '{') depth++
+          if (sourceLine[i] === '}') depth--
+          i++
+        }
+      }
+      end = i
+    }
+  }
+
+  return { start, end }
+}
+
 function stripTex(tex) {
   return tex
     .replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1')  // \cmd{content} → content

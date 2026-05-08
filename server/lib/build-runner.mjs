@@ -3,16 +3,17 @@
  *
  * Runs the build pipeline as child processes:
  *   1. latexmk → DVI + synctex
- *   2. dvisvgm → SVG pages (priority pages first if specified)
+ *   2. Publish main.dvi to output/, clear stale SVGs, signal reload
  *   3. extract-preamble.js → macros.json
  *   4. extract-synctex-lookup.mjs → lookup.json
  *   5. compute-proof-pairing.mjs → proof-info.json
  *
+ * SVG pages are built on demand by buildCurrentPage() (shadow-repo.mjs) when
+ * the client requests them. The build never runs dvisvgm — ensure does.
  * Each step writes output to server/projects/{name}/output/.
- * Signals reload via @tldraw/sync custom messages after SVG conversion.
  */
 
-import { exec as execCb } from 'child_process'
+import { exec as execCb, execSync } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
@@ -31,10 +32,11 @@ import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { snapshotBeforeBuild } from './history-store.mjs'
-import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
+import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
+import { commitSnapshot } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
+import { clearSynctexCache } from './synctex-query.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -386,17 +388,68 @@ async function compileLaTeX(ctx) {
       if (existsSync(bblPath)) unlinkSync(bblPath)
       addLog(`Running ${bibTool} for citations...`)
       signalBuildProgress(name, 'compiling', bibTool)
+      let bibFailed = false
       try {
         await run(bibCmd, { cwd: buildDir, timeout: 60000 })
         addLog(`${bibTool} done — recompiling`)
       } catch (e) {
-        addLog(`${bibTool} failed (non-fatal): ${e.message.split('\n')[0]}`)
+        const errMsg = e.message || ''
+        addLog(`${bibTool} failed: ${errMsg.split('\n')[0]}`)
+        bibFailed = true
+
+        // Detect biber corruption — clean state files + PAR cache and retry
+        if (useBiblatex) {
+          // Biber fails silently with exit code 2 when its PAR cache is corrupt
+          // (Unicode::UCD error). Also fails with XML/malformed errors on bad .bcf.
+          const isCorrupt = true // Always retry on biber failure — cleaning is safe
+          if (isCorrupt) {
+            addLog('Biber failed — cleaning state files and PAR cache, retrying')
+            const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+            for (const ext of cleanExts) {
+              const f = join(buildDir, `${texBase}${ext}`)
+              if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+              // Also clean from build cache so corruption doesn't persist
+              const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+              if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+            }
+            // Clean biber's PAR cache — delete only the corrupt unicore/ dir
+            try {
+              const tmpDir = process.env.TMPDIR || '/tmp'
+              for (const d of readdirSync(tmpDir)) {
+                if (!d.startsWith('par-')) continue
+                const parDir = join(tmpDir, d)
+                for (const sub of readdirSync(parDir)) {
+                  if (!sub.startsWith('cache-')) continue
+                  const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+                  if (existsSync(unicorePath)) {
+                    try {
+                      for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                      addLog('Cleaned corrupt biber unicore cache')
+                    } catch {}
+                  }
+                }
+              }
+            } catch {}
+            // Retry biber
+            try {
+              await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+              addLog('Biber retry succeeded')
+              bibFailed = false
+            } catch (e2) {
+              addLog(`Biber retry also failed: ${e2.message?.split('\n')[0]}`)
+            }
+          }
+        }
       }
       // Recompile with bibliography — pdflatex may exit non-zero on warnings, that's fine
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch (e) {
         addLog(`pdflatex exited with warnings after ${bibTool} (continuing): ${e.message.split('\n')[0]}`)
+      }
+      // If biber still failed, check the output for raw cite keys and warn
+      if (bibFailed) {
+        addLog('⚠ Citations may show as raw keys — biber could not process the bibliography')
       }
     }
   }
@@ -409,6 +462,55 @@ async function compileLaTeX(ctx) {
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch {}
+    }
+
+    // After second pass, re-read log. If MANY citations are undefined (>5),
+    // it's likely biber corruption, not just a few missing keys.
+    // Run one more pass first, then nuclear clean only on mass failure.
+    const postSecondLog = readFileSync(logPath, 'utf8')
+    const undefinedCites = (postSecondLog.match(/Citation .* undefined/g) || []).length
+    if (undefinedCites > 5) {
+      addLog(`${undefinedCites} undefined citations — running third pass`)
+      try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch {}
+      const finalLog = readFileSync(logPath, 'utf8')
+      const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
+      if (stillUndefined > 5 && existsSync(bcfPath)) {
+        addLog(`${stillUndefined} citations still undefined — cleaning biber state and retrying`)
+        const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+        for (const ext of cleanExts) {
+          const f = join(buildDir, `${texBase}${ext}`)
+          if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+          const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+          if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+        }
+        // Clean biber PAR cache — delete the specific unicore/ dir that corrupts
+        try {
+          const tmpDir = process.env.TMPDIR || '/tmp'
+          for (const d of readdirSync(tmpDir)) {
+            if (!d.startsWith('par-')) continue
+            const parDir = join(tmpDir, d)
+            for (const sub of readdirSync(parDir)) {
+              if (!sub.startsWith('cache-')) continue
+              const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+              if (existsSync(unicorePath)) {
+                // Only delete the corrupted unicore dir, not the whole cache
+                try {
+                  for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                  addLog('Cleaned corrupt biber unicore cache')
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+        const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        try {
+          await run(bibCmd2, { cwd: buildDir, timeout: 60000 })
+          await run(cmd, { cwd: texDir, timeout: 120000, env })
+          addLog('Citation recovery succeeded')
+        } catch (e) {
+          addLog(`Citation recovery failed: ${e.message?.split('\n')[0]}`)
+        }
+      }
     }
   }
 
@@ -433,9 +535,19 @@ async function compileLaTeX(ctx) {
   if (!existsSync(dviFile)) throw new Error('DVI file not created')
 
   // Parse expected page count from log for later verification against dvisvgm output
+  // TeX wraps long lines at 79 chars — join continuations before matching.
   let expectedPages = null
   if (existsSync(logPath)) {
-    const m = readFileSync(logPath, 'utf8').match(/Output written on .+\((\d+) pages?/)
+    const raw = readFileSync(logPath, 'utf8')
+    const joined = raw.split('\n').reduce((acc, line) => {
+      if (acc.length > 0 && acc[acc.length - 1].length === 79) {
+        acc[acc.length - 1] += line
+      } else {
+        acc.push(line)
+      }
+      return acc
+    }, []).join('\n')
+    const m = joined.match(/Output written on .+\((\d+) pages?/)
     if (m) expectedPages = parseInt(m[1])
   }
   return { expectedPages }
@@ -624,6 +736,300 @@ async function computeProofPairing(ctx) {
   }
 }
 
+/** Phase 7: Generate source-map.json — unified client index.
+ * Combines synctex positions + label data into one file:
+ * - labels: all \label{} items with page, position, type, number
+ * - pages: per-page line index (y → file:line) for forward/reverse lookup
+ */
+async function generateSourceMap(ctx) {
+  const { name, texBase, buildDir, outDir, srcDir, addLog } = ctx
+  const { loadSynctex } = await import('./synctex-query.mjs')
+
+  try {
+    const synctex = await loadSynctex(name)
+    if (!synctex) { addLog('Source map: no synctex data'); return }
+
+    // Build per-page line index: sorted list of { y, file, line }
+    // Deduplicate by file:line (keep the first y for each source location)
+    const pageIndex = {}
+    const seen = new Set()
+    for (const r of synctex.records) {
+      const filePath = synctex.inputMap.get(r.inputId)
+      if (!filePath || !filePath.endsWith('.tex')) continue
+      // Derive relative file name
+      let relFile = filePath
+      try {
+        const realSrcDir = realpathSync(sourceDir(name))
+        if (filePath.startsWith(realSrcDir)) relFile = filePath.slice(realSrcDir.length + 1)
+      } catch {}
+      const key = `${r.page}:${relFile}:${r.line}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (!pageIndex[r.page]) pageIndex[r.page] = []
+      pageIndex[r.page].push({ y: Math.round(r.y * 10) / 10, file: relFile, line: r.line })
+    }
+    // Sort each page's entries by y
+    for (const page of Object.keys(pageIndex)) {
+      pageIndex[page].sort((a, b) => a.y - b.y)
+    }
+
+    // Parse labels directly from .aux file
+    const auxFile = join(buildDir, `${texBase}.aux`)
+    let labels = []
+    if (existsSync(auxFile)) {
+      const auxText = readFileSync(auxFile, 'utf8')
+      const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
+      let m
+      while ((m = re.exec(auxText)) !== null) {
+        const [, label, number, page, title] = m
+        const pageNum = parseInt(page, 10)
+        if (isNaN(pageNum)) continue
+        const type = label.includes(':') ? label.split(':')[0] : 'label'
+        labels.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
+      }
+    }
+
+    const sourceMap = { labels, pages: pageIndex }
+    const outPath = join(outDir, 'source-map.json')
+    writeFileSync(outPath, JSON.stringify(sourceMap))
+    const sizeKB = Math.round(statSync(outPath).size / 1024)
+    addLog(`Source map: ${labels.length} labels, ${Object.keys(pageIndex).length} pages (${sizeKB} KB)`)
+  } catch (e) {
+    addLog(`Source map generation failed: ${e.message}`)
+  }
+}
+
+/** Summarize a git diff into a structural change outline.
+ *  Groups changes by section/subsection and identifies formal results (theorems, lemmas, etc.)
+ *  and their proofs. Returns a markdown-formatted summary or null if no meaningful changes.
+ */
+function summarizeDiff(diffText, projectName) {
+  const projDir = projectDir(projectName)
+  const outDir = outputDir(projectName)
+
+  // 1. Parse diff hunks: extract file, old/new line ranges, and +/- counts
+  const hunks = parseDiffHunks(diffText)
+  if (hunks.length === 0) return null
+
+  // 2. Build section tree from tex source in shadow repo
+  const shadowDir = join(projDir, 'shadow-repo')
+  const project = readProject(projectName)
+  const mainFile = project?.mainFile || ''
+  const texPath = join(shadowDir, mainFile)
+  let texLines = []
+  try { texLines = readFileSync(texPath, 'utf8').split('\n') } catch { return null }
+  const sections = buildSectionTree(texLines)
+
+  // 3. Load proof-info.json for result/proof line ranges
+  let proofPairs = []
+  try {
+    const pi = JSON.parse(readFileSync(join(outDir, 'proof-info.json'), 'utf8'))
+    proofPairs = pi.pairs || pi
+  } catch {}
+
+  // 4. Load source-map.json labels for numbering
+  const labelNumbers = new Map()
+  try {
+    const sm = JSON.parse(readFileSync(join(outDir, 'source-map.json'), 'utf8'))
+    for (const l of sm.labels || []) {
+      labelNumbers.set(l.label, l.number)
+    }
+  } catch {}
+
+  // 5. Parse result titles from tex source (the [...] optional argument)
+  const resultTitles = new Map()
+  for (const pair of proofPairs) {
+    const startLine = pair.statementLines?.[0]
+    if (startLine && startLine <= texLines.length) {
+      const line = texLines[startLine - 1]
+      const titleMatch = line.match(/\\begin\{(?:theorem|lemma|proposition|corollary|definition)\}\[([^\]]*)\]/)
+      if (titleMatch) {
+        // Strip \cite/\citep/\citet commands to get clean title
+        let title = titleMatch[1].replace(/\\(?:cite[pt]?)\{[^}]*\}/g, '').replace(/[{}]/g, '').trim()
+        // Check if it's a borrowed result (had a citation)
+        const isBorrowed = /\\(?:cite[pt]?)\{/.test(titleMatch[1])
+        resultTitles.set(pair.id, { title, isBorrowed })
+      }
+    }
+  }
+
+  // 6. Classify each hunk
+  const changes = []
+  for (const hunk of hunks) {
+    // Find containing section/subsection
+    const section = findContainingSection(sections, hunk.newStart)
+
+    // Check if hunk overlaps any formal result statement or proof
+    let resultHit = null
+    for (const pair of proofPairs) {
+      const [stmtStart, stmtEnd] = pair.statementLines || [0, 0]
+      const [proofStart, proofEnd] = pair.proofLines || [0, 0]
+
+      if (hunkOverlaps(hunk, stmtStart, stmtEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'statement', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+      if (hunkOverlaps(hunk, proofStart, proofEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'proof', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+    }
+
+    changes.push({ section, result: resultHit, added: hunk.added, deleted: hunk.deleted, file: hunk.file })
+  }
+
+  // 7. Aggregate by section, then by result
+  return formatChangeSummary(changes, labelNumbers)
+}
+
+function parseDiffHunks(diffText) {
+  const hunks = []
+  let currentFile = null
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const m = line.match(/^diff --git a\/(.+?) b\//)
+      if (m) currentFile = m[1]
+      continue
+    }
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+    if (hunkMatch) {
+      hunks.push({
+        file: currentFile,
+        oldStart: parseInt(hunkMatch[1]),
+        oldCount: parseInt(hunkMatch[2] || '1'),
+        newStart: parseInt(hunkMatch[3]),
+        newCount: parseInt(hunkMatch[4] || '1'),
+        added: 0,
+        deleted: 0,
+      })
+      continue
+    }
+    if (hunks.length > 0) {
+      if (line.startsWith('+') && !line.startsWith('+++')) hunks[hunks.length - 1].added++
+      if (line.startsWith('-') && !line.startsWith('---')) hunks[hunks.length - 1].deleted++
+    }
+  }
+  return hunks
+}
+
+function buildSectionTree(texLines) {
+  const sections = []
+  for (let i = 0; i < texLines.length; i++) {
+    const m = texLines[i].match(/\\(section|subsection|subsubsection)\{(.+?)\}/)
+    if (m) {
+      const title = m[2].replace(/\\[a-zA-Z]+\{[^}]*\}/g, '').replace(/[{}\\]/g, '').trim()
+      // Check next few lines for \label{sec:...} (may not be immediately after)
+      let label = null
+      for (let k = 1; k <= 3 && i + k < texLines.length; k++) {
+        const labelMatch = texLines[i + k].match(/\\label\{(sec:[^}]+)\}/)
+        if (labelMatch) { label = labelMatch[1]; break }
+        // Stop if we hit another sectioning command or begin/end
+        if (texLines[i + k].match(/\\(?:section|subsection|begin|end)\{/)) break
+      }
+      sections.push({ level: m[1], title, line: i + 1, label })
+    }
+  }
+  // Assign end lines (each section ends where the next same-or-higher level section begins)
+  for (let i = 0; i < sections.length; i++) {
+    const levelRank = { section: 0, subsection: 1, subsubsection: 2 }
+    const myRank = levelRank[sections[i].level] ?? 0
+    let endLine = texLines.length
+    for (let j = i + 1; j < sections.length; j++) {
+      const nextRank = levelRank[sections[j].level] ?? 0
+      if (nextRank <= myRank) { endLine = sections[j].line - 1; break }
+    }
+    sections[i].endLine = endLine
+  }
+  return sections
+}
+
+function findContainingSection(sections, line) {
+  // Find the deepest (most specific) section containing this line
+  let best = null
+  for (const s of sections) {
+    if (line >= s.line && line <= s.endLine) {
+      if (!best || ({ section: 0, subsection: 1, subsubsection: 2 }[s.level] ?? 0) > ({ section: 0, subsection: 1, subsubsection: 2 }[best.level] ?? 0)) {
+        best = s
+      }
+    }
+  }
+  return best
+}
+
+function hunkOverlaps(hunk, startLine, endLine) {
+  if (!startLine || !endLine) return false
+  const hunkEnd = hunk.newStart + hunk.newCount - 1
+  return hunk.newStart <= endLine && hunkEnd >= startLine
+}
+
+function formatChangeSummary(changes, labelNumbers) {
+  // Group by section title, then by result
+  const groups = new Map()
+  for (const c of changes) {
+    const secKey = c.section ? (c.section.label || c.section.title) : '(preamble)'
+    if (!groups.has(secKey)) groups.set(secKey, { section: c.section, items: [] })
+    groups.get(secKey).items.push(c)
+  }
+
+  const lines = []
+  for (const [secKey, group] of groups) {
+    let sectionLabel
+    if (!group.section) {
+      sectionLabel = '**Preamble**'
+    } else {
+      const num = group.section.label ? labelNumbers?.get(group.section.label) : null
+      const prefix = num ? `§${num}` : '§'
+      sectionLabel = `**${prefix} "${group.section.title}"**`
+    }
+    lines.push(sectionLabel)
+
+    // Sub-group by result
+    const resultItems = new Map()
+    const textItems = []
+    for (const item of group.items) {
+      if (item.result) {
+        const rKey = `${item.result.id}:${item.result.type}`
+        if (!resultItems.has(rKey)) resultItems.set(rKey, { result: item.result, added: 0, deleted: 0 })
+        const r = resultItems.get(rKey)
+        r.added += item.added
+        r.deleted += item.deleted
+      } else {
+        textItems.push(item)
+      }
+    }
+
+    for (const [, r] of resultItems) {
+      const { result, added, deleted } = r
+      const numStr = result.number ? ` ${result.number}` : ''
+      const titleStr = result.title ? ` (${result.title})` : ''
+      const locStr = result.type === 'proof' ? 'proof' : 'statement'
+      const countStr = formatCounts(added, deleted)
+      lines.push(`  - ${result.resultType}${numStr}${titleStr} ${locStr}: ${countStr}`)
+    }
+
+    if (textItems.length > 0) {
+      const totalAdded = textItems.reduce((s, i) => s + i.added, 0)
+      const totalDeleted = textItems.reduce((s, i) => s + i.deleted, 0)
+      lines.push(`  - text: ${formatCounts(totalAdded, totalDeleted)}`)
+    }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null
+}
+
+function formatCounts(added, deleted) {
+  const parts = []
+  if (added > 0) parts.push(`+${added}`)
+  if (deleted > 0) parts.push(`-${deleted}`)
+  return parts.join(' / ') || 'modified'
+}
+
 /** Phase 6: Generate theorem-map.json from .aux file. */
 async function generateTheoremMap(ctx) {
   const { texBase, texDir, srcDir, buildDir, outDir, addLog } = ctx
@@ -633,19 +1039,19 @@ async function generateTheoremMap(ctx) {
     return
   }
 
-  const PREFIXES = ['thm:', 'lem:', 'prop:', 'cor:', 'def:', 'ass:']
   const auxText = readFileSync(auxFile, 'utf8')
 
   // Parse \newlabel{LABEL}{{NUMBER}{PAGE}{TITLE}{...}} — skip @cref variants
+  // Include ALL labels (theorems, equations, sections, figures, etc.)
   const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
   const entries = []
   let m
   while ((m = re.exec(auxText)) !== null) {
     const [, label, number, page, title] = m
-    if (!PREFIXES.some(p => label.startsWith(p))) continue
     const pageNum = parseInt(page, 10)
     if (isNaN(pageNum)) continue
-    entries.push({ label, type: label.split(':')[0], number: number.trim(), page: pageNum, title: title.trim() })
+    const type = label.includes(':') ? label.split(':')[0] : 'label'
+    entries.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
   }
 
   if (entries.length === 0) {
@@ -683,6 +1089,7 @@ async function generateTheoremMap(ctx) {
   const tmpPath = join(buildDir, 'theorem-map.json')
   writeFileSync(tmpPath, JSON.stringify(map, null, 2))
   publishFile(tmpPath, join(outDir, 'theorem-map.json'))
+
   addLog(`Theorem map: ${entries.length} entries`)
 }
 
@@ -759,6 +1166,53 @@ function writeRelevantFiles(ctx) {
   } catch (e) {
     addLog(`Relevant files: write failed (non-fatal): ${e.message}`)
   }
+}
+
+// ─── Exported helpers ────────────────────────────────────────────────────────
+
+export function emitDocArrived(name) {
+  try {
+    const updated = readProject(name)
+    if (updated?.buildStatus === 'success') {
+      emitGlobalEvent('doc-arrived', {
+        name, title: updated.title || name,
+        format: updated.format, pages: updated.pages || 0,
+      })
+    }
+  } catch {}
+}
+
+// ─── Lazy DVI ensure ─────────────────────────────────────────────────────────
+
+/**
+ * Ensure the current DVI is up to date.
+ * Triggered by buildCurrentPage when a page is requested.
+ * If a source.stamp file exists that is newer than main.dvi, the project is
+ * stale and a full build runs. Multiple concurrent callers share one build.
+ */
+const _ensureCurrentDviInflight = new Map()
+
+export async function ensureCurrentDvi(name) {
+  const outDir = outputDir(name)
+  const dviFile = join(outDir, 'main.dvi')
+  const stampFile = join(projectDir(name), 'source.stamp')
+
+  const needsBuild = !existsSync(dviFile) ||
+    (existsSync(stampFile) && statSync(stampFile).mtimeMs > statSync(dviFile).mtimeMs)
+
+  if (!needsBuild) return dviFile
+
+  // Already building — coalesce
+  if (_ensureCurrentDviInflight.has(name)) return _ensureCurrentDviInflight.get(name)
+
+  const building = runBuild(name)
+    .then(() => {
+      emitDocArrived(name)
+      return dviFile
+    })
+    .finally(() => _ensureCurrentDviInflight.delete(name))
+  _ensureCurrentDviInflight.set(name, building)
+  return building
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
@@ -855,14 +1309,22 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     signalBuildProgress(name, 'compiling', null)
     const { expectedPages } = await compileLaTeX(ctx)
 
-    // Phase 2+3: SVG conversion and macro extraction run in parallel
+    // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
+    // SVGs are built lazily when pages are first requested (see buildCurrentPage).
     status.phase = 'converting'
-    signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
-    const oldHashes = loadPageHashes(outDir)
-    const [svgResult] = await Promise.all([
-      convertSvgs(ctx, priorityPages, oldHashes, expectedPages),
-      extractMacros(ctx),
-    ])
+    const dviFile = join(buildDir, `${texBase}.dvi`)
+    publishFile(dviFile, join(outDir, 'main.dvi'))
+    // Clear stale SVGs — clients will request them on demand after the reload signal
+    for (const f of readdirSync(outDir)) {
+      if (/^page-\d+\.svg$/.test(f)) {
+        try { unlinkSync(join(outDir, f)) } catch {}
+      }
+    }
+    ctx.addLog(`DVI published — signaling reload`)
+    signalReload(name, null)
+
+    // Phase 3: Macro extraction
+    await extractMacros(ctx)
 
     // Phase 4+5: Synctex → proof pairing (sequential, post-reload)
     status.phase = 'extracting'
@@ -872,23 +1334,27 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Phase 6: Theorem map
     await generateTheoremMap(ctx)
 
-    // Phase 7: Relevant-files set (for source-change filtering). Parses
+    // Phase 7: Source map — unified index for the client
+    await generateSourceMap(ctx)
+
+    // Phase 8: Relevant-files set (for source-change filtering). Parses
     // the .fls file that pdflatex -recorder wrote and captures every
     // INPUT path that lives inside the project's sourceDir.
     writeRelevantFiles(ctx)
 
     // Finalize
     updateProject(name, {
-      pages: svgResult.pageCount,
+      pages: expectedPages ?? 0,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
     })
     saveBuildCache(ctx)
+    clearSynctexCache(name)
 
     // Append changelog entry with TeX diff
     try {
-      const clEntry = appendBuildEntry(name, svgResult.changedPages, Object.values(svgResult.newHashes).join(''))
-      if (clEntry) ctx.addLog(`Changelog: ${svgResult.changedPages.length} page(s), diff ${clEntry.texDiff.length} chars`)
+      const clEntry = appendBuildEntry(name, [], null)
+      if (clEntry) ctx.addLog(`Changelog: diff ${clEntry.texDiff.length} chars`)
     } catch (e) {
       ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
     }
@@ -896,20 +1362,59 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
-    // Update doc-version sentinel shape with source git commit hash (non-blocking)
-    updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
-      ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
-    })
-
-    // Commit source snapshot to shadow repo and cache SVGs (non-blocking)
-    commitSnapshot(name).then(result => {
+    // Commit source snapshot to shadow repo (non-blocking)
+    commitSnapshot(name).then(async result => {
       if (result) {
-        cacheSvgSnapshot(name, result.hash).catch(e => {
-          ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
+        // Update doc-version sentinel with shadow hash (the build's version identity)
+        updateDocVersionSentinel(name, result.hash).catch(e => {
+          ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
+        recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+        // Commit + tag the source repo so shadow/<hash> points to the exact
+        // source content that produced this build. Without this, the tag
+        // points to whatever was last committed — which may not include the
+        // changes that triggered this build.
+        try {
+          const project = readProject(name)
+          if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
+            const tag = `shadow/${result.hash.slice(0, 7)}`
+            const cwd = project.sourceDir
+            // Stage all .tex/.bib/.sty/.cls files and commit
+            execSync(`git add -A *.tex *.bib *.sty *.cls 2>/dev/null; git diff --cached --quiet || git commit -m "shadow ${result.hash.slice(0, 7)}" --allow-empty`, { cwd, stdio: 'pipe', timeout: 10000 })
+            execSync(`git tag -f "${tag}"`, { cwd, stdio: 'pipe', timeout: 5000 })
+          }
+        } catch {}
+        // Build change summary: diff against previous shadow commit
+        try {
+          const shadowDir = join(projDir, 'shadow-repo')
+          const diffOutput = execSync(
+            `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
+            { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
+          )
+          if (diffOutput.trim()) {
+            const summary = summarizeDiff(diffOutput, name)
+            console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+            if (summary) {
+              // Emit as global event — unified-server.mjs routes to fleet chat
+              emitGlobalEvent('build-chat', {
+                name,
+                hash: result.hash.slice(0, 7),
+                text: `**Build ${result.hash.slice(0, 7)}:**\n${summary}`,
+              })
+              // Also broadcast as a signal for the viewer
+              broadcastSignal(`doc-${name}`, 'signal:build-summary', {
+                hash: result.hash.slice(0, 7),
+                summary,
+                timestamp: Date.now(),
+              })
+            }
+          } else {
+            console.log(`[build:${name}] No tex diff between shadow commits`)
+          }
+        } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
@@ -989,16 +1494,8 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, srcDir) {
-  let commitHash = 'unknown'
-  if (srcDir && existsSync(srcDir)) {
-    try {
-      const { stdout } = await execAsync('git rev-parse HEAD', { cwd: srcDir, timeout: 5000 })
-      commitHash = stdout.trim()
-    } catch {
-      // Not a git repo, or no commits yet — leave as 'unknown'
-    }
-  }
+async function updateDocVersionSentinel(name, shadowHash) {
+  const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
   const sentinel = {

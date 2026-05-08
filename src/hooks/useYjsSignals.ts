@@ -1,12 +1,75 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
-import { clearLookupCache } from '../synctexLookup'
+import { clearLookupCache, loadLookup } from '../synctexLookup'
+import * as sourceMap from '../sourceMap'
+import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
+import { PDF_HEIGHT } from '../layoutConstants'
+
+// SyncTeX y=0 is at the TeX reference point, 72pt from the top of the page
+const SYNCTEX_VIEWBOX_OFFSET = 72
+
+function _extractLabel(content: string | undefined): string | null {
+  if (!content) return null
+  const m = content.match(/\\label\{([^}]+)\}/)
+  return m ? m[1] : null
+}
+
+/** Find the label nearest to targetY (canvas coords) that appears in the lookup. */
+function _nearestLabel(
+  lines: LookupData['lines'],
+  pages: SvgDocument['pages'],
+  targetY: number,
+): { label: string; canvasY: number } | null {
+  let bestLabel: string | null = null
+  let bestCanvasY = 0
+  let bestDist = Infinity
+  for (const entry of Object.values(lines)) {
+    const label = _extractLabel(entry.content)
+    if (!label) continue
+    const pg = pages[entry.page - 1]
+    if (!pg) continue
+    const scaleY = pg.bounds.height / PDF_HEIGHT
+    const canvasY = pg.bounds.y + (entry.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY
+    const dist = Math.abs(canvasY - targetY)
+    if (dist < bestDist) { bestDist = dist; bestLabel = label; bestCanvasY = canvasY }
+  }
+  return bestLabel ? { label: bestLabel, canvasY: bestCanvasY } : null
+}
+
+/**
+ * Scroll so that `anchorLabel` appears at the same position relative to
+ * the viewport center as it did before the rebuild (delta = pre-rebuild
+ * labelCanvasY − vpCenterY; positive = label was below center).
+ */
+function _applyScrollAnchor(
+  editor: Editor,
+  pages: SvgDocument['pages'],
+  newLines: LookupData['lines'],
+  anchorLabel: string,
+  anchorDelta: number,
+) {
+  // Build label → entry map
+  const labelMap = new Map<string, { page: number; y: number }>()
+  for (const entry of Object.values(newLines)) {
+    const label = _extractLabel(entry.content)
+    if (label) labelMap.set(label, entry)
+  }
+  const entry = labelMap.get(anchorLabel)
+  if (!entry) return
+  const pg = pages[entry.page - 1]
+  if (!pg) return
+  const scaleY = pg.bounds.height / PDF_HEIGHT
+  const newLabelCanvasY = pg.bounds.y + (entry.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY
+  const targetCenterY = newLabelCanvasY - anchorDelta
+  const vp = editor.getViewportPageBounds()
+  editor.centerOnPoint({ x: vp.x + vp.w / 2, y: targetCenterY }, { animation: { duration: 200 } })
+}
 
 export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
@@ -36,27 +99,68 @@ export function useYjsSignals({
   setRefViewerRefs, refViewerLineRef, panelsLocalRef,
   onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
+  // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
+  // The signalBus fires synctexLookup's cache-clear listener before ours, so we
+  // can't call loadLookup() inside the reload handler to get pre-rebuild data —
+  // the cache is already gone. Instead we pre-load it here and stash it in a ref.
+  const lookupSnapshotRef = useRef<LookupData | null>(null)
+  useEffect(() => {
+    loadLookup(document.name).then(data => { lookupSnapshotRef.current = data })
+  }, [document.name])
+
   // Subscribe to Yjs reload signals
   useEffect(() => {
     return onReloadSignal((signal) => {
       const editor = editorRef.current
       if (!editor) return
+
       if (signal.type === 'partial') {
         reloadPages(editor, document, signal.pages).then(result => {
           onReloadResult?.(result)
         })
       } else {
         clearLookupCache(document.name)
+        sourceMap.clear()
+        sourceMap.load(document.name)
         diffDataRef.current = null
         setDiffFetchSeq(s => s + 1)
         proofDataRef.current = null
         setProofDataReady(false)
         setProofFetchSeq(s => s + 1)
-        reloadPages(editor, document, null).then(result => {
+        reloadPages(editor, document, null).then(async result => {
           onReloadResult?.(result)
+          // Refresh lookup cache for future synctex queries
+          lookupSnapshotRef.current = await loadLookup(document.name)
         })
       }
     })
+  }, [document])
+
+  // Poll for new builds as a fallback — catches stale content if the reload signal
+  // was missed (e.g. tldraw sync WebSocket died silently after a server restart).
+  useEffect(() => {
+    const docName = document.name
+    let lastKnownBuild = ''
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(docName)}`)
+        if (!res.ok) return
+        const data = await res.json()
+        const buildTs = data.lastBuild || ''
+        if (!lastKnownBuild) { lastKnownBuild = buildTs; return }
+        if (buildTs && buildTs !== lastKnownBuild) {
+          lastKnownBuild = buildTs
+          const editor = editorRef.current
+          if (editor) {
+            console.log(`[Poll] New build detected (${buildTs}), reloading viewport pages`)
+            reloadPages(editor, document, null).then(result => onReloadResult?.(result))
+          }
+        }
+      } catch {}
+    }
+    const timer = setInterval(poll, 30_000)
+    poll() // initial check
+    return () => clearInterval(timer)
   }, [document])
 
   // Subscribe to Yjs forward sync signals (scroll, highlight from Claude)
@@ -170,35 +274,12 @@ export function useYjsSignals({
           captureBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h }
         }
 
-        if (signal.bounds || signal.page) {
-          // Targeted screenshot: render via CanvasClipPanel (handles off-screen content).
-          // The ScreenshotCapture component handles rendering, capturing, and sending
-          // the signal:screenshot response.
-          if (setScreenshotCapture) {
-            setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
-          }
-          return
+        // All screenshots go through CanvasClipPanel — no direct editor.toImage().
+        // ScreenshotCapture handles rendering, capturing, and sending signal:screenshot
+        // + signal:screenshot-bounds so the annotation viewer appears in chat.
+        if (setScreenshotCapture) {
+          setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
         }
-
-        // Viewport screenshot (no bounds/page specified): capture current view directly
-        const vp = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: vp,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1])
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-        console.log(`[Screenshot] Captured viewport (${Math.round(base64.length / 1024)}KB)`)
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)
       }

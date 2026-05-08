@@ -26,6 +26,7 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
+import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -68,9 +69,11 @@ import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
 const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
+import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
 import { FollowingBadge } from './pills/FollowingBadge'
+import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
@@ -79,9 +82,9 @@ import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
-import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
 import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -98,7 +101,7 @@ import { useFootControl } from './hooks/useFootControl'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
-import { useCompareColumn } from './hooks/useCompareColumn'
+import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
@@ -300,11 +303,11 @@ function VersionStamp({ docName }: { docName: string }) {
   }, [fetchVersions])
 
   const handleClick = useCallback(async (idx: number) => {
-    if (idx === 0) return // dismiss via scrubber, not version wheel
+    if (idx === 0) return // index 0 = most recent build, dismiss handled by scrubber
     const v = versions[idx]
     if (!v) return
-    // Activate shadow column for this version
-    ;(window as any).__shadowScrub?.(idx)
+    // Activate shadow column for this version using the time-axis scrubber
+    ;(window as any).__shadowScrubVersion?.(v)
     setActiveIdx(idx)
   }, [versions])
 
@@ -489,9 +492,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Shadow history scrubber
   const {
-    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
-    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+    shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
+    shadowColumnX, shadowYOffset, shadowChangelog,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
+  // Divider diff: draw on the gap between columns to trigger word-level diff
+  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
 
   // Side-by-side version comparison — relay Yjs signal to window event
   useEffect(() => {
@@ -500,8 +507,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     })
     return unsub
   }, [])
-  useCompareColumn(editorRef.current, docName, document?.pages?.length ?? 0)
-
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
 
@@ -794,13 +799,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onToggleTimeline: toggleTimeline,
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
-    shadowHistoryVersionCount: shadowVersions.length,
-    shadowVersions,
-    shadowActiveIdx,
-    onShadowScrub: handleShadowScrub,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions])
-  // Note: shadowActiveIdx intentionally excluded from deps — changes to it
-  // should NOT cascade re-renders through PanelContext (causes hooks errors)
+    shadowActiveVersion,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
   // When the fleet HUD overlay is open, hide fleet shapes in the main editor
   // from both rendering AND hit-testing. The overlay renders its own copies.
@@ -818,10 +818,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       override indicator() { return null as any }
     }
-    const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
+    const utils = defaultShapeUtils.map(u =>
+      u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
+    )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -1063,13 +1065,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {shadowVisible && (
+      {shadowVisible && shadowTimeBounds && (
         <ShadowHistoryOverlay
-          versions={shadowVersions}
-          activeIdx={shadowActiveIdx}
+          timeBounds={shadowTimeBounds}
+          activeVersion={shadowActiveVersion ?? null}
           loading={shadowLoading}
-          onScrub={handleShadowScrub}
+          onScrubTime={handleShadowScrubTime}
+          onStep={handleShadowStep}
           onClose={hideShadowOverlay}
+          onRealign={realignShadow}
+          changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}
       <div className="build-pills-row">
@@ -1079,7 +1084,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
-        <BuildWarningPill warnings={buildWarnings} />
+        <BuildWarningPill warnings={buildWarnings}>
+          <BuildProgressPill />
+        </BuildWarningPill>
+        {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>
       {editorRef.current && (
@@ -1093,7 +1101,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </div>
   )
 
-  const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
+  // AgentPill replaced by FleetIconPill in build-pills-row
+  const agentPillContent = null
 
   const versionStampContent = <VersionStamp docName={document.name} />
 
@@ -1137,32 +1146,46 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
+          // Load source map (labels index) for ref resolution
+          sourceMap.load(document.name)
+
           setNavigateToAnchor((anchorId: string, title: string) => {
-            const entry = anchorIndex.get(anchorId)
-            if (!entry) return
-
-            // Find which page this anchor is on
-            const pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
-            if (pageIdx < 0) return
-
-            // Convert xlink:title (e.g. "equation.28") to display label
-            const { type, displayLabel } = anchorIdToLabel(title || anchorId)
-
-            // Convert viewBox to PDF coordinates
+            let page = -1
             let yTop = 0, yBottom = PDF_HEIGHT
-            const svgVB = getSvgViewBox(entry.pageShapeId)
-            if (svgVB && entry.viewBox) {
-              const parts = entry.viewBox.split(/\s+/).map(Number)
-              if (parts.length === 4) {
-                const [, svgY, , svgH] = parts
-                yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
-                yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
+            let labelForRegion = anchorId
+
+            // 1. Resolve page from source map (works for all labels, even unloaded pages)
+            const titleParts = (title || anchorId).split('.')
+            const thmNum = titleParts.slice(1).join('.')
+            const smMatch = sourceMap.resolveLabel(anchorId) || sourceMap.resolveLabel(thmNum)
+            if (smMatch && smMatch.page >= 1 && smMatch.page <= document.pages.length) {
+              page = smMatch.page
+              labelForRegion = smMatch.label
+              yBottom = PDF_HEIGHT * 0.3
+            }
+
+            // 2. Refine position from SVG anchor index if available (has precise viewBox)
+            const entry = anchorIndex.get(anchorId)
+            if (entry) {
+              const svgPageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+              if (svgPageIdx >= 0) page = svgPageIdx + 1
+              const svgVB = getSvgViewBox(entry.pageShapeId)
+              if (svgVB && entry.viewBox) {
+                const parts = entry.viewBox.split(/\s+/).map(Number)
+                if (parts.length === 4) {
+                  const [, svgY, , svgH] = parts
+                  yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
+                  yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
+                }
               }
             }
 
-            const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
-            setRefViewerRefsLocal([{ label: anchorId, region }])
-            // Update all fleet-docview shapes that have 'ref' in their sources
+            if (page < 1) return
+
+            const { type, displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
+
+            const region: LabelRegion = { page, yTop, yBottom, type, displayLabel }
+            setRefViewerRefsLocal([{ label: labelForRegion, region }])
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
             editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'fleet-docview')
@@ -1173,7 +1196,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
                 editor.updateShape({
                   id: dvShape.id, type: dvShape.type,
-                  props: { ...dvShape.props, label: anchorId, page: pageIdx + 1, yTop, yBottom, title: dvTitle },
+                  props: { ...dvShape.props, label: labelForRegion, page, yTop, yBottom, title: dvTitle },
                 })
               })
           })
@@ -1199,13 +1222,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
-          // For SVG documents: fetch page content in background (layout is already displayed)
-          if (!document.format || document.format === 'svg') {
-            const hasContent = document.pages.some(p => hasSvgText(p.shapeId))
-            if (!hasContent) {
-              fetchSvgPagesAsync(editor, document)
-            }
-          }
+          // SVG page content is fetched lazily by each SvgPageShape when it
+          // enters the viewport — no bulk fetch needed here.
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -1230,20 +1248,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               shapeToPage.set(document.pages[i].shapeId, i + 1)
             }
 
-            buildReverseIndex(document.name).then((reverseLookup) => {
-              if (!reverseLookup) return
+            setOnSourceClick((shapeId: string, clickYFraction: number) => {
+              const page = shapeToPage.get(shapeId)
+              if (!page) return
 
-              setOnSourceClick((shapeId: string, clickYFraction: number) => {
-                const page = shapeToPage.get(shapeId)
-                if (!page) return
+              const pdfY = clickYFraction * PDF_HEIGHT
+              const match = sourceMap.pageToSource(page, pdfY)
+              if (!match) return
 
-                // Convert click fraction to PDF y coordinate
-                const pdfY = clickYFraction * PDF_HEIGHT
-                const match = reverseLookup(page, pdfY)
-                if (!match) return
-
-                openInEditor(document.name, match.file, match.line)
-              })
+              openInEditor(document.name, match.file, match.line)
             })
           }
 
@@ -1304,6 +1317,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
+              }
+              // Recompute HUD panOffset ONLY if no saved position exists.
+              // With a saved panOffset (from a previous session), restoring from
+              // localStorage is correct — don't nuke it. Without one (first visit),
+              // we need to recompute after camera restoration so pageToScreen()
+              // uses the correct camera (commit 4031e60).
+              if (localStorage.getItem('fleet-hud-panOffset') === null) {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  })
+                })
               }
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)

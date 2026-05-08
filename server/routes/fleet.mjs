@@ -14,7 +14,7 @@ import path from 'path'
 import os from 'os'
 
 // Server owner — the human running this server process. Browser users
-// identify themselves via the WS 'identify' message and get their own agent.
+// log in via the WS 'login' message or register via 'register'.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
@@ -104,14 +104,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
     if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agents = fleetStore ? fleetStore.getAliveAgents() : []
+    const agents = fleetStore ? fleetStore.getAllAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
 
   // --- GET /api/human ---
   // Returns the server owner's identity. Used by MCP agents and CLI tools
-  // to know who the "local human" is. Browser users identify via WS 'identify'.
+  // to know who the "local human" is. Browser users log in via WS 'login'.
   router.get('/api/human', (req, res) => {
     res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
   })
@@ -306,6 +306,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         let status = 'dead'
         if (heartbeat && tmuxUp !== false) status = 'alive'
         else if (heartbeat || tmuxUp) status = 'stale'
+        // Auto-mark dead: no heartbeat for >1h, tmux not alive, not human
+        if (status === 'dead' && !a.dead && !a.human && lastSeenMs > 60 * 60 * 1000) {
+          a.dead = true
+          try { fleetStore?.markDead(a.id) } catch {}
+        }
         return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
       const missing = roster.filter(r => !registryIds.has(r.fleet_id))
@@ -455,6 +460,21 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json(result)
   })
 
+  // --- POST /api/kill-session ---
+  // Kill the agent's tmux session outright. Marks agent dead.
+  router.post('/api/kill-session', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
+    const result = await rpcAgent(res, agent, 'kill-session', {
+      agent_id: agent.id, tmux_session: agent.tmux_session,
+    })
+    if (result === null) return
+    broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+  })
+
   // --- POST /api/interrupt ---
   // Two-phase: kick the agent immediately so the caller can move on, then
   // let the daemon do the polled re-interrupt loop in the background.
@@ -501,6 +521,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (fleetStore) fleetStore.upsertAgent(agent)
     broadcastState()
     res.json({ ok: true, agent: agent.id, labels })
+  })
+
+  // --- POST /api/set-metadata ---
+  // Merge key/value pairs into an agent's metadata JSON.
+  router.post('/api/set-metadata', (req, res) => {
+    const { agent: agentQuery, ...fields } = req.body || {}
+    if (!agentQuery) { res.status(400).json({ error: 'agent required' }); return }
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    const meta = { ...(agent.metadata || {}), ...fields }
+    agent.metadata = meta
+    if (fleetStore) fleetStore.upsertAgent(agent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.id, metadata: meta })
   })
 
   // --- POST /api/send-key ---
@@ -550,21 +584,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/restart-my-mcp ---
-  // Agents call this to restart their OWN fleet MCP out-of-band (can't use
-  // the MCP tool for self-restart). Returns 202 immediately so the agent's
-  // bash subprocess finishes and Claude Code is back in the foreground before
-  // the daemon sends keystrokes to the session.
+  // Developer tool: restart an agent's own fleet MCP (e.g. after updating fleet.mjs).
+  // Returns 202 immediately; daemon triggers the restart ~1.5s later.
   // body: { agent: <id|name> }
   router.post('/api/restart-my-mcp', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    // Respond immediately — the daemon restart must happen AFTER the agent's
-    // HTTP request finishes so Claude Code has re-acquired the terminal.
     res.status(202).json({ ok: true, message: 'restart scheduled' })
-    // 1.5s grace: enough time for the HTTP response to arrive, the bash tool
-    // to complete, and Claude Code to be back at the prompt before we type /mcp.
     await new Promise(r => setTimeout(r, 1500))
     const route = resolveRpc('restart-mcp', agent)
     if (route.via === 'none') {
@@ -576,16 +604,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         tmux_session: agent.tmux_session,
         skipPreflight: true,
       })
-      // Notify the agent so it sees 📬 and resumes — the /mcp navigation
-      // left Claude Code in an interrupted state.
-      if (fleetStore) {
-        fleetStore.share({
-          type: 'chat',
-          from: SERVER_OWNER_ID,
-          to: agent.id,
-          text: 'Fleet MCP restarted. Resume your task.',
-        })
-      }
     } catch (e) {
       console.error(`restart-my-mcp daemon call failed: ${e.message}`)
     }
@@ -843,10 +861,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- POST /api/wiretap ---
   router.post('/api/wiretap', (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
-    const { agent, filter } = req.body || {}
+    const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter)
+    const tap = fleetStore.addWiretap(agent, filter, types)
     res.json(tap)
   })
 

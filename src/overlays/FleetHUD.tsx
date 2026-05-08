@@ -21,6 +21,11 @@ const FLEET_SHAPE_TYPES_SET = new Set(FLEET_SHAPE_TYPES)
  *  hit-testing (they're rendered by the overlay instead). */
 export const fleetHudOpenRef = { current: false }
 
+/** True when layout mode is active (fleet shapes are selectable/draggable).
+ *  Read by BrowseIdle's _deselHandler to skip selectNone during layout.
+ *  Separate from the CSS class to avoid circular dependency. */
+export const fleetLayoutActiveRef = { current: false }
+
 interface FleetHUDProps {
   mainEditor: Editor
   shapeUtils: TLAnyShapeUtilConstructor[]
@@ -113,6 +118,13 @@ export function FleetHUD({
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
   // Camera tick used to recompute canvas→screen for the render on camera change
   const [cameraTick, setCameraTick] = useState(0)
+  // True once document page shapes are present — panOffset must not be computed before this.
+  // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
+  // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
+  const [docShapesReady, setDocShapesReady] = useState(() => {
+    const s = mainEditor.getCurrentPageShapes()
+    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+  })
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -125,8 +137,11 @@ export function FleetHUD({
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
   // cameraYRef (Y): set once, never updated by shape moves.
-  const panOffsetRef = useRef<number | null>(null)
-  const cameraYRef = useRef<number | null>(null)
+  // Persisted in localStorage so panning survives browser reloads.
+  const storedPan = localStorage.getItem('fleet-hud-panOffset')
+  const storedCamY = localStorage.getItem('fleet-hud-cameraY')
+  const panOffsetRef = useRef<number | null>(storedPan !== null ? parseFloat(storedPan) : null)
+  const cameraYRef = useRef<number | null>(storedCamY !== null ? parseFloat(storedCamY) : null)
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -189,6 +204,25 @@ export function FleetHUD({
     }
   }, [mainEditor])
 
+  // Watch for SVG/HTML page shapes to arrive (async on browser restore).
+  // If no saved panOffset exists, reset so it recomputes with real shape bounds.
+  // If a saved panOffset exists (from a previous session), keep it — that's the user's position.
+  useEffect(() => {
+    if (docShapesReady) return
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      const hasPage = Object.values(changes.added).some((r: any) =>
+        r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
+      if (hasPage) {
+        setDocShapesReady(true)
+        // Only force recompute if we don't have a saved position
+        if (localStorage.getItem('fleet-hud-panOffset') === null) {
+          panOffsetRef.current = null
+        }
+      }
+    }, { source: 'all', scope: 'document' })
+    return unsub
+  }, [mainEditor, docShapesReady])
+
   // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
   // main canvas — avoids the "two copies" issue where both the HUD and main
   // canvas show the same shapes simultaneously.
@@ -233,12 +267,21 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
+    // Skip camera changes during the first 2s after mount — these are camera
+    // restoration and page-shape-driven adjustments, not user pans. Without
+    // this, the deltas get added to panOffset, corrupting the saved position.
+    // A single skipFirst wasn't enough: there can be multiple camera changes
+    // during load (default → restored → page-shape adjustment).
+    const mountTime = Date.now()
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (cam.z === lastCamZ && panOffsetRef.current !== null) {
+        if (Date.now() - mountTime < 2000) {
+          // Settling period — don't update panOffset
+        } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
+          localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
         }
         lastCamX = cam.x
         lastCamZ = cam.z
@@ -302,31 +345,65 @@ export function FleetHUD({
     const checkSelection = () => {
       const editor = overlayEditorRef.current
       if (!editor) return
-      // During drag-box select, TLDraw's brush sweeps empty areas and temporarily
-      // clears selection. Don't remove hud-layout-active mid-brush or
-      // pointer-events goes none and pointerup never reaches TLDraw (brush stuck).
-      if (editor.isIn('select.brushing')) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
-      el.classList.toggle('hud-layout-active', hasFleetSelected)
+      if (hasFleetSelected) {
+        // ADD immediately — user selected a fleet shape, enable interaction
+        fleetLayoutActiveRef.current = true
+        el.classList.add('hud-layout-active')
+      }
+      // REMOVAL is handled by BrowseIdle.onEnter — never from here.
+      // Removing from a store listener races with TLDraw's state machine
+      // and kills pointer-events mid-interaction.
     }
 
     // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
     let unsub: (() => void) | null = null
+    const onPointerUp = () => checkSelection()
+    // HACK: Safety valve — if pointer-events:none was restored mid-drag
+    // (e.g. class removed by a React re-render), TLDraw never sees pointerup
+    // and stays stuck in brushing/pointing_canvas with isPointing=true.
+    // On any window pointerup, if the overlay editor is still "pointing",
+    // force-dispatch pointer_up through TLDraw so it cleans up its state.
+    const onWindowPointerUp = (e: PointerEvent) => {
+      const editor = overlayEditorRef.current
+      if (!editor) return
+      if (!editor.inputs.isPointing) return
+      editor.dispatch({
+        type: 'pointer',
+        name: 'pointer_up',
+        target: 'canvas',
+        pointerId: e.pointerId,
+        point: { x: e.clientX, y: e.clientY, z: 0.5 },
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        button: e.button,
+        buttons: e.buttons,
+      })
+    }
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
         checkSelection()
         unsub = overlayEditorRef.current.store.listen(({ changes }) => {
           for (const [, to] of Object.values(changes.updated)) {
-            if ((to as any).typeName === 'instance_page_state') {
+            const typeName = (to as any).typeName
+            if (typeName === 'instance_page_state') {
+              checkSelection()
+              return
+            }
+            if (typeName === 'instance' && (to as any).brush == null) {
               checkSelection()
               return
             }
           }
         }, { scope: 'session', source: 'all' })
+        el.addEventListener('pointerup', onPointerUp, true)
+        window.addEventListener('pointerup', onWindowPointerUp, true)
       } else {
         rafId = requestAnimationFrame(trySubscribe)
       }
@@ -336,7 +413,13 @@ export function FleetHUD({
     return () => {
       cancelAnimationFrame(rafId)
       unsub?.()
-      el.classList.remove('hud-layout-active')
+      el.removeEventListener('pointerup', onPointerUp, true)
+      window.removeEventListener('pointerup', onWindowPointerUp, true)
+      // Only clear layout mode when the HUD is actually closing (expanded going false).
+      if (!expanded) {
+        fleetLayoutActiveRef.current = false
+        el.classList.remove('hud-layout-active')
+      }
     }
   }, [expanded])
 
@@ -351,30 +434,32 @@ export function FleetHUD({
     const onReset = () => {
       panOffsetRef.current = null
       cameraYRef.current = null
+      localStorage.removeItem('fleet-hud-panOffset')
+      localStorage.removeItem('fleet-hud-cameraY')
       setFleetBounds(getFleetBounds(mainEditor))
     }
+    // Toggle: FleetIconPill click dispatches fleet-hud-toggle
+    const onToggle = () => {
+      setExpanded(prev => {
+        const next = !prev
+        localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
+        return next
+      })
+    }
     window.addEventListener('fleet-hud-reset', onReset)
-    return () => window.removeEventListener('fleet-hud-reset', onReset)
+    window.addEventListener('fleet-hud-toggle', onToggle)
+    return () => {
+      window.removeEventListener('fleet-hud-reset', onReset)
+      window.removeEventListener('fleet-hud-toggle', onToggle)
+    }
   }, [mainEditor])
 
   // Don't render if no fleet shapes
   if (!fleetBounds) return null
 
-  // Collapsed: just the pill
+  // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
   if (!expanded) {
-    return (
-      <>
-        <div className="fleet-pill-container">
-          <span
-            className="fleet-pill"
-            onClick={() => { setExpanded(true); localStorage.setItem('fleet-hud-expanded', '1') }}
-            onPointerDown={e => e.stopPropagation()}
-          >
-            {aliveCount > 0 ? `${aliveCount} agent${aliveCount !== 1 ? 's' : ''}` : 'Fleet'}
-          </span>
-        </div>
-      </>
-    )
+    return null
   }
 
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
@@ -390,17 +475,19 @@ export function FleetHUD({
   if (panOffsetRef.current === null) {
     // Compute initial X: fleet right edge sits MARGIN_GAP px left of
     // the document's left margin at the current camera position.
+    // Guard: if SVG/HTML page shapes haven't loaded yet (browser restore path),
+    // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
+    // placed fleet shapes in the middle of the document text.
+    if (!docShapesReady) return null
     const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
       (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-    let docLeftScreen = window.innerWidth / 2
-    if (docShapes.length > 0) {
-      let minPageX = Infinity
-      for (const s of docShapes) {
-        const b = mainEditor.getShapePageBounds(s.id)
-        if (b && b.x < minPageX) minPageX = b.x
-      }
-      docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+    if (docShapes.length === 0) return null
+    let minPageX = Infinity
+    for (const s of docShapes) {
+      const b = mainEditor.getShapePageBounds(s.id)
+      if (b && b.x < minPageX) minPageX = b.x
     }
+    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
     // Use the left group's right edge for camera positioning — not the full
     // fleet bounds, which may include a right-margin chat far to the right.
     // "Left group" = shapes within 1200px of the leftmost fleet shape.
@@ -419,6 +506,8 @@ export function FleetHUD({
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
+    localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
+    localStorage.setItem('fleet-hud-cameraY', String(cameraYRef.current))
   }
 
   const overlayCam = {

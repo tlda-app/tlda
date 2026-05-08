@@ -43,12 +43,17 @@ export default defineConfig({
       ignored: ['**/fleet/dashboard/**'],
     },
     proxy: {
-      // Fleet WebSocket endpoints
+      // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
         target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
       '/ws/terminal': {
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        ws: true,
+      },
+      // Yjs sync WebSocket
+      '/sync': {
         target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
@@ -68,6 +73,10 @@ export default defineConfig({
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',
     },
+  },
+  define: {
+    USE_SERVER: false,
+    SYNCTEX_SERVER: JSON.stringify(''),
   },
   optimizeDeps: {
     exclude: ['pdfjs-dist'],

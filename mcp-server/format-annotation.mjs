@@ -15,7 +15,7 @@
 export function formatHighlight(annotation) {
   const lineRef = annotation.sortLine ? `L${annotation.sortLine}` : (annotation.page ? `p${annotation.page}` : '')
   const hlText = annotation.highlightedText || annotation.highlightText || ''
-  const fileRef = annotation.file ? ` ${annotation.file}` : ''
+  const fileRef = annotation.sourceFile ? ` ${annotation.sourceFile}` : (annotation.file ? ` ${annotation.file}` : '')
   let out = `[highlight] ${annotation.color || 'yellow'} ${lineRef}${fileRef}`
   if (hlText) {
     if (hlText.includes('⟦')) {
@@ -111,22 +111,73 @@ export function formatActivity(events, agents = []) {
 /**
  * Format an annotation ref attachment (from message metadata.attachments).
  * Used to expand «annotation:label#shape:id» and «highlight:label#shape:id» chip tokens.
- * @param {object} refData - ref attachment with fields: type, label, color, file, lineno, content
+ *
+ * @param {object} refData - ref attachment with fields:
+ *   type, label, color, file, sourceLines, content
+ *   sourceLines: [{line, content, file, highlighted, hlStart?, hlEnd?}]
+ *   hlStart/hlEnd are character offsets within the line for precise column ranges.
  * @returns {string}
  */
 export function formatAnnotationRef(refData) {
   if (!refData) return null
-  const { type, label, color, file, lineno } = refData
-  const lineRef = lineno ? `L${lineno}` : ''
-  const fileRef = file ? ` ${file.split('/').pop()}` : ''
-  let out = `[${type || 'annotation'}] ${color || ''} ${lineRef}${fileRef}`.trimEnd()
-  const content = refData.content || label || ''
-  if (content) {
-    if (content.includes('⟦')) {
-      out += `\n  ${content}`
-    } else {
-      out += `\n  ⟦${content}⟧`
-    }
+  const { type, label, color, file, sourceLines } = refData
+
+  // Unresolved highlight — calibration failed, show SVG-extracted text
+  if (refData.unresolved) {
+    const content = refData.content || label || ''
+    return `[${type || 'highlight'}] ${color || ''} ⚠ unresolved\n  ⟦${content}⟧`
   }
+
+  // Build location string as "file:line:col–line:col" ranges.
+  // Group contiguous highlighted lines into ranges; handle discontinuous highlights.
+  let locationRef = ''
+  if (file && sourceLines && sourceLines.length > 0) {
+    const highlighted = sourceLines.filter(sl => sl.highlighted)
+    if (highlighted.length > 0) {
+      // Group into contiguous runs
+      const runs = []
+      let runStart = highlighted[0], runEnd = highlighted[0]
+      for (let i = 1; i < highlighted.length; i++) {
+        if (highlighted[i].line === runEnd.line + 1) {
+          runEnd = highlighted[i]
+        } else {
+          runs.push([runStart, runEnd])
+          runStart = highlighted[i]
+          runEnd = highlighted[i]
+        }
+      }
+      runs.push([runStart, runEnd])
+
+      const rangeStrs = runs.map(([start, end]) => {
+        const sc = start.hlStart != null ? `:${start.hlStart}` : ''
+        const ec = end.hlEnd != null ? `:${end.hlEnd}` : ''
+        if (start.line === end.line) return `${start.line}${sc}–${start.line}${ec}`
+        return `${start.line}${sc}–${end.line}${ec}`
+      })
+      locationRef = ` ${file.split('/').pop()}:${rangeStrs.join(', ')}`
+    } else if (file) {
+      locationRef = ` ${file.split('/').pop()}`
+    }
+  } else if (file) {
+    locationRef = ` ${file.split('/').pop()}`
+  }
+
+  let out = `[${type || 'annotation'}] ${color || ''}${locationRef}`.trimEnd()
+
+  // Build passage: context lines with highlighted portions wrapped in ⟦⟧.
+  if (sourceLines && sourceLines.length > 0) {
+    const passageLines = sourceLines.map(sl => {
+      if (!sl.highlighted) return sl.content
+      if (sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart) {
+        return sl.content.slice(0, sl.hlStart) + '⟦' + sl.content.slice(sl.hlStart, sl.hlEnd) + '⟧' + sl.content.slice(sl.hlEnd)
+      }
+      return '⟦' + sl.content + '⟧'
+    })
+    out += '\n  ' + passageLines.join('\n  ')
+  } else {
+    const content = refData.content || label || ''
+    if (content) out += content.includes('⟦') ? `\n  ${content}` : `\n  ⟦${content}⟧`
+  }
+
   return out
 }

@@ -33,7 +33,7 @@ blocked((ms, stack) => {
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { existsSync, readdirSync, readFileSync, mkdirSync, openSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, openSync, statSync } from 'fs'
 import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
@@ -103,7 +103,7 @@ const daemonConnections = new Map()         // machine_id -> ws
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
-// themselves via the WS 'identify' message and get their own human agent.
+// themselves via WS 'login' (returning) or 'register' (new) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
@@ -246,16 +246,13 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
-// Set before a share() call to suppress the echo back to the originating WS connection.
-// Cleared immediately after share() returns (listeners fire synchronously inside share()).
-let _suppressEchoWs = null
+// No server-side echo suppression. Dedup is client-side: the WS reply
+// includes the event ID, which the client maps to its optimistic event
+// before the echo arrives (WS message ordering guarantees this).
 
 function broadcastFleet(msg) {
   const data = JSON.stringify(msg)
-  const suppress = _suppressEchoWs
-  _suppressEchoWs = null  // reset after one use (share() fires listeners synchronously)
   for (const ws of wsFleetClients) {
-    if (ws === suppress) continue  // don't echo back to the sender
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
@@ -265,7 +262,7 @@ function broadcastEvent(type, data) {
 function broadcastState() {
   if (!fleetStore) return
   broadcastFleet({
-    agents: fleetStore.getAllAgents().filter(a => !a.dead),
+    agents: fleetStore.getAllAgents(),
     tasks: fleetStore.getActiveTasks(),
   })
 }
@@ -309,6 +306,15 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
+  }
+  if (event?.type === 'build-chat' && fleetStore && event.text) {
+    // Send build notifications only to agents monitoring this doc (via monitor_add)
+    if (event.name) {
+      const subs = tldaFeedback.subscribers(event.name)
+      for (const agentId of subs) {
+        fleetStore.chat('fleet:tlda', agentId, event.text)
+      }
+    }
   }
 })
 
@@ -498,7 +504,7 @@ app.use('/docs', (req, res, next) => {
   // Exempt site_libs (Quarto static assets) from auth — loaded by iframes which can't inject Authorization headers
   if (req.path.includes('/site_libs/')) return next()
   requireRead(req, res, next)
-}, (req, res, next) => {
+}, async (req, res, next) => {
   // Skip manifest (handled above)
   if (req.path === '/manifest.json') return next()
 
@@ -515,6 +521,23 @@ app.use('/docs', (req, res, next) => {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
+
+    // On-demand shadow page generation: history/shadow-{hash7}/page-N.svg
+    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/page-(\d+)\.svg$/)
+    if (shadowPageMatch) {
+      const hash7 = shadowPageMatch[2]
+      const pageNum = parseInt(shadowPageMatch[3], 10)
+      try {
+        const { buildShadowPage } = await import('./lib/shadow-repo.mjs')
+        const svgPath = await buildShadowPage(name, hash7, pageNum)
+        res.set('Cache-Control', 'public, max-age=86400')
+        return res.sendFile(resolve(svgPath), { dotfiles: 'allow' })
+      } catch (e) {
+        console.error(`[shadow] on-demand page failed: ${name}@${hash7} p${pageNum}: ${e.message}`)
+        return res.status(404).json({ error: 'Shadow page unavailable', detail: e.message })
+      }
+    }
+
     return res.status(404).json({ error: 'Not found' })
   }
 
@@ -562,6 +585,36 @@ app.use('/docs', (req, res, next) => {
       console.error(`[docs] Error generating combined HTML for ${name}:`, e.message)
     }
     return res.status(404).json({ error: 'Not found' })
+  }
+
+  // On-demand current-column SVG: page-N.svg built lazily from output/main.dvi.
+  // buildCurrentPage handles DVI staleness (via ensureCurrentDvi) and SVG staleness.
+  // We delegate to it whenever: SVG is missing, DVI is missing/stale, or source.stamp
+  // is newer than the DVI (source changed since last build).
+  const livePageMatch = filePath.match(/^page-(\d+)\.svg$/)
+  if (livePageMatch) {
+    const pageNum = parseInt(livePageMatch[1], 10)
+    const svgPath = join(PROJECTS_DIR, name, 'output', filePath)
+    const dviPath = join(PROJECTS_DIR, name, 'output', 'main.dvi')
+    const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
+    const svgExists = existsSync(svgPath)
+    const dviExists = existsSync(dviPath)
+    const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
+    const needsBuild = !svgExists ||
+      !dviExists ||
+      statSync(svgPath).mtimeMs < dviMtime ||
+      (existsSync(stampPath) && statSync(stampPath).mtimeMs > dviMtime)
+    if (needsBuild) {
+      try {
+        const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
+        const built = await buildCurrentPage(name, pageNum)
+        res.set('Cache-Control', 'no-cache')
+        return res.sendFile(resolve(built), { dotfiles: 'allow' })
+      } catch (e) {
+        console.error(`[live] on-demand page failed: ${name} p${pageNum}: ${e.message}`)
+        return res.status(404).json({ error: 'Page unavailable', detail: e.message })
+      }
+    }
   }
 
   // Try project output first
@@ -695,9 +748,16 @@ if (existsSync(katexDir)) {
 
 // ---------- Viewer SPA ----------
 // Serve built SPA from dist/ (Vite build output)
+// Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
-  app.use(express.static(distDir))
+  app.use(express.static(distDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.set('Cache-Control', 'no-cache')
+      }
+    }
+  }))
 }
 
 // SPA catch-all: serve index.html for client-side routing
@@ -709,6 +769,7 @@ app.get('/{*path}', (req, res) => {
 
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
+    res.set('Cache-Control', 'no-cache')
     return res.sendFile(indexPath)
   }
 
@@ -894,7 +955,7 @@ server.on('upgrade', (req, socket, head) => {
       // Send initial state on connect
       if (fleetStore) {
         const initState = {
-          agents: fleetStore.getAllAgents().filter(a => !a.dead),
+          agents: fleetStore.getAllAgents(),
           tasks: fleetStore.getActiveTasks(),
         }
         ws.send(JSON.stringify(initState))
@@ -961,7 +1022,7 @@ async function handleFleetWsMessage(ws, msg) {
       registered_at: existing?.registered_at || now,
       last_seen: now,
       dead: false,
-      human: false,
+      human: !!msg.human,
       is_manager: !!manager,
       metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
       // machine_id: optional. The fleet MCP doesn't send it yet — once it
@@ -982,29 +1043,24 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Browser identity: a browser client sends { type: "identify", name: "alice" }
-  // to claim a human identity. Creates/updates a human agent in the DB.
-  if (type === 'identify') {
+  // Login: browser sends { type: "login", name: "skip" } to log in as an
+  // existing agent. Never creates — just attaches this WS to the agent.
+  if (type === 'login') {
     const { name } = msg
     if (!name || typeof name !== 'string') { error('missing name'); return }
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
-    const humanId = `fleet:${sanitized}`
-    const now = new Date().toISOString()
-    const existing = fleetStore.getAgent?.(humanId)
-    fleetStore.upsertAgent({
-      id: humanId,
-      friendly_name: sanitized,
-      human: true,
-      dead: false,
-      labels: existing?.labels || [],
-      registered_at: existing?.registered_at || now,
-      last_seen: now,
-    })
-    // Track this WS as belonging to this human (for heartbeat on /api/state)
-    ws._tldaHumanId = humanId
+    // Find existing agent by friendly_name
+    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(sanitized)
+    if (nameRows.length === 0) {
+      error(`No agent named "${sanitized}". Register first.`)
+      return
+    }
+    const agent = fleetStore._hydrateAgent(nameRows[0])
+    fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
+    ws._tldaHumanId = agent.id
     broadcastState()
-    reply({ id: humanId, name: sanitized })
+    reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
     return
   }
 
@@ -1020,33 +1076,77 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to, from, metadata, inline_attachments, attachments, cc, context } = msg
-    if (!to || !text) { error('missing to or message'); return }
-    // Fleet MCP sends inline_attachments / attachments / cc / context at the
-    // top level of the msg. Fold them into the metadata JSON so the receiver
-    // pipeline (fleet-data.mjs → chat-render.mjs / my_task) can find them.
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
+    if (!rawTo || !text) { error('missing to or message'); return }
+    const resolve = (id) => {
+      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
+      const a = fleetStore?.findAgent(id); return a ? a.id : null
+    }
+    const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
+    const to = resolve(rawTo)
+    if (!to) { error(`Recipient not found: "${rawTo}"`); return }
+    // Update sender heartbeat
+    if (from) fleetStore.updateHeartbeat?.(from)
+    // Resolve CC
+    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
+    if (ccResolved && ccResolved.length === 0) ccResolved = null
+    // Copy attachments to server-accessible path
+    let processedAttachments = attachments
+    if (attachments && attachments.length) {
+      const UPLOAD_DIR = path.join(import.meta.dirname || '.', 'uploads')
+      processedAttachments = attachments.map(a => {
+        if (a.path && fs.existsSync(a.path)) {
+          try {
+            fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+            const name = `${Date.now()}-${path.basename(a.path)}`
+            const dest = path.join(UPLOAD_DIR, name)
+            fs.copyFileSync(a.path, dest)
+            return { ...a, path: dest, originalPath: a.path }
+          } catch { /* keep original */ }
+        }
+        return a
+      })
+    }
+    // Resolve wiretaps
+    let wiretapRecipients = []
+    const taps = fleetStore.getWiretaps?.() || []
+    for (const tap of taps) {
+      if (!tap.filter) continue
+      let matches = false
+      try {
+        const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
+        const fromMatch = !f.from || f.from.some(grp => grp.every(t => [from, ...(fleetStore.findAgent(from)?.labels || [])].includes(t)))
+        const toMatch = !f.to || f.to.some(grp => grp.every(t => [to, ...(fleetStore.findAgent(to)?.labels || [])].includes(t)))
+        matches = fromMatch && toMatch
+      } catch {}
+      if (matches && tap.agent_id !== from && tap.agent_id !== to) {
+        wiretapRecipients.push(tap.agent_id)
+      }
+    }
+    // Attach sender's chatReminder if set
+    const senderAgent = fleetStore.getAgent?.(from)
+    const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     const combinedMetadata = {
       ...(metadata || {}),
-      ...(cc ? { cc } : {}),
-      ...(attachments ? { attachments } : {}),
+      ...(ccResolved ? { cc: ccResolved } : {}),
+      ...(processedAttachments ? { attachments: processedAttachments } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
+      ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
       ...(context ? { context } : {}),
+      ...(chatReminder ? { chatReminder } : {}),
     }
-    _suppressEchoWs = ws  // suppress echo back to the originating WS connection (reset by broadcastFleet)
-    const event = fleetStore.share?.({
-      type: 'chat',
-      from,
-      to,
-      text,
-      metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-    })
-    if (!event) { error('store error'); return }
-    // No manual broadcast — share() already fires the listener that
-    // broadcasts via fleetStore.onEvent → broadcastEvent('fleet-event', ...).
-    // A second manual broadcast here used to produce duplicate messages
-    // in receivers (one with the trimmed metadata shape, one with the full
-    // store record).
-    reply({ ok: true, event_id: event.id })
+    // Write to DB, reply with event_id FIRST so the client can reconcile
+    // the optimistic event before the echo arrives on the same socket.
+    const ts = new Date().toISOString()
+    const meta = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
+    const result = fleetStore.db.prepare(
+      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('chat', ts, from, to, text, meta)
+    const eventId = Number(result.lastInsertRowid)
+    fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+    reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
+    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
+    broadcastEvent('fleet-event', inserted)
     return
   }
 
@@ -1054,6 +1154,41 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent } = msg
     if (agent) fleetStore.updateHeartbeat?.(agent)
     reply({ ok: true })
+    return
+  }
+
+  if (type === 'load-history') {
+    const limit = Math.min(parseInt(msg.limit || '50'), 1000)
+    const before = msg.before || null
+    const agent = msg.agent || null
+    try {
+      let events = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+        .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      const hasMore = events.length > limit
+      if (hasMore) events.shift()
+      events = events.filter(e => {
+        const t = e.text || ''
+        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
+      })
+      const allAgents = fleetStore.getAllAgents()
+      const agentMap = {}
+      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
+      const unreadIds = new Set()
+      try {
+        const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
+        for (const r of rows) unreadIds.add(r.event_id)
+      } catch {}
+      const resolved = events.map(e => ({
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }))
+      reply({ events: resolved, hasMore })
+    } catch (e) {
+      error(e.message)
+    }
     return
   }
 
@@ -1249,6 +1384,22 @@ async function handleFleetWsMessage(ws, msg) {
       const result = await sendRpc(route.machine_id, 'kick', { agent_id: agent.id })
       broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
       reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- kill-session ----
+  if (type === 'kill-session') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('kill-session', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
   }
@@ -1742,7 +1893,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'activity-event') {
     if (!fleetStore) return
-    const { agent_id, tool, arg, input, ts, usage, prettyResult } = msg
+    const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
     if (!agent_id) return
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
@@ -1751,12 +1902,34 @@ function handleDaemonWsMessage(ws, msg) {
         from: agent_id,
         to: agent_id,
         text: tool === '_text' ? (arg || '') : (tool || ''),
-        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}) },
+        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}), ...(origTool ? { origTool } : {}) },
         unread: false,
         timestamp: ts || new Date().toISOString(),
       })
     } catch (e) {
       console.error(`[fleet-daemon] activity write: ${e.message}`)
+    }
+    return
+  }
+
+  if (type === 'qualification-warning') {
+    if (!fleetStore) return
+    const { agent_id, file, required, message: warnMsg } = msg
+    if (!agent_id || !warnMsg) return
+    try {
+      const event = fleetStore.share({
+        type: 'chat',
+        from: agent_id,
+        to: SERVER_OWNER_ID,
+        text: warnMsg,
+        metadata: { type: 'qualification_warning', file, required },
+      })
+      if (event) {
+        fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
+        broadcastEvent('fleet-event', { ...event, type: 'chat' })
+      }
+    } catch (e) {
+      console.error(`[fleet-daemon] qualification-warning write: ${e.message}`)
     }
     return
   }

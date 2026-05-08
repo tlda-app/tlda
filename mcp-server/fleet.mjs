@@ -7,7 +7,7 @@
  * See fleet-identity.md for the full identity system design.
  *
  * Tools:
- *   - register(manager?, session_id?)    register this agent (all agents call this)
+ *   - register(session_id?, name?)       register this agent (all agents call this)
  *   - delegate(agent, description, message)  assign task (manager only)
  *   - chat(message, to?)                 send message + kick recipient
  *   - task_list()                        show active tasks + registered agents
@@ -114,7 +114,14 @@ function getSearchIndex() {
 }
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
-// getFleetStore() is gone. Use fetch() to the dashboard server instead.
+// All server fetches go through fleetFetch — adds a timeout so tool handlers
+// never hang when the server is down. Without this, Claude Code kills the
+// MCP process (SIGKILL) after its own internal timeout.
+const FETCH_TIMEOUT_MS = 10000;
+function fleetFetch(url, opts = {}) {
+  if (!opts.signal) opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  return fetch(url, opts);
+}
 
 // Append-only message log (backup). Fleet store writes are handled by
 // individual handlers (chat, delegate, task_done, register) to avoid
@@ -171,15 +178,18 @@ async function fetchCurrentDocVersion(doc) {
   try {
     const tldaPort = process.env.TLDA_PORT || 5176;
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=1`, {
+    const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
       headers,
       signal: AbortSignal.timeout(1500),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const v = data?.versions?.[0];
-    const hash = v?.hash || v?.commitHash || v?.id || null;
-    const version = typeof hash === 'string' ? hash.slice(0, 12) : null;
+    // Prefer most recent git-type entry (has real commitHash) over build-type entries
+    const versions = data?.versions || [];
+    const gitVersion = versions.find(v => v.type === 'git' && v.commitHash);
+    const v = gitVersion || versions[0];
+    const hash = v?.commitHash || v?.hash || null;
+    const version = typeof hash === 'string' ? hash.slice(0, 7) : null;
     _docVersionCache = { doc, version, ts: now };
     return version;
   } catch {
@@ -581,12 +591,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Registration & Identity ----
     {
       name: 'register',
-      description: 'Register this agent. All agents call this at session start. Pass manager=true to register as manager.',
+      description: 'Register this agent. All agents call this at session start.',
       inputSchema: {
         type: 'object',
         properties: {
-          manager: { type: 'boolean', description: 'Register as manager (default false)' },
-          testing: { type: 'boolean', description: 'Deprecated, ignored. Any manager can register alongside others now.' },
           session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
           name: { type: 'string', description: 'Agent name' },
         },
@@ -708,20 +716,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'List tlda documents this agent is currently subscribed to for feedback notifications.',
       inputSchema: { type: 'object', properties: {} },
     },
-    // Keep register_manager as alias for backward compat (keepalive watcher calls it)
-    {
-      name: 'register_manager',
-      description: 'Register as manager. Alias for register(manager=true).',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
-      name: 'unregister_manager',
-      description: 'Step down as manager. ',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-    },
     // ---- Agent Lifecycle ----
     {
       name: 'name_agent',
@@ -790,6 +784,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp.' },
+          doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
     },
@@ -917,11 +912,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Wiretap ----
     {
       name: 'wiretap',
-      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels.',
+      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
       inputSchema: {
         type: 'object',
         properties: {
           filter: { type: 'array', description: 'DNF of [role, label] tuples. E.g. [[["to","skip"],["from","math"]],[["to","apps"]]]' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Event types to listen for. E.g. ["chat"] for chat only, ["chat","delegate"] for chat + delegations. Omit for all types.' },
           remove: { description: 'true to remove all wiretaps, or a wiretap ID to remove one.' },
         },
       },
@@ -1072,11 +1068,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // Report tool_call status to dashboard (replaces pane scraping for idle detection)
   reportStatus('tool_call', name);
 
+  try {
+
   // ==== Registration & Identity ====
 
   // ---- register ----
-  if (name === 'register' || name === 'register_manager') {
-    const isManager = name === 'register_manager' || args.manager === true;
+  if (name === 'register') {
     const agentName = args.name || null;
 
     // The MCP process is preserved across compactions (it's a stdio child of
@@ -1108,6 +1105,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           AGENT_ID = match.id;
         }
       }
+    }
+
+    // Re-try session detection if it failed at startup (file may not have existed yet)
+    if (!CLAUDE_SESSION && !args.session_id) {
+      try {
+        const ppid = process.ppid;
+        if (ppid && ppid > 1) {
+          const sessionFile = path.join(os.homedir(), '.claude', 'sessions', `${ppid}.json`);
+          if (fs.existsSync(sessionFile)) {
+            const data = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+            if (data?.sessionId) {
+              CLAUDE_SESSION = data.sessionId;
+              process.stderr.write(`[fleet] register: session detected on retry: ${CLAUDE_SESSION}\n`);
+            }
+          }
+        }
+      } catch {}
     }
 
     // Need either a session UUID or a name
@@ -1309,7 +1323,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       tmux_session: entry.tmux_session,
       cwd: entry.cwd,
       labels: entry.labels,
-      manager: entry.is_manager,
       machine_id: machineId,
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
@@ -1328,8 +1341,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const agentCount = state.agents.length;
-    const role = isManager ? 'manager' : 'agent';
-    let msg = `Registered ${entry.id} as ${role}. ${agentCount} agent(s) registered.`;
+    let msg = `Registered ${entry.id}. ${agentCount} agent(s) registered.`;
     if (identitySource) {
       msg += `\nIdentity: ${identitySource}`;
     }
@@ -1337,33 +1349,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
     }
 
-    const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
-    const repoRefPath = path.join(__dirname, 'managing-agents.md');
-    const refExists = fs.existsSync(refPath);
-
-    if (isManager) {
-      msg += '\n\nWhen you see 📬 as input, call my_task() — it means an agent sent you a message or a task changed.';
-      if (refExists) {
-        msg += '\nRead ~/.claude/reference/managing-agents.md before proceeding.';
-      } else {
-        msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
-      }
-    } else {
-      msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
-      msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
-      if (refExists) {
-        msg += '\nSee ~/.claude/reference/managing-agents.md for how to work with the manager.';
-      } else {
-        msg += `\nSee ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
-      }
+    if (!CLAUDE_SESSION) {
+      msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
+      process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }
+
+    msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
+    msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
     msg += '\nChat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.';
 
     // Health check: report what's up/down so agent knows communication channels
     const health = [];
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
       health.push('tlda: ✘ (unreachable)');
@@ -1380,14 +1379,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return { content: [{ type: 'text', text: msg }] };
-  }
-
-  // ---- unregister_manager ----
-  if (name === 'unregister_manager') {
-    const guard = requireManager();
-    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-    // No state write needed — manager flag is handled server-side
-    return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
   }
 
   // reclaim_identity removed — tmux-based identity detection handles this automatically
@@ -1532,7 +1523,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (att.path && fs.existsSync(att.path)) {
         try {
           const buf = fs.readFileSync(att.path);
-          const res = await fetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
+          const res = await fleetFetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
             method: 'POST',
             headers: { 'x-filename': encodeURIComponent(att.name) },
             body: buf,
@@ -1585,7 +1576,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let tldaDown = false;
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
       // 401 means tlda is up but auth is required — that's fine, server is running
       if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
     } catch {
@@ -1610,7 +1601,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { reason } = args || {};
     try {
       const tldaPort = process.env.TLDA_PORT || 5176;
-      const res = await fetch(`http://127.0.0.1:${tldaPort}/api/terminal-card`, {
+      const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -1659,9 +1650,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text }] };
     }
 
-    // Check if there are multiple managers (show delegated_by if so)
-    const managerCount = agents.filter(a => a.is_manager).length;
-    const showOwner = managerCount > 1;
+    const showOwner = false;
 
     const agentMap = new Map(agents.map(a => [a.id, a]));
     const lines = active.map(t => {
@@ -2032,7 +2021,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         try {
           const fs = await import('fs')
           const path = await import('path')
-          const resp = await fetch(url)
+          const resp = await fleetFetch(url)
           if (resp.ok) {
             const buf = Buffer.from(await resp.arrayBuffer())
             const ext = path.extname(new URL(url).pathname) || '.png'
@@ -2058,13 +2047,14 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
   // content. Handles: msg, activity, tool, annotation, highlight chip types.
   // metadata: optional message metadata (for annotation/highlight ref lookup via attachments)
   async function resolveChipTokens(text, metadata) {
-    if (!text || !text.includes('«')) return text
+    if (!text || !text.includes('«')) return { text, images: [] }
     const chipPattern = /«(.+?)»/g
     const chips = [...text.matchAll(chipPattern)]
-    if (chips.length === 0) return text
+    if (chips.length === 0) return { text, images: [] }
 
     const dashPort = process.env.FLEET_DASH_PORT || 5176
     let resolved = text
+    const chipImages = []
     for (const match of chips) {
       const inner = match[1]
       const colonIdx = inner.indexOf(':')
@@ -2080,6 +2070,11 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         if (refData) {
           const formatted = formatAnnotationRef(refData)
           if (formatted) resolved = resolved.replace(token, '\n' + formatted + '\n')
+          // Include screenshot for unresolved highlights
+          if (refData.unresolved && refData.screenshotDataUrl) {
+            const base64 = refData.screenshotDataUrl.replace(/^data:image\/png;base64,/, '')
+            chipImages.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } })
+          }
         }
         // No API fallback — ref data must be in attachments (embedded by sender)
       }
@@ -2097,9 +2092,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         if (evIdMatch) {
           // Event ID path
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
@@ -2148,9 +2141,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
             try {
               const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
-              const url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res = await fetch(url)
-              const data = await res.json()
+              const data = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data.events || []).filter(e => e.type === 'activity')
             } catch {}
           }
@@ -2213,7 +2204,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         }
       }
     }
-    return resolved
+    return { text: resolved, images: chipImages }
   }
 
   // ---- my_task ----
@@ -2251,12 +2242,19 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const fromLabel = m.metadata?.fromLabel || m.from;
         const replyHint = ` (reply with chat(to: "${m.from}"))`;
         const ctx = m.metadata?.context;
-        const docHint = ctx?.doc
-          ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
-          : '';
-        const resolvedText = await resolveChipTokens(m.text, m.metadata)
-        const { text: imgResolvedText, images } = await resolveImages(resolvedText)
-        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
+        let docHint = '';
+        if (ctx?.doc) {
+          if (ctx.compareRef) {
+            docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
+          } else {
+            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
+          }
+        }
+        const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
+        const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
+        images.push(...chipImages)
+        const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
+        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
@@ -2725,13 +2723,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const pageSize = args.page_size || 200;
 
     const fetchEventsForAgent = async (agentId) => {
-      const dashPort = process.env.FLEET_DASH_PORT || 5176;
-      let url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${pageSize}`;
-      if (args.since) url += `&since=${encodeURIComponent(args.since)}`;
-      if (args.until) url += `&until=${encodeURIComponent(args.until)}`;
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
+      const params = { agent: agentId, limit: pageSize };
+      if (args.since) params.since = args.since;
+      if (args.until) params.until = args.until;
+      const data = await sendWS('store-events', params);
+      if (!data) return;
       serverTotal = data.total ?? null;
       for (const e of (data.events || [])) {
         const text = e.type === 'delegate'
@@ -2792,6 +2788,30 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       header = `${filtered.length} messages${rangeStr}`;
     }
 
+    // Fetch shadow commit log if doc parameter provided
+    let shadowCommits = [];
+    if (args.doc) {
+      try {
+        const dashPort = process.env.FLEET_DASH_PORT || 5176;
+        const sRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          shadowCommits = (sData.commits || []).map(c => ({ ...c, ms: new Date(c.timestamp).getTime() }));
+        }
+      } catch {}
+    }
+
+    // Binary search: find latest shadow commit at or before a given timestamp
+    const versionAt = (tsStr) => {
+      if (!shadowCommits.length || !tsStr) return null;
+      const ms = new Date(tsStr).getTime();
+      // Commits are newest-first from git log
+      for (const c of shadowCommits) {
+        if (c.ms <= ms) return c.hash;
+      }
+      return null;
+    };
+
     // Format as readable thread
     const lines = filtered.map(m => {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
@@ -2799,7 +2819,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const from = fromAgent?.friendly_name || m.from?.slice?.(0, 8) || m.from;
       const toAgent = getAgent(state, m.to);
       const to = toAgent?.friendly_name || m.to?.slice?.(0, 8) || m.to;
-      return `[${ts}] ${from} → ${to}\n${m.text}`;
+      const ver = args.doc ? versionAt(m.timestamp) : null;
+      const verStr = ver ? ` @${ver}` : '';
+      return `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
     });
 
     return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n\n---\n\n')}` }] };
@@ -2809,14 +2831,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- label_agent ----
   if (name === 'label_agent') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/label`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: args.agent, labels: args.labels || [] }),
-      });
-      const data = await res.json();
+      const data = await sendWS('label', { agent: args.agent, labels: args.labels || [] });
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
@@ -2829,14 +2845,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const { agent } = args;
     if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to interrupt.' }], isError: true };
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/interrupt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent }),
-      });
-      const data = await res.json();
+      const data = await sendWS('interrupt', { agent });
       if (data.error) return { content: [{ type: 'text', text: `Interrupt failed: ${data.error}` }], isError: true };
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
@@ -2859,7 +2869,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/restart-mcp`, {
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/restart-mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: args.agent }),
@@ -2886,7 +2896,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'roll_call') {
     const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/roll-call`);
+      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/roll-call`);
       const data = await res.json();
       if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
 
@@ -3182,34 +3192,30 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
         // Remove specific wiretap by ID
-        await fetch(`http://127.0.0.1:${dashPort}/api/wiretap/${args.remove}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: args.remove });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const existing = await res.json();
+      const existing = await sendWS('wiretap-list', { agent: myId });
       for (const tap of existing) {
-        await fetch(`http://127.0.0.1:${dashPort}/api/wiretap/${tap.id}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: tap.id });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
 
     // List existing wiretaps if no filter specified
     if (!args.filter) {
-      const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const taps = await res.json();
+      const taps = await sendWS('wiretap-list', { agent: myId });
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
       const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
     }
 
-    const res = await fetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: myId, filter: args.filter }),
-    });
-    const tap = await res.json();
-    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}` }] };
+    const body = { agent: myId, filter: args.filter }
+    if (args.types && args.types.length > 0) body.types = args.types
+    const tap = await sendWS('wiretap-add', body);
+    const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
+    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
   }
 
   // ---- timer (non-blocking) ----
@@ -3358,6 +3364,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+
+  } catch (err) {
+    process.stderr.write(`[fleet] tool ${name} threw: ${err?.message || err}\n${err?.stack || ''}\n`);
+    return { content: [{ type: 'text', text: `Fleet MCP error (${name}): ${err?.message || err}` }], isError: true };
+  }
 });
 
 const transport = new StdioServerTransport();
@@ -3543,7 +3554,7 @@ async function handleChannelMessage(msg) {
   // Dashboard WS sends { event: 'fleet-event', data: {...} } or state updates
   const eventType = msg.event === 'fleet-event' ? (msg.data?.type || '') : '';
   if (!eventType) return;
-  if (!['chat', 'delegate', 'task_done'].includes(eventType)) return;
+  if (!['chat', 'delegate', 'task_done', 'activity'].includes(eventType)) return;
 
   const data = msg.data || {};
 
@@ -3558,9 +3569,12 @@ async function handleChannelMessage(msg) {
     return;
   }
 
-  // Only care about events targeting this agent
+  // Check if this agent is a direct target OR a wiretap CC recipient
   const targetId = data.to || data.to_id || '';
-  if (targetId !== AGENT_ID) return;
+  const wiretapCc = data.metadata?.wiretap_cc || [];
+  const isDirectTarget = targetId === AGENT_ID;
+  const isWiretapTarget = wiretapCc.includes(AGENT_ID);
+  if (!isDirectTarget && !isWiretapTarget) return;
 
   // Skip events FROM this agent
   const fromId = data.from || data.from_id || '';
@@ -3584,20 +3598,47 @@ async function handleChannelMessage(msg) {
     const s = String(raw || '');
     return s.length > PREVIEW_MAX ? s.slice(0, PREVIEW_MAX) + '…' : s;
   };
-  if (eventType === 'delegate') {
-    const desc = previewOf(data.text || data.description);
-    content = `📬 New task assigned: ${desc}\nCall my_task() to see it.`;
-  } else if (eventType === 'chat') {
-    // Resolve friendly name: check metadata, then strip fleet: prefix from ID
-    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
-    const preview = previewOf(data.text || data.message);
-    const ctx = data.metadata?.context;
-    const docHint = ctx?.doc
-      ? ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
-      : '';
-    content = `📬 Message from ${fromLabel}${docHint}: ${preview}\nCall my_task() to read and respond.`;
-  } else if (eventType === 'task_done') {
-    content = `📬 Task update. Call my_task() to see details.`;
+  const isTruncated = (raw) => String(raw || '').length > PREVIEW_MAX;
+  const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+  const toLabel = (data.to || data.to_id || '')?.replace(/^fleet:/, '') || '';
+
+  if (isWiretapTarget && !isDirectTarget) {
+    // Wiretap: format identically to get_thread entries so the agent can
+    // concatenate wiretap output with get_thread history seamlessly.
+    const ts = data.timestamp ? new Date(data.timestamp).toLocaleString() : '';
+    const text = eventType === 'delegate'
+      ? `[DELEGATE] ${data.description || ''}\n${data.message || data.text || ''}`
+      : eventType === 'task_done'
+      ? `[DONE] ${data.description || ''}`
+      : eventType === 'activity'
+      ? (data.metadata?.tool || data.text || '')
+      : data.text || data.message || '';
+    content = `[${ts}] ${fromLabel} → ${toLabel}\n${text}`;
+  } else {
+    // Direct target: use the existing notification format
+    if (eventType === 'delegate') {
+      const desc = previewOf(data.text || data.description);
+      const rawDesc = data.text || data.description || '';
+      const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call my_task() for the full text before responding)` : '';
+      content = `📬 New task assigned: ${desc}${truncNote}\nCall my_task() to see it.`;
+    } else if (eventType === 'chat') {
+      const rawText = data.text || data.message || '';
+      const preview = previewOf(rawText);
+      const ctx = data.metadata?.context;
+      let docHint = '';
+      if (ctx?.doc) {
+        if (ctx.compareRef) {
+          docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
+        } else {
+          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
+        }
+      }
+      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
+      const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
+    } else if (eventType === 'task_done') {
+      content = `📬 Task update. Call my_task() to see details.`;
+    }
   }
 
   // Suppress if identical content within 30s
@@ -3615,7 +3656,7 @@ async function handleChannelMessage(msg) {
       params: {
         content,
         meta: {
-          event_type: eventType,
+          event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
           from: fromId,
         },
       },
@@ -3773,8 +3814,8 @@ setInterval(() => {
   }
 }, 30000); // check every 30s
 
-// Also log signal-based exits (SIGTERM, SIGHUP) for diagnostics.
-for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+// SIGTERM/SIGHUP: exit gracefully (parent wants us dead).
+for (const sig of ['SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: received ${sig}, exiting\n`;
     process.stderr.write(msg);
@@ -3782,3 +3823,20 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
     process.exit(0);
   });
 }
+// SIGINT: log but ignore. Claude Code propagates SIGINT from terminal interrupts
+// (Ctrl+C, Escape). Exiting on SIGINT kills the MCP every time the agent gets
+// interrupted, which is the main cause of "MCP disconnected" errors.
+process.on('SIGINT', () => {
+  process.stderr.write(`[${new Date().toISOString()}] fleet PID ${process.pid}: received SIGINT, ignoring\n`);
+});
+
+// Catch-all exit diagnostics: log every exit with code and reason.
+process.on('exit', (code) => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: process.exit(${code}) — catch-all\n`;
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+process.on('beforeExit', (code) => {
+  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: beforeExit(${code}) — event loop drained\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});

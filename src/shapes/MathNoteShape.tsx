@@ -42,6 +42,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 import { chatInsertBus } from './FleetPillShape'
+import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -547,6 +548,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         editor.setEditingShape(null)
       }
 
+      // Voice accumulator state — declared here so the updateListener can
+      // reference them by closure even though they're mutated later.
+      let voiceAnchorPos: number | null = null
+      let lastVoiceLen = 0
+      let voiceFilling = false  // true while onVoiceUpdate is dispatching
+
       const startState = EditorState.create({
         doc: shape.props.text || '',
         extensions: [
@@ -579,6 +586,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 type: 'math-note' as any,
                 props: { text },
               })
+            }
+            // Cursor moved or text typed by the user (not voice) — interrupt the
+            // current speech session so the next one starts from the new position.
+            // Mirrors the textarea onEdit → enterEdit() path in voice.mjs.
+            if (!voiceFilling && (update.selectionSet || update.docChanged)) {
+              voiceAnchorPos = null
+              lastVoiceLen = 0
+              notifyAccumulatorCursorMoved()
             }
             // Track cursor position for preview scroll
             if (update.selectionSet || update.docChanged) {
@@ -646,6 +661,49 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       // Focus the editor
       view.focus()
+      // Move cursor to end of content so the user can continue typing after existing text.
+      // On double-click edit of a note, CodeMirror's own click handler repositions the cursor
+      // to the clicked location — this just sets the initial position sensibly.
+      view.dispatch({
+        selection: { anchor: view.state.doc.length },
+        scrollIntoView: true,
+      })
+
+      // Wire voice accumulator: Right Shift → dictate into this note.
+      // voiceAnchorPos/lastVoiceLen/voiceFilling are declared above (before EditorState.create)
+      // so the updateListener closure can reference them.
+      const onVoiceUpdate = (text: string) => {
+        const v = cmViewRef.current
+        if (!v) return
+        if (voiceAnchorPos === null) {
+          // First update of this recording session: snapshot cursor position
+          voiceAnchorPos = v.state.selection.main.head
+          lastVoiceLen = 0
+        }
+        const from = voiceAnchorPos
+        const to = voiceAnchorPos + lastVoiceLen
+        voiceFilling = true
+        v.dispatch({
+          changes: { from, to, insert: text },
+          selection: { anchor: from + text.length },
+        })
+        voiceFilling = false
+        lastVoiceLen = text.length
+        // EditorView.updateListener fires and saves to shape props
+      }
+      const onVoiceStop = () => {
+        // Recording stopped — next session starts a fresh anchor
+        voiceAnchorPos = null
+        lastVoiceLen = 0
+      }
+      setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+
+      // Re-register accumulator whenever CodeMirror regains focus.
+      // If the chat shape called setVoiceTarget (which calls hardResetVoice and clears
+      // _accumulator), we need to reclaim it when the note is focused again — the
+      // isEditing effect won't re-fire since the note stays in edit mode throughout.
+      const onCmFocus = () => setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+      view.dom.addEventListener('focus', onCmFocus, true)
 
       // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
       if (useVim && pendingEntryMode && cm) {
@@ -659,7 +717,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
 
       return () => {
+        view.dom.removeEventListener('focus', onCmFocus, true)
         container.removeEventListener('keydown', captureTab, true)
+        clearVoiceAccumulator(onVoiceUpdate)
         view.destroy()
         cmViewRef.current = null
         setIsVimInsert(false)

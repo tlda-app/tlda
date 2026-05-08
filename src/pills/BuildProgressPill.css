@@ -1,0 +1,11 @@
+.build-progress-text {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .build-progress-text {
+  color: rgba(255, 255, 255, 0.15);
+}

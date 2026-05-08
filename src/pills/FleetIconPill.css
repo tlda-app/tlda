@@ -1,0 +1,73 @@
+/* FleetIconPill — basestar logo in the build-pills-row */
+
+.fleet-icon-pill-container {
+  position: relative;
+  pointer-events: all;
+}
+
+/* Badge: opacity-based visibility, same pattern as .build-warning-badge */
+.fleet-icon-pill-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: black;
+  cursor: pointer;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.fleet-icon-pill-container:hover .fleet-icon-pill-badge {
+  opacity: 0.6;
+}
+
+/* Dimmer when fleet shapes are hidden */
+.fleet-icon-pill--hidden .fleet-icon-pill-badge {
+  opacity: 0.05;
+}
+
+.fleet-icon-pill--hidden:hover .fleet-icon-pill-badge {
+  opacity: 0.35;
+}
+
+/* Layout preset fan — appears to the right of the icon during drag */
+.fleet-icon-pill-fan {
+  position: absolute;
+  left: 100%;
+  bottom: 0;
+  margin-left: 6px;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 10002;
+}
+
+.fleet-icon-pill-fan-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+
+.fleet-icon-pill-fan-item.hovered {
+  opacity: 0.7;
+}
+
+/* ── Dark mode ─────────────────────────────────────────────────────────────── */
+
+html[data-theme="dark"] .fleet-icon-pill-badge {
+  color: white;
+}
+
+html[data-theme="dark"] .fleet-icon-pill-fan-item {
+  opacity: 0.4;
+}
+
+html[data-theme="dark"] .fleet-icon-pill-fan-item.hovered {
+  opacity: 0.8;
+}

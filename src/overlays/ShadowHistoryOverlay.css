@@ -1,12 +1,32 @@
-/* Shadow history scrubber overlay — floating bar at bottom of canvas */
+/* Shadow history scrubber overlay — floating bar at bottom of canvas
+   with optional space-time dots panel above it */
 
-.shadow-scrubber {
+/* Container: wraps both the dots panel and scrubber bar */
+.shadow-scrubber-container {
   position: fixed;
   bottom: 56px; /* above tldraw's bottom toolbar */
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
 
+  width: 560px;
+  max-width: 90vw;
+  pointer-events: all;
+  user-select: none;
+
+  /* Faint by default, visible on hover */
+  opacity: 0.15;
+  transition: opacity 0.3s ease;
+}
+.shadow-scrubber-container:hover {
+  opacity: 1;
+}
+.shadow-scrubber-container.active {
+  opacity: 0.85;
+}
+
+/* The scrubber bar itself */
+.shadow-scrubber-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -18,24 +38,9 @@
   backdrop-filter: blur(8px);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 
-  min-width: 340px;
-  max-width: 620px;
-  pointer-events: all;
-  user-select: none;
   color: rgba(226, 232, 240, 0.85);
   font-size: 11px;
   font-family: var(--tl-font-sans, system-ui, sans-serif);
-
-  /* Faint by default, visible on hover */
-  opacity: 0.15;
-  transition: opacity 0.3s ease;
-}
-.shadow-scrubber:hover {
-  opacity: 1;
-}
-/* When actively scrubbing (not at current version), stay visible */
-.shadow-scrubber.active {
-  opacity: 0.85;
 }
 
 /* Open button — attached to the bottom bar, activates the scrubber */
@@ -113,9 +118,7 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
   transition: transform 0.15s;
 }
-.shadow-scrubber-range::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-}
+
 .shadow-scrubber-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
@@ -125,10 +128,10 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Label area */
+/* Label area — fixed width prevents layout shift */
 .shadow-scrubber-label {
   flex: none;
-  max-width: 200px;
+  width: 120px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -156,6 +159,27 @@
   text-align: center;
 }
 
+/* Realign button */
+.shadow-scrubber-realign {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: rgba(148, 163, 184, 0.5);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.shadow-scrubber-realign:hover {
+  color: rgba(99, 102, 241, 0.9);
+  background: rgba(148, 163, 184, 0.15);
+}
+
 /* Close button */
 .shadow-scrubber-close {
   flex: none;
@@ -177,7 +201,108 @@
   background: rgba(148, 163, 184, 0.15);
 }
 
-/* Dark theme — already matches the dark bg, so minimal overrides needed */
-.tl-theme__dark .shadow-scrubber {
+/* Dark theme */
+.tl-theme__dark .shadow-scrubber-bar {
   background: rgba(15, 23, 42, 0.92);
+}
+
+
+/* ─── Space-time dots panel ────────────────────────────────────── */
+
+/* Hidden by default, appears on hover over the container */
+.spacetime-panel {
+  display: flex;
+  height: 160px;
+  margin-bottom: 4px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.shadow-scrubber-container:hover .spacetime-panel {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Y axis labels column */
+.spacetime-y-axis {
+  position: relative;
+  width: 22px;
+  flex: none;
+}
+
+.spacetime-y-label {
+  position: absolute;
+  right: 2px;
+  transform: translateY(-50%);
+  font-size: 8px;
+  font-family: var(--tl-font-sans, system-ui, sans-serif);
+  color: rgba(148, 163, 184, 0.45);
+  line-height: 1;
+}
+
+/* Dot scatter field.
+   Aligned with the slider track: the bar has padding(10) + step(22) + gap(8)
+   before the range input, and gap(8) + step(22) + gap(8) + label(120) + buttons(~50) + padding(10)
+   after it. The field margins match to line up X positions with the slider. */
+.spacetime-field {
+  position: relative;
+  flex: 1;
+  margin-left: 18px;   /* padding(10) + step(22) + gap(8) - y-axis(22) = 18 */
+  margin-right: 210px;  /* gap(8) + step(22) + gap(8) + label(120) + gap(8) + btns(~40) + padding(10) */
+  border-left: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+/* Individual dot */
+.spacetime-dot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  background: rgba(245, 158, 11, 0.8);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.spacetime-dot.multi {
+  width: 2px;
+  height: 2px;
+}
+.spacetime-dot:hover {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 1);
+  box-shadow: 0 0 5px rgba(245, 158, 11, 0.5);
+  z-index: 10;
+}
+
+/* Tooltip — fixed position, positioned by JS */
+.spacetime-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.88);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 10px;
+  font-family: var(--tl-font-sans, system-ui, sans-serif);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 600;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.spacetime-tooltip-page {
+  font-weight: 600;
+  color: rgba(245, 158, 11, 0.9);
+}
+
+.spacetime-tooltip-time {
+  opacity: 0.7;
+}
+
+.spacetime-tooltip-multi {
+  opacity: 0.5;
+  font-size: 9px;
 }

@@ -337,15 +337,14 @@ export function CanvasClipPanel({
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
 
-  // Mirror main editor's active tool to the HUD editor so the single tldraw toolbar
-  // controls both. When the user picks eraser/select in the main toolbar, the HUD
-  // editor switches to the same tool — enabling deletion of fleet shapes (and any
-  // stuck non-fleet shapes) without needing a separate HUD toolbar.
-  const mainToolId = useValue('mainToolId', () => mainEditor.getCurrentToolId(), [mainEditor])
+  // HUD always stays in browse mode — it's a viewport overlay, not an editing surface.
+  // Mirroring the main tool caused placement tools (voice-note, math-note, etc.) to
+  // fire onEnter in the HUD editor and create ghost shapes in the HUD's copy store.
+  // Fleet shapes are deletable via select+X without needing eraser mirroring.
   useEffect(() => {
     if (!editor || !lockCamera) return
-    try { editor.setCurrentTool(mainToolId) } catch { /* tool may not exist in HUD */ }
-  }, [editor, mainToolId, lockCamera])
+    try { editor.setCurrentTool('browse') } catch { /* ignore */ }
+  }, [editor, lockCamera])
 
   // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
   // files dropped over a fleet-chat shape are routed to that chat's input instead
@@ -707,9 +706,10 @@ export function CanvasClipPanel({
         // returns null — use elementFromPoint instead.
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
           const target = document.elementFromPoint(e.clientX, e.clientY)
-          const chatLog = (target?.closest('[data-shape-id]')
-            ?.querySelector('.fleet-chat-log') ?? null) as HTMLElement | null
-          if (chatLog) chatLog.scrollTop += e.deltaY
+          const shapeEl = target?.closest('[data-shape-id]')
+          const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
+            shapeEl?.querySelector('.fleet-agents-body') ?? null) as HTMLElement | null
+          if (scrollable) scrollable.scrollTop += e.deltaY
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
         if (Math.abs(e.deltaX) > 0) {

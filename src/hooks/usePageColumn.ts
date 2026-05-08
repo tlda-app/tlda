@@ -62,6 +62,14 @@ function makeShapeId(columnId: string, pageNum: number): TLShapeId {
   return `shape:col-${columnId}-p${pageNum}` as TLShapeId
 }
 
+/** Find minimum x coordinate of <text> elements in SVG (PDF points), or null if none found */
+function parseSvgTextMinX(svgText: string): number | null {
+  const matches = [...svgText.matchAll(/<text[^>]+\bx="([\d.]+)"/g)]
+  if (matches.length === 0) return null
+  const xs = matches.map(m => parseFloat(m[1])).filter(x => x > 0)
+  return xs.length > 0 ? Math.min(...xs) : null
+}
+
 function parseSvgDimensions(svgText: string) {
   const vbMatch = svgText.match(/viewBox="([^"]+)"/)
   if (vbMatch) {
@@ -94,7 +102,6 @@ function visiblePageRange(
 
 // ── Imperative column manager ──────────────────────────────────────────────
 
-const HANDLE_WIDTH = 4
 const AXIS_RATIO = 3  // must exceed this ratio for horizontal movement
 
 class PageColumn {
@@ -109,6 +116,7 @@ class PageColumn {
   private handleId: TLShapeId | null = null
   private handlePos: { x: number; y: number } | null = null
   private handleUnsub: (() => void) | null = null
+  private textLeftMarginPx: number | null = null  // set from page-1 SVG; null = use fallback
 
   constructor(editor: Editor, options: PageColumnOptions) {
     columnSession++
@@ -117,33 +125,76 @@ class PageColumn {
     this.columnId = `${columnSession}-${options.source.type}-${(options.source.ref || 'live').slice(0, 7)}`
     this.columnX = options.columnX
     this.yOffset = options.yOffset ?? 0
+    // Expose compare ref for chat metadata
+    if (options.source.ref) {
+      ;(window as any).__tlda_compare_ref__ = options.source.ref.slice(0, 7)
+    }
   }
 
-  /** Create a draggable handle shape in the gap between columns */
-  createHandle(mainRightEdge: number) {
-    const handleH = Math.min(this.options.totalPages * (PAGE_HEIGHT + PAGE_GAP), 2000)
-    const isRight = this.columnX > mainRightEdge
-    const handleX = isRight
-      ? mainRightEdge + (this.columnX - mainRightEdge) / 2 - HANDLE_WIDTH / 2
-      : this.columnX + TARGET_WIDTH + (mainRightEdge - this.columnX - TARGET_WIDTH) / 2 - HANDLE_WIDTH / 2
+  private handleXFromMargin(): number {
+    // Use parsed SVG text margin if available; fall back to geometry margin=1.2in
+    const marginPx = this.textLeftMarginPx ?? (1.2 * 72 * (TARGET_WIDTH / PDF_WIDTH))
+    return this.columnX + marginPx - 10
+  }
 
-    this.handleId = createShapeId(`col-${this.columnId}-handle`)
+  /** Create a draggable handle line near the left text edge of the shadow column */
+  createHandle(_mainRightEdge: number) {
+    const handleX = this.handleXFromMargin()
+
+    // Deterministic ID based on source ref — stable across sessions so Yjs doesn't accumulate
+    const hash7 = (this.options.source.ref || 'live').slice(0, 7)
+    this.handleId = createShapeId(`shadow-col-handle-${hash7}`)
+
+    // Sweep ALL existing shadow column handles (any hash7, any session) before creating new one
+    for (const s of this.editor.getCurrentPageShapes()) {
+      if ((s.id as string).startsWith('shape:shadow-col-handle-')) {
+        if (s.isLocked) this.editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+        this.editor.deleteShapes([s.id])
+      }
+    }
+
+    // Render as a TLDraw line — line shapes hide their selection bounds by default,
+    // so clicking the handle won't show a bounding box.
+    const handleH = 99999
+    const handleY = this.yOffset - handleH / 2
     this.editor.createShape({
       id: this.handleId,
-      type: 'geo' as any,
-      x: handleX, y: this.yOffset,
-      isLocked: false, opacity: 0.1,
+      type: 'line' as any,
+      x: handleX, y: handleY,
+      isLocked: false, opacity: 0.05,
       props: {
-        w: HANDLE_WIDTH, h: handleH,
-        geo: 'rectangle', fill: 'solid',
-        color: 'light-blue', dash: 'solid',
+        points: {
+          a1: { id: 'a1', index: 'a1', x: 0, y: 0 },
+          a2: { id: 'a2', index: 'a2', x: 0, y: handleH },
+        },
+        color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
       },
     })
-    this.handlePos = { x: handleX, y: this.yOffset }
+    this.handlePos = { x: handleX, y: handleY }
 
     // Listen for handle drag — apply Y offset (default) or X gap (if strongly horizontal)
+    // Also recreate the handle if it gets accidentally deleted (eraser, etc.)
     this.handleUnsub = this.editor.store.listen(({ changes }) => {
       if (this.destroyed || !this.handleId) return
+
+      // Handle deleted — recreate it
+      for (const rec of Object.values(changes.removed)) {
+        const r = rec as any
+        if (r.typeName !== 'shape' || r.id !== this.handleId) continue
+        const pos = this.handlePos || { x: r.x, y: r.y }
+        setTimeout(() => {
+          if (this.destroyed || this.loaded.size === 0) return
+          this.editor.createShape({
+            id: this.handleId!, type: 'line' as any,
+            x: pos.x, y: pos.y, isLocked: false, opacity: 0.05,
+            props: {
+              points: { a1: { id: 'a1', index: 'a1', x: 0, y: 0 }, a2: { id: 'a2', index: 'a2', x: 0, y: 99999 } },
+              color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
+            },
+          })
+        }, 50)
+      }
+
       for (const [, to] of Object.values(changes.updated)) {
         const rec = to as any
         if (rec.typeName !== 'shape' || rec.id !== this.handleId) continue
@@ -222,6 +273,18 @@ class PageColumn {
       const scale = TARGET_WIDTH / dims.width
       const shapeId = makeShapeId(this.columnId, pageNum)
       setSvgText(shapeId as string, svgText)
+
+      // On page 1, compute text left margin from SVG and update handle if needed
+      if (pageNum === 1 && this.textLeftMarginPx === null) {
+        const minX = parseSvgTextMinX(svgText)
+        if (minX !== null) {
+          this.textLeftMarginPx = minX * (TARGET_WIDTH / dims.width)
+          if (this.handleId) {
+            const h = this.editor.getShape(this.handleId)
+            if (h) this.editor.updateShape({ id: this.handleId, type: h.type, x: this.handleXFromMargin() })
+          }
+        }
+      }
       svgViewBoxStore.set(shapeId as string, dims.viewBox)
 
       if (this.destroyed) return  // final check before creating shape
@@ -277,6 +340,8 @@ class PageColumn {
 
   destroy() {
     this.destroyed = true
+    // Clear compare ref from chat metadata
+    delete (window as any).__tlda_compare_ref__
     // Stop listening for handle drags
     this.handleUnsub?.()
     this.handleUnsub = null
@@ -288,6 +353,13 @@ class PageColumn {
         this.editor.deleteShapes([this.handleId])
       }
       this.handleId = null
+    }
+    // Clean up orphan handles from old session-counter-based naming scheme
+    for (const s of this.editor.getCurrentPageShapes()) {
+      if (/^shape:col-\d+.*-handle$/.test(s.id as string)) {
+        if (s.isLocked) this.editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+        this.editor.deleteShapes([s.id])
+      }
     }
     // Remove tracked pages
     if (this.loaded.size > 0) this.removePages([...this.loaded])
@@ -342,7 +414,8 @@ export function usePageColumn(
   // Manage column imperatively via refs — render-time reconciliation avoids
   // React Strict Mode double-fire issues that destroy columns mid-fetch.
   const columnRef = useRef<PageColumn | null>(null)
-  const activeKeyRef = useRef<string | null>(null)
+  // '__startup__' sentinel so the first null→null transition fires reconcile for orphan cleanup
+  const activeKeyRef = useRef<string | null>('__startup__')
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
 
@@ -370,6 +443,21 @@ export function usePageColumn(
       syncTimerRef.current = null
     }
     activeKeyRef.current = optionsKey
+
+    // Startup orphan cleanup: on the first transition (from '__startup__' sentinel to null),
+    // sweep handle shapes AND page column shapes left over from previous sessions.
+    if (!options && editor) {
+      requestAnimationFrame(() => {
+        if (columnRef.current) return  // column was created before rAF fired
+        for (const s of editor.getCurrentPageShapes()) {
+          const id = s.id as string
+          if (id.startsWith('shape:shadow-col-handle-') || /^shape:col-\d+-shadow-/.test(id)) {
+            if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
+            editor.deleteShapes([s.id])
+          }
+        }
+      })
+    }
 
     // Create new column
     if (editor && options) {
@@ -408,6 +496,15 @@ export function usePageColumn(
         unsub()
       }
     }
+  }
+
+  // Propagate yOffset changes to an existing column without destroying it.
+  // The optionsKey doesn't include yOffset, so this handles SyncTeX alignment updates.
+  const col = columnRef.current
+  if (col && options && options.yOffset !== undefined && options.yOffset !== col.options.yOffset) {
+    const newOffset = options.yOffset
+    col.options = { ...col.options, yOffset: newOffset }
+    requestAnimationFrame(() => { if (!col.destroyed) col.setYOffset(newOffset) })
   }
 
   // No useEffect for cleanup — React Strict Mode double-fires effects,

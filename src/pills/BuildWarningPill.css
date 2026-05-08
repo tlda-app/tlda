@@ -3,6 +3,9 @@
 .build-warning-container {
   position: relative;
   pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .build-warning-badge {
@@ -55,6 +58,15 @@
 
 .build-warning-item + .build-warning-item {
   border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.build-warning-item.clean-rebuild {
+  color: #7ab8a0;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 /* Dark mode */

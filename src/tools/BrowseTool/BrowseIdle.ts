@@ -29,6 +29,7 @@ import {
   getHitShapeOnCanvasPointerDown,
   startEditingShapeWithRichText,
 } from 'tldraw'
+import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
@@ -148,6 +149,23 @@ export class BrowseIdle extends StateNode {
     this.selectedShapesOnKeyDown = []
     this.editor.setCursor({ type: 'default', rotation: 0 })
 
+    // Layout mode exit: when returning to idle in the HUD overlay editor,
+    // check if fleet shapes are still selected. If not, turn off layout mode.
+    // This is the ONLY place layout mode is turned off — never from store
+    // listeners, which race with TLDraw's state machine.
+    if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
+      const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+      const hasFleetSelected = this.editor.getSelectedShapeIds().some(id => {
+        const s = this.editor.getShape(id)
+        return s && FLEET_TYPES.has(s.type)
+      })
+      if (!hasFleetSelected) {
+        fleetLayoutActiveRef.current = false
+        const wrap = this.editor.getContainer().closest('.fleet-hud-wrap') as HTMLElement
+        wrap?.classList.remove('hud-layout-active')
+      }
+    }
+
     // Capture-phase listener: clears selection when clicking outside the
     // selected shape.  Runs before fleet shapes' stopEventPropagation can
     // swallow the event, so the state machine always sees the click.
@@ -160,9 +178,22 @@ export class BrowseIdle extends StateNode {
         this.editor.markEventAsHandled(e)
       }
 
+      // Mark scrubber interactions as handled — prevents TLDraw from calling
+      // setPointerCapture on the canvas, which would steal the drag from the
+      // range input and make the slider unresponsive.
+      if (target?.closest('.shadow-scrubber-container')) {
+        this.editor.markEventAsHandled(e)
+        return
+      }
+
       const selected = this.editor.getSelectedShapeIds()
       if (selected.length === 0) return
       if (!target) return
+
+      // In HUD layout mode, don't deselect on empty-area clicks — let TLDraw
+      // handle it via pointing_canvas (BrowsePointingCanvas skips selectNone).
+      // Uses a JS ref (not the CSS class) to avoid circular dependency.
+      if (fleetLayoutActiveRef.current && target.closest('.fleet-hud-wrap .tl-canvas')) return
 
       // If clicking on a tldraw selection/resize handle, don't interfere
       if (target.closest('.tl-corner-handle, .tl-resize-handle, .tl-selection__fg')) return
@@ -277,7 +308,7 @@ export class BrowseIdle extends StateNode {
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
           // treat as empty canvas so drag-box select works over document backgrounds.
           // In the main canvas, keep passing through to DOM.
-          if (this.editor.getContainer().closest('.fleet-hud-wrap.hud-layout-active')) {
+          if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
             this.parent.transition('pointing_canvas', info)
             return
           }

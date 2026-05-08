@@ -63,7 +63,7 @@ export function HistoryPanel({ docName, entry, totalPages, pageHeight, editor, o
 
   const label = entry.type === 'git'
     ? entry.commitMessage?.slice(0, 40) || entry.id
-    : new Date(entry.timestamp).toLocaleTimeString()
+    : new Date(entry.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 
   return (
     <div className={`history-panel history-panel--${side}`}>

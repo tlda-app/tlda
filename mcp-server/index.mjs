@@ -664,7 +664,7 @@ async function collectDrawnShapes(docName) {
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
-      const sourceLine = record.meta?.sourceLine || null;
+      const sourceLine = record.meta?.sourceAnchor?.line || record.meta?.sourceLine || null;
       // Handwriting recognition metadata
       const transcription = record.meta?.transcription || null;
       const transcriptionVerified = record.meta?.transcriptionVerified || false;
@@ -2124,7 +2124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // create_shape tool definition removed — too low-level
     {
       name: 'lookup_theorem',
-      description: 'Look up a theorem, lemma, proposition, corollary, definition, or assumption in a tlda document by number or label. Returns label, type, number, page, source line, and title.',
+      description: 'Look up any labeled item in a tlda document — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2574,7 +2574,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (typeFilter && !typeFilter.includes(aType)) continue;
           if (unaddressedOnly && s.meta?.addressed) continue;
           if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;
-          const shapeLine = s.lines?.[0]?.line || s.sourceLine || 0;
+          const shapeLine = s.sourceLine || s.lines?.[0]?.line || 0;
           if (startLine && shapeLine && shapeLine < startLine) continue;
           if (endLine && shapeLine && shapeLine > endLine) continue;
           items.push({
@@ -3583,20 +3583,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
     try {
       const tldaProjectsDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects');
-      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
-      if (!fs.existsSync(mapPath)) {
-        return { content: [{ type: 'text', text: `No theorem-map.json for "${doc}". Trigger a build first.` }], isError: true };
-      }
-      const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
       const q = query.trim();
-      let entry = mapData[q];
-      if (!entry) entry = Object.values(mapData).find(e => e.number === q);
-      if (!entry) {
-        const available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
-        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.\nAvailable: ${available}` }] };
+      let entry = null;
+
+      // Load source-map.json (unified index)
+      const smPath = path.join(tldaProjectsDir, doc, 'output', 'source-map.json');
+      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
+
+      if (fs.existsSync(smPath)) {
+        const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
+        const labels = sm.labels || [];
+        entry = labels.find(e => e.label === q || e.number === q);
+        if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
+      } else if (fs.existsSync(mapPath)) {
+        // Legacy fallback
+        const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        entry = mapData[q];
+        if (!entry) entry = Object.values(mapData).find(e => e.number === q);
       }
+
+      if (!entry) {
+        let available = '';
+        if (fs.existsSync(smPath)) {
+          const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
+          const named = (sm.labels || []).filter(e => ['thm','lem','prop','cor','def','ass'].includes(e.type));
+          available = named.map(e => `${e.number} (${e.label})`).join(', ');
+        } else if (fs.existsSync(mapPath)) {
+          const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+          available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
+        }
+        return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.${available ? '\nAvailable: ' + available : ''}` }] };
+      }
+      const typeName = { thm: 'THM', lem: 'LEM', prop: 'PROP', cor: 'COR', def: 'DEF', ass: 'ASS', eq: 'EQ', sec: 'SEC', fig: 'FIG' }[entry.type] || entry.type.toUpperCase();
       const lines = [
-        `**${entry.type.toUpperCase()} ${entry.number}** — ${entry.title || '(no title)'}`,
+        `**${typeName} ${entry.number}** — ${entry.title || '(no title)'}`,
         `Label: \`${entry.label}\``,
         `Page: ${entry.page}`,
         entry.file ? `Source: ${entry.file}:${entry.line}` : 'Source: unknown',

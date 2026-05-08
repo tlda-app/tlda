@@ -330,6 +330,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-log {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-gutter: stable;
 }
 
 /* --- Draggable elements in chat --- */
@@ -942,30 +943,27 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: rgba(150, 150, 200, 0.4);
   font-size: 12px;
 }
-/* Thread messages — look like normal chat lines */
+/* Thread messages — rendered like live chat lines inside a subtle frame */
 .fleet-chat-shape .tool-pretty-thread {
   border-left: 2px solid var(--accent, #7a9ec8);
-  padding-left: 6px;
+  border-radius: 4px;
+  background: rgba(100, 140, 200, 0.02);
+  padding: 2px 0;
 }
-.fleet-chat-shape .pretty-thread-msg {
-  padding: 2px 4px;
+.fleet-chat-shape .tool-pretty-thread .chat-line {
+  /* Thread messages inherit normal chat-line styling */
 }
-.fleet-chat-shape .pretty-thread-msg + .pretty-thread-msg {
-  border-top: 1px solid var(--glass-2, rgba(128,128,128,0.06));
+.fleet-chat-shape .pretty-msg-body {
+  font-size: 11px;
+  margin-top: 1px;
 }
-.fleet-chat-shape .pretty-msg-header {
-  font-size: 10px;
-  margin-bottom: 1px;
-}
-.fleet-chat-shape .pretty-ts {
-  color: var(--text-dim);
+.fleet-chat-shape .pretty-ver {
+  font-family: var(--mono);
   font-size: 9px;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
+  color: var(--accent, #7a9ec8);
+  opacity: 0.6;
+  margin-left: 2px;
 }
-.fleet-chat-shape .pretty-arrow { color: var(--text-dim); margin: 0 2px; font-size: 9px; }
-.fleet-chat-shape .pretty-msg-body { font-size: 11px; }
 /* Search results — alternating stripes with clear separation */
 .fleet-chat-shape .tool-pretty-search {
   border-left: 2px solid var(--yellow, #c8b060);
@@ -1468,21 +1466,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Respawn button --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  background: none;
-  border: 1px solid rgba(128,128,128,0.2);
-  border-radius: 3px;
-  color: rgba(128,128,128,0.5);
-  font-size: 10px;
-  padding: 0 4px;
-  cursor: pointer;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-.fleet-agents-shape .fleet-agents-respawn-btn:hover {
-  border-color: rgba(128,128,128,0.4);
-  color: rgba(128,128,128,0.7);
-}
 
 /* --- Unread dot --- */
 
@@ -1499,21 +1482,40 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: #7a9ec8;
 }
 
-/* --- Respawn button in row --- */
+/* --- Kill/respawn button (left of agent name, on hover) --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  margin-left: 4px;
+.fleet-agents-shape .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
+  cursor: pointer;
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(128, 128, 128, 0.7);
 }
-.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn {
-  opacity: 0.6;
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
+  opacity: 0.5;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-kill-btn:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  opacity: 1 !important;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
   opacity: 0;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn {
-  opacity: 0.5;
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
+  opacity: 0.4;
 }
 
 /* --- Spawn buttons --- */
@@ -2236,11 +2238,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-docview-body {
   position: relative;
+  width: 100%;
+  height: 100%;
 }
 .fleet-docview .clip-panel {
   border: none;
   border-radius: 0;
   background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+.fleet-docview .clip-panel-canvas {
+  height: 100% !important;
+}
+.fleet-docview .fleet-btn-group,
+.fleet-docview .fleet-btn-group.fleet-btn-group-topright {
+  z-index: 100;
 }
 .fleet-docview-nav {
   display: flex;
@@ -2279,7 +2292,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .docview-sources-overlay {
   position: absolute;
   inset: 0;
-  background: var(--bg-panel, #1e1e2e);
+  background: rgba(255, 255, 255, 0.95);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -2287,18 +2300,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 8px;
   gap: 4px;
 }
+.tl-theme__dark .docview-sources-overlay {
+  background: rgba(30, 30, 46, 0.95);
+}
 .docview-sources-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-dim);
+  color: #666;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding-bottom: 4px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid rgba(0,0,0,0.08);
   margin-bottom: 2px;
+}
+.tl-theme__dark .docview-sources-header {
+  color: var(--text-dim);
+  border-bottom-color: rgba(255,255,255,0.08);
 }
 .docview-sources-back {
   font-size: 11px;
@@ -2318,13 +2338,17 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   border-radius: 3px;
 }
-.docview-source-row:hover { background: rgba(255,255,255,0.05); }
+.docview-source-row:hover { background: rgba(0,0,0,0.05); }
+.tl-theme__dark .docview-source-row:hover { background: rgba(255,255,255,0.05); }
 .docview-source-row input[type="checkbox"] {
   margin: 0;
   cursor: pointer;
 }
 .docview-source-label {
   flex: 1;
+  color: #333;
+}
+.tl-theme__dark .docview-source-label {
   color: var(--text, #cdd6f4);
 }
 .docview-source-desc {
@@ -2462,4 +2486,64 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin: 0 2px;
   vertical-align: middle;
   letter-spacing: 0.02em;
+}
+
+/* --- Doc Clip Shape --- */
+
+.doc-clip-shape {
+  overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 2px;
+}
+
+.doc-clip-bar {
+  height: 8px;
+  background: rgba(128, 128, 128, 0.08);
+  cursor: grab;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.doc-clip-bar:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.doc-clip-close {
+  position: absolute;
+  right: 2px;
+  top: -1px;
+  font-size: 10px;
+  line-height: 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  padding: 0 2px;
+}
+
+.doc-clip-shape:hover .doc-clip-close {
+  opacity: 0.5;
+}
+
+.doc-clip-close:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+
+.doc-clip-shape .clip-panel {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.doc-clip-shape .clip-panel-canvas {
+  height: 100% !important;
+}
+
+.doc-clip-body {
+  overflow: hidden;
 }

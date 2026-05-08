@@ -60,14 +60,13 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
   preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
-  remotes: 'tlda remotes [doc]\n\n  Show remote access URLs (Tailscale, Funnel) with QR codes.\n  Checks server reachability, firewall status, and prints scannable URLs.\n\n  Optionally pass a doc name to include ?doc=NAME in the URLs.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port'])
+const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser'])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -839,23 +838,30 @@ async function cmdListen() {
 
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda open [name]'); process.exit(1) }
-
   const server = getServer()
   const token = getToken()
-  const url = `${server}/?doc=${name}` + (token ? `&token=${token}` : '')
-  console.log(`Opening ${url}`)
+  const browser = getFlag('browser') || loadConfig().browser || null
+  const redirect = name ? `/?doc=${name}` : '/'
+  const url = token
+    ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
+    : `${server}${redirect}`
+  console.log(`Opening ${server}${redirect}`)
 
   const { execFile } = await import('child_process')
-  execFile('open', [url])
+  if (browser) {
+    execFile('open', ['-a', browser, url])
+  } else {
+    execFile('open', [url])
+  }
 }
 
 async function cmdShare() {
+  const { execSync } = await import('child_process')
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: tlda share [name]'); process.exit(1) }
 
-  const server = getServer()
   const config = loadConfig()
+  const port = getPort()
   const readToken = config.tokenRead || null
 
   if (!readToken) {
@@ -863,8 +869,51 @@ async function cmdShare() {
     process.exit(1)
   }
 
-  const url = `${server}/?doc=${name}&token=${readToken}`
-  console.log(url)
+  const run = (cmd) => {
+    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
+    catch { return null }
+  }
+
+  const makeUrl = (base) => {
+    const redirect = `/?doc=${name}`
+    return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
+  }
+
+  const printQr = async (url) => {
+    try {
+      const qr = await import('qrcode-terminal')
+      qr.default.generate(url, { small: true })
+    } catch {}
+  }
+
+  // Try Funnel (public HTTPS) first, then Tailscale, then localhost
+  const funnelStatus = run('tailscale funnel status 2>&1')
+  const funnelMatch = funnelStatus?.match(/https:\/\/\S+\.ts\.net/)
+  if (funnelMatch) {
+    const url = makeUrl(funnelMatch[0])
+    console.log(`${bold('Funnel')} (public)`)
+    console.log(`  ${cyan(url)}`)
+    console.log()
+    await printQr(url)
+    return
+  }
+
+  const tsIp = run('tailscale ip -4')
+  if (tsIp) {
+    const url = makeUrl(`http://${tsIp}:${port}`)
+    console.log(`${bold('Tailscale')}`)
+    console.log(`  ${cyan(url)}`)
+    console.log()
+    await printQr(url)
+    return
+  }
+
+  // Localhost fallback
+  const url = `http://localhost:${port}/?doc=${name}&token=${readToken}`
+  console.log(`${bold('Local')} ${dim('(not reachable from other devices)')}`)
+  console.log(`  ${cyan(url)}`)
+  console.log()
+  console.log(dim('To share over the network: install Tailscale, or run `tailscale funnel start`'))
 }
 
 async function cmdList() {
@@ -954,6 +1003,35 @@ async function cmdBuild() {
   console.log(green('Build triggered.'))
 }
 
+async function cmdRevert() {
+  const name = getPositional(0) || await inferProjectName()
+  let ref = getPositional(1)
+  if (!name || !ref) {
+    console.error('Usage: tlda revert <name> shadow:<hash>')
+    console.error('  Restores source files from a shadow repo snapshot and rebuilds.')
+    console.error('  Use `doc_version` MCP tool to list versions.')
+    process.exit(1)
+  }
+
+  // Accept both "shadow:abc1234" and bare "abc1234"
+  if (ref.startsWith('shadow:')) ref = ref.slice(7)
+
+  console.log(`Reverting "${name}" to shadow:${ref.slice(0, 7)}...`)
+
+  try {
+    // Restore source from shadow repo + write to author's working copy
+    const result = await api('POST', `/api/projects/${name}/history/shadow/${ref}/revert`)
+    if (result.error) {
+      console.error(red(`Revert failed: ${result.error}`))
+      process.exit(1)
+    }
+    console.log(green(`Reverted to shadow:${ref.slice(0, 7)} — rebuilding...`))
+  } catch (e) {
+    console.error(red(`Revert failed: ${e.message}`))
+    process.exit(1)
+  }
+}
+
 async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda delete <name>'); process.exit(1) }
@@ -1033,6 +1111,43 @@ async function cmdPublish() {
   exec(`node ${scriptPath} ${passthrough.join(' ')}`, { stdio: 'inherit' })
 }
 
+async function cmdMcpSetup() {
+  const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const nodePath = process.execPath
+  const serverUrl = getServer()
+  const outPath = join(process.cwd(), '.mcp.json')
+
+  let existing = {}
+  try { existing = JSON.parse(readFileSync(outPath, 'utf8')) } catch {}
+
+  const config = {
+    ...existing,
+    mcpServers: {
+      ...(existing.mcpServers || {}),
+      tlda: {
+        type: 'stdio',
+        command: nodePath,
+        args: [join(tldaRoot, 'mcp-server', 'index.mjs')],
+        env: { TLDA_SERVER: serverUrl }
+      },
+      fleet: {
+        type: 'stdio',
+        command: nodePath,
+        args: [join(tldaRoot, 'mcp-server', 'fleet.mjs')],
+        cwd: tldaRoot
+      }
+    }
+  }
+
+  writeFileSync(outPath, JSON.stringify(config, null, 2) + '\n')
+  console.log(`Wrote ${outPath}`)
+  console.log(`  tlda MCP:  ${join(tldaRoot, 'mcp-server', 'index.mjs')}`)
+  console.log(`  fleet MCP: ${join(tldaRoot, 'mcp-server', 'fleet.mjs')}`)
+  console.log(`  server:    ${serverUrl}`)
+  console.log()
+  console.log(`Open Claude Code in this directory and the tlda + fleet tools will be available.`)
+}
+
 async function cmdConfig() {
   const sub = getPositional(0)
   if (sub === 'set') {
@@ -1088,120 +1203,12 @@ async function cmdAuth() {
   console.log('  show   Show current tokens')
 }
 
-async function cmdRemotes() {
-  const { execSync } = await import('child_process')
-  const config = loadConfig()
-  const port = getPort()
-  const readToken = config.tokenRead || null
-  const doc = getPositional(0) || null
-
-  const run = (cmd) => {
-    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
-    catch { return null }
-  }
-
-  const check = async (url) => {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
-      return res.ok
-    } catch { return false }
-  }
-
-  // Server running?
-  const localOk = await check(`http://127.0.0.1:${port}/health`)
-  if (!localOk) {
-    console.error(red(`Server not responding on localhost:${port}`))
-    console.error(dim('Run: tlda server start'))
-    process.exit(1)
-  }
-  console.log(green(`Server running on port ${port}`))
-  console.log()
-
-  // Firewall check (macOS)
-  if (process.platform === 'darwin') {
-    const fwState = run('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate')
-    if (fwState?.includes('State = 1')) {
-      const nodePath = run('which node')
-      if (nodePath) {
-        const fwApps = run('/usr/libexec/ApplicationFirewall/socketfilterfw --listapps')
-        if (fwApps?.includes(nodePath) && fwApps?.includes('Block incoming connections')) {
-          // Find the block line that follows the node path
-          const lines = fwApps.split('\n')
-          const nodeIdx = lines.findIndex(l => l.includes(nodePath))
-          if (nodeIdx >= 0 && lines[nodeIdx + 1]?.includes('Block incoming')) {
-            console.log(red('macOS firewall is blocking Node.js incoming connections!'))
-            console.log(dim(`Run: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp ${nodePath}`))
-            console.log()
-          }
-        }
-      }
-    }
-  }
-
-  const buildLoginUrl = (base) => {
-    const redirect = doc ? `/?doc=${doc}` : '/'
-    if (readToken) {
-      return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
-    }
-    return `${base}${redirect}`
-  }
-
-  const printQr = async (url) => {
-    try {
-      const qr = await import('qrcode-terminal')
-      qr.default.generate(url, { small: true })
-    } catch {
-      console.log(dim('  (qrcode-terminal not available)'))
-    }
-  }
-
-  const entries = []
-
-  // Tailscale
-  const tsIp = run('tailscale ip -4')
-  if (tsIp) {
-    const base = `http://${tsIp}:${port}`
-    const url = buildLoginUrl(base)
-    const ok = await check(`${base}/health`)
-    entries.push({ label: 'Tailscale', url, ok })
-  }
-
-  // Funnel
-  const funnelStatus = run('tailscale funnel status 2>&1')
-  if (funnelStatus) {
-    const urlMatch = funnelStatus.match(/https:\/\/\S+\.ts\.net/)
-    if (urlMatch) {
-      const base = urlMatch[0]
-      const url = buildLoginUrl(base)
-      const ok = await check(`${base}/health`)
-      entries.push({ label: 'Funnel', url, ok })
-    }
-  }
-
-  if (entries.length === 0) {
-    console.log(dim('No remote access methods found.'))
-    console.log(dim('Install Tailscale: https://tailscale.com'))
-    return
-  }
-
-  for (const { label, url, ok } of entries) {
-    const status = ok ? green('reachable') : red('unreachable')
-    console.log(`${bold(label)} ${dim('—')} ${status}`)
-    if (readToken) {
-      console.log(dim('  Login URL (sets cookie, then redirects):'))
-    }
-    console.log(`  ${cyan(url)}`)
-    console.log()
-    if (ok) await printQr(url)
-    console.log()
-  }
-}
 
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
     'server', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
-    'status', 'errors', 'delete', 'rm', 'preview',
+    'status', 'errors', 'delete', 'rm', 'preview', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
@@ -1364,6 +1371,57 @@ async function cmdDeploy() {
   console.log(green(bold('Deploy complete.')))
 }
 
+// ---- setup: one-time setup tasks ----
+async function cmdSetup() {
+  const sub = process.argv[3]
+  if (!sub || sub === '--help') {
+    console.log(`tlda setup — one-time setup tasks
+
+Subcommands:
+  editor [--editor CMD]   Install the texsync:// URL handler so Cmd-click
+                          opens source in your editor (default: zed)
+                          Supported: zed, code, cursor, codium, nvim, vim, sublime
+
+Example:
+  tlda setup editor                # set up for Zed
+  tlda setup editor --editor code  # set up for VS Code
+`)
+    return
+  }
+
+  if (sub === 'editor') {
+    const { spawn: cpSpawn } = await import('child_process')
+    const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'install-texsync.sh')
+    if (!existsSync(script)) {
+      console.error(red(`install-texsync.sh not found: ${script}`))
+      process.exit(1)
+    }
+    const args = process.argv.slice(4) // everything after "tlda setup editor"
+    const child = cpSpawn('bash', [script, ...args], { stdio: 'inherit' })
+    child.on('exit', (code) => process.exit(code ?? 0))
+    await new Promise(() => {})
+  } else {
+    console.error(red(`Unknown setup subcommand: ${sub}`))
+    console.error('Run "tlda setup" for available options.')
+    process.exit(1)
+  }
+}
+
+// ---- spawn: forward to bin/fleet-spawn.py ----
+async function cmdSpawn() {
+  const { spawn: cpSpawn } = await import('child_process')
+  const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
+  if (!existsSync(spawnScript)) {
+    console.error(red(`fleet-spawn script not found: ${spawnScript}`))
+    process.exit(1)
+  }
+  const spawnArgs = process.argv.slice(3) // everything after "tlda spawn"
+  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit' })
+  child.on('exit', (code) => process.exit(code ?? 0))
+  // Keep the process alive until child exits
+  await new Promise(() => {})
+}
+
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
   const autoFix = process.argv.includes('--fix')
@@ -1391,7 +1449,7 @@ async function cmdDoctor() {
     issues++
   }
 
-  // 2. LaTeX tools
+  // 2. LaTeX tools + git
   const checkBin = (bin) => {
     try { execSync(`which ${bin}`, { stdio: 'pipe' }); return true } catch { return false }
   }
@@ -1405,6 +1463,12 @@ async function cmdDoctor() {
     ok('dvisvgm found')
   } else {
     fail('dvisvgm not found', 'Included in MacTeX. If using BasicTeX: tlmgr install dvisvgm')
+    issues++
+  }
+  if (checkBin('git')) {
+    ok('git found')
+  } else {
+    fail('git not found — change review and history features will not work', 'brew install git')
     issues++
   }
 
@@ -1567,7 +1631,7 @@ async function cmdDoctor() {
     }
   }
 
-  // 6. MCP server configured
+  // 6. MCP servers configured (tlda + fleet)
   {
     const mcpConfigs = [
       join(homedir(), '.claude', 'settings.json'),
@@ -1576,9 +1640,11 @@ async function cmdDoctor() {
       join(process.cwd(), '.mcp.json'),
     ]
     const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-    const mcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
+    const tldaMcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
+    const fleetMcpEntry = join(tldaRoot, 'mcp-server', 'fleet.mjs')
 
-    let mcpFound = false
+    let tldaFound = false
+    let fleetFound = false
     for (const cfgPath of mcpConfigs) {
       if (!existsSync(cfgPath)) continue
       try {
@@ -1586,28 +1652,47 @@ async function cmdDoctor() {
         const servers = cfg.mcpServers || {}
         for (const s of Object.values(servers)) {
           const args = s.args || []
-          if (args.some(a => String(a).includes('mcp-server'))) {
-            mcpFound = true; break
-          }
+          if (args.some(a => String(a).includes('mcp-server/index.mjs'))) tldaFound = true
+          if (args.some(a => String(a).includes('mcp-server/fleet.mjs'))) fleetFound = true
         }
       } catch {}
-      if (mcpFound) break
     }
 
-    if (mcpFound) {
-      ok('MCP server configured in Claude settings')
+    if (tldaFound) {
+      ok('tlda MCP configured')
     } else {
-      fail('MCP server not found in Claude settings')
+      fail('tlda MCP not found in Claude settings')
       console.log()
-      console.log('  Add this to your project .mcp.json or ~/.claude/settings.json:')
+      console.log('  Add to ~/.config/claude/settings.json:')
       console.log()
       console.log('  ' + cyan(JSON.stringify({
         mcpServers: {
-          'tldraw-feedback': {
+          'tlda': {
             type: 'stdio',
             command: process.execPath,
-            args: [mcpEntry],
+            args: [tldaMcpEntry],
             env: { TLDA_SERVER: serverUrl }
+          }
+        }
+      }, null, 2).split('\n').join('\n  ')))
+      console.log()
+      issues++
+    }
+
+    if (fleetFound) {
+      ok('fleet MCP configured')
+    } else {
+      fail('fleet MCP not found in Claude settings')
+      console.log()
+      console.log('  Add to ~/.config/claude/settings.json:')
+      console.log()
+      console.log('  ' + cyan(JSON.stringify({
+        mcpServers: {
+          'fleet': {
+            type: 'stdio',
+            command: process.execPath,
+            args: [fleetMcpEntry],
+            cwd: tldaRoot
           }
         }
       }, null, 2).split('\n').join('\n  ')))
@@ -1632,26 +1717,7 @@ async function cmdDoctor() {
     } catch {}
   }
 
-  // 8. Fleet server
-  {
-    const fleetUrl = process.env.FLEET_SERVER || 'http://localhost:5199'
-    try {
-      const res = await fetch(`${fleetUrl}/api/state`, { signal: AbortSignal.timeout(2000) })
-      if (res.ok) {
-        const data = await res.json()
-        const agentCount = (data.agents || []).filter(a => !a.dead && !a.human).length
-        ok(`Fleet server running at ${fleetUrl} (${agentCount} active agents)`)
-      } else {
-        fail(`Fleet server returned ${res.status}`, 'Check fleet server logs')
-        issues++
-      }
-    } catch {
-      fail(`Fleet server not reachable at ${fleetUrl}`)
-      issues++
-    }
-  }
-
-  // 9. Sync health (docs with broken sync stores)
+  // 8. Sync health (docs with broken sync stores)
   if (serverRunning) {
     try {
       const health = await api('GET', '/api/projects/health', null, { timeoutMs: 5000 })
@@ -1802,17 +1868,8 @@ ${tokenEnvLines.join('\n')}
 
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
-    } else {
-      // Fallback: kill by port (catches zombies that don't respond to /health)
-      try {
-        const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
-        if (pids) {
-          for (const pid of pids.split('\n')) {
-            try { process.kill(parseInt(pid), 'SIGTERM') } catch {}
-          }
-        }
-      } catch {}
     }
+    // No fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
     for (let i = 0; i < 20; i++) {
@@ -1866,7 +1923,7 @@ ${tokenEnvLines.join('\n')}
     } catch {
       // Not running — kill any zombie holding the port
       try {
-        const stale = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
+        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
         if (stale) {
           for (const pid of stale.split('\n')) {
             try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
@@ -1916,6 +1973,37 @@ ${tokenEnvLines.join('\n')}
           // activity cards, terminal-chat extraction, and source watching;
           // a server start with no daemon = silent failure for Skip.
           await ensureFleetDaemonRunning()
+          // Start whisper bridge for voice transcription (non-blocking)
+          try {
+            const bridgeScript = join(tldaRoot, 'bin', 'whisper-bridge.mjs')
+            if (existsSync(bridgeScript)) {
+              // Check if bridge is already running
+              let bridgeUp = false
+              try {
+                const ws = new (await import('ws')).default('ws://127.0.0.1:8179')
+                await new Promise((resolve, reject) => {
+                  ws.on('open', () => { bridgeUp = true; ws.close(); resolve() })
+                  ws.on('error', () => { ws.close(); resolve() })
+                  setTimeout(() => { ws.close(); resolve() }, 1000)
+                })
+              } catch {}
+              if (!bridgeUp) {
+                const { spawn: spawnBridge } = await import('child_process')
+                const { openSync: bridgeOpenSync } = await import('fs')
+                const bridgeLog = join(dirname(LOGFILE), 'whisper-bridge.log')
+                const bridgeLogFd = bridgeOpenSync(bridgeLog, 'a')
+                const bridgeChild = spawnBridge('node', [bridgeScript], {
+                  detached: true,
+                  stdio: ['ignore', bridgeLogFd, bridgeLogFd],
+                  cwd: tldaRoot,
+                })
+                bridgeChild.unref()
+                console.log(dim('  Whisper bridge started (voice transcription)'))
+              } else {
+                console.log(dim('  Whisper bridge already running'))
+              }
+            }
+          } catch {}
           return
         }
       } catch {}
@@ -2269,13 +2357,16 @@ async function main() {
       case 'preview': await ensureServer(); await cmdPreview(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
+      case 'revert':  await ensureServer(); await cmdRevert(); break
       case 'logs':    await cmdServer('logs'); break
       case 'log':     await cmdServer('logs'); break
       case 'publish': await cmdPublish(); break
       case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
-      case 'remotes': await cmdRemotes(); break
+      case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
+      case 'setup': await cmdSetup(); break
+      case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
@@ -2302,10 +2393,11 @@ Commands:
   logs           Show server log (alias: tlda server logs)
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
-  remotes [doc]    Show Tailscale/Funnel URLs with QR codes
   publish [doc ...]  Publish docs to GitHub Pages + Fly
   whisper        Manage local whisper speech server [start|stop|status|log]
+  setup          One-time setup [editor]
   deploy         Build, restart server, verify SPA renders
+  mcp-setup      Write .mcp.json for Claude Code integration (current directory)
   doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 

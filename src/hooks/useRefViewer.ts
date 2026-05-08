@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Editor } from 'tldraw'
 import { broadcastRefViewer, writeSignal } from '../useYjsSync'
 import { canvasToPdf } from '../synctexAnchor'
-import { buildReverseIndex, type ReverseMatch } from '../synctexLookup'
+import * as sourceMap from '../sourceMap'
 import { PDF_HEIGHT } from '../layoutConstants'
 import type { SvgDocument, ProofData, LabelRegion } from '../svgDocumentLoader'
 
@@ -44,11 +44,7 @@ export function useRefViewer({
     }
   }, [])
 
-  // --- Reverse index for click-to-ref ---
-  const reverseIndexRef = useRef<((page: number, y: number) => ReverseMatch | null) | null>(null)
-  useEffect(() => {
-    buildReverseIndex(document.name).then(fn => { reverseIndexRef.current = fn })
-  }, [document.name])
+  // Source map is loaded by SvgDocument — no separate load needed here
 
   // Helper: resolve refs on a given line to regions
   const resolveRefsOnLine = useCallback((line: number): { label: string; region: LabelRegion }[] | null => {
@@ -152,9 +148,6 @@ export function useRefViewer({
   const lookupRefAt = useCallback((clientX: number, clientY: number): boolean => {
     const editor = editorRef.current
     if (!editor) return false
-    const reverseIndex = reverseIndexRef.current
-    if (!reverseIndex) return false
-
     const point = editor.screenToPage({ x: clientX, y: clientY })
     const pages = document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
@@ -164,7 +157,7 @@ export function useRefViewer({
     const pdf = canvasToPdf(point.x, point.y, pages)
     if (!pdf) return false
 
-    const match = reverseIndex(pdf.page, pdf.y)
+    const match = sourceMap.pageToSource(pdf.page, pdf.y)
     if (!match) return false
     const line = match.line
 
@@ -234,9 +227,6 @@ export function useRefViewer({
 
     const handleClick = (e: MouseEvent) => {
       if (!e.metaKey && !e.ctrlKey) return
-      const reverseIndex = reverseIndexRef.current
-      if (!reverseIndex) return
-
       const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
       const pages = document.pages.map(p => ({
         bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
@@ -245,7 +235,7 @@ export function useRefViewer({
       const pdf = canvasToPdf(point.x, point.y, pages)
       if (!pdf) return
 
-      const match = reverseIndex(pdf.page, pdf.y)
+      const match = sourceMap.pageToSource(pdf.page, pdf.y)
       if (!match) return
 
       e.preventDefault()

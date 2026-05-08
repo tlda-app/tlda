@@ -58,7 +58,11 @@ export function dispatchSignalDirect(key: string, data: Record<string, unknown>)
 
 type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
-const reloadHandle = bus.register<ReloadSignal>({ key: 'signal:reload' })
+const reloadHandle = bus.register<ReloadSignal>({
+  key: 'signal:reload',
+  initBehavior: 'fire-if-recent',
+  recentMs: 1_800_000,  // replay last reload signal if < 30 min old (covers new-tab after build)
+})
 export const onReloadSignal = reloadHandle.on
 
 export type ForwardSyncSignal =
@@ -223,6 +227,19 @@ const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; ti
 })
 export const onDiffSummaries = diffSummariesHandle.on
 
+// Shared doc — agent shared a markdown file, auto-display in doc viewer
+export type SharedDocSignal = {
+  shapeId: string    // ID of the math-note sticky holding the content
+  filePath: string   // original file path
+  timestamp: number
+}
+const sharedDocHandle = bus.register<SharedDocSignal>({
+  key: 'signal:shared-doc',
+  initBehavior: 'fire-if-recent',
+  recentMs: 86_400_000,
+})
+export const onSharedDocSignal = sharedDocHandle.on
+
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.
  * Also caches locally and dispatches to the signal bus so own UI reacts.
@@ -271,6 +288,10 @@ export function broadcastCamera(x: number, y: number, z: number) {
 
 export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
   writeSignal('signal:ref-viewer', { refs, viewerId: localViewerId })
+}
+
+export function broadcastSharedDoc(shapeId: string, filePath: string) {
+  writeSignal('signal:shared-doc', { shapeId, filePath })
 }
 
 /**
