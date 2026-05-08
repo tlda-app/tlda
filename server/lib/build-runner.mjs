@@ -228,7 +228,7 @@ export function killAllBuilds() {
 // Pretex commands injected before \documentclass.
 // draft mode for graphicx (placeholder boxes instead of images),
 // hypertex driver for hyperref, and ensure hyperref loads.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
@@ -381,7 +381,7 @@ async function compileLaTeX(ctx) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
         ? `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
-        : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${join(buildDir, texBase)}"`
+        : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${texBase}"`
       const bibTool = useBiblatex ? 'biber' : 'bibtex'
       // Remove stale .bbl — if we're here, citations are broken anyway.
       // Prevents format-switch corruption (biblatex↔bibtex cached .bbl).
@@ -1385,7 +1385,6 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
           if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
             const tag = `shadow/${result.hash.slice(0, 7)}`
             const cwd = project.sourceDir
-            // Stage all .tex/.bib/.sty/.cls files and commit
             execSync(`git add -A *.tex *.bib *.sty *.cls 2>/dev/null; git diff --cached --quiet || git commit -m "shadow ${result.hash.slice(0, 7)}" --allow-empty`, { cwd, stdio: 'pipe', timeout: 10000 })
             execSync(`git tag -f "${tag}"`, { cwd, stdio: 'pipe', timeout: 5000 })
           }

@@ -449,7 +449,7 @@ export function getShadowRepoDir(name) {
 // First request for a hash7 starts the compile; all subsequent requests wait on the same promise.
 const _activeDviBuilds = new Map()
 
-const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
 
 /**
  * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
