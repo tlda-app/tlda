@@ -422,6 +422,18 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
         if (_filling) return
+        // Plain Enter sends the message. The stop→onend→start restart path is
+        // unreliable in Safari (webkitSpeechRecognition silently fails to resume),
+        // so do the same thing double-tap-right-shift does: hardResetVoice + start.
+        // Suppress the textarea-clear input event that would otherwise call enterEdit().
+        if (e.key === 'Enter' && !e.shiftKey && _recording) {
+          _filling = true
+          setTimeout(() => {
+            _filling = false
+            hardResetVoice().then(() => startRecording())
+          }, 50)
+          return
+        }
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
           enterEdit()
         }
@@ -1096,12 +1108,9 @@ export async function initVoice() {
   _initialized = true
 
   // Detect whisper-stream bridge (non-blocking — never delay voice init)
-  // Detect whisper-stream bridge and set backend.
-  // If URL has &voice=chrome, force Chrome. Otherwise whisper-stream is default
-  // when the bridge is available. Set _backend eagerly so right-shift doesn't
-  // trigger a SpeechRecognition (and browser mic prompt) during the async check.
+  // Chrome is default. Pass &voice=whisper to use whisper-stream instead.
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  if (urlVoice !== 'chrome') {
+  if (urlVoice === 'whisper') {
     // Optimistically assume whisper — prevents Chrome mic prompt on Safari.
     // If the bridge isn't running, we'll fall back to Chrome in the onerror.
     _backend = 'whisper-stream'
@@ -1111,13 +1120,13 @@ export async function initVoice() {
     testWs.onopen = () => {
       testWs.close()
       _whisperAvailable = true
-      if (urlVoice === 'chrome') {
-        console.log('voice: staying on Chrome (via URL param)')
-      } else {
+      if (urlVoice === 'whisper') {
         _backend = 'whisper-stream'
-        console.log('voice: using whisper-stream backend')
+        console.log('voice: using whisper-stream backend (via URL param)')
         connectWhisperBridge()
         if (_recording) showRecordingHud()
+      } else {
+        console.log('voice: whisper bridge available but using Chrome (default)')
       }
     }
     testWs.onerror = () => {
@@ -1125,7 +1134,7 @@ export async function initVoice() {
       // Bridge not available — fall back to Chrome
       if (_backend === 'whisper-stream' && !_whisperAvailable) {
         _backend = 'chrome'
-        console.log('voice: whisper bridge not available, using Chrome')
+        console.log('voice: whisper bridge not available, falling back to Chrome')
       }
     }
   } catch {

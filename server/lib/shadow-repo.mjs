@@ -13,6 +13,7 @@ const _execAsyncRaw = promisify(execCb)
 const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
+import { readdir as readdirAsync, rm as rmAsync, cp as cpAsync } from 'fs/promises'
 import { join, relative, basename, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -193,28 +194,32 @@ export async function commitSnapshot(name) {
 
   const scope = readPaperScope(name)
   if (!scope) {
-    // No paper-scope yet — first build hasn't produced relevant-files.json.
-    // Skip rather than fall back to copy-everything (which would re-introduce
-    // the bug class this whole change is fixing).
+    // No paper-scope yet — first build hasn't produced relevant-files.json,
+    // or augmentation failed. Skip rather than fall back to copy-everything
+    // (which would re-introduce the bug class this whole change is fixing).
     return null
   }
 
-  // Sync the shadow repo's working tree to exactly the paper-scope set.
-  // Step 1: remove any non-.git, non-.gitignore content from the repo.
-  // (We rebuild from scope to handle removals, renames, etc. uniformly.)
-  for (const entry of readdirSync(repoDir)) {
-    if (entry === '.git' || entry === '.gitignore') continue
-    rmSync(join(repoDir, entry), { recursive: true, force: true })
-  }
+  // Clear existing non-.git, non-.gitignore content from the shadow repo.
+  // We rebuild from scope to handle removals, renames, etc. uniformly.
+  // Async fs avoids blocking the event loop on large source trees.
+  const repoEntries = await readdirAsync(repoDir)
+  await Promise.all(
+    repoEntries
+      .filter((entry) => entry !== '.git' && entry !== '.gitignore')
+      .map((entry) => rmAsync(join(repoDir, entry), { recursive: true, force: true })),
+  )
 
-  // Step 2: copy each paper-scope file from src into the shadow repo,
-  // preserving directory structure.
-  for (const rel of scope) {
-    const from = join(srcDir, rel)
-    const to = join(repoDir, rel)
-    mkdirSync(dirname(to), { recursive: true })
-    copyFileSync(from, to)
-  }
+  // Copy each paper-scope file from src into the shadow repo, preserving
+  // directory structure. mkdir each dirname first since cp is per-file.
+  await Promise.all(
+    scope.map(async (rel) => {
+      const from = join(srcDir, rel)
+      const to = join(repoDir, rel)
+      mkdirSync(dirname(to), { recursive: true })
+      await cpAsync(from, to)
+    }),
+  )
 
   // Step 3: stage all changes (additions, modifications, deletions).
   await execAsync('git add -A', { cwd: repoDir, timeout: 10000 })

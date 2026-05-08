@@ -970,6 +970,16 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
+async function rpcKillSession({ tmux_session, agent_id }) {
+  if (!tmux_session) throw new Error('missing tmux_session')
+  checkSession(tmux_session)
+  await tmux('kill-session', '-t', tmux_session)
+  if (agent_id) {
+    try { await fetch(`${SERVER}/api/agents/${agent_id}/mark-dead`, { method: 'POST' }).catch(() => {}) } catch {}
+  }
+  return { ok: true, tmux_session }
+}
+
 async function rpcRestartMcp({ tmux_session, skipPreflight }) {
   // No-op: the fleet MCP reconnects automatically via WS retry logic.
   // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
@@ -1111,6 +1121,7 @@ const RPC_HANDLERS = {
   'interrupt': rpcInterrupt,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
+  'kill-session': rpcKillSession,
   'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,

@@ -9,6 +9,8 @@ import {
   HTMLContainer,
   T,
   createShapeId,
+  useEditor,
+  useValue,
 } from 'tldraw'
 import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
@@ -16,6 +18,71 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
+const CHAT_W = 400
+const CHAT_H = 600
+const SNAP_THRESHOLD = 20 // px distance for edge snapping
+const SNAP_GAP = 10 // gap between shapes when snapped
+
+const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+// Module-level snap state — written by drag handler, read by the component.
+// The component re-renders on every translate frame, so it picks up changes.
+const _snapState = {
+  deltaX: 0,
+  deltaY: 0,
+  lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
+  active: false, // true during drag
+  expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
+  prevSnapMode: undefined as boolean | undefined,
+}
+
+/**
+ * Snap a point (top-left of new 400×600 chat) to nearby fleet shape edges.
+ * Returns the snapped position and visual snap guide lines.
+ */
+function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number; lines: Array<{ axis: 'x' | 'y'; pos: number }> } {
+  const fleetShapes = editor.getCurrentPageShapes()
+    .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== excludeId)
+  if (fleetShapes.length === 0) return { ...point, lines: [] }
+
+  let { x, y } = point
+  const lines: Array<{ axis: 'x' | 'y'; pos: number }> = []
+
+  // Collect edges from all fleet shapes
+  const edges: { type: string; val: number }[] = []
+  for (const s of fleetShapes) {
+    const b = editor.getShapePageBounds(s.id)
+    if (!b) continue
+    edges.push({ type: 'x-left-to-right', val: b.x + b.w + SNAP_GAP })
+    edges.push({ type: 'x-right-to-left', val: b.x - SNAP_GAP - CHAT_W })
+    edges.push({ type: 'x-left-to-left', val: b.x })
+    edges.push({ type: 'y-top-to-top', val: b.y })
+    edges.push({ type: 'y-top-to-bottom', val: b.y + b.h + SNAP_GAP })
+    edges.push({ type: 'y-bottom-to-top', val: b.y - SNAP_GAP - CHAT_H })
+  }
+
+  // Find closest X snap
+  let bestXDist = SNAP_THRESHOLD
+  let snappedX = false
+  for (const e of edges) {
+    if (!e.type.startsWith('x-')) continue
+    const dist = Math.abs(e.val - x)
+    if (dist < bestXDist) { bestXDist = dist; x = e.val; snappedX = true }
+  }
+  if (snappedX) lines.push({ axis: 'x', pos: x })
+
+  // Find closest Y snap
+  let bestYDist = SNAP_THRESHOLD
+  let snappedY = false
+  for (const e of edges) {
+    if (!e.type.startsWith('y-')) continue
+    const dist = Math.abs(e.val - y)
+    if (dist < bestYDist) { bestYDist = dist; y = e.val; snappedY = true }
+  }
+  if (snappedY) lines.push({ axis: 'y', pos: y })
+
+  return { x, y, lines }
+}
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
@@ -306,7 +373,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => false
   override canBind = () => false
-  override canSnap = () => false
+  override canSnap = (shape: any) => shape.props?.pillType === 'agent' || shape.props?.pillType === 'label'
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
@@ -316,6 +383,62 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     // Clear any pending auto-delete since the user is actively dragging
     const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
     if (timerId) clearTimeout(timerId)
+    _snapState.active = true
+    _snapState.expanded = false
+
+    // Enable snap mode during pill drag so TLDraw shows native snap guides.
+    // Save previous state to restore on translate end.
+    const pill = shape as any
+    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
+      _snapState.prevSnapMode = this.editor.getInstanceState().isSnapMode
+      this.editor.updateInstanceState({ isSnapMode: true })
+    }
+  }
+
+  // During drag: expand pill to chat dimensions when over empty canvas,
+  // collapse back when over a fleet shape. TLDraw's native snap handles
+  // the expanded pill like any other shape.
+  override onTranslate = (_initial: TLShape, current: TLShape) => {
+    const pill = current as any
+    if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
+
+    const editor = this.editor
+    const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+    const hitEditor = mainEditor || editor
+
+    // Check if pill center is over an existing fleet shape
+    const bounds = editor.getShapePageBounds(pill.id)
+    const cx = bounds ? bounds.x + bounds.w / 2 : pill.x + (pill.props.w || PILL_W) / 2
+    const cy = bounds ? bounds.y + bounds.h / 2 : pill.y + (pill.props.h || PILL_H) / 2
+
+    let overFleet = false
+    const allFleet = hitEditor.getCurrentPageShapes()
+      .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
+    for (const s of allFleet) {
+      const sb = hitEditor.getShapePageBounds(s.id)
+      if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
+        overFleet = true
+        break
+      }
+    }
+
+    // Expand to chat dimensions when over empty canvas, collapse when over fleet shape
+    const shouldExpand = !overFleet
+    if (shouldExpand && !_snapState.expanded) {
+      _snapState.expanded = true
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: CHAT_W, h: CHAT_H },
+      })
+    } else if (!shouldExpand && _snapState.expanded) {
+      _snapState.expanded = false
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: PILL_W, h: PILL_H },
+      })
+    }
   }
 
   onCreate = (shape: TLShape) => {
@@ -350,6 +473,23 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint = mainEditor.screenToPage(screenPoint)
     }
 
+    // When expanded (pill was 400×600), the drop point is already the
+    // pill's center which = the chat's center. Adjust to top-left.
+    if (_snapState.expanded) {
+      dropPoint.x -= CHAT_W / 2
+      dropPoint.y -= CHAT_H / 2
+    }
+    // Restore snap mode
+    if (_snapState.prevSnapMode !== undefined) {
+      this.editor.updateInstanceState({ isSnapMode: _snapState.prevSnapMode })
+    }
+    _snapState.active = false
+    _snapState.expanded = false
+    _snapState.prevSnapMode = undefined
+    _snapState.deltaX = 0
+    _snapState.deltaY = 0
+    _snapState.lines = []
+
     dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
 
     // Ephemeral: delete after drop
@@ -357,9 +497,25 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   component(shape: any) {
+    const editor = useEditor()
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
+    const isAgentPill = pillType === 'agent' || pillType === 'label'
+
+    // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
+    const overFleetShape = useValue('pill-over-fleet', () => {
+      if (!isAgentPill) return false
+      const bounds = editor.getShapePageBounds(shape.id)
+      if (!bounds) return false
+      const cx = bounds.x + bounds.w / 2
+      const cy = bounds.y + bounds.h / 2
+      return editor.getCurrentPageShapes().some(s => {
+        if (s.id === shape.id || !FLEET_TYPES.includes(s.type as string)) return false
+        const sb = editor.getShapePageBounds(s.id)
+        return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
+      })
+    }, [editor, shape.id, isAgentPill])
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
@@ -416,6 +572,46 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
+        {/* Ghost: show where a new chat will be created.
+            When expanded (pill is 400×600), the ghost fills the pill bounds.
+            When collapsed (pill is 70×18), ghost is offset from pill center.
+            Hidden when over an existing fleet shape. */}
+        {isAgentPill && !overFleetShape && (
+          <div
+            className="fleet-chat-shape"
+            style={{
+              position: 'absolute',
+              // When expanded, ghost fills the pill's own bounds (0,0).
+              // When collapsed, offset to pill center.
+              top: _snapState.expanded ? 0 : PILL_H / 2,
+              left: _snapState.expanded ? 0 : PILL_W / 2,
+              width: CHAT_W,
+              height: CHAT_H,
+              opacity: 0.5,
+              pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <div style={{
+              padding: '4px 8px',
+              fontSize: 10,
+              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+              color: 'var(--text-dim)',
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+            }}>
+              → {displayName}
+            </div>
+            <div style={{ flex: 1 }} />
+            <div style={{
+              height: 28,
+              borderTop: '1px solid rgba(128, 128, 128, 0.1)',
+              margin: '0 4px 4px',
+              borderRadius: 4,
+              background: 'rgba(128, 128, 128, 0.05)',
+            }} />
+          </div>
+        )}
       </HTMLContainer>
     )
   }

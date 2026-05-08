@@ -24,7 +24,7 @@ const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(
 let _agents = []
 let _tasks = []
 let _events = []          // chat + lifecycle (delegate, task_done) — capped at MAX_EVENTS
-const MAX_EVENTS = 500    // keep only the most recent N events in memory; older events fetched from DB on scroll
+const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
@@ -198,60 +198,41 @@ export function reconcileOptimistic(tempId, serverEventId) {
   if (ev) { ev._dbId = serverEventId; delete ev._tempId; notify('messages', null) }
 }
 
-export async function respawnAgent(id) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, respawn: true }),
-  })
+export function respawnAgent(id) {
+  return wsSend({ type: 'spawn', agent: id, respawn: true })
 }
 
-export async function spawnAgent(model, doc) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, ...(doc ? { doc } : {}) }),
-  })
+export function spawnAgent(model, doc) {
+  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}) })
 }
 
-export async function renameAgent(id, name) {
-  return fetch(`${FLEET}/api/rename`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, name }),
-  })
+export function renameAgent(id, name) {
+  return wsSend({ type: 'rename', agent: id, name })
 }
 
-export async function setAgentLabels(id, labels) {
-  return fetch(`${FLEET}/api/label`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, labels }),
-  })
+export function setAgentLabels(id, labels) {
+  return wsSend({ type: 'label', agent: id, labels })
 }
 
-export async function kickAgent(id) {
-  return fetch(`${FLEET}/api/kick`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id }),
-  })
+export function kickAgent(id) {
+  return wsSend({ type: 'kick', agent: id })
 }
 
-export async function sendKey(session, key) {
-  return fetch(`${FLEET}/api/send-key`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, key }),
-  })
+export function killSession(id) {
+  return wsSend({ type: 'kill-session', agent: id })
 }
 
-export async function sendText(session, text) {
-  return fetch(`${FLEET}/api/send-text`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, text }),
-  })
+export function sendKey(agent, key) {
+  return wsSend({ type: 'send-key', agent, key })
+}
+
+export function sendText(agent, text) {
+  return wsSend({ type: 'send-text', agent, text })
+}
+
+/** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
+export function fleetWS(type, body = {}) {
+  return wsSend({ type, ...body })
 }
 
 // --- WebSocket connection ---
@@ -309,13 +290,7 @@ export function connect() {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
     }
-    // Always do a full state refresh on reconnect — not just catch-up.
-    // This ensures agents/tasks are populated even if the initial load failed
-    // or the server restarted and event IDs reset.
-    fetch(`${FLEET}/api/state`).then(r => r.json()).then(s => {
-      updateAgents(s.agents || [])
-      updateTasks(s.tasks || [])
-    }).catch(() => {})
+    // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
@@ -454,7 +429,7 @@ export async function init() {
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
-    fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
+    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(() => ({ events: [] })),
   ])
 
   // Populate agents + tasks
@@ -588,8 +563,15 @@ export async function fetchHistory(agentId, limit = 200) {
 }
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  // Use WebSocket for history to avoid racing with live events.
+  // Falls back to HTTP if WS is not connected.
+  let res
+  if (_ws && _ws.readyState === 1) {
+    res = await wsSend({ type: 'load-history', agent: agentId || null, before: beforeTs, limit: count })
+  } else {
+    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  }
 
   const events = (res.events || [])
     .filter(e => {

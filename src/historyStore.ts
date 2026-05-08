@@ -229,6 +229,23 @@ export function shadowSnapshotPageUrl(docName: string, hash: string, page: numbe
 }
 
 /**
+ * Fetch the space-time changelog: per-commit page-level changes.
+ * Returns { commits, totalPages } for the SpaceTimeDots overlay.
+ */
+export async function fetchShadowChangelog(
+  docName: string,
+  limit = 200,
+): Promise<{ commits: Array<{ hash: string; timestamp: number; changedPages: number[] }>; totalPages: number } | null> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/changelog?limit=${limit}`)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+/**
  * Fetch page count for a shadow version.
  * Returns null if not yet compiled.
  */

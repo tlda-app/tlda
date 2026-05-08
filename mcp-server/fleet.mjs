@@ -1059,19 +1059,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-    {
-      name: 'sign_report',
-      description: 'QA-only tool. Sign off on a submitted report. Only callable by configured QA agents (qa-haiku, qa-opus).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'string', description: 'Task ID to sign off on.' },
-          verdict: { type: 'string', enum: ['approved', 'rejected'], description: 'Approve or reject the report.' },
-          notes: { type: 'string', description: 'Required if rejected, optional if approved.' },
-        },
-        required: ['task_id', 'verdict'],
-      },
-    },
   ],
 }));
 
@@ -1749,28 +1736,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch {}
     }
 
-    // QA gate (own task only — check for QA signatures)
-    if (agent === AGENT_ID) {
-      try {
-        const qaRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/status?task_id=${encodeURIComponent(task.id)}`);
-        const qaStatus = await qaRes.json();
-        // Only enforce if QA is configured (has agent IDs) and a report exists
-        let qaConfigRes;
-        try { qaConfigRes = await (await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`)).json(); } catch { qaConfigRes = { qa_agent_ids: [] }; }
-        if (qaConfigRes.qa_agent_ids?.length > 0) {
-          if (qaStatus.status === 'no_report') {
-            return { content: [{ type: 'text', text: 'Submit a report() first' }], isError: true };
-          }
-          if (qaStatus.status === 'rejected') {
-            return { content: [{ type: 'text', text: `QA rejected: ${qaStatus.notes || 'no details'}. Fix and re-report.` }], isError: true };
-          }
-          if (qaStatus.status === 'pending') {
-            return { content: [{ type: 'text', text: `Waiting for QA sign-off (${(qaStatus.approved_by || []).length}/${qaConfigRes.qa_agent_ids.length} approved)` }], isError: true };
-          }
-        }
-      } catch {}
-    }
-
     // Lint gate (own task only)
     let _lintOverrides = [];
     if (agent === AGENT_ID) {
@@ -1831,106 +1796,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agent = getAgent(state, AGENT_ID);
     const cwd = agent?.cwd || process.env.PWD || null;
 
-    // Check if QA system is configured
-    let qaConfig;
-    try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`);
-      qaConfig = await res.json();
-    } catch { qaConfig = { qa_agent_ids: [] }; }
-    const qaEnabled = qaConfig.qa_agent_ids?.length > 0;
-
-    // ---- QA-enabled path: structured report submission ----
-    if (qaEnabled && args.task_type) {
-      const taskType = args.task_type;
-      const missing = [];
-
-      // Validate required fields by task type
-      if (taskType === 'app') {
-        if (!args.files_changed?.length) missing.push('files_changed');
-        if (!args.screenshot_before) missing.push('screenshot_before');
-        if (!args.screenshot_after) missing.push('screenshot_after');
-        if (!args.test_method) missing.push('test_method');
-        if (args.console_errors === undefined) missing.push('console_errors');
-        if (!args.summary) missing.push('summary');
-      } else if (taskType === 'math') {
-        if (!args.files_changed?.length) missing.push('files_changed');
-        if (args.builds_clean === undefined) missing.push('builds_clean');
-        if (!args.theorem_statement) missing.push('theorem_statement');
-        if (!args.proof_sketch) missing.push('proof_sketch');
-        if (!args.summary) missing.push('summary');
-      } else {
-        return { content: [{ type: 'text', text: `Invalid task_type: "${taskType}". Must be "app" or "math".` }], isError: true };
-      }
-
-      if (missing.length > 0) {
-        return { content: [{ type: 'text', text: `Missing required fields for ${taskType} report: ${missing.join(', ')}` }], isError: true };
-      }
-
-      // Validate file paths exist (screenshots, test evidence)
-      const pathsToCheck = [];
-      if (args.screenshot_before) pathsToCheck.push(args.screenshot_before);
-      if (args.screenshot_after) pathsToCheck.push(args.screenshot_after);
-      if (args.test_evidence) pathsToCheck.push(args.test_evidence);
-      for (const p of pathsToCheck) {
-        try {
-          if (!fs.existsSync(p)) {
-            return { content: [{ type: 'text', text: `File not found: ${p}` }], isError: true };
-          }
-        } catch (e) {
-          return { content: [{ type: 'text', text: `Cannot check file ${p}: ${e.message}` }], isError: true };
-        }
-      }
-
-      // Check QA agents are alive (tmux sessions exist)
-      const qaDown = [];
-      for (const qaId of qaConfig.qa_agent_ids) {
-        const qaAgent = agents.find(a => a.id === qaId);
-        if (!qaAgent?.tmux_session) { qaDown.push(qaId); continue; }
-        try {
-          execSync(`tmux has-session -t ${qaAgent.tmux_session} 2>/dev/null`, { timeout: 3000 });
-        } catch {
-          qaDown.push(qaAgent.friendly_name || qaId);
-        }
-      }
-      if (qaDown.length > 0) {
-        return { content: [{ type: 'text', text: `QA system is down — cannot submit report. Missing QA agents: ${qaDown.join(', ')}. Ask the manager to respawn them.` }], isError: true };
-      }
-
-      // Build fields object
-      const fields = {};
-      const fieldNames = ['worktree_branch', 'dev_port', 'files_changed', 'screenshot_before', 'screenshot_after',
-        'test_method', 'test_evidence', 'console_errors', 'builds_clean', 'theorem_statement', 'proof_sketch', 'summary'];
-      for (const f of fieldNames) {
-        if (args[f] !== undefined) fields[f] = args[f];
-      }
-
-      // Submit report to server
-      try {
-        const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/report`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task_id: task.id, agent_id: AGENT_ID, task_type: taskType, fields }),
-        });
-        const data = await res.json();
-        if (!data.ok) return { content: [{ type: 'text', text: `Report submission failed: ${JSON.stringify(data)}` }], isError: true };
-
-        // Kick qa-haiku (first QA agent in the list)
-        const firstQa = qaConfig.qa_agent_ids[0];
-        if (firstQa) {
-          const qaAgent = agents.find(a => a.id === firstQa);
-          if (qaAgent?.tmux_session) {
-            try { execSync(`tmux send-keys -t ${qaAgent.tmux_session} '📬' Enter`, { timeout: 5000 }); } catch {}
-          }
-        }
-
-        logEvent({ type: 'qa_report', agent: AGENT_ID, task_id: task.id, task_type: taskType, report_id: data.report.id });
-        return { content: [{ type: 'text', text: `Report submitted for QA review (report #${data.report.id}). qa-haiku will review first, then qa-opus. Wait for 📬 — QA will sign off or send feedback.` }] };
-      } catch (e) {
-        return { content: [{ type: 'text', text: `Report submission failed (server unreachable): ${e.message}` }], isError: true };
-      }
-    }
-
-    // ---- Legacy self-review path (no QA configured, or pass+summary mode) ----
+    // ---- Self-review path ----
     if (args.pass && args.summary) {
       const friendlyName = agent?.friendly_name || AGENT_ID.slice(0, 8);
 
@@ -1986,11 +1852,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/tasks/done`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: AGENT_ID, task_id: task.id, skip_qa: true }),
-        });
+        await sendWS('task-done', { agent: AGENT_ID, task_id: task.id, skip_qa: true });
       } catch (e) {
         process.stderr.write(`[fleet] report task_done failed: ${e.message}\n`);
       }
@@ -2032,25 +1894,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const humanMsgBlock = formatHumanMessages(humanMsgs, state);
     const contextSection = [context, humanMsgBlock].filter(Boolean).join('\n\n');
 
-    // If QA is enabled, prompt for structured report instead of pass/summary
-    const qaPrompt = qaEnabled ? `
-
-### QA is enabled. Submit a structured report:
-
-Call \`report(task_type="app"|"math", ...fields)\` with the required fields for your task type.
-
-**App tasks:** worktree_branch, dev_port, files_changed, screenshot_before, screenshot_after, test_method, test_evidence, console_errors, summary
-**Math tasks:** files_changed, builds_clean, theorem_statement, proof_sketch, summary` : `
-
-If you find issues: fix them now, then call \`report()\` again.
-If it's clean: call \`report(pass=true, summary="...")\` with a structured summary including screenshot verification.`;
-
     const reviewPrompt = `## Self-Review Gate
 
 **Task:** ${task.description}
 **Working directory:** ${cwd || 'unknown'}
 **Diff:** ${diffLines} lines
-**QA system:** ${qaEnabled ? 'enabled' : 'disabled (self-review mode)'}
 
 ${contextSection ? contextSection + '\n\n---\n' : ''}
 \`\`\`diff
@@ -2073,42 +1921,12 @@ If your task involves UI changes, you MUST:
 3. For each success criterion, state what you see in the screenshot that proves it's met
 4. If ANYTHING looks wrong or doesn't match criteria, fix it before reporting
 
-Do NOT report "looks good" without reading and describing the screenshots.${qaPrompt}`;
+Do NOT report "looks good" without reading and describing the screenshots.
+
+If you find issues: fix them now, then call \`report()\` again.
+If it's clean: call \`report(pass=true, summary="...")\` with a structured summary including screenshot verification.`;
 
     return { content: [{ type: 'text', text: reviewPrompt }] };
-  }
-
-  // ---- sign_report (QA-only) ----
-  if (name === 'sign_report') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
-
-    const { task_id, verdict, notes } = args;
-    if (!task_id || !verdict) return { content: [{ type: 'text', text: 'Missing required fields: task_id, verdict' }], isError: true };
-    if (verdict === 'rejected' && !notes) return { content: [{ type: 'text', text: 'Notes are required when rejecting a report.' }], isError: true };
-
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
-    try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/sign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id, agent_id: AGENT_ID, verdict, notes }),
-      });
-      const data = await res.json();
-      if (res.status === 403) return { content: [{ type: 'text', text: `Permission denied: ${data}` }], isError: true };
-      if (res.status === 404) return { content: [{ type: 'text', text: `No active report for task ${task_id}` }], isError: true };
-      if (!res.ok) return { content: [{ type: 'text', text: `sign_report failed: ${JSON.stringify(data)}` }], isError: true };
-
-      logEvent({ type: 'qa_sign', agent: AGENT_ID, task_id, verdict, notes });
-      let msg = `Signed report for ${task_id}: ${verdict}.`;
-      if (verdict === 'approved') {
-        msg += ' Next QA reviewer will be notified, or task is ready for completion if all QA agents have signed.';
-      } else {
-        msg += ` Manager notified with rejection notes.`;
-      }
-      return { content: [{ type: 'text', text: msg }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `sign_report failed (server unreachable): ${e.message}` }], isError: true };
-    }
   }
 
   // ---- read_terminal (read agent's tmux pane) ----
@@ -2118,12 +1936,10 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     }
 
     // Look up agent via server API
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     let agents;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
-      agents = await res.json();
-      if (agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents.error}` }], isError: true };
+      agents = await sendWS('store-agents');
+      if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
       return { content: [{ type: 'text', text: `task_check failed (server unreachable): ${e.message}` }], isError: true };
     }
@@ -2154,8 +1970,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     // Fetch tasks to find active task for this agent
     let tasks;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/tasks?active=true`);
-      tasks = await res.json();
+      tasks = await sendWS('store-tasks', { active: true });
     } catch {
       tasks = [];
     }
@@ -2277,16 +2092,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           // Event ID path
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
               let agents = []
               try {
-                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-                const stateData = await stateRes.json()
+                const stateData = await sendWS('store-agents')
                 agents = Array.isArray(stateData) ? stateData : []
               } catch {}
               resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
@@ -2308,17 +2120,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           // Event ID — look up this event and surrounding activity events (±60s)
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const anchor = (data.events || [])[0]
             if (anchor) {
               const since = new Date(new Date(anchor.timestamp).getTime() - 60000).toISOString()
               const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
               const agentId = anchor.from
-              const url2 = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res2 = await fleetFetch(url2)
-              const data2 = await res2.json()
+              const data2 = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data2.events || []).filter(e => e.type === 'activity')
             }
           } catch {}
@@ -2333,9 +2141,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
             try {
               const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
-              const url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res = await fleetFetch(url)
-              const data = await res.json()
+              const data = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data.events || []).filter(e => e.type === 'activity')
             } catch {}
           }
@@ -2352,8 +2158,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
           let agents = []
           try {
-            const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-            const stateData = await stateRes.json()
+            const stateData = await sendWS('store-agents')
             agents = Array.isArray(stateData) ? stateData : []
           } catch {}
           resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
@@ -2371,9 +2176,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           const eventId = evIdMatch[1]
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${eventId - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: eventId - 1, limit: 1 })
             const ev = (data.events || [])[0]
             if (ev) {
               let meta = ev.metadata
@@ -2386,8 +2189,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
               try {
-                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-                const agents = await stateRes.json()
+                const agents = await sendWS('store-agents')
                 const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
                 if (a) agentName = a.friendly_name || a.name || agentName
               } catch {}
@@ -2451,7 +2253,8 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
         images.push(...chipImages)
-        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
+        const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
+        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
@@ -2754,8 +2557,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
       let allAgents = [];
       try {
-        const res = await fleetFetch(`http://127.0.0.1:${dashPort_}/api/store/agents`);
-        if (res.ok) allAgents = await res.json();
+        const data = await sendWS('store-agents');
+        if (Array.isArray(data)) allAgents = data;
       } catch {}
       // Collect all matching agent IDs (friendly_name, session_id)
       // Prefix match is intentional here — search_logs is read-only, broad matching is useful
@@ -2835,7 +2638,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       } else {
         const proj = r.project?.match(/work-(.+)$/)?.[1]?.replace(/-/g, '/') ?? r.project ?? '';
         parts.push(`[session] [${r.role}] ${proj}`);
-        if (r.sessionId) parts.push(r.sessionId.slice(0, 8));
+        // Session UUIDs are intentionally not surfaced — agents should
+        // identify sessions by their owning agent name + timestamp, not by
+        // the Claude Code session ID. See get_thread for the rejection of
+        // session UUIDs as identifiers.
       }
       const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
       parts.push(snippet);
@@ -2920,13 +2726,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const pageSize = args.page_size || 200;
 
     const fetchEventsForAgent = async (agentId) => {
-      const dashPort = process.env.FLEET_DASH_PORT || 5176;
-      let url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${pageSize}`;
-      if (args.since) url += `&since=${encodeURIComponent(args.since)}`;
-      if (args.until) url += `&until=${encodeURIComponent(args.until)}`;
-      const res = await fleetFetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
+      const params = { agent: agentId, limit: pageSize };
+      if (args.since) params.since = args.since;
+      if (args.until) params.until = args.until;
+      const data = await sendWS('store-events', params);
+      if (!data) return;
       serverTotal = data.total ?? null;
       for (const e of (data.events || [])) {
         const text = e.type === 'delegate'
@@ -2947,6 +2751,22 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
     } else if (args.agent) {
+      // Reject Claude Code session UUIDs (8-4-4-4-12 hex). These are an
+      // internal Claude Code identifier and have no place in fleet — the
+      // primary key for agents is the agent name or fleet:UUID. Catching
+      // them with a specific error stops agents from inventing workarounds
+      // (raw JSONL reads, search_logs misuse) when "Agent not found" looks
+      // ambiguous.
+      const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (SESSION_UUID.test(args.agent)) {
+        return {
+          content: [{
+            type: 'text',
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roll_call.`,
+          }],
+          isError: true,
+        };
+      }
       const agentEntry = getAgent(state, args.agent);
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
@@ -3030,14 +2850,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- label_agent ----
   if (name === 'label_agent') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/label`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: args.agent, labels: args.labels || [] }),
-      });
-      const data = await res.json();
+      const data = await sendWS('label', { agent: args.agent, labels: args.labels || [] });
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
@@ -3050,14 +2864,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const { agent } = args;
     if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to interrupt.' }], isError: true };
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/interrupt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent }),
-      });
-      const data = await res.json();
+      const data = await sendWS('interrupt', { agent });
       if (data.error) return { content: [{ type: 'text', text: `Interrupt failed: ${data.error}` }], isError: true };
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
@@ -3403,22 +3211,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
         // Remove specific wiretap by ID
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${args.remove}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: args.remove });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const existing = await res.json();
+      const existing = await sendWS('wiretap-list', { agent: myId });
       for (const tap of existing) {
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${tap.id}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: tap.id });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
 
     // List existing wiretaps if no filter specified
     if (!args.filter) {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const taps = await res.json();
+      const taps = await sendWS('wiretap-list', { agent: myId });
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
       const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
@@ -3426,12 +3232,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const body = { agent: myId, filter: args.filter }
     if (args.types && args.types.length > 0) body.types = args.types
-    const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const tap = await res.json();
+    const tap = await sendWS('wiretap-add', body);
     const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
     return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
   }
@@ -3852,7 +3653,8 @@ async function handleChannelMessage(msg) {
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
+      const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
       content = `📬 Task update. Call my_task() to see details.`;
     }

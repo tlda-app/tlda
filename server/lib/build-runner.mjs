@@ -750,7 +750,11 @@ async function generateSourceMap(ctx) {
     if (!synctex) { addLog('Source map: no synctex data'); return }
 
     // Build per-page line index: sorted list of { y, file, line }
-    // Deduplicate by file:line (keep the first y for each source location)
+    // Deduplicate by file:line (keep the first y for each source location).
+    // Hoist realpathSync out of the loop — was being called per-record (350+ records on
+    // bregman), blocking the event loop ~750ms. Now resolved once per build.
+    let realSrcDir = null
+    try { realSrcDir = realpathSync(sourceDir(name)) } catch {}
     const pageIndex = {}
     const seen = new Set()
     for (const r of synctex.records) {
@@ -758,10 +762,9 @@ async function generateSourceMap(ctx) {
       if (!filePath || !filePath.endsWith('.tex')) continue
       // Derive relative file name
       let relFile = filePath
-      try {
-        const realSrcDir = realpathSync(sourceDir(name))
-        if (filePath.startsWith(realSrcDir)) relFile = filePath.slice(realSrcDir.length + 1)
-      } catch {}
+      if (realSrcDir && filePath.startsWith(realSrcDir)) {
+        relFile = filePath.slice(realSrcDir.length + 1)
+      }
       const key = `${r.page}:${relFile}:${r.line}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -1465,6 +1468,65 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
                 summary,
                 timestamp: Date.now(),
               })
+              // Lint: agent-parentheticals
+              try {
+                const { lintDiff } = await import('./lint-parens.mjs')
+                const findings = lintDiff(diffOutput, (file) => {
+                  try {
+                    return readFileSync(join(shadowDir, file), 'utf8')
+                  } catch { return null }
+                })
+                if (findings.length > 0) {
+                  const grouped = new Map()
+                  for (const f of findings) {
+                    if (!grouped.has(f.file)) grouped.set(f.file, [])
+                    grouped.get(f.file).push(f)
+                  }
+                  const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
+                  for (const [file, items] of grouped) {
+                    lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
+                  }
+                  lines.push('Agent-written parentheticals are usually fig leaves for weak structure — see `~/work/dot-claude/spellbook/math/writing/SKILL.md`. Skip writes them freely; this only flags ones added in build diffs.')
+                  emitGlobalEvent('build-chat', {
+                    name,
+                    hash: result.hash.slice(0, 7),
+                    text: lines.join('\n'),
+                  })
+                  console.log(`[build:${name}] Parens lint: ${findings.length} findings`)
+                }
+              } catch (lintErr) {
+                console.error(`[build:${name}] Parens lint failed:`, lintErr.message)
+              }
+              // Lint: passive voice
+              try {
+                const { lintDiff: lintPassiveDiff } = await import('./lint-passive.mjs')
+                const findings = lintPassiveDiff(diffOutput, (file) => {
+                  try {
+                    return readFileSync(join(shadowDir, file), 'utf8')
+                  } catch { return null }
+                })
+                if (findings.length > 0) {
+                  const grouped = new Map()
+                  for (const f of findings) {
+                    if (!grouped.has(f.file)) grouped.set(f.file, [])
+                    grouped.get(f.file).push(f)
+                  }
+                  const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
+                  for (const [file, items] of grouped) {
+                    const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
+                    lines.push(`- \`${file}\`: ${detail}`)
+                  }
+                  lines.push('Passive voice in math prose makes the reader work harder to identify who is doing what. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" instead of "is bounded by …" / "is given by …".')
+                  emitGlobalEvent('build-chat', {
+                    name,
+                    hash: result.hash.slice(0, 7),
+                    text: lines.join('\n'),
+                  })
+                  console.log(`[build:${name}] Passive lint: ${findings.length} findings`)
+                }
+              } catch (lintErr) {
+                console.error(`[build:${name}] Passive lint failed:`, lintErr.message)
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)

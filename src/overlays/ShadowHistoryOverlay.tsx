@@ -7,12 +7,17 @@
  * the actual adjacent build (one save at a time), so any historical version
  * is reachable even in projects with hundreds of thousands of builds.
  *
+ * When changelog data is provided, a 2D space-time scatter panel appears
+ * above the scrubber: X = time (shared axis with slider), Y = page position.
+ * Each dot marks which document pages changed at each build.
+ *
  * Pointer events are handled by BrowseIdle.markEventAsHandled, which prevents
  * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, useMemo } from 'react'
 import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
+import type { ChangelogCommit } from './SpaceTimeDots'
 import './ShadowHistoryOverlay.css'
 
 const SLIDER_STEPS = 1000  // resolution of the time-axis slider
@@ -55,9 +60,11 @@ interface Props {
   onStep: (dir: 'older' | 'newer') => void
   onClose: () => void
   onRealign?: () => void
+  /** Changelog data for space-time dots overlay */
+  changelog?: { commits: ChangelogCommit[]; totalPages: number }
 }
 
-export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign }: Props) {
+export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, changelog }: Props) {
   const resolvedSliderVal = activeVersion
     ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
     : SLIDER_STEPS  // rightmost = current
@@ -88,6 +95,11 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
     onScrubTime(sliderPosToTimestamp(clamped, timeBounds))
   }, [onScrubTime, timeBounds])
 
+  // Hover state for space-time dots
+  const [hoveredDot, setHoveredDot] = useState<{
+    x: number; y: number; commit: ChangelogCommit; page: number
+  } | null>(null)
+
   const isCurrent = activeVersion === null
   const isAtOldest = activeVersion?.hash === timeBounds.oldest.hash
 
@@ -110,50 +122,155 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
     )
   }
 
+  // Compute space-time dots
+  const { dots, yLabels } = useMemo(() => {
+    if (!changelog || changelog.commits.length === 0 || changelog.totalPages === 0) {
+      return { dots: [], yLabels: [] }
+    }
+    const { commits, totalPages } = changelog
+    // Use the changelog's own time range so dots spread across the full panel,
+    // not the global shadow bounds which may span months of sparse history.
+    const commitTs = commits.map(c => c.timestamp)
+    const tMin = Math.min(...commitTs)
+    const tMax = Math.max(...commitTs)
+    const tSpan = Math.max(tMax - tMin, 1)
+
+    const dotData: Array<{
+      xPct: number; yPct: number
+      commit: ChangelogCommit; page: number; isMulti: boolean
+    }> = []
+
+    for (const commit of commits) {
+      const xPct = ((commit.timestamp - tMin) / tSpan) * 100
+      for (const page of commit.changedPages) {
+        const yPct = totalPages === 1 ? 50 : ((page - 1) / (totalPages - 1)) * 100
+        dotData.push({
+          xPct: Math.max(0, Math.min(100, xPct)),
+          yPct: Math.max(0, Math.min(100, yPct)),
+          commit, page,
+          isMulti: commit.changedPages.length > 1,
+        })
+      }
+    }
+
+    // Y axis labels — evenly spaced page numbers
+    const labels: Array<{ page: number; yPct: number }> = []
+    if (totalPages <= 1) {
+      labels.push({ page: 1, yPct: 50 })
+    } else {
+      const step = Math.max(1, Math.ceil(totalPages / 5))
+      for (let p = 1; p <= totalPages; p += step) {
+        labels.push({ page: p, yPct: ((p - 1) / (totalPages - 1)) * 100 })
+      }
+      if (labels[labels.length - 1].page !== totalPages) {
+        labels.push({ page: totalPages, yPct: 100 })
+      }
+    }
+
+    return { dots: dotData, yLabels: labels }
+  }, [changelog, timeBounds])
+
+  const handleDotClick = useCallback((commit: ChangelogCommit) => {
+    onScrubTime(commit.timestamp)
+  }, [onScrubTime])
+
   return (
     <div
-      className={`shadow-scrubber${!isCurrent ? ' active' : ''}`}
+      className={`shadow-scrubber-container${!isCurrent ? ' active' : ''}`}
       style={isHidden ? { display: 'none' } : undefined}
     >
-      {/* Older — step to the build just before this one */}
-      <button
-        className="shadow-scrubber-step"
-        disabled={isAtOldest}
-        onClick={() => onStep('older')}
-        title="Older (one build)"
-      >‹</button>
-
-      <input
-        type="range"
-        className="shadow-scrubber-range"
-        min={0}
-        max={SLIDER_STEPS}
-        value={sliderVal}
-        onChange={handleRange}
-        title="Drag to scrub history by time — right = current, left = older"
-      />
-
-      {/* Newer — step to the build just after, or back to current */}
-      <button
-        className="shadow-scrubber-step"
-        disabled={isCurrent}
-        onClick={() => onStep('newer')}
-        title="Newer (one build)"
-      >›</button>
-
-      <span className="shadow-scrubber-label">{labelText}</span>
-
-      {onRealign && !isCurrent && (
-        <button
-          className="shadow-scrubber-realign"
-          onClick={onRealign}
-          title="Re-align columns to viewport center"
-        >⊙</button>
+      {/* Space-time dots panel — above the scrubber bar */}
+      {dots.length > 0 && (
+        <div className="spacetime-panel">
+          <div className="spacetime-y-axis">
+            {yLabels.map(l => (
+              <span
+                key={l.page}
+                className="spacetime-y-label"
+                style={{ top: `${l.yPct}%` }}
+              >
+                {l.page}
+              </span>
+            ))}
+          </div>
+          <div className="spacetime-field">
+            {dots.map((d, i) => (
+              <span
+                key={i}
+                className={`spacetime-dot${d.isMulti ? ' multi' : ''}`}
+                style={{ left: `${d.xPct}%`, top: `${d.yPct}%` }}
+                onPointerEnter={(e) => {
+                  const rect = (e.target as HTMLElement).getBoundingClientRect()
+                  setHoveredDot({
+                    x: rect.left + rect.width / 2,
+                    y: rect.top,
+                    commit: d.commit, page: d.page,
+                  })
+                }}
+                onPointerLeave={() => setHoveredDot(null)}
+                onClick={() => handleDotClick(d.commit)}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
-      <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
-        ×
-      </button>
+      {/* Scrubber bar */}
+      <div className="shadow-scrubber-bar">
+        <button
+          className="shadow-scrubber-step"
+          disabled={isAtOldest}
+          onClick={() => onStep('older')}
+          title="Older (one build)"
+        >‹</button>
+
+        <input
+          type="range"
+          className="shadow-scrubber-range"
+          min={0}
+          max={SLIDER_STEPS}
+          value={sliderVal}
+          onChange={handleRange}
+          title="Drag to scrub history by time — right = current, left = older"
+        />
+
+        <button
+          className="shadow-scrubber-step"
+          disabled={isCurrent}
+          onClick={() => onStep('newer')}
+          title="Newer (one build)"
+        >›</button>
+
+        <span className="shadow-scrubber-label">{labelText}</span>
+
+        {onRealign && !isCurrent && (
+          <button
+            className="shadow-scrubber-realign"
+            onClick={onRealign}
+            title="Re-align columns to viewport center"
+          >⊙</button>
+        )}
+
+        <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
+          ×
+        </button>
+      </div>
+
+      {/* Hover tooltip — positioned via fixed coordinates */}
+      {hoveredDot && (
+        <div
+          className="spacetime-tooltip"
+          style={{ left: hoveredDot.x, top: hoveredDot.y - 8 }}
+        >
+          <span className="spacetime-tooltip-page">p.{hoveredDot.page}</span>
+          <span className="spacetime-tooltip-time">{formatTime(hoveredDot.commit.timestamp)}</span>
+          {hoveredDot.commit.changedPages.length > 1 && (
+            <span className="spacetime-tooltip-multi">
+              +{hoveredDot.commit.changedPages.length - 1} pg
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

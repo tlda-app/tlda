@@ -214,7 +214,7 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      mode: T.string,
+      mode: T.optional(T.string),
       label: T.string,
       page: T.number,
       yTop: T.number,
@@ -224,6 +224,20 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-docview',
+      sequence: [],
+    }),
+  },
+  'doc-clip': {
+    props: {
+      w: T.number,
+      h: T.number,
+      page: T.number,
+      yTop: T.number,
+      yBottom: T.number,
+      label: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.doc-clip',
       sequence: [],
     }),
   },

@@ -26,6 +26,7 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
+import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -492,7 +493,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Shadow history scrubber
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
-    shadowColumnX, shadowYOffset,
+    shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
@@ -822,7 +823,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -1073,6 +1074,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onStep={handleShadowStep}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
+          changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}
       <div className="build-pills-row">
@@ -1316,14 +1318,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-              // Reset FleetHUD panOffset so it recomputes with the restored camera.
-              // Defer two frames: setCamera needs one frame to propagate through
-              // TLDraw's internal state before pageToScreen gives correct values.
-              requestAnimationFrame(() => {
+              // Recompute HUD panOffset ONLY if no saved position exists.
+              // With a saved panOffset (from a previous session), restoring from
+              // localStorage is correct — don't nuke it. Without one (first visit),
+              // we need to recompute after camera restoration so pageToScreen()
+              // uses the correct camera (commit 4031e60).
+              if (localStorage.getItem('fleet-hud-panOffset') === null) {
                 requestAnimationFrame(() => {
-                  window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  })
                 })
-              })
+              }
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds

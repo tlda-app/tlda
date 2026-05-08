@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, killSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
@@ -648,6 +648,22 @@ function AgentRow({
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
+        {/* Kill/respawn — single button left of name, on hover. Live → ×, dead → ⟳ */}
+        {(agent.dead ? canRespawn : true) && (
+          <span
+            className={agent.dead ? 'fleet-agents-respawn-btn' : 'fleet-agents-kill-btn'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              if (agent.dead) respawnAgent(agent.id)
+              else killSession(agent.id)
+            }}
+            title={agent.dead ? 'Respawn agent' : 'Kill agent session'}
+          >
+            {agent.dead ? '⟳' : '×'}
+          </span>
+        )}
+
         {/* Agent name — draggable (drag to create pill filter). Stops row click via onStartDrag's stopEventPropagation */}
         <span
           className={`fleet-agents-col-name fleet-agents-pill`}
@@ -662,18 +678,6 @@ function AgentRow({
         <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}
         </span>
-
-        {/* Respawn button — its own action, not expand */}
-        {canRespawn && (
-          <span
-            className="fleet-agents-respawn-btn"
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
-            title="Respawn agent"
-          >
-            ⟳
-          </span>
-        )}
 
         {/* Labels — draggable chips */}
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>

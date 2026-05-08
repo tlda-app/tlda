@@ -369,7 +369,12 @@ export function renderChatLine(m, ctx) {
   const retractBtn = isFromUser && msgAge < 300000
     ? `<span class="chat-retract" data-ts="${esc(m.timestamp)}" title="Retract">\u232B</span>`
     : ''
-  const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}`
+  // Queued: message from human to a currently-thinking agent, sent after thinking started
+  const thinkingAgents = ctx.thinkingAgents
+  const targetThinkingSince = thinkingAgents?.get?.(m.to)
+  const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
+  const isQueued = isFromUser && targetThinkingSince && msgTs >= targetThinkingSince
+  const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}${isQueued ? ' chat-queued' : ''}`
   // Delegation arrows
   const activeTasks = getTasks().filter(t => t.status !== 'done')
   const isDelegator = activeTasks.some(t => t.delegated_by === m.from && t.agent === m.to)

@@ -28,11 +28,10 @@ import {
 } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { onBuildStatusSignal, type BuildError } from '../useYjsSync'
+import { onBuildStatusSignal, type BuildError, onSharedDocSignal, type SharedDocSignal } from '../useYjsSync'
 import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
@@ -40,7 +39,7 @@ import { getSvgText, setSvgText } from '../stores/svgTextStore'
 const DEFAULT_W = 300
 const DEFAULT_H = 250
 
-const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
+const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 type Source = typeof ALL_SOURCES[number]
 
 function parseSources(s: string | undefined): Source[] {
@@ -48,7 +47,7 @@ function parseSources(s: string | undefined): Source[] {
     const arr = JSON.parse(s ?? 'null')
     if (Array.isArray(arr)) return arr.filter((x): x is Source => ALL_SOURCES.includes(x as Source))
   } catch {}
-  return ['ref']
+  return ['ref', 'shared']
 }
 
 interface ResolvedErrorBounds {
@@ -181,6 +180,16 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     return () => { cancelled = true }
   }, [buildErrors, doc])
 
+  // --- Shared doc source ---
+  const [sharedShapeId, setSharedShapeId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!sources.includes('shared')) return
+    return onSharedDocSignal((signal: SharedDocSignal) => {
+      setSharedShapeId(signal.shapeId)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourcesRaw])
+
   // --- Ref navigation history ---
   const [history, setHistory] = useState<NavEntry[]>([])
   const [historyIdx, setHistoryIdx] = useState(-1)
@@ -236,13 +245,26 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   // --- Compute display bounds (priority: errors > ref > proof) ---
   const bounds = useValue('docview-bounds', (): ClipBounds | null => {
-    if (!doc?.pages?.length) return null
-
     // Errors: highest priority when active
-    if (sources.includes('errors') && resolvedErrors.length > 0) {
+    if (doc?.pages?.length && sources.includes('errors') && resolvedErrors.length > 0) {
       const item = resolvedErrors[Math.min(errorIndex, resolvedErrors.length - 1)]
       return item?.bounds ?? null
     }
+
+    // Shared doc: show the sticky shape's region (doesn't require doc pages)
+    if (sources.includes('shared') && sharedShapeId && mainEditor) {
+      const shapeBounds = mainEditor.getShapePageBounds(sharedShapeId as any)
+      if (shapeBounds) {
+        return {
+          x: shapeBounds.x - 10,
+          y: shapeBounds.y - 10,
+          w: shapeBounds.w + 20,
+          h: shapeBounds.h + 20,
+        }
+      }
+    }
+
+    if (!doc?.pages?.length) return null
 
     // Ref: pinned region from last click
     let refBounds: ClipBounds | null = null
@@ -317,7 +339,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
     // Only ref, no proof source
     return refBounds
-  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex])
+  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex, sharedShapeId])
 
   // Prefetch SVG for the page the bounds point to — the clip panel needs it
   // loaded in svgTextStore even if the page is outside the main viewport.
@@ -356,6 +378,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   const activeSource: Source | null =
     (sources.includes('errors') && resolvedErrors.length > 0) ? 'errors' :
+    (sources.includes('shared') && sharedShapeId) ? 'shared' :
     (sources.includes('ref') && (label || page > 0)) ? 'ref' :
     sources.includes('proof') ? 'proof' : null
 
@@ -412,7 +435,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 }}
               />
               <span>
-                {src === 'ref' ? 'References' : src === 'proof' ? 'Proof tracker' : 'Build errors'}
+                {src === 'ref' ? 'References' : src === 'proof' ? 'Proof tracker' : src === 'shared' ? 'Shared docs' : 'Build errors'}
               </span>
             </label>
           ))}
@@ -523,19 +546,82 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             >→</button>
             <button
               className="fleet-layout-btn"
-              onPointerUp={(e: any) => {
+              onPointerDown={(e: any) => {
                 e.stopPropagation()
                 if (!mainEditor || !bounds) return
-                // Save current camera position for Return
-                const cam = mainEditor.getCamera()
-                setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
-                const vp = mainEditor.getViewportPageBounds()
-                mainEditor.centerOnPoint(
-                  { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
-                  { animation: { duration: 300 } }
-                )
+                const startX = e.clientX
+                const startY = e.clientY
+                let dragged = false
+                let ghost: HTMLDivElement | null = null
+
+                const onMove = (ev: PointerEvent) => {
+                  if (!dragged && (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5)) {
+                    dragged = true
+                    // Create ghost preview
+                    ghost = document.createElement('div')
+                    ghost.style.cssText = 'position:fixed;width:400px;height:300px;border:2px solid rgba(128,128,128,0.4);border-radius:2px;background:rgba(255,255,255,0.05);pointer-events:none;z-index:99999;'
+                    document.body.appendChild(ghost)
+                  }
+                  if (ghost) {
+                    ghost.style.left = (ev.clientX - 200) + 'px'
+                    ghost.style.top = (ev.clientY - 150) + 'px'
+                  }
+                }
+                const onUp = (ev: PointerEvent) => {
+                  window.removeEventListener('pointermove', onMove)
+                  window.removeEventListener('pointerup', onUp)
+                  if (ghost) { ghost.remove(); ghost = null }
+
+                  if (dragged) {
+                    // Drag → peel off doc-clip at drop point
+                    let clipPage = 0
+                    let clipYTop = 0
+                    let clipYBottom = 300
+                    if (doc?.pages?.length) {
+                      const centerY = bounds.y + bounds.h / 2
+                      for (let i = 0; i < doc.pages.length; i++) {
+                        const pb = doc.pages[i].bounds
+                        if (centerY >= pb.y && centerY <= pb.y + pb.height) {
+                          clipPage = i + 1
+                          const scale = pb.height / PDF_HEIGHT
+                          clipYTop = Math.max(0, (bounds.y - pb.y) / scale)
+                          clipYBottom = Math.min(PDF_HEIGHT, (bounds.y + bounds.h - pb.y) / scale)
+                          break
+                        }
+                      }
+                    }
+                    if (clipPage <= 0) return
+                    const dropPage = mainEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+                    mainEditor.createShape({
+                      id: createShapeId(),
+                      type: 'doc-clip' as any,
+                      x: dropPage.x - 200,
+                      y: dropPage.y - 150,
+                      isLocked: false,
+                      props: {
+                        w: 400,
+                        h: 300,
+                        page: clipPage,
+                        yTop: Math.round(clipYTop),
+                        yBottom: Math.round(clipYBottom),
+                        label: title || label || '',
+                      },
+                    })
+                  } else {
+                    // Click → navigate to location
+                    const cam = mainEditor.getCamera()
+                    setSavedCamera({ x: cam.x, y: cam.y, z: cam.z })
+                    const vp = mainEditor.getViewportPageBounds()
+                    mainEditor.centerOnPoint(
+                      { x: vp.x + vp.w / 2, y: bounds.y + bounds.h / 2 },
+                      { animation: { duration: 300 } }
+                    )
+                  }
+                }
+                window.addEventListener('pointermove', onMove)
+                window.addEventListener('pointerup', onUp)
               }}
-              title="Go to location"
+              title="Click: go to location. Drag: peel off to canvas."
             >↗</button>
             {savedCamera && (
               <button
@@ -566,7 +652,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: currentError ? h - errorHeaderH : h }}
       >
-        {bounds && mainEditor && svgReady ? (
+        {bounds && mainEditor && (svgReady || activeSource === 'shared') ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -577,6 +663,13 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             maxHeightFraction={1}
             readOnly
             cameraOverride={(() => {
+              // Shared doc: zoom to fit the sticky's width
+              if (activeSource === 'shared' && bounds) {
+                const zoom = w / bounds.w
+                const panelH = currentError ? h - errorHeaderH : h
+                const camY = -(bounds.y - (panelH / zoom - bounds.h) / 2)
+                return { x: -bounds.x, y: camY, z: zoom }
+              }
               // Zoom to fit page width, center bounds region vertically
               const pageIdx = boundsPageIdx >= 0 ? boundsPageIdx : 0
               const pg = doc?.pages?.[pageIdx]
@@ -592,6 +685,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>
             {activeSource === 'proof' ? 'scroll to a proof' :
              activeSource === 'ref' ? 'click a ref' :
+             activeSource === 'shared' ? 'waiting for shared doc…' :
              sources.length === 0 ? 'no sources' : 'waiting…'}
           </div>
         )}
@@ -600,71 +694,3 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   )
 }
 
-/**
- * DocViewPortal — renders a CanvasClipPanel via React portal outside the
- * tldraw tree, positioned to overlay the shape's screen location.
- * This avoids the nested-tldraw crash (React error #300).
- */
-export function DocViewPortal({
-  mainEditor, bounds, shapeUtils, licenseKey, panelWidth, panelHeight: _panelHeight, shapeId, editor: _editor,
-}: {
-  mainEditor: Editor
-  bounds: ClipBounds
-  shapeUtils: any[]
-  licenseKey: string
-  panelWidth: number
-  panelHeight: number
-  shapeId: string
-  editor: Editor
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
-
-  useEffect(() => {
-    const el = document.createElement('div')
-    el.className = 'fleet-docview-portal'
-    el.style.position = 'fixed'
-    el.style.zIndex = '99999'
-    el.style.pointerEvents = 'none'
-    document.body.appendChild(el)
-    containerRef.current = el
-    return () => { el.remove(); containerRef.current = null }
-  }, [])
-
-  useEffect(() => {
-    const update = () => {
-      const shapeEl = document.querySelector(`[data-shape-id="${shapeId}"]`)
-      if (!shapeEl) return
-      const bodyEl = shapeEl.querySelector('.fleet-docview-body')
-      if (!bodyEl) return
-      const rect = bodyEl.getBoundingClientRect()
-      setPos({ x: rect.left, y: rect.top })
-      if (containerRef.current) {
-        containerRef.current.style.left = rect.left + 'px'
-        containerRef.current.style.top = rect.top + 'px'
-        containerRef.current.style.width = rect.width + 'px'
-        containerRef.current.style.height = rect.height + 'px'
-        containerRef.current.style.pointerEvents = isSelected ? 'none' : 'auto'
-      }
-    }
-    update()
-    const interval = setInterval(update, 500)
-    return () => clearInterval(interval)
-  }, [shapeId, isSelected])
-
-  if (!containerRef.current || !pos) return null
-
-  return createPortal(
-    <CanvasClipPanel
-      mainEditor={mainEditor}
-      bounds={bounds}
-      shapeUtils={shapeUtils}
-      tools={[]}
-      licenseKey={licenseKey}
-      panelWidth={panelWidth}
-      maxHeightFraction={1}
-      readOnly
-    />,
-    containerRef.current,
-  )
-}
