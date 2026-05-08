@@ -91,9 +91,44 @@
   cursor: default;
 }
 
+/* Track wrapper — positions dots behind the range slider */
+.shadow-scrubber-track-wrap {
+  flex: 1;
+  position: relative;
+  min-width: 120px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+}
+
+/* Timeline dots layer — behind the range input */
+.shadow-scrubber-dots {
+  position: absolute;
+  left: 7px;   /* half thumb width — align with track endpoints */
+  right: 7px;
+  top: 50%;
+  height: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.shadow-scrubber-dot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.shadow-scrubber:hover .shadow-scrubber-dot {
+  opacity: 0.85;
+}
+
 /* Range slider */
 .shadow-scrubber-range {
-  flex: 1;
+  width: 100%;
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
@@ -101,7 +136,8 @@
   background: rgba(148, 163, 184, 0.2);
   outline: none;
   cursor: pointer;
-  min-width: 120px;
+  position: relative;
+  z-index: 1;
 }
 .shadow-scrubber-range::-webkit-slider-thumb {
   -webkit-appearance: none;

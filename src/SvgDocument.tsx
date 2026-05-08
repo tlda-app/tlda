@@ -495,6 +495,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
     shadowColumnX, shadowYOffset,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
+    shadowTimelineDots,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
@@ -1074,6 +1075,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onStep={handleShadowStep}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
+          timelineDots={shadowTimelineDots}
         />
       )}
       <div className="build-pills-row">
