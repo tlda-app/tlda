@@ -379,12 +379,25 @@ export function renderCodeCard(toolName, input, ctx) {
     const content = input.content
     const lines = content.split('\n')
     if (lines.length < 2) return ''
-    const lang = langFromFilePath(input.file_path)
+    const filePath = input.file_path || ''
+    const isMd = /\.md$/i.test(filePath)
+    const lang = langFromFilePath(filePath)
     const escaped = esc(content)
+    if (isMd) {
+      // Markdown files: never fold (collapse resets on re-render), word-wrap, draggable chip.
+      // The md-file-card chip enables the same drag-to-canvas action as chat-received .md files.
+      const isScratch = /\/scratch\//.test(filePath)
+      const name = filePath.split('/').pop() || 'file.md'
+      const chipClass = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
+      return `<div class="code-block-wrap code-card">
+      <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span><span class="code-block-copy" title="Copy">⎘</span></div>
+      <pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>
+    </div>`
+    }
     const shouldFold = lines.length > 10
     const highlighted = (!shouldFold && lang) ? highlightSyntax(escaped, lang) : escaped
     const foldClass = shouldFold ? ' code-collapsed' : ''
-    const langLabel = lang || input.file_path?.split('.').pop() || ''
+    const langLabel = lang || filePath.split('.').pop() || ''
     const toggleHtml = shouldFold
       ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''

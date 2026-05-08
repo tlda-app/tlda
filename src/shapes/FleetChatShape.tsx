@@ -2451,7 +2451,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   e.preventDefault()
                   if (ta.value !== '') {
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.style.height = ''
                     return
                   }
                   // Interrupt all targeted agents — no thinkingAgents filter.
@@ -2488,7 +2488,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   historyIndexRef.current = nextIdx
                   if (nextIdx < 0) {
                     ta.value = ''
-                    // field-sizing: content auto-shrinks
+                    ta.style.height = ''
                   } else {
                     const history = sentHistoryRef.current
                     ta.value = history[history.length - 1 - nextIdx]
@@ -2521,7 +2521,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     if (targetId) {
                       openTerminal(targetId)
                       ta.value = ''
-                      // field-sizing: content auto-shrinks
+                      ta.style.height = ''
                     }
                     return
                   }
@@ -2608,6 +2608,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       read: true,
                     })
                     ta.value = ''
+                    ta.style.height = ''
                     ta.dispatchEvent(new Event('input', { bubbles: true }))
                     resetTranscript()
                     restartRecording()
