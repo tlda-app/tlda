@@ -38,7 +38,7 @@ def resolve_model(model):
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
-SERVER_SCRIPT = os.path.join(REPO_DIR, "dashboard", "server.mjs")
+TLDA_CLI = os.path.join(REPO_DIR, "cli", "tlda.mjs")
 
 
 def ensure_server():
@@ -50,30 +50,23 @@ def ensure_server():
         pass
 
     if DASH_HOST not in ("127.0.0.1", "localhost"):
-        print(f"Warning: fleet server unreachable at {API}", file=sys.stderr)
+        print(f"Warning: tlda server unreachable at {API}", file=sys.stderr)
         return False
 
-    print(f"Fleet server not running — starting...", file=sys.stderr)
-    log_path = os.path.expanduser("~/.claude/fleet-server.log")
-    with open(log_path, "a") as logf:
-        subprocess.Popen(
-            ["node", SERVER_SCRIPT],
-            cwd=REPO_DIR,
-            stdout=logf,
-            stderr=logf,
-            start_new_session=True,
-        )
+    print(f"tlda server not running — starting...", file=sys.stderr)
+    subprocess.run(["node", TLDA_CLI, "server", "start"], cwd=REPO_DIR,
+                    capture_output=True, timeout=15)
 
     for _ in range(20):
         time.sleep(0.5)
         try:
             urlopen(f"{API}/api/state", timeout=1)
-            print("Fleet server started.", file=sys.stderr)
+            print("tlda server started.", file=sys.stderr)
             return True
         except URLError:
             pass
 
-    print("Warning: fleet server failed to start — spawning without it.", file=sys.stderr)
+    print("Error: tlda server failed to start.", file=sys.stderr)
     return False
 
 
@@ -213,15 +206,9 @@ def respawn(name, model_override, cwd_override, session_override=None):
     server_up = ensure_server()
 
     if not server_up:
-        fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
-        sess = f"fleet-{name}"
-        cwd = cwd_override or os.getcwd()
-        model = resolve_model(model_override or DEFAULT_MODEL)
-        tmux_kill(sess)
-        cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
-        tmux_start(sess, cwd, cmd)
-        print(f"{sess} ({fleet_id}) spawned fresh (server down — will register on reconnect)")
-        return sess
+        print(f"Error: fleet server is down — can't look up agent '{name}' to respawn.", file=sys.stderr)
+        print(f"Start the server first (tlda server start), or use --fresh to create a new agent.", file=sys.stderr)
+        sys.exit(1)
 
     agents = api_get("/api/store/agents")
     agent = next((a for a in agents if a.get("friendly_name") == name), None)

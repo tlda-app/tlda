@@ -1143,6 +1143,41 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'load-history') {
+    const limit = Math.min(parseInt(msg.limit || '50'), 1000)
+    const before = msg.before || null
+    const agent = msg.agent || null
+    try {
+      let events = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+        .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      const hasMore = events.length > limit
+      if (hasMore) events.shift()
+      events = events.filter(e => {
+        const t = e.text || ''
+        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
+      })
+      const allAgents = fleetStore.getAllAgents()
+      const agentMap = {}
+      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
+      const unreadIds = new Set()
+      try {
+        const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
+        for (const r of rows) unreadIds.add(r.event_id)
+      } catch {}
+      const resolved = events.map(e => ({
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }))
+      reply({ events: resolved, hasMore })
+    } catch (e) {
+      error(e.message)
+    }
+    return
+  }
+
   if (type === 'delegate') {
     const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from } = msg
     if (!agentQuery || !description) { error('missing agent or description'); return }

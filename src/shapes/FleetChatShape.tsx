@@ -1337,35 +1337,79 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom — always on. No scroll-up detection because
-  // CanvasClipPanel intercepts wheel events in capture phase, making
-  // wheel/touch handlers unreliable (false positives that suppress scroll).
-
-  // When the chat log's own height changes (e.g. the textarea grows and eats into
-  // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible.
-  const rawItemsLenRef = useRef(rawItems.length)
-  rawItemsLenRef.current = rawItems.length
-  const virtualizerRef = useRef(virtualizer)
-  virtualizerRef.current = virtualizer
-  // Single rAF loop keeps scroll at bottom every frame. No ResizeObserver
-  // (fires after paint = 1 frame bounce), no separate effects for rawItems/
-  // totalSize/images/resize. One mechanism, zero bounce.
-  useEffect(() => {
-    let rafId: number
-    const tick = () => {
-      const el = chatLogRef.current
-      if (el && rawItemsLenRef.current > 0) {
-        const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-        if (dist > 1) {
-          el.scrollTop = el.scrollHeight
-        }
-      }
-      rafId = requestAnimationFrame(tick)
-    }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
+  // Auto-scroll to bottom — event-driven, not every frame.
+  // CanvasClipPanel already routes wheel events to .fleet-chat-log via
+  // scrollable.scrollTop += e.deltaY, so we must NOT fight it with a
+  // continuous rAF loop. Instead: scroll to bottom when new content arrives
+  // or the container resizes, but only if the user hasn't scrolled up.
+  const isAtBottomRef = useRef(true)
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const prevItemsLenRef = useRef(0)
+  // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
+  // virtualizer's inner div calls it again after measurement, catching the
+  // race where scrollHeight grows after the initial scroll.
+  const scrollSuppressUntilRef = useRef(0)
+  const scrollToBottom = useCallback(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    scrollSuppressUntilRef.current = Date.now() + 100
+    isAtBottomRef.current = true
   }, [])
+
+  // Track whether user is at bottom (within 30px threshold).
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const onScroll = () => {
+      if (Date.now() < scrollSuppressUntilRef.current) return
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      const atBottom = dist < 30
+      isAtBottomRef.current = atBottom
+      setShowScrollBtn(!atBottom)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Scroll to bottom when new messages arrive.
+  // Always scroll on first load (prevLen was 0). After that, only if at bottom.
+  useEffect(() => {
+    const prevLen = prevItemsLenRef.current
+    prevItemsLenRef.current = rawItems.length
+    if (rawItems.length === 0) return
+    if (prevLen === 0) {
+      // First load — messages may still be rendering. Scroll repeatedly
+      // for 500ms to catch late layout changes.
+      scrollToBottom()
+      const id = setInterval(scrollToBottom, 50)
+      setTimeout(() => clearInterval(id), 500)
+    } else if (isAtBottomRef.current) {
+      scrollToBottom()
+      requestAnimationFrame(scrollToBottom)
+    }
+  }, [rawItems.length, scrollToBottom])
+
+  // ResizeObserver on the inner content div (virtualizer total-size container).
+  // When the virtualizer measures a new item, this div's height changes, which
+  // updates scrollHeight. We scroll to bottom at that point if we should be
+  // pinned there. Observing the outer scroll container wouldn't work — its
+  // visible size is fixed, only scrollHeight changes.
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) {
+        requestAnimationFrame(scrollToBottom)
+      }
+    })
+    // Observe both the scroll container AND its first child (the virtualizer
+    // total-size div). The container catches shape resizes; the child catches
+    // virtualizer measurement updates.
+    ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => ro.disconnect()
+  }, [scrollToBottom])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
@@ -2736,7 +2780,42 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Auto-scroll is always on — no scroll-to-bottom button needed */}
+        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
+        {showScrollBtn && (
+          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+            <button
+              className="fleet-scroll-bottom-btn"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                scrollToBottom()
+                setShowScrollBtn(false)
+              }}
+              style={{
+                position: 'absolute',
+                right: 8,
+                bottom: 4,
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                border: 'none',
+                background: 'transparent',
+                color: 'rgba(200, 200, 200, 1)',
+                opacity: 0.35,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                fontWeight: 'bold',
+                lineHeight: 1,
+                padding: 0,
+                transition: 'opacity 0.2s',
+              }}
+              title="Scroll to bottom"
+            >↓</button>
+          </div>
+        )}
       </div>
     </HTMLContainer>
   )

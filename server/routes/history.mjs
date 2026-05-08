@@ -928,4 +928,112 @@ router.get('/shadow/adjacent', requireRead, async (req, res) => {
   }
 })
 
+/**
+ * GET /shadow/changelog — Space-time changelog: which pages changed at each build.
+ * Returns { commits: [{ hash, timestamp, changedPages }], totalPages }.
+ *
+ * Parses `git log -U0` hunk headers to find changed source lines, then maps
+ * them to page numbers via the current lookup.json.
+ */
+router.get('/shadow/changelog', requireRead, async (req, res) => {
+  const { name } = req.params
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500)
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const repoDir = getShadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) {
+    return res.json({ commits: [], totalPages: 0 })
+  }
+
+  // 1. Build file→pages map from current lookup.json
+  const lookupPath = join(outputDir(name), 'lookup.json')
+  const filePages = new Map()  // filename → Set<page>
+  let totalPages = project.pages || 0
+  if (existsSync(lookupPath)) {
+    try {
+      const lookup = JSON.parse(readFileSync(lookupPath, 'utf8'))
+      const lines = lookup.lines || {}
+      const mainFile = lookup.meta?.texFile || project.mainFile || 'main.tex'
+
+      for (const [key, entry] of Object.entries(lines)) {
+        if (!entry.page) continue
+        // Keys are either "123" (main file) or "appendix.tex:123" (input files)
+        const colonIdx = key.indexOf(':')
+        const file = colonIdx >= 0 ? key.slice(0, colonIdx) : mainFile
+        const lineNum = parseInt(colonIdx >= 0 ? key.slice(colonIdx + 1) : key, 10)
+        if (isNaN(lineNum)) continue
+        if (!filePages.has(file)) filePages.set(file, new Map())
+        // line → page
+        filePages.get(file).set(lineNum, entry.page)
+        if (entry.page > totalPages) totalPages = entry.page
+      }
+    } catch {}
+  }
+
+  // 2. Run git log with unified diff (zero context) to get hunk headers
+  try {
+    const { stdout } = await execAsync(
+      `git log --format="COMMIT %H %at" -U0 --diff-filter=M -n ${limit}`,
+      { cwd: repoDir, timeout: 30000, maxBuffer: 50 * 1024 * 1024 },
+    )
+
+    const commits = []
+    let currentCommit = null
+    let currentFile = null
+
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('COMMIT ')) {
+        if (currentCommit) commits.push(currentCommit)
+        const parts = line.split(' ')
+        currentCommit = {
+          hash: parts[1],
+          timestamp: parseInt(parts[2], 10) * 1000,
+          changedPages: new Set(),
+        }
+        currentFile = null
+      } else if (line.startsWith('+++ b/')) {
+        currentFile = line.slice(6)
+      } else if (line.startsWith('@@ ') && currentCommit) {
+        // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+        const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+        if (m) {
+          const newStart = parseInt(m[3], 10)
+          const newCount = parseInt(m[4] ?? '1', 10)
+          // Map changed lines to pages
+          const lineMap = currentFile ? filePages.get(currentFile) : null
+          if (lineMap) {
+            for (let l = newStart; l < newStart + newCount; l++) {
+              const page = lineMap.get(l)
+              if (page) currentCommit.changedPages.add(page)
+            }
+            // If no exact line match, find nearest mapped line
+            if (currentCommit.changedPages.size === 0) {
+              let bestDist = Infinity, bestPage = null
+              for (const [mappedLine, page] of lineMap) {
+                const dist = Math.abs(mappedLine - newStart)
+                if (dist < bestDist) { bestDist = dist; bestPage = page }
+              }
+              if (bestPage && bestDist < 50) currentCommit.changedPages.add(bestPage)
+            }
+          }
+        }
+      }
+    }
+    if (currentCommit) commits.push(currentCommit)
+
+    // Serialize Sets to arrays
+    const result = commits.map(c => ({
+      hash: c.hash,
+      timestamp: c.timestamp,
+      changedPages: [...c.changedPages].sort((a, b) => a - b),
+    }))
+
+    res.json({ commits: result, totalPages })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 export default router
