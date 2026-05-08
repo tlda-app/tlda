@@ -863,6 +863,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       const isMd = /\.md$/i.test(chipUrl || chipPath)
       if (isMd && chipUrl) {
         e.stopPropagation()
+        // Prevent auto-scroll from pushing the chip out of view when the expand card grows the content.
+        // isAtBottomRef is declared later but accessed at call time (ref identity is stable).
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        isAtBottomRef.current = false
         // Toggle: if already expanded, collapse
         const existing = mdChip.nextElementSibling as HTMLElement | null
         if (existing?.classList.contains('md-expand-card')) {
@@ -1512,11 +1516,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               broadcastSharedDoc(existingId, filePath)
             } else {
               // Create new sticky off to the right of the document
-              // Offset to avoid overlapping existing shared stickies
+              // Offset to avoid overlapping all existing math-notes and fleet-docview panels
               let newX = 2000
-              const sharedStickies = allShapes
-                .filter((s: any) => s.type === 'math-note' && s.meta?.sharedDoc)
-              for (const s of sharedStickies) {
+              const blockers = allShapes.filter(s =>
+                (s as any).type === 'math-note' ||
+                (s as any).type === 'fleet-docview'
+              )
+              for (const s of blockers) {
                 const sb = mainEditor.getShapePageBounds(s.id)
                 if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {
                   newX = sb.x + sb.w + 30

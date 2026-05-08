@@ -68,7 +68,9 @@ export async function remapAnnotations(
 
   const updates: TLShapePartial[] = []
 
-  // Solo shapes (math notes): resolve anchor, position directly
+  // Solo shapes (math notes): resolve anchor, update Y only.
+  // Synctex x varies between builds (nearby-line fallback, display-math offsets), causing
+  // horizontal drift that is confusing and not meaningful for note placement.
   for (const shape of solo) {
     const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
     try {
@@ -77,15 +79,13 @@ export async function remapAnnotations(
       const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
       if (!canvasPos) continue
 
-      const newX = canvasPos.x - 100
       const newY = canvasPos.y - 100
-      const dx = Math.abs(shape.x - newX)
       const dy = Math.abs(shape.y - newY)
-      if (dx > 1 || dy > 1) {
+      if (dy > 1) {
         updates.push({
           id: shape.id,
           type: shape.type,
-          x: newX,
+          x: shape.x,
           y: newY,
         })
       }
