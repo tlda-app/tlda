@@ -1155,6 +1155,31 @@ function writeRelevantFiles(ctx) {
     addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
     return
   }
+  // Augment with bibtex inputs (.bib, .bst) — pdflatex doesn't read these
+  // but bibtex does. Parse \bibdata and \bibstyle from the .aux file.
+  const auxPath = join(buildDir, `${texBase}.aux`)
+  if (existsSync(auxPath)) {
+    try {
+      const aux = readFileSync(auxPath, 'utf8')
+      const bibdataMatch = aux.match(/\\bibdata\{([^}]+)\}/)
+      if (bibdataMatch) {
+        for (const stem of bibdataMatch[1].split(',')) {
+          addRelevantPath(relevant, stem.trim() + '.bib', srcDir, authorDir)
+        }
+      }
+      const bibstyleMatch = aux.match(/\\bibstyle\{([^}]+)\}/)
+      if (bibstyleMatch) {
+        addRelevantPath(relevant, bibstyleMatch[1].trim() + '.bst', srcDir, authorDir)
+      }
+    } catch {}
+  }
+  // Augment with SVG siblings of included PDF figures — tlda's patch pipeline
+  // renders SVGs, not the PDFs that pdflatex reads.
+  for (const p of [...relevant]) {
+    if (!p.endsWith('.pdf')) continue
+    const svgPath = p.replace(/\.pdf$/, '.svg')
+    if (existsSync(svgPath)) relevant.add(svgPath)
+  }
   const outPath = join(outDir, 'relevant-files.json')
   try {
     writeFileSync(outPath, JSON.stringify({
@@ -1165,6 +1190,20 @@ function writeRelevantFiles(ctx) {
     addLog(`Relevant files: ${relevant.size} entries from ${lineCount} INPUT lines`)
   } catch (e) {
     addLog(`Relevant files: write failed (non-fatal): ${e.message}`)
+  }
+}
+
+/** Add a relative path to the relevant set, resolving against srcDir and authorDir. */
+function addRelevantPath(relevant, relPath, srcDir, authorDir) {
+  const mirrorPath = join(srcDir, relPath)
+  if (existsSync(mirrorPath)) {
+    try { relevant.add(realpathSync(mirrorPath)) } catch { relevant.add(mirrorPath) }
+  }
+  if (authorDir) {
+    const authorPath = join(authorDir, relPath)
+    if (existsSync(authorPath)) {
+      try { relevant.add(realpathSync(authorPath)) } catch { relevant.add(authorPath) }
+    }
   }
 }
 
@@ -1373,20 +1412,36 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Commit + tag the source repo so shadow/<hash> points to the exact
-        // source content that produced this build. Without this, the tag
-        // points to whatever was last committed — which may not include the
-        // changes that triggered this build.
+        // Mirror: shadow repo records the build, working copy receives it via
+        // its tlda-shadow remote. No filter on the working-copy side — the
+        // shadow already contains paper-scope only (commitSnapshot enforces
+        // that). We update the working copy's master ref + index to match
+        // shadow's HEAD without touching the working tree, so any uncommitted
+        // edits survive and show as "modified" relative to the new master.
         try {
           const project = readProject(name)
           if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
-            const tag = `shadow/${result.hash.slice(0, 7)}`
             const cwd = project.sourceDir
-            // Stage all .tex/.bib/.sty/.cls files and commit
-            execSync(`git add -A *.tex *.bib *.sty *.cls 2>/dev/null; git diff --cached --quiet || git commit -m "shadow ${result.hash.slice(0, 7)}" --allow-empty`, { cwd, stdio: 'pipe', timeout: 10000 })
-            execSync(`git tag -f "${tag}"`, { cwd, stdio: 'pipe', timeout: 5000 })
+            const shadowDir = join(projDir, 'shadow-repo')
+            // Tag the shadow commit so shadow/<hash> resolves to it.
+            const tag = `shadow/${result.hash.slice(0, 7)}`
+            execSync(`git tag -f "${tag}"`, { cwd: shadowDir, stdio: 'pipe', timeout: 5000 })
+            // Ensure the working copy has the shadow as a remote.
+            try {
+              execSync(`git remote get-url tlda-shadow`, { cwd, stdio: 'pipe', timeout: 5000 })
+            } catch {
+              execSync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, stdio: 'pipe', timeout: 5000 })
+            }
+            // Fetch shadow's history into the working copy, then move the
+            // working copy's master to shadow's HEAD. --mixed updates the
+            // index but leaves the working tree untouched (preserves the
+            // user's uncommitted edits).
+            execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+            execSync(`git reset --mixed tlda-shadow/master`, { cwd, stdio: 'pipe', timeout: 10000 })
           }
-        } catch {}
+        } catch (mirrorErr) {
+          ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+        }
         // Build change summary: diff against previous shadow commit
         try {
           const shadowDir = join(projDir, 'shadow-repo')
