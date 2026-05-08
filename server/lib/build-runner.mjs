@@ -1442,6 +1442,36 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
               } catch (lintErr) {
                 console.error(`[build:${name}] Parens lint failed:`, lintErr.message)
               }
+              // Lint: passive voice
+              try {
+                const { lintDiff: lintPassiveDiff } = await import('./lint-passive.mjs')
+                const findings = lintPassiveDiff(diffOutput, (file) => {
+                  try {
+                    return readFileSync(join(shadowDir, file), 'utf8')
+                  } catch { return null }
+                })
+                if (findings.length > 0) {
+                  const grouped = new Map()
+                  for (const f of findings) {
+                    if (!grouped.has(f.file)) grouped.set(f.file, [])
+                    grouped.get(f.file).push(f)
+                  }
+                  const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
+                  for (const [file, items] of grouped) {
+                    const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
+                    lines.push(`- \`${file}\`: ${detail}`)
+                  }
+                  lines.push('Passive voice in math prose makes the reader work harder to identify who is doing what. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" instead of "is bounded by …" / "is given by …".')
+                  emitGlobalEvent('build-chat', {
+                    name,
+                    hash: result.hash.slice(0, 7),
+                    text: lines.join('\n'),
+                  })
+                  console.log(`[build:${name}] Passive lint: ${findings.length} findings`)
+                }
+              } catch (lintErr) {
+                console.error(`[build:${name}] Passive lint failed:`, lintErr.message)
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
