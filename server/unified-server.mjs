@@ -1144,6 +1144,7 @@ function handleFleetWsMessage(ws, msg) {
       const allAgents = fleetStore.getAllAgents()
       const agentMap = {}
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
       try {
         const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
