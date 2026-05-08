@@ -13,6 +13,7 @@ const _execAsyncRaw = promisify(execCb)
 const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
+import { readdir as readdirAsync, rm as rmAsync, cp as cpAsync } from 'fs/promises'
 import { join, relative, basename, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -98,17 +99,22 @@ export async function commitSnapshot(name) {
     throw new Error(`Source directory not found: ${srcDir}`)
   }
 
-  // Clear existing files in shadow repo (except .git and .gitignore)
-  for (const entry of readdirSync(repoDir)) {
-    if (entry === '.git' || entry === '.gitignore') continue
-    const fullPath = join(repoDir, entry)
-    rmSync(fullPath, { recursive: true, force: true })
-  }
+  // Clear existing files in shadow repo (except .git and .gitignore).
+  // Async fs avoids blocking the event loop on large source trees (was 700ms+).
+  const repoEntries = await readdirAsync(repoDir)
+  await Promise.all(
+    repoEntries
+      .filter((entry) => entry !== '.git' && entry !== '.gitignore')
+      .map((entry) => rmAsync(join(repoDir, entry), { recursive: true, force: true })),
+  )
 
-  // Copy source files in
-  for (const entry of readdirSync(srcDir)) {
-    cpSync(join(srcDir, entry), join(repoDir, entry), { recursive: true })
-  }
+  // Copy source files in.
+  const srcEntries = await readdirAsync(srcDir)
+  await Promise.all(
+    srcEntries.map((entry) =>
+      cpAsync(join(srcDir, entry), join(repoDir, entry), { recursive: true }),
+    ),
+  )
 
   // Stage everything
   await execAsync('git add -A', { cwd: repoDir, timeout: 10000 })

@@ -750,7 +750,11 @@ async function generateSourceMap(ctx) {
     if (!synctex) { addLog('Source map: no synctex data'); return }
 
     // Build per-page line index: sorted list of { y, file, line }
-    // Deduplicate by file:line (keep the first y for each source location)
+    // Deduplicate by file:line (keep the first y for each source location).
+    // Hoist realpathSync out of the loop — was being called per-record (350+ records on
+    // bregman), blocking the event loop ~750ms. Now resolved once per build.
+    let realSrcDir = null
+    try { realSrcDir = realpathSync(sourceDir(name)) } catch {}
     const pageIndex = {}
     const seen = new Set()
     for (const r of synctex.records) {
@@ -758,10 +762,9 @@ async function generateSourceMap(ctx) {
       if (!filePath || !filePath.endsWith('.tex')) continue
       // Derive relative file name
       let relFile = filePath
-      try {
-        const realSrcDir = realpathSync(sourceDir(name))
-        if (filePath.startsWith(realSrcDir)) relFile = filePath.slice(realSrcDir.length + 1)
-      } catch {}
+      if (realSrcDir && filePath.startsWith(realSrcDir)) {
+        relFile = filePath.slice(realSrcDir.length + 1)
+      }
       const key = `${r.page}:${relFile}:${r.line}`
       if (seen.has(key)) continue
       seen.add(key)
