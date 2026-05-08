@@ -1701,16 +1701,52 @@ async function cmdDoctor() {
     }
   }
 
-  // 7. Projects with build errors (only if server is running)
+  // 7. Project state — build errors, stuck pipelines, dangling mainFile.
+  // Catches the silent failure modes where a project stops being built but
+  // nothing surfaces it: mainFile pointing to a deleted source file,
+  // buildStatus stuck at "failed" for weeks, lastBuild far behind source mtime.
   if (serverRunning) {
     try {
       const data = await api('GET', '/api/projects', null, { timeoutMs: 5000 })
-      const errored = (data.projects || []).filter(p => p.buildStatus === 'error')
-      if (errored.length === 0) {
-        ok('No projects with build errors')
+      const projects = data.projects || []
+      const projectIssues = []
+      for (const p of projects) {
+        if (p.buildStatus === 'error' || p.buildStatus === 'failed') {
+          projectIssues.push({ p, kind: 'build-broken', detail: p.buildStatus })
+          continue
+        }
+        if (p.sourceDir && p.mainFile) {
+          const mainPath = join(p.sourceDir, p.mainFile)
+          if (!existsSync(mainPath)) {
+            projectIssues.push({ p, kind: 'main-missing', detail: p.mainFile })
+            continue
+          }
+          // Stale: source touched after lastBuild by 7+ days. Cheap heuristic
+          // for "edits aren't being captured."
+          if (p.lastBuild) {
+            try {
+              const lastBuildMs = Date.parse(p.lastBuild)
+              const mainMtime = statSync(mainPath).mtimeMs
+              const stale = mainMtime - lastBuildMs > 7 * 24 * 60 * 60 * 1000
+              if (stale) {
+                const days = Math.round((mainMtime - lastBuildMs) / (24 * 60 * 60 * 1000))
+                projectIssues.push({ p, kind: 'stale', detail: `mainFile edited ${days}d after last build` })
+              }
+            } catch {}
+          }
+        }
+      }
+      if (projectIssues.length === 0) {
+        ok('All projects healthy (builds, mainFile, freshness)')
       } else {
-        for (const p of errored) {
-          fail(`Project "${p.name}" has build errors`, `tlda errors ${p.name}`)
+        for (const { p, kind, detail } of projectIssues) {
+          if (kind === 'build-broken') {
+            fail(`Project "${p.name}" build ${detail}`, `tlda errors ${p.name}`)
+          } else if (kind === 'main-missing') {
+            fail(`Project "${p.name}" mainFile missing: ${detail}`, `edit ${p.sourceDir.replace(homedir(), '~')}/project.json or recreate project`)
+          } else if (kind === 'stale') {
+            fail(`Project "${p.name}" stale: ${detail}`, `tlda push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
+          }
           issues++
         }
       }
