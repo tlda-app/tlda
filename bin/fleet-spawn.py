@@ -120,12 +120,87 @@ def tmux_kill(session):
     subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
 
 
+REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
+
+# Glyphs whose presence in the tail of a Claude Code pane indicates the agent
+# is busy (spinner running, /compact in progress, prompt input not yet active).
+# Sending keystrokes while these are showing tends to land in the void —
+# the Enter doesn't submit because the input field isn't focused yet.
+BUSY_INDICATORS = ("✻", "⏺ ", "Compacting", "esc to interrupt")
+
+
+def pane_idle(session):
+    """True if the agent's tmux pane shows the input prompt (`❯`) with no
+    active spinner / compaction line in the input area or status row.
+
+    Claude Code renders the input area as a box bounded by two `────────`
+    dividers, with a status row below the bottom divider:
+
+        ────────  ← top divider (penultimate)
+        ❯ <prompt text>
+        ────────  ← bottom divider (last)
+          esc to interrupt · ...        (busy)
+          ? for shortcuts               (idle)
+
+    A finished `✻ Brewed for Ns` line that scrolled into the history
+    above the top divider isn't "busy" — only spinners/compact lines
+    *inside* the box, or "esc to interrupt" in the status row, count.
+    """
+    out = subprocess.run(
+        ["tmux", "capture-pane", "-t", session, "-p", "-S", "-30"],
+        capture_output=True, text=True, check=False,
+    ).stdout or ""
+    lines = out.splitlines()
+    # Find indices of the last two divider lines.
+    dividers = [i for i, l in enumerate(lines) if l.startswith("────")]
+    if len(dividers) >= 2:
+        # Input area is between the last two dividers; status row is after.
+        check = "\n".join(lines[dividers[-2]:])
+    else:
+        # Fall back to the bottom of the pane if the layout doesn't match.
+        check = "\n".join(lines[-6:])
+    if any(g in check for g in BUSY_INDICATORS):
+        return False
+    return "❯" in check
+
+
+def inject_register_prompt(session, deadline_seconds=90):
+    """Wait for the agent to reach an idle input prompt, then type the
+    register prompt and submit. Single Enter early to dismiss the
+    channels-dialog if it shows. Used as the entry point for the
+    --inject-keystrokes child process that tmux_start backgrounds."""
+    # Channels-dialog dismissal is harmless if the dialog isn't there.
+    time.sleep(3)
+    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=False)
+
+    deadline = time.time() + deadline_seconds
+    while time.time() < deadline:
+        time.sleep(2)
+        if pane_idle(session):
+            break
+    else:
+        # Timed out — agent never reached idle. Don't force-inject; better
+        # to leave the session alone than to scribble into a busy buffer.
+        return
+
+    # send-keys -l treats the arg as literal so quotes/backticks don't expand.
+    subprocess.run(["tmux", "send-keys", "-t", session, "-l", REGISTER_PROMPT], check=False)
+    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=False)
+
+
 def tmux_start(session, cwd, cmd):
+    """Start a new tmux session and background a child that injects the
+    register prompt once the agent reaches its prompt. Pane-state-aware so
+    the keystrokes don't get swallowed by an in-progress /compact or
+    thinking spinner on resume."""
     subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", cwd, cmd], check=True)
-    # Auto-accept channels dialog, then tell the agent to register with fleet.
+    # Re-invoke this script with --inject-keystrokes <session>; the child
+    # runs inject_register_prompt() and exits. Using sys.executable + the
+    # script path keeps the helper readable and testable in isolation.
     subprocess.Popen(
-        f"sleep 3 && tmux send-keys -t {session} Enter && sleep 5 && tmux send-keys -t {session} Enter && sleep 8 && tmux send-keys -t {session} 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.' Enter",
-        shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        [sys.executable, os.path.abspath(__file__), "--inject-keystrokes", session],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def fresh_spawn(name, model, cwd):
@@ -288,6 +363,13 @@ def respawn(name, model_override, cwd_override, session_override=None):
 
 
 def main():
+    # The keystroke-injection child is invoked as a sub-process by
+    # tmux_start; handle it before argparse so it doesn't conflict with
+    # the normal CLI surface.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--inject-keystrokes":
+        inject_register_prompt(sys.argv[2])
+        return
+
     parser = argparse.ArgumentParser(description="Spawn or respawn fleet agents")
     parser.add_argument("name", help="Agent friendly name")
     parser.add_argument("--fresh", action="store_true", help="Spawn a new agent instead of respawning")
