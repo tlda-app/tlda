@@ -422,6 +422,18 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
         if (_filling) return
+        // Plain Enter sends the message. The stop→onend→start restart path is
+        // unreliable in Safari (webkitSpeechRecognition silently fails to resume),
+        // so do the same thing double-tap-right-shift does: hardResetVoice + start.
+        // Suppress the textarea-clear input event that would otherwise call enterEdit().
+        if (e.key === 'Enter' && !e.shiftKey && _recording) {
+          _filling = true
+          setTimeout(() => {
+            _filling = false
+            hardResetVoice().then(() => startRecording())
+          }, 50)
+          return
+        }
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
           enterEdit()
         }
