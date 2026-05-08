@@ -48,6 +48,30 @@ def strip_math_and_refs(line: str) -> str:
     return s
 
 
+# Verbs that are commonly used as state-of-being predicates in math prose
+# when no explicit agent is given. "X is bounded" / "X is satisfied" /
+# "X is well-defined" usually mean the property holds, not that someone
+# performed an action. We only flag these when there's an explicit agent
+# ("by Y"), where the agentive reading is unambiguous.
+STATIVE_OK_VERBS = {
+    "bounded", "satisfied", "defined", "well-defined", "specified",
+    "known", "fixed", "named", "labeled", "labelled", "called",
+    "needed", "required", "guaranteed", "ensured", "established",
+    "true", "false", "unique", "finite", "infinite", "non-empty",
+}
+
+
+def has_agent(verb_token):
+    """Return True if the verb has an explicit `by AGENT` child (agentive passive)."""
+    for child in verb_token.children:
+        if child.dep_ == "agent":
+            return True
+        # spaCy sometimes uses "prep" with text "by" rather than "agent"
+        if child.dep_ == "prep" and child.text.lower() == "by":
+            return True
+    return False
+
+
 def lint_text(text: str, file_label: str = "<text>"):
     """Run passive-voice detection line by line."""
     nlp = spacy.load("en_core_web_sm")
@@ -76,6 +100,13 @@ def lint_text(text: str, file_label: str = "<text>"):
                 if verb.i in seen_verbs:
                     continue
                 seen_verbs.add(verb.i)
+                # Skip stative-OK verbs unless they have an explicit agent.
+                # "X is bounded" → skip. "X is bounded by C" → flag.
+                verb_lemma = verb.lemma_.lower()
+                verb_text = verb.text.lower()
+                if (verb_lemma in STATIVE_OK_VERBS or verb_text in STATIVE_OK_VERBS) \
+                        and not has_agent(verb):
+                    continue
                 # Build a small snippet around the verb
                 start = max(0, verb.i - 2)
                 end = min(len(doc), verb.i + 3)
