@@ -259,11 +259,19 @@ function broadcastFleet(msg) {
 function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
 }
+// Server-authoritative thinking/compacting state.
+// Populated from agent-thinking / agent-compacting events, included in
+// broadcastState() so state pushes never wipe client indicators.
+const _thinkingState = new Map()   // agentId → timestamp (ms)
+const _compactingState = new Map() // agentId → timestamp (ms)
+
 function broadcastState() {
   if (!fleetStore) return
   broadcastFleet({
     agents: fleetStore.getAllAgents(),
     tasks: fleetStore.getActiveTasks(),
+    thinking: Object.fromEntries(_thinkingState),
+    compacting: Object.fromEntries(_compactingState),
   })
 }
 
@@ -733,8 +741,13 @@ import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
+function clearEphemeralState(agentId) {
+  _thinkingState.delete(agentId)
+  _compactingState.delete(agentId)
+}
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, suppressEchoFor: () => {},
+  fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
+  suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -958,6 +971,8 @@ server.on('upgrade', (req, socket, head) => {
         const initState = {
           agents: fleetStore.getAllAgents(),
           tasks: fleetStore.getActiveTasks(),
+          thinking: Object.fromEntries(_thinkingState),
+          compacting: Object.fromEntries(_compactingState),
           connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
@@ -1231,12 +1246,22 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'agent-thinking') {
+    if (msg.thinking) {
+      _thinkingState.set(msg.agentId, Date.now())
+    } else {
+      _thinkingState.delete(msg.agentId)
+    }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
     return
   }
 
   if (type === 'agent-compacting') {
+    if (msg.compacting) {
+      _compactingState.set(msg.agentId, Date.now())
+    } else {
+      _compactingState.delete(msg.agentId)
+    }
     broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
     reply({ ok: true })
     return

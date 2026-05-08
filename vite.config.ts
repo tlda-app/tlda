@@ -45,22 +45,22 @@ export default defineConfig({
     proxy: {
       // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
-        target: 'ws://localhost:5176',
+        target: 'ws://localhost:5197',
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5176',
+        target: 'ws://localhost:5197',
         ws: true,
       },
       // Yjs sync WebSocket → test server
       '/sync': {
-        target: 'ws://localhost:5176',
+        target: 'ws://localhost:5197',
         ws: true,
       },
       // All API routes → test server
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      '/api': 'http://localhost:5197',
+      '/docs': 'http://localhost:5197',
+      '/health': 'http://localhost:5197',
     },
   },
   preview: {
