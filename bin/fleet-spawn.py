@@ -28,13 +28,27 @@ DASH_HOST = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
 API = f"http://{DASH_HOST}:{DASH_PORT}"
 DEFAULT_MODEL = 'claude-sonnet-4-6'
 
-# Model aliases — "opus" gets the 1M context variant
+# Model aliases — agents pass these short names; we resolve to Claude Code model IDs.
+MODEL_ALIASES = {
+    "opus": "claude-opus-4-7[1m]",      # latest opus, 1M context
+    "opus47": "claude-opus-4-7[1m]",    # explicit
+    "opus46": "claude-opus-4-6[1m]",    # prior generation, less context burn
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
 def resolve_model(model):
-    if model == "opus":
-        return "claude-opus-4-6[1m]"
-    if model == "sonnet":
-        return "claude-sonnet-4-6"
-    return model
+    if model in MODEL_ALIASES:
+        return MODEL_ALIASES[model]
+    # Literal Claude Code model IDs pass through unchanged.
+    if model.startswith("claude-"):
+        return model
+    valid = ", ".join(sorted(MODEL_ALIASES.keys()))
+    raise ValueError(
+        f"Unknown model: {model!r}. "
+        f"Valid aliases: {valid}. "
+        f"Or pass a literal claude-* model ID."
+    )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -283,10 +297,14 @@ def main():
     parser.add_argument("--no-attach", action="store_true", help="Don't attach to tmux session after spawning")
     args = parser.parse_args()
 
-    if args.fresh:
-        sess = fresh_spawn(args.name, args.model, args.cwd)
-    else:
-        sess = respawn(args.name, args.model, args.cwd, args.session)
+    try:
+        if args.fresh:
+            sess = fresh_spawn(args.name, args.model, args.cwd)
+        else:
+            sess = respawn(args.name, args.model, args.cwd, args.session)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
 
     if not args.no_attach:
         os.execvp("tmux", ["tmux", "attach-session", "-t", sess])

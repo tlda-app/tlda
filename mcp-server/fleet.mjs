@@ -2638,7 +2638,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       } else {
         const proj = r.project?.match(/work-(.+)$/)?.[1]?.replace(/-/g, '/') ?? r.project ?? '';
         parts.push(`[session] [${r.role}] ${proj}`);
-        if (r.sessionId) parts.push(r.sessionId.slice(0, 8));
+        // Session UUIDs are intentionally not surfaced — agents should
+        // identify sessions by their owning agent name + timestamp, not by
+        // the Claude Code session ID. See get_thread for the rejection of
+        // session UUIDs as identifiers.
       }
       const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
       parts.push(snippet);
@@ -2748,6 +2751,22 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
     } else if (args.agent) {
+      // Reject Claude Code session UUIDs (8-4-4-4-12 hex). These are an
+      // internal Claude Code identifier and have no place in fleet — the
+      // primary key for agents is the agent name or fleet:UUID. Catching
+      // them with a specific error stops agents from inventing workarounds
+      // (raw JSONL reads, search_logs misuse) when "Agent not found" looks
+      // ambiguous.
+      const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (SESSION_UUID.test(args.agent)) {
+        return {
+          content: [{
+            type: 'text',
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roll_call.`,
+          }],
+          isError: true,
+        };
+      }
       const agentEntry = getAgent(state, args.agent);
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
