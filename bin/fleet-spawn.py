@@ -30,9 +30,9 @@ DEFAULT_MODEL = 'claude-sonnet-4-6'
 
 # Model aliases — agents pass these short names; we resolve to Claude Code model IDs.
 MODEL_ALIASES = {
-    "opus": "claude-opus-4-7[1m]",      # latest opus, 1M context
-    "opus47": "claude-opus-4-7[1m]",    # explicit
-    "opus46": "claude-opus-4-6[1m]",    # prior generation, less context burn
+    "opus": "claude-opus-4-6[1m]",      # default opus — 4.6 burns less context than 4.7
+    "opus46": "claude-opus-4-6[1m]",    # explicit
+    "opus47": "claude-opus-4-7[1m]",    # opt-in for the latest opus
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
