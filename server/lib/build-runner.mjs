@@ -1436,11 +1436,12 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
               execSync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, stdio: 'pipe', timeout: 5000 })
             }
             // Fetch shadow's history into the working copy, then move the
-            // working copy's master to shadow's HEAD. --mixed updates the
-            // index but leaves the working tree untouched (preserves the
-            // user's uncommitted edits).
+            // working copy's current branch to shadow's HEAD. --mixed updates
+            // the index but leaves the working tree untouched (preserves any
+            // uncommitted edits). FETCH_HEAD is branch-name-agnostic, so this
+            // works whether the shadow's default branch is "main" or "master".
             execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
-            execSync(`git reset --mixed tlda-shadow/master`, { cwd, stdio: 'pipe', timeout: 10000 })
+            execSync(`git reset --mixed FETCH_HEAD`, { cwd, stdio: 'pipe', timeout: 10000 })
           }
         } catch (mirrorErr) {
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
