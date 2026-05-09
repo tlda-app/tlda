@@ -1245,6 +1245,32 @@ function addRelevantPath(relevant, relPath, srcDir, authorDir) {
   }
 }
 
+// Detect xr-referenced sibling .tex files in the project's primary main.
+// Scans main's .tex source (top-level only; doesn't follow \input chains —
+// most papers put \externaldocument near \usepackage{xr}, not nested).
+// Returns relative .tex filenames that exist next to main.
+//
+// Used when project.json doesn't explicitly declare mainFiles[], so the
+// user can flip arxiv-mode by editing source — toggling \arxivtrue (which
+// controls whether xr loads) implicitly adds/removes secondary targets.
+function detectXrSiblings(srcDir, mainFile) {
+  const mainPath = join(srcDir, mainFile)
+  if (!existsSync(mainPath)) return []
+  let source
+  try { source = readFileSync(mainPath, 'utf8') } catch { return [] }
+  // Strip comments so commented-out \externaldocument lines don't trigger.
+  // (Inline % comments only — not full-line escape handling.)
+  const stripped = source.replace(/(^|[^\\])%[^\n]*/g, '$1')
+  const out = []
+  for (const m of stripped.matchAll(/\\externaldocument(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
+    const stem = m[1].trim()
+    const rel = stem.endsWith('.tex') ? stem : stem + '.tex'
+    if (rel === mainFile) continue
+    if (existsSync(join(srcDir, rel))) out.push(rel)
+  }
+  return out
+}
+
 // Topologically sort mainFiles so xr-dependents come AFTER their targets.
 // "Dependent": main with \externaldocument{X} reads X.aux at compile time, so
 // X must be built first. We scan main's .tex source (and inputs reachable
@@ -1431,11 +1457,23 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   if (!project) throw new Error(`Project "${name}" not found`)
 
   // Multi-target: project may declare mainFiles[] (an ordered list of build
-  // targets). Legacy single-target projects use project.mainFile only.
-  // projectMainFiles normalizes both to an array. Empty fallback so weird
-  // schemas (e.g. tests, books accidentally entering this path) don't crash.
-  const mainFiles = projectMainFiles(project)
+  // targets), OR tlda auto-detects secondary targets from xr references in
+  // the primary mainFile's source. The auto-detection makes the user's
+  // experience "just edit the .tex" — flipping \arxivtrue (which controls
+  // whether xr loads) switches the project between single-target (no xr)
+  // and multi-target (xr active and refers to a sibling .tex) without any
+  // project.json edit.
+  let mainFiles = projectMainFiles(project)
   if (mainFiles.length === 0) mainFiles.push('main.tex')
+  // If the project doesn't explicitly configure mainFiles[], augment the
+  // primary mainFile with any xr-referenced siblings discovered by scanning
+  // its .tex source for \externaldocument{X} where X.tex is a sibling.
+  if (!Array.isArray(project.mainFiles) || project.mainFiles.length === 0) {
+    const xrSiblings = detectXrSiblings(srcDir, mainFiles[0])
+    if (xrSiblings.length > 0) {
+      mainFiles = [mainFiles[0], ...xrSiblings]
+    }
+  }
   const isMulti = mainFiles.length > 1
 
   // Validate all targets exist before starting any work.
