@@ -5,7 +5,7 @@ import {
   sortByIndex,
 } from 'tldraw'
 import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
-import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges } from './stores'
+import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
@@ -191,13 +191,15 @@ async function fetchPage(
   basePath: string,
   index: number,
 ): Promise<{ index: number; svgDoc: Document } | null> {
-  const url = `${basePath}page-${index + 1}.svg`
+  const pageBasePath = page.targetBasePath || basePath
+  const pageNum = page.pageInTarget || (index + 1)
+  const url = `${pageBasePath}page-${pageNum}.svg`
   try {
     let resp = await fetch(url)
     if (!resp.ok) {
       // Retry once after 1s — page may still be building
       await new Promise(r => setTimeout(r, 1000))
-      resp = await fetch(`${basePath}page-${index + 1}.svg?t=${Date.now()}`)
+      resp = await fetch(`${pageBasePath}page-${pageNum}.svg?t=${Date.now()}`)
       if (!resp.ok) return null
     }
     const svgText = await resp.text()
@@ -328,7 +330,11 @@ export async function reloadPages(
   // Fetch SVGs in parallel with cache-bust
   const results = await Promise.all(
     indices.map(async (i) => {
-      const url = `${basePath}page-${i + 1}.svg?t=${timestamp}`
+      const page = pages[i]
+      const storedUrl = getPageUrl(i)
+      const pageBasePath = page.targetBasePath || basePath
+      const pageNum = page.pageInTarget || (i + 1)
+      const url = storedUrl ? `${storedUrl}?t=${timestamp}` : `${pageBasePath}page-${pageNum}.svg?t=${timestamp}`
       try {
         const resp = await fetch(url)
         if (!resp.ok) {

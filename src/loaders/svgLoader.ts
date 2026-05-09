@@ -5,38 +5,53 @@ import {
 } from 'tldraw'
 import { setActiveMacros } from '../katexMacros'
 import { extractTextFromSvgAsync } from '../TextSelectionLayer'
-import { setSvgText, svgViewBoxStore, anchorIndex } from '../stores'
+import { setSvgText, svgViewBoxStore, anchorIndex, setPageUrl } from '../stores'
 import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from '../layoutConstants'
-import type { SvgPage, SvgDocument, DiffData, DiffHighlight, DiffChange } from './types'
+import type { SvgPage, SvgDocument, TargetInfo, DiffData, DiffHighlight, DiffChange } from './types'
 
 export const pageSpacing = PAGE_GAP
 
 /**
  * Create SVG document layout using known page dimensions — no network.
- * Pages are created as placeholders; SVGs are fetched later via fetchSvgPagesAsync.
+ * Pages are created as placeholders; SVGs are fetched later via SvgPageShape viewport entry.
+ * targets[] is always present — single-target is the N=1 case.
+ * SVG URLs are flat: /docs/<project>/<texBase>-page-N.svg
  */
-export function createSvgDocumentLayout(name: string, pageCount: number, basePath: string): SvgDocument {
+export function createSvgDocumentLayout(name: string, pageCount: number, basePath: string, targets?: TargetInfo[]): SvgDocument {
   const pages: SvgPage[] = []
   const width = TARGET_WIDTH
   const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
   let top = 0
+  let globalIdx = 0
 
-  for (let i = 0; i < pageCount; i++) {
-    const pageId = `${name}-page-${i}`
-    pages.push({
-      src: '',
-      bounds: new Box(0, top, width, height),
-      assetId: AssetRecordType.createId(pageId),
-      shapeId: createShapeId(pageId),
-      width,
-      height,
-    })
-    top += height + pageSpacing
+  const effectiveTargets = targets || [{ name, title: name, pages: pageCount, basePath }]
+
+  for (const target of effectiveTargets) {
+    for (let i = 0; i < target.pages; i++) {
+      const pageId = effectiveTargets.length > 1
+        ? `${name}-${target.name}-page-${i}`
+        : `${name}-page-${i}`
+      const svgUrl = `${basePath}${target.name}-page-${i + 1}.svg`
+      setPageUrl(globalIdx, svgUrl)
+      pages.push({
+        src: '',
+        bounds: new Box(0, top, width, height),
+        assetId: AssetRecordType.createId(pageId),
+        shapeId: createShapeId(pageId),
+        width,
+        height,
+        targetBasePath: basePath,
+        pageInTarget: i + 1,
+        targetName: target.name,
+      })
+      top += height + pageSpacing
+      globalIdx++
+    }
   }
 
-  // Kick off macros fetch (non-blocking — macros ready before user types a note)
-  const cacheBust = `?t=${Date.now()}`
-  fetch(basePath + 'macros.json' + cacheBust)
+  // Kick off macros fetch via API (primary target's preamble macros)
+  const macrosUrl = basePath.replace(/\/docs\/([^/]+)\/$/, '/api/projects/$1/macros')
+  fetch(macrosUrl + `?t=${Date.now()}`)
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (data?.macros) {
@@ -46,8 +61,8 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
     })
     .catch(() => {})
 
-  console.log(`SVG document layout ready: ${pageCount} pages`)
-  return { name, pages, basePath }
+  console.log(`SVG document layout ready: ${pages.length} pages (${effectiveTargets.length} target${effectiveTargets.length > 1 ? 's' : ''})`)
+  return { name, pages, basePath, targets: effectiveTargets }
 }
 
 /**

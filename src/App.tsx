@@ -54,6 +54,7 @@ interface DocConfig {
   members?: string[]
   buildStatus?: string
   autoSync?: boolean
+  targets?: { texBase: string; mainFile: string; pages: number }[]
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -310,8 +311,15 @@ function App() {
         const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
         document = await loadImageDocument(config.name, urls, fullBasePath)
       } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts
-        document = createSvgDocumentLayout(docName, config.pages, fullBasePath)
+        // SVG: create layout immediately, pages fetched async after editor mounts.
+        // targets[] always present from API; map to TargetInfo for the layout.
+        const targets = config.targets?.map(t => ({
+          name: t.texBase,
+          title: t.texBase.replace(/_/g, ' '),
+          pages: t.pages,
+          basePath: fullBasePath,
+        }))
+        document = createSvgDocumentLayout(docName, config.pages, fullBasePath, targets)
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
