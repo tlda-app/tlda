@@ -1245,6 +1245,56 @@ function addRelevantPath(relevant, relPath, srcDir, authorDir) {
   }
 }
 
+// Topologically sort mainFiles so xr-dependents come AFTER their targets.
+// "Dependent": main with \externaldocument{X} reads X.aux at compile time, so
+// X must be built first. We scan main's .tex source (and inputs reachable
+// from it) for \externaldocument{...} references. Any referenced X that's
+// also a mainFile in the project gets ordered before main. Falls back to
+// the declared order on parse failure or unresolvable cycles.
+function orderTargetsByXrDeps(mainFiles, srcDir) {
+  if (mainFiles.length <= 1) return [...mainFiles]
+  const stems = new Set(mainFiles.map(f => basename(f, '.tex')))
+  // Map texBase → set of texBases it depends on (xr-references).
+  const deps = new Map()
+  for (const mf of mainFiles) {
+    const stem = basename(mf, '.tex')
+    deps.set(stem, new Set())
+    const path = join(srcDir, mf)
+    if (!existsSync(path)) continue
+    let source
+    try { source = readFileSync(path, 'utf8') } catch { continue }
+    // Match \externaldocument[prefix]{X} — prefix optional.
+    for (const m of source.matchAll(/\\externaldocument(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
+      const target = m[1].trim()
+      if (stems.has(target)) deps.get(stem).add(target)
+    }
+  }
+  // Topo sort: emit nodes whose deps are all already emitted.
+  const remaining = new Set(mainFiles.map(f => basename(f, '.tex')))
+  const ordered = []
+  while (remaining.size > 0) {
+    let progress = false
+    for (const stem of remaining) {
+      const ds = deps.get(stem) || new Set()
+      const unmet = [...ds].some(d => remaining.has(d))
+      if (!unmet) {
+        ordered.push(stem)
+        remaining.delete(stem)
+        progress = true
+        break
+      }
+    }
+    if (!progress) {
+      // Cycle — fall back to declared order for the rest.
+      for (const stem of remaining) ordered.push(stem)
+      break
+    }
+  }
+  // Map back to mainFile names in the resolved order.
+  const byStem = new Map(mainFiles.map(f => [basename(f, '.tex'), f]))
+  return ordered.map(s => byStem.get(s)).filter(Boolean)
+}
+
 // If the project's working copy is a git repo and the shadow is still
 // empty (or has only the initial init commit), seed the shadow by filtering
 // the working-copy git history to paper-scope. Skip if the shadow already
@@ -1444,7 +1494,16 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     let totalPages = 0
     const targetMeta = []   // [{ texBase, mainFile, expectedPages, targetOutDir }]
 
-    for (const mf of mainFiles) {
+    // Order targets by xr dependency so that documents read by
+    // \externaldocument{X} are built BEFORE the documents that reference
+    // them. Each pdflatex run reads X.aux at compile-time, so X.aux must be
+    // current. Without ordering, cross-doc refs would lag a build.
+    const orderedMainFiles = orderTargetsByXrDeps(mainFiles, srcDir)
+    if (orderedMainFiles.join(',') !== mainFiles.join(',')) {
+      ctx.addLog(`Targets reordered for xr deps: ${orderedMainFiles.join(' → ')}`)
+    }
+
+    for (const mf of orderedMainFiles) {
       const tBase = basename(mf, '.tex')
       const tPath = join(srcDir, mf)
       const tDir = join(srcDir, dirname(mf))
