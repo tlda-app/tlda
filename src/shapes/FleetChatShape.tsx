@@ -1518,9 +1518,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               // Create new sticky off to the right of the document
               // Offset to avoid overlapping all existing math-notes and fleet-docview panels
               let newX = 2000
-              const blockers = allShapes.filter(s =>
-                (s as any).type === 'math-note' ||
-                (s as any).type === 'fleet-docview'
+              const blockers = allShapes.filter((s: any) =>
+                s.type === 'math-note' ||
+                s.type === 'fleet-docview'
               )
               for (const s of blockers) {
                 const sb = mainEditor.getShapePageBounds(s.id)
