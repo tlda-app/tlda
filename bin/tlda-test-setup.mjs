@@ -30,7 +30,12 @@ import { join } from 'node:path'
 
 const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
 const PROJECT = 'test-fleet'
-const VIEWPORT = { width: 1280, height: 800 }
+// 1920×1080 — Skip's primary work environment is an ultrawide; the layout is
+// designed for it. The default 3-col fleet (1180pt of fleet content + ~600pt
+// doc + margin) doesn't fit comfortably below ~1900px since the HUD overlay
+// camera renders at z=1. Smaller test viewports work for narrow-viewport-bug
+// repros but the canonical "what the user sees" needs the wide viewport.
+const VIEWPORT = { width: 1920, height: 1080 }
 const HEADED = process.argv.includes('--headed')
 const KEEP_OPEN = process.argv.includes('--keep-open')
 
@@ -247,9 +252,15 @@ async function applyLayoutAndCamera(page) {
     return ed && ed.getCurrentPageShapes().some(s => s.type === 'svg-page' || s.type === 'html-page')
   }, null, { timeout: 30000 })
 
-  // Frame the camera FIRST so createFleetLayout sees the final doc position
-  // when it computes anchor coordinates and the FleetHUD computes its
-  // panOffset.
+  // Frame the camera on the doc ONLY.
+  //
+  // Fleet shapes exist on the canvas at huge page-coord offsets (anchorX is
+  // ~1200pt left of the doc) but the user never sees those raw shapes — they
+  // are rendered exclusively via the FleetHUD overlay, which has its own
+  // camera. If the main camera frames any region containing the on-canvas
+  // fleet shape positions, the user sees DUPLICATE renderings: the HUD
+  // overlay AND the raw shapes. Frame the doc tightly so the on-canvas
+  // shapes stay off-screen.
   await page.evaluate(() => {
     const ed = (window).__tldraw_editor__
     const pages = ed.getCurrentPageShapes()
@@ -263,19 +274,13 @@ async function applyLayoutAndCamera(page) {
     })[0]
     const b = ed.getShapePageBounds(first.id)
     if (!b) return
-    // Pad bounds to the LEFT by 1.0× page width so the doc lands on the right
-    // half of the viewport — leaves room for the FleetHUD overlay on the left.
-    const padLeft = b.w * 1.0
-    ed.zoomToBounds(
-      { x: b.x - padLeft, y: b.y, w: b.w + padLeft, h: b.h },
-      { inset: 16, animation: { duration: 0 } }
-    )
-    // Clear any stale HUD position from prior sessions so the layout step
-    // recomputes against the current camera.
+    ed.zoomToBounds(b, { inset: 16, animation: { duration: 0 } })
+    // Clear any stale HUD position from prior sessions so the FleetHUD's
+    // auto-position recomputes against the current camera.
     try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
     try { localStorage.removeItem('fleet-hud-override') } catch {}
   })
-  console.log('✓ camera framed (doc right, fleet left)')
+  console.log('✓ camera framed on doc')
 
   // Wait for the FleetIconPill (and the fleet agent list) to be ready.
   await page.waitForSelector('.fleet-icon-pill-container', { timeout: 15000 })
