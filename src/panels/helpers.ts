@@ -89,7 +89,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
 
 // --- Heading parsing ---
 
-export type TocLevel = 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection'
+export type TocLevel = 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection' | 'divider'
 
 export interface TocEntry {
   level: TocLevel
@@ -179,12 +179,12 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
 
   headings.sort((a, b) => a.line - b.line)
 
-  // Insert synthetic "Appendix" section heading
+  // Insert a divider before appendix sections (visual separator, not a parent)
   if (appendixEntry) {
     const insertIdx = headings.findIndex(h => h.entry.page >= appendixEntry!.page)
     if (insertIdx >= 0) {
       headings.splice(insertIdx, 0, {
-        level: 'part',
+        level: 'divider',
         title: 'Appendix',
         line: headings[insertIdx].line - 1,
         entry: appendixEntry,

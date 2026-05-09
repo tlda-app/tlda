@@ -757,6 +757,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
     })),
+    targets: document.targets,
   }), [docKey, document])
 
   // Volatile panel state — toggles, loading flags, history, etc.

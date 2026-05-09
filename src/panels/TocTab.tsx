@@ -78,23 +78,60 @@ export function TocTab() {
         .catch(() => {})
       return
     }
-    loadLookup(doc.docName).then(data => {
-      if (data) {
+    const targets = doc.targets
+    if (targets && targets.length > 1) {
+      // Multi-target: load each target's lookup, merge with dividers
+      let pageOffset = 0
+      Promise.all(targets.map(async (t) => {
+        const resp = await fetch(`/docs/${doc.docName}/${t.name}-lookup.json`).catch(() => null)
+        if (!resp?.ok) return { target: t, headings: [] as TocEntry[], pageOffset }
+        const data = await resp.json()
         const h = parseHeadings(data.lines, data.meta)
-        setHeadings(h)
-        // Fold all headings that have children by default
-        setCollapsed(computeDefaultFolded(h))
-      } else {
-        // Fallback: try HTML TOC
-        loadHtmlToc(doc!.docName).then(toc => {
-          if (toc) {
-            setHtmlToc(toc)
-            setCollapsed(computeDefaultFolded(toc))
+        // Offset page numbers by pages from previous targets
+        for (const entry of h) {
+          entry.entry = { ...entry.entry, page: entry.entry.page + pageOffset }
+        }
+        const result = { target: t, headings: h, pageOffset }
+        pageOffset += t.pages
+        return result
+      })).then(results => {
+        const merged: TocEntry[] = []
+        for (const r of results) {
+          if (r.headings.length > 0 || results.indexOf(r) > 0) {
+            // Add target divider (skip for first target if it has no special label)
+            const isFirst = results.indexOf(r) === 0
+            if (!isFirst) {
+              const firstEntry = r.headings[0]?.entry || { page: r.pageOffset + 1, x: 0, y: 0, content: '' }
+              merged.push({
+                level: 'divider',
+                title: r.target.title || r.target.name,
+                line: -1,
+                entry: firstEntry,
+              })
+            }
           }
-        })
-      }
-    })
-  }, [doc?.docName, doc?.format, reloadCount])
+          merged.push(...r.headings)
+        }
+        setHeadings(merged)
+        setCollapsed(computeDefaultFolded(merged))
+      })
+    } else {
+      loadLookup(doc.docName).then(data => {
+        if (data) {
+          const h = parseHeadings(data.lines, data.meta)
+          setHeadings(h)
+          setCollapsed(computeDefaultFolded(h))
+        } else {
+          loadHtmlToc(doc!.docName).then(toc => {
+            if (toc) {
+              setHtmlToc(toc)
+              setCollapsed(computeDefaultFolded(toc))
+            }
+          })
+        }
+      })
+    }
+  }, [doc?.docName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -536,6 +573,13 @@ export function TocTab() {
         </a>
       )}
       {items.map((h, i) => {
+        if (h.level === 'divider') {
+          return (
+            <div key={i} className="toc-item toc-divider" onClick={h.nav}>
+              <span className="toc-divider-label">{h.title}</span>
+            </div>
+          )
+        }
         if (h.level === 'part') {
           currentPartIdx = i
           currentChapterIdx = -1

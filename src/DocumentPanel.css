@@ -473,6 +473,21 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   color: #666;
 }
 
+.toc-item.toc-divider {
+  padding: 8px 8px 4px;
+  cursor: pointer;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  margin-top: 6px;
+}
+
+.toc-divider-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+}
+
 .toc-item.chapter {
   font-weight: 700;
   padding-top: 6px;
