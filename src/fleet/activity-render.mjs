@@ -76,7 +76,9 @@ function renderThreadResult(text, ctx) {
   if (msgs.length <= 1) {
     return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)}</div>`
   }
-  const THREAD_PREVIEW = 8
+  const THREAD_FRONT = 3
+  const THREAD_TAIL = 5
+  const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
   const renderMsg = (msg) => {
     const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
@@ -103,14 +105,21 @@ function renderThreadResult(text, ctx) {
       <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
   }
-  // Show last N messages by default (most recent are most relevant)
-  const visibleMsgs = hasMoreMsgs ? msgs.slice(-THREAD_PREVIEW) : msgs
-  const rows = visibleMsgs.map(renderMsg).join('')
-  let moreHtml = ''
+  // Show first FRONT + gap marker + last TAIL, so both ends are visible.
+  // This lets Skip see the time range of what was actually read.
+  // The gap marker doubles as the expand button — clicking it reveals the hidden middle rows in place.
+  let rows = ''
+  const moreHtml = ''
   if (hasMoreMsgs) {
-    const hiddenRows = msgs.slice(0, msgs.length - THREAD_PREVIEW).map(renderMsg).join('')
-    moreHtml = `<div class="pretty-expand-btn">${msgs.length - THREAD_PREVIEW} earlier — show all</div>`
+    const frontMsgs = msgs.slice(0, THREAD_FRONT)
+    const tailMsgs = msgs.slice(-THREAD_TAIL)
+    const hiddenCount = msgs.length - THREAD_PREVIEW
+    const hiddenRows = msgs.slice(THREAD_FRONT, msgs.length - THREAD_TAIL).map(renderMsg).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = frontMsgs.map(renderMsg).join('') + gapMarker + tailMsgs.map(renderMsg).join('')
+  } else {
+    rows = msgs.map(renderMsg).join('')
   }
   // Parse header (message count + pagination warning)
   const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)

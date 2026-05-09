@@ -35,6 +35,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -754,9 +755,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
           agent: { type: 'string', description: 'Filter to a specific agent (by UUID, name, or friendly name)' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
-          limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+          limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
           context: { type: 'number', description: 'Number of surrounding messages to include with each chat match (default 0, max 20). Shows N messages before and after each match.' },
-          before: { type: 'string', description: 'ISO timestamp — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only return matches after this time.' },
+          before: { type: 'string', description: 'ISO timestamp, relative shorthand, or "now" — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
         },
         required: ['query'],
       },
@@ -780,10 +782,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Required unless task_id is given.' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
-          since: { type: 'string', description: 'ISO timestamp — only messages after this time.' },
-          until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
+          until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
-          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp.' },
+          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
@@ -2548,9 +2550,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
     }
 
-    const limit = Math.min(args.limit || 20, 100);
+    const sinceTs = parseTimestamp(args.since) || undefined;
+    const beforeTs = parseTimestamp(args.before) || undefined;
+    const isBoundedSearch = !!(sinceTs && beforeTs);
+    const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
-    const beforeTs = args.before || undefined;
 
     let agentIds;
     if (args.agent) {
@@ -2588,13 +2592,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       agentIds = [...ids];
     }
     // Search session logs (entries_fts)
-    let sessionResults = idx.search(query, { project: args.project || undefined, agent: agentIds, role: args.role || undefined, limit });
+    let sessionResults = idx.search(query, { project: args.project || undefined, agent: agentIds, role: args.role || undefined, limit, since: sinceTs });
 
     // Search chat events (chat_events_fts)
     // Pass context: 0 to searchChat — we handle context ourselves via getChatContext
     let chatResults = [];
     try {
-      chatResults = idx.searchChat(query, { agent: agentIds, role: args.role || undefined, limit, context: 0 });
+      chatResults = idx.searchChat(query, { agent: agentIds, role: args.role || undefined, limit, context: 0, since: sinceTs });
     } catch { /* chat FTS not yet built — degrade gracefully */ }
 
     // Apply `before` timestamp filter for pagination
@@ -2687,11 +2691,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const stats = idx.stats();
 
+    // For bounded calls, error if results hit the limit (would be silently truncated)
+    if (isBoundedSearch && allResults.length >= limit) {
+      return {
+        content: [{ type: 'text', text: `Bounded query returned ≥${limit} results — too many to return in one call. Narrow your time range (since: ${sinceTs}, before: ${beforeTs}) or use a more specific query.` }],
+        isError: true,
+      };
+    }
+
     // Log search event so dashboard can show what agents searched for
     const filters = [];
     if (args.agent) filters.push(`agent=${args.agent}`);
     if (args.role) filters.push(`role=${args.role}`);
     if (args.project) filters.push(`project=${args.project}`);
+    if (sinceTs) filters.push(`since=${sinceTs}`);
     if (beforeTs) filters.push(`before=${beforeTs}`);
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
     const allSnippets = [...sessionResults, ...chatResults].slice(0, 5).map(r => {
@@ -2707,7 +2720,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     });
 
     let header = `${allResults.length} results (${sessionResults.length} session, ${chatResults.length} chat) — index: ${stats.totalEntries} entries, ${stats.totalFiles} files`;
-    if (beforeTs) header += ` — filtered before ${beforeTs}`;
+    if (sinceTs) header += ` — since ${sinceTs}`;
+    if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;
 
     const separator = contextWindow > 0 ? '\n\n' : '\n\n';
@@ -2721,14 +2735,17 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let filtered = [];
     let serverTotal = null;
 
-    // Server handles time filtering and pagination. page_size caps results per call;
-    // to get the next page, call again with since=<last returned timestamp>.
-    const pageSize = args.page_size || 200;
+    const resolvedSince = parseTimestamp(args.since);
+    const resolvedUntil = parseTimestamp(args.until);
+    // When both bounds are set the caller committed to a finite range — fetch
+    // everything rather than silently paginating. Error if it's too large.
+    const isBounded = !!(resolvedSince && resolvedUntil);
+    const pageSize = isBounded ? 10_000 : (args.page_size || 200);
 
     const fetchEventsForAgent = async (agentId) => {
       const params = { agent: agentId, limit: pageSize };
-      if (args.since) params.since = args.since;
-      if (args.until) params.until = args.until;
+      if (resolvedSince) params.since = resolvedSince;
+      if (resolvedUntil) params.until = resolvedUntil;
       const data = await sendWS('store-events', params);
       if (!data) return;
       serverTotal = data.total ?? null;
@@ -2790,6 +2807,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     if (filtered.length === 0) {
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
+    }
+
+    // For bounded calls, error rather than silently truncate
+    if (isBounded && serverTotal !== null && serverTotal > filtered.length) {
+      return {
+        content: [{ type: 'text', text: `Bounded query returned ${serverTotal} messages — too large to fetch in one call. Narrow your time range (currently ${resolvedSince} → ${resolvedUntil}) and try again.` }],
+        isError: true,
+      };
     }
 
     // Build header with total context and forward-pagination hint
