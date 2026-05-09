@@ -1107,38 +1107,36 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Detect whisper-stream bridge (non-blocking — never delay voice init)
-  // Chrome is default. Pass &voice=whisper to use whisper-stream instead.
+  // Chrome Web Speech is the default voice backend.
+  // Whisper is opt-in via &voice=whisper — and only then do we ask the
+  // server to lazy-start the whisper bridge (it stays off otherwise).
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
   if (urlVoice === 'whisper') {
-    // Optimistically assume whisper — prevents Chrome mic prompt on Safari.
-    // If the bridge isn't running, we'll fall back to Chrome in the onerror.
     _backend = 'whisper-stream'
-  }
-  try {
-    const testWs = new WebSocket(WHISPER_BRIDGE_URL)
-    testWs.onopen = () => {
-      testWs.close()
-      _whisperAvailable = true
-      if (urlVoice === 'whisper') {
-        _backend = 'whisper-stream'
+    try {
+      await fetch('/api/voice/whisper/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: whisper lazy-start request failed', err)
+    }
+    try {
+      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+      testWs.onopen = () => {
+        testWs.close()
+        _whisperAvailable = true
         console.log('voice: using whisper-stream backend (via URL param)')
         connectWhisperBridge()
         if (_recording) showRecordingHud()
-      } else {
-        console.log('voice: whisper bridge available but using Chrome (default)')
       }
-    }
-    testWs.onerror = () => {
-      testWs.close()
-      // Bridge not available — fall back to Chrome
-      if (_backend === 'whisper-stream' && !_whisperAvailable) {
-        _backend = 'chrome'
-        console.log('voice: whisper bridge not available, falling back to Chrome')
+      testWs.onerror = () => {
+        testWs.close()
+        if (!_whisperAvailable) {
+          _backend = 'chrome'
+          console.log('voice: whisper bridge not available, falling back to Chrome')
+        }
       }
+    } catch {
+      _backend = 'chrome'
     }
-  } catch {
-    _backend = 'chrome'
   }
 
   if (!SpeechRecognition && _backend === 'chrome') {
