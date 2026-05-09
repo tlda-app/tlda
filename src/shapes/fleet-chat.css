@@ -458,7 +458,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* --- Agent nicks are draggable --- */
 .fleet-chat-shape .agent-nick {
   cursor: grab;
-  user-select: none;
   touch-action: none;
 }
 
