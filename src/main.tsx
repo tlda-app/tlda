@@ -4,17 +4,18 @@ import './index.css'
 import App from './App.tsx'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
-// (e.g. 3412x2056). Add a CSS class so we can scale up UI chrome.
-// Uses screen.width (display resolution) instead of innerWidth (window size)
-// because innerWidth varies with window state, sidebars, etc. — causing
-// inconsistent toolbar sizes on each page load.
+// where CSS pixels are physically tiny (retina display + lots of CSS px = small UI).
+// Detection is binary: retina (devicePixelRatio >= 2) AND wide CSS viewport
+// (>= 2560px). When true, toggle .hires class and set --hires-scale to a fixed
+// 1.5x. CSS rules under .hires bump our chrome's font-size/width/height/padding
+// directly via calc(... * var(--hires-scale)) — no `zoom` (which breaks tldraw
+// pointer math on draggable elements like sliders).
 {
   function updateHiresScale() {
-    const refWidth = 1440
-    const ratio = screen.width / refWidth
-    if (ratio > 1.3) {
+    const isHires = window.devicePixelRatio >= 2 && screen.width >= 2560
+    if (isHires) {
       document.documentElement.classList.add('hires')
-      document.documentElement.style.setProperty('--hires-scale', String(ratio))
+      document.documentElement.style.setProperty('--hires-scale', '1.5')
     } else {
       document.documentElement.classList.remove('hires')
       document.documentElement.style.removeProperty('--hires-scale')
