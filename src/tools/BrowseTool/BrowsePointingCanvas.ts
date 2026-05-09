@@ -25,12 +25,7 @@ const PointingCanvasBase = SelectTool.children().find(c => c.id === 'pointing_ca
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class BrowsePointingCanvas extends (PointingCanvasBase as any) {
-  static id = 'pointing_canvas'
-  // NOTE: don't redeclare other statics (isLockable, useCoalescedEvents).
-  // Tldraw reads them off the constructor with specific defaults from the
-  // parent; overriding here changes runtime behavior. The TS error from the
-  // `as any` parent is silenced at the call site in BrowseTool.children()
-  // via `as unknown as TLStateNodeConstructor` — see that file.
+  static override id = 'pointing_canvas'
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onEnter(_info: TLPointerEventInfo & { target: 'canvas' }) {
