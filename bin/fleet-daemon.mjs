@@ -271,7 +271,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot', 'ScheduleWakeup'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup'])
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
