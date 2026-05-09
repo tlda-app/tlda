@@ -30,7 +30,7 @@ import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
-import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors, projectMainFiles } from './project-store.mjs'
+import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
@@ -1456,24 +1456,15 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
-  // Multi-target: project may declare mainFiles[] (an ordered list of build
-  // targets), OR tlda auto-detects secondary targets from xr references in
-  // the primary mainFile's source. The auto-detection makes the user's
-  // experience "just edit the .tex" — flipping \arxivtrue (which controls
-  // whether xr loads) switches the project between single-target (no xr)
-  // and multi-target (xr active and refers to a sibling .tex) without any
-  // project.json edit.
-  let mainFiles = projectMainFiles(project)
-  if (mainFiles.length === 0) mainFiles.push('main.tex')
-  // If the project doesn't explicitly configure mainFiles[], augment the
-  // primary mainFile with any xr-referenced siblings discovered by scanning
-  // its .tex source for \externaldocument{X} where X.tex is a sibling.
-  if (!Array.isArray(project.mainFiles) || project.mainFiles.length === 0) {
-    const xrSiblings = detectXrSiblings(srcDir, mainFiles[0])
-    if (xrSiblings.length > 0) {
-      mainFiles = [mainFiles[0], ...xrSiblings]
-    }
-  }
+  // Multi-target is derived purely from the source: tlda scans the primary
+  // mainFile for \externaldocument{X} references and adds each matching
+  // sibling X.tex as a secondary target. The user toggles arxiv-mode by
+  // editing \arxivtrue in source; xr loads/unloads accordingly; tlda
+  // builds one or two targets accordingly. No project.json field declares
+  // additional targets — the document is the source of truth.
+  const primary = project.mainFile || 'main.tex'
+  const xrSiblings = detectXrSiblings(srcDir, primary)
+  const mainFiles = [primary, ...xrSiblings]
   const isMulti = mainFiles.length > 1
 
   // Validate all targets exist before starting any work.
