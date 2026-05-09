@@ -30,7 +30,7 @@ import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
-import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
+import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors, projectMainFiles } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
@@ -1373,15 +1373,19 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
-  const mainFile = project.mainFile || 'main.tex'
-  const texBase = basename(mainFile, '.tex')
-  const texPath = join(srcDir, mainFile)
-  // If mainFile has a directory prefix (e.g. "revision/manuscript.tex"),
-  // the compilation cwd must be that subdirectory so pdflatex finds the file.
-  const texDir = join(srcDir, dirname(mainFile))
+  // Multi-target: project may declare mainFiles[] (an ordered list of build
+  // targets). Legacy single-target projects use project.mainFile only.
+  // projectMainFiles normalizes both to an array. Empty fallback so weird
+  // schemas (e.g. tests, books accidentally entering this path) don't crash.
+  const mainFiles = projectMainFiles(project)
+  if (mainFiles.length === 0) mainFiles.push('main.tex')
+  const isMulti = mainFiles.length > 1
 
-  if (!existsSync(texPath)) {
-    throw new Error(`Main file "${mainFile}" not found in source`)
+  // Validate all targets exist before starting any work.
+  for (const mf of mainFiles) {
+    if (!existsSync(join(srcDir, mf))) {
+      throw new Error(`Main file "${mf}" not found in source`)
+    }
   }
 
   const buildId = `${name}-${++buildIdCounter}`
@@ -1395,13 +1399,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   }
   activeBuilds.set(name, status)
 
-  const buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
-  mkdirSync(buildDir, { recursive: true })
-
+  // Project-level ctx shared across targets — per-target fields (texBase,
+  // texPath, texDir, mainFile, buildDir, outDir) are filled in per iteration.
   const ctx = {
     name, project, buildId,
-    srcDir, outDir, projDir, buildDir,
-    texBase, texPath, texDir, mainFile,
+    srcDir, outDir, projDir,
     run: (cmd, opts = {}) => trackedExec(buildId, cmd, opts),
     addLog: (msg) => {
       const line = `[${new Date().toISOString()}] ${msg}`
@@ -1409,6 +1411,14 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       console.log(`[build:${name}] ${msg}`)
     },
   }
+  // Backward-compat: keep top-level ctx.texBase etc. set to the *primary*
+  // target so legacy single-target ctx callers still see what they expect.
+  ctx.mainFile = mainFiles[0]
+  ctx.texBase = basename(ctx.mainFile, '.tex')
+  ctx.texPath = join(srcDir, ctx.mainFile)
+  ctx.texDir = join(srcDir, dirname(ctx.mainFile))
+  ctx.buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
+  mkdirSync(ctx.buildDir, { recursive: true })
 
   try {
     // Snapshot current output in background — don't block the build
@@ -1424,49 +1434,107 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const buildStart = Date.now()
     const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
-    // Phase 1: LaTeX compilation
-    status.phase = 'compiling'
-    signalBuildProgress(name, 'compiling', null)
-    const { expectedPages } = await compileLaTeX(ctx)
+    // Per-target phases (compile, publish DVI, extract macros / synctex /
+    // proof-pairing / theorem-map / source-map / relevant-files). Each
+    // target's outputs land in:
+    //   - flat: outDir/page-N.svg, outDir/main.dvi, outDir/macros.json, ...
+    //     (single-target projects only — preserves the legacy URL layout)
+    //   - subdir: outDir/<targetBase>/page-N.svg, outDir/<targetBase>/main.dvi, ...
+    //     (multi-target projects)
+    let totalPages = 0
+    const targetMeta = []   // [{ texBase, mainFile, expectedPages, targetOutDir }]
 
-    // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
-    // SVGs are built lazily when pages are first requested (see buildCurrentPage).
-    status.phase = 'converting'
-    const dviFile = join(buildDir, `${texBase}.dvi`)
-    publishFile(dviFile, join(outDir, 'main.dvi'))
-    // Clear stale SVGs — clients will request them on demand after the reload signal
-    for (const f of readdirSync(outDir)) {
-      if (/^page-\d+\.svg$/.test(f)) {
-        try { unlinkSync(join(outDir, f)) } catch {}
+    for (const mf of mainFiles) {
+      const tBase = basename(mf, '.tex')
+      const tPath = join(srcDir, mf)
+      const tDir = join(srcDir, dirname(mf))
+      const tOutDir = isMulti ? join(outDir, tBase) : outDir
+      mkdirSync(tOutDir, { recursive: true })
+      const tBuildDir = isMulti
+        ? join(tmpdir(), `tlda-build-${name}-${tBase}-${Date.now()}`)
+        : ctx.buildDir
+      if (isMulti) mkdirSync(tBuildDir, { recursive: true })
+
+      const tCtx = {
+        ...ctx,
+        mainFile: mf,
+        texBase: tBase,
+        texPath: tPath,
+        texDir: tDir,
+        outDir: tOutDir,
+        buildDir: tBuildDir,
       }
+
+      // Phase 1: LaTeX compilation
+      status.phase = 'compiling'
+      signalBuildProgress(name, isMulti ? `compiling ${tBase}` : 'compiling', null)
+      const { expectedPages } = await compileLaTeX(tCtx)
+
+      // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
+      // SVGs are built lazily when pages are first requested.
+      status.phase = 'converting'
+      const dviFile = join(tBuildDir, `${tBase}.dvi`)
+      publishFile(dviFile, join(tOutDir, 'main.dvi'))
+      for (const f of readdirSync(tOutDir)) {
+        if (/^page-\d+\.svg$/.test(f)) {
+          try { unlinkSync(join(tOutDir, f)) } catch {}
+        }
+      }
+      tCtx.addLog(`DVI published${isMulti ? ` (${tBase})` : ''} — signaling reload`)
+
+      // Phases 3-8: extract macros, synctex, proof pairing, theorem map,
+      // source map, relevant files (per-target, written to tOutDir).
+      await extractMacros(tCtx)
+      status.phase = 'extracting'
+      const hasSynctex = await extractSynctex(tCtx)
+      if (hasSynctex) await computeProofPairing(tCtx)
+      await generateTheoremMap(tCtx)
+      await generateSourceMap(tCtx)
+      writeRelevantFiles(tCtx)
+
+      targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0, targetOutDir: tOutDir })
+      totalPages += expectedPages ?? 0
     }
-    ctx.addLog(`DVI published — signaling reload`)
+
+    // Multi-target only: write a project-level union relevant-files.json
+    // covering every target's set, so the daemon's source-change filter
+    // sees all relevant inputs regardless of which target opened them.
+    if (isMulti) {
+      const union = new Set()
+      for (const t of targetMeta) {
+        const p = join(t.targetOutDir, 'relevant-files.json')
+        if (existsSync(p)) {
+          try {
+            const j = JSON.parse(readFileSync(p, 'utf8'))
+            for (const f of j.files || []) union.add(f)
+          } catch {}
+        }
+      }
+      writeFileSync(
+        join(outDir, 'relevant-files.json'),
+        JSON.stringify({
+          generated_at: new Date().toISOString(),
+          source_dir: project?.sourceDir || srcDir,
+          targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
+          files: [...union].sort(),
+        }, null, 2),
+      )
+    }
+
+    // Send the reload signal once, after all targets finish.
     signalReload(name, null)
 
-    // Phase 3: Macro extraction
-    await extractMacros(ctx)
-
-    // Phase 4+5: Synctex → proof pairing (sequential, post-reload)
-    status.phase = 'extracting'
-    const hasSynctex = await extractSynctex(ctx)
-    if (hasSynctex) await computeProofPairing(ctx)
-
-    // Phase 6: Theorem map
-    await generateTheoremMap(ctx)
-
-    // Phase 7: Source map — unified index for the client
-    await generateSourceMap(ctx)
-
-    // Phase 8: Relevant-files set (for source-change filtering). Parses
-    // the .fls file that pdflatex -recorder wrote and captures every
-    // INPUT path that lives inside the project's sourceDir.
-    writeRelevantFiles(ctx)
+    // Total pages across all targets — what the viewer reports as project.pages.
+    const expectedPages = totalPages
 
     // Finalize
     updateProject(name, {
-      pages: expectedPages ?? 0,
+      pages: expectedPages,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
+      ...(isMulti && {
+        targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
+      }),
     })
     saveBuildCache(ctx)
     clearSynctexCache(name)
