@@ -683,6 +683,29 @@ app.use('/docs', (req, res, next) => {
     }
   }
 
+  // Project-level metadata aliases — bare names resolve to the primary
+  // target's per-target file. These names predate multi-target; viewer code
+  // fetches them as project-wide artifacts. Aliasing keeps callers simple
+  // and the canonical "doc metadata" is the primary target's.
+  const BARE_METADATA = new Set([
+    'lookup.json', 'macros.json', 'proof-info.json',
+    'source-map.json', 'theorem-map.json',
+  ])
+  if (BARE_METADATA.has(filePath)) {
+    try {
+      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
+      if (existsSync(projectJsonPath)) {
+        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+        const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+        const aliased = join(PROJECTS_DIR, name, 'output', `${primaryTexBase}-${filePath}`)
+        if (existsSync(aliased)) {
+          res.set('Cache-Control', 'no-cache')
+          return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {
