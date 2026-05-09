@@ -164,20 +164,48 @@ def pane_idle(session):
     return "❯" in check
 
 
-def inject_register_prompt(session, deadline_seconds=90):
-    """Wait for the agent to reach an idle input prompt, then type the
-    register prompt and submit. Single Enter early to dismiss the
-    channels-dialog if it shows. Used as the entry point for the
-    --inject-keystrokes child process that tmux_start backgrounds."""
-    # Channels-dialog dismissal is harmless if the dialog isn't there.
-    time.sleep(3)
+CHANNELS_DIALOG_MARKER = "Loading development channels"
+
+
+def pane_has_channels_dialog(session):
+    """True if the agent's tmux pane is currently showing the
+    `--dangerously-load-development-channels` confirmation dialog."""
+    out = subprocess.run(
+        ["tmux", "capture-pane", "-t", session, "-p", "-S", "-50"],
+        capture_output=True, text=True, check=False,
+    ).stdout or ""
+    return CHANNELS_DIALOG_MARKER in out and "I am using this for local development" in out
+
+
+def dismiss_channels_dialog(session):
+    """Send '1\\n' to select 'I am using this for local development' and
+    confirm. Idempotent if the dialog isn't there (a stray '1' lands in
+    the input area but Enter clears it on a non-prompt screen)."""
+    subprocess.run(["tmux", "send-keys", "-t", session, "1"], check=False)
     subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=False)
 
+
+def inject_register_prompt(session, deadline_seconds=120):
+    """Wait for the agent to reach an idle input prompt, then type the
+    register prompt and submit. Detects and dismisses the dev-channels
+    confirmation dialog as it appears (timing varies — CC startup can be
+    slow on a thrashed machine, so we poll instead of firing one Enter
+    at a fixed delay). Used as the entry point for the --inject-keystrokes
+    child process that tmux_start backgrounds."""
     deadline = time.time() + deadline_seconds
+    dismissed = False
+    # Initial settle so the tmux pane has rendered something.
+    time.sleep(2)
     while time.time() < deadline:
-        time.sleep(2)
+        if not dismissed and pane_has_channels_dialog(session):
+            dismiss_channels_dialog(session)
+            dismissed = True
+            # Give CC a moment to process and re-render past the dialog.
+            time.sleep(2)
+            continue
         if pane_idle(session):
             break
+        time.sleep(1.5)
     else:
         # Timed out — agent never reached idle. Don't force-inject; better
         # to leave the session alone than to scribble into a busy buffer.
