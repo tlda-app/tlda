@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
-import { commitSnapshot } from './shadow-repo.mjs'
+import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -1183,6 +1183,41 @@ function writeRelevantFiles(ctx) {
     const svgPath = p.replace(/\.pdf$/, '.svg')
     if (existsSync(svgPath)) relevant.add(svgPath)
   }
+  // Augment with xr / xr-hyper externally-referenced documents. When main
+  // does \externaldocument{X}, xr writes \@input{X.aux} into main's .aux —
+  // that's the marker. Treat X as a paper file: include X.tex + (if
+  // present) the inputs reachable from X via its own .fls.
+  if (existsSync(auxPath)) {
+    try {
+      const aux = readFileSync(auxPath, 'utf8')
+      for (const m of aux.matchAll(/\\@input\{([^}]+)\.aux\}/g)) {
+        const stem = m[1]
+        addRelevantPath(relevant, stem + '.tex', srcDir, authorDir)
+        // If pdflatex has been run on the xr target separately, its .fls is
+        // available — pull its INPUT lines into the paper scope too.
+        const xrFls = join(srcDir, stem + '.fls')
+        if (existsSync(xrFls)) {
+          try {
+            for (const line of readFileSync(xrFls, 'utf8').split('\n')) {
+              if (!line.startsWith('INPUT ')) continue
+              let p = line.slice(6).trim()
+              if (!p) continue
+              if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
+              if (!p.startsWith('/')) p = join(srcDir, p)
+              try { p = realpathSync(p) } catch {}
+              if (p.startsWith(srcDir + '/')) {
+                const rel = p.slice(srcDir.length + 1)
+                if (authorDir) relevant.add(join(authorDir, rel))
+                relevant.add(p)
+              } else if (authorDir && p.startsWith(authorDir + '/')) {
+                relevant.add(p)
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
   const outPath = join(outDir, 'relevant-files.json')
   try {
     writeFileSync(outPath, JSON.stringify({
@@ -1208,6 +1243,49 @@ function addRelevantPath(relevant, relPath, srcDir, authorDir) {
       try { relevant.add(realpathSync(authorPath)) } catch { relevant.add(authorPath) }
     }
   }
+}
+
+// If the project's working copy is a git repo and the shadow is still
+// empty (or has only the initial init commit), seed the shadow by filtering
+// the working-copy git history to paper-scope. Skip if the shadow already
+// has real commits — bootstrap runs once, then commitSnapshot takes over.
+async function maybeBootstrapShadowFromProjectRepo(name) {
+  const project = readProject(name)
+  if (!project?.sourceDir) return
+  const sourceDir = project.sourceDir
+  if (!existsSync(join(sourceDir, '.git'))) return
+
+  const shadowDir = join(projectDir(name), 'shadow-repo')
+  // Already has real history? Skip (defined as: at least 2 commits, since the
+  // blank initShadowRepo seeds an "init" commit with .gitignore).
+  if (existsSync(join(shadowDir, '.git'))) {
+    try {
+      const cnt = execSync('git rev-list --count HEAD 2>/dev/null', {
+        cwd: shadowDir, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, encoding: 'utf8',
+      }).trim()
+      if (parseInt(cnt, 10) > 1) return
+    } catch { /* missing HEAD or empty repo — proceed with bootstrap */ }
+  }
+
+  // Need a paper-scope to filter — written by writeRelevantFiles just above.
+  const relPath = join(outputDir(name), 'relevant-files.json')
+  if (!existsSync(relPath)) return
+  let parsed
+  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return }
+  const files = Array.isArray(parsed?.files) ? parsed.files : []
+  const scope = files
+    .filter(p => typeof p === 'string' && p.startsWith(sourceDir + '/'))
+    .map(p => p.slice(sourceDir.length + 1))
+  if (scope.length === 0) return
+
+  // Move existing blank shadow out of the way so initShadowFromProjectRepo
+  // can clone fresh. The blank shadow is just an init commit + .gitignore;
+  // safe to discard.
+  if (existsSync(shadowDir)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    renameSync(shadowDir, shadowDir + '-pre-init-' + ts)
+  }
+  await initShadowFromProjectRepo(name, sourceDir, scope)
 }
 
 // ─── Exported helpers ────────────────────────────────────────────────────────
@@ -1405,6 +1483,16 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
     emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
+
+    // Bootstrap: if the project's working copy is a git repo AND the shadow
+    // doesn't have real history yet, seed the shadow by filtering the
+    // working-copy git to paper-scope. Folds into the normal back-and-forth
+    // bootstrap — first build computes scope; if there's an extant project
+    // git, that scope filters the project's existing history into the shadow.
+    // Idempotent: skipped on subsequent builds (shadow already has commits).
+    await maybeBootstrapShadowFromProjectRepo(name).catch(e => {
+      ctx.addLog(`shadow bootstrap from project repo skipped (non-fatal): ${e.message}`)
+    })
 
     // Commit source snapshot to shadow repo (non-blocking)
     commitSnapshot(name).then(async result => {
