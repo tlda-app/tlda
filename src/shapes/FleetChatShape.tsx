@@ -23,11 +23,7 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-// @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
-// @ts-ignore — vanilla JS module
-// @ts-ignore — vanilla JS module
-import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
@@ -419,6 +415,21 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 }
 
 
+// Apply a text transform only to non-code regions of HTML.
+// Iterates alternating tag and text segments; tracks <code>/<pre> nesting depth
+// so that transforms are never applied to content inside code spans or blocks.
+function transformNonCode(html: string, transform: (text: string) => string): string {
+  let inCode = 0
+  return html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) inCode++
+      else if (/^<\/(code|pre)>/i.test(segment)) inCode = Math.max(0, inCode - 1)
+      return segment
+    }
+    return inCode > 0 ? segment : transform(segment)
+  })
+}
+
 // --- Virtual chat message row ---
 // Defined outside FleetChatInner so React.memo comparisons are stable.
 // Receives raw rendered HTML from renderChatLine/renderActivityGroup and a
@@ -730,8 +741,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
   // for visible items, so the cost scales with the viewport not the message count.
   const postProcess = useCallback((html: string): string => {
-    // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
-    html = html.replace(/«(.+?)»/g, (_match, inner) => {
+    // Turn «type:label» reference tokens into chips — only in non-code regions
+    // and not when immediately preceded by a quote character (quoted = literal).
+    html = transformNonCode(html, (text) => text.replace(/(?<!["'])«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
@@ -791,17 +803,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
       const tokenAttr = ` data-token="${token.replace(/"/g, '&quot;')}"`
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
-    })
-    // Convert tlda URLs to ref-chips
-    html = html.replace(
-      /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
-      (_match, url, docName) => {
-        if (!isTldaUrl(url)) return _match
-        const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const openUrl = url.replace(/"/g, '&quot;')
-        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
-      }
-    )
+    }))
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {

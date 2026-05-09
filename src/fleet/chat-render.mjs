@@ -24,14 +24,10 @@ export function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
 
-// Convert <code>https://...</code> (backtick URLs) into clickable links.
-// URLs inside backticks are rendered as <code> by the markdown renderer, not <a>.
-// The url capture is already HTML-encoded by the renderer, so use it directly in href/text.
-function linkifyCodeUrls(html) {
-  return html.replace(/<code>(https?:\/\/[^\s<>"]+)<\/code>/g, (_, url) => {
-    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-  })
-}
+// Backtick-wrapped URLs stay as <code> — they're literal text, not chips.
+// (Previously this function converted them to <a> links, but that caused
+// chipification of quoted URLs. Plain <code> is selectable and copyable.)
+function linkifyCodeUrls(html) { return html }
 
 export function timeShort(ts) {
   if (!ts) return ''
