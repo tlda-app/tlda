@@ -1252,10 +1252,11 @@ function addRelevantPath(relevant, relPath, srcDir, authorDir) {
 // also a mainFile in the project gets ordered before main. Falls back to
 // the declared order on parse failure or unresolvable cycles.
 function orderTargetsByXrDeps(mainFiles, srcDir) {
-  if (mainFiles.length <= 1) return [...mainFiles]
+  if (mainFiles.length <= 1) return { ordered: [...mainFiles], hasCycle: false, hasXrDeps: false }
   const stems = new Set(mainFiles.map(f => basename(f, '.tex')))
   // Map texBase → set of texBases it depends on (xr-references).
   const deps = new Map()
+  let hasXrDeps = false
   for (const mf of mainFiles) {
     const stem = basename(mf, '.tex')
     deps.set(stem, new Set())
@@ -1266,12 +1267,16 @@ function orderTargetsByXrDeps(mainFiles, srcDir) {
     // Match \externaldocument[prefix]{X} — prefix optional.
     for (const m of source.matchAll(/\\externaldocument(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
       const target = m[1].trim()
-      if (stems.has(target)) deps.get(stem).add(target)
+      if (stems.has(target)) {
+        deps.get(stem).add(target)
+        hasXrDeps = true
+      }
     }
   }
   // Topo sort: emit nodes whose deps are all already emitted.
   const remaining = new Set(mainFiles.map(f => basename(f, '.tex')))
   const ordered = []
+  let hasCycle = false
   while (remaining.size > 0) {
     let progress = false
     for (const stem of remaining) {
@@ -1286,13 +1291,15 @@ function orderTargetsByXrDeps(mainFiles, srcDir) {
     }
     if (!progress) {
       // Cycle — fall back to declared order for the rest.
+      hasCycle = true
       for (const stem of remaining) ordered.push(stem)
       break
     }
   }
   // Map back to mainFile names in the resolved order.
   const byStem = new Map(mainFiles.map(f => [basename(f, '.tex'), f]))
-  return ordered.map(s => byStem.get(s)).filter(Boolean)
+  const orderedFiles = ordered.map(s => byStem.get(s)).filter(Boolean)
+  return { ordered: orderedFiles, hasCycle, hasXrDeps }
 }
 
 // If the project's working copy is a git repo and the shadow is still
@@ -1497,12 +1504,20 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Order targets by xr dependency so that documents read by
     // \externaldocument{X} are built BEFORE the documents that reference
     // them. Each pdflatex run reads X.aux at compile-time, so X.aux must be
-    // current. Without ordering, cross-doc refs would lag a build.
-    const orderedMainFiles = orderTargetsByXrDeps(mainFiles, srcDir)
+    // current. With mutually-referencing documents (cycle), declared order
+    // is preserved and a second pass converges cross-refs.
+    const { ordered: orderedMainFiles, hasCycle, hasXrDeps } =
+      orderTargetsByXrDeps(mainFiles, srcDir)
     if (orderedMainFiles.join(',') !== mainFiles.join(',')) {
       ctx.addLog(`Targets reordered for xr deps: ${orderedMainFiles.join(' → ')}`)
     }
+    // Two passes only if there's at least one xr cross-ref between
+    // targets — otherwise targets are independent and one pass is enough.
+    const passCount = hasXrDeps ? 2 : 1
+    if (passCount > 1) ctx.addLog(`Multi-target xr cross-refs detected — running ${passCount} passes`)
 
+    for (let pass = 0; pass < passCount; pass++) {
+    const isFinalPass = pass === passCount - 1
     for (const mf of orderedMainFiles) {
       const tBase = basename(mf, '.tex')
       const tPath = join(srcDir, mf)
@@ -1551,9 +1566,13 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       await generateSourceMap(tCtx)
       writeRelevantFiles(tCtx)
 
-      targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0, targetOutDir: tOutDir })
-      totalPages += expectedPages ?? 0
+      // Only accumulate metadata on the final pass.
+      if (isFinalPass) {
+        targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0, targetOutDir: tOutDir })
+        totalPages += expectedPages ?? 0
+      }
     }
+    } // end pass loop
 
     // Multi-target only: write a project-level union relevant-files.json
     // covering every target's set, so the daemon's source-change filter
