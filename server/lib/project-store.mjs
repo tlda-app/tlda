@@ -54,7 +54,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const TLDA_ROOT = resolve(__dirname, '..', '..')
 const FORBIDDEN_SOURCE_DIRS = new Set([TLDA_ROOT])
 
-export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir, members }) {
+/**
+ * Return a project's build targets as an array of mainFile strings.
+ * Supports both legacy single-target projects (project.mainFile is a string)
+ * and multi-target projects (project.mainFiles is an array).
+ *
+ * Returns [] for projects with neither (e.g. book/markdown).
+ */
+export function projectMainFiles(project) {
+  if (Array.isArray(project?.mainFiles) && project.mainFiles.length > 0) {
+    return [...project.mainFiles]
+  }
+  if (typeof project?.mainFile === 'string' && project.mainFile.length > 0) {
+    return [project.mainFile]
+  }
+  return []
+}
+
+export function createProject({ name, title, mainFile = 'main.tex', mainFiles, format = 'svg', sourceDir: srcDir, members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -67,10 +84,24 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
   mkdirSync(join(dir, 'output'), { recursive: true })
 
   const isBook = format === 'book'
+  // Multi-target: accept either mainFiles[] (preferred) or mainFile (legacy).
+  // Always store BOTH so legacy callers reading project.mainFile keep working.
+  // mainFile is the primary/first target; mainFiles is the full ordered list.
+  let primary = mainFile
+  let allTargets = null
+  if (!isBook && Array.isArray(mainFiles) && mainFiles.length > 0) {
+    primary = mainFiles[0]
+    allTargets = [...mainFiles]
+  }
+  const targetField = isBook
+    ? {}
+    : allTargets
+      ? { mainFile: primary, mainFiles: allTargets }
+      : { mainFile: primary }
   const project = {
     name,
     title: title || name,
-    ...(!isBook && { mainFile }),
+    ...targetField,
     format,
     ...(srcDir && { sourceDir: srcDir }),
     ...(isBook && members && { members }),
