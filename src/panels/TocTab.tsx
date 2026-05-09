@@ -86,7 +86,7 @@ export function TocTab() {
         const resp = await fetch(`/docs/${doc.docName}/${t.name}-lookup.json`).catch(() => null)
         if (!resp?.ok) return { target: t, headings: [] as TocEntry[], pageOffset }
         const data = await resp.json()
-        const h = parseHeadings(data.lines, data.meta)
+        const h = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })
         // Offset page numbers by pages from previous targets
         for (const entry of h) {
           entry.entry = { ...entry.entry, page: entry.entry.page + pageOffset }
