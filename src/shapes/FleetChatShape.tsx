@@ -1408,6 +1408,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // updates scrollHeight. We scroll to bottom at that point if we should be
   // pinned there. Observing the outer scroll container wouldn't work — its
   // visible size is fixed, only scrollHeight changes.
+  //
+  // hasMessages re-runs the effect when messages first arrive: el.firstElementChild
+  // changes identity (empty-state div → virtualizer total-size div) and the observer
+  // must re-attach to the new element. Without this, the observer watches the detached
+  // empty-state div and misses all virtualizer height updates during initial load.
+  const hasMessages = rawItems.length > 0
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
@@ -1422,7 +1428,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     ro.observe(el)
     if (el.firstElementChild) ro.observe(el.firstElementChild)
     return () => ro.disconnect()
-  }, [scrollToBottom])
+  }, [scrollToBottom, hasMessages])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
