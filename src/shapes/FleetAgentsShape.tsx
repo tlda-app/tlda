@@ -15,7 +15,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, killSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -46,39 +46,6 @@ function labelColor(name: string): string {
   let h = 0
   for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
-}
-
-// --- Service health polling ---
-interface ServiceHealth {
-  tlda: { ok: boolean; uptime?: number }
-  fleet: { ok: boolean; error?: string | null; uptime?: number }
-  sync: { ok: boolean }
-}
-
-function useServiceHealth(): ServiceHealth | null {
-  const [health, setHealth] = useState<ServiceHealth | null>(null)
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval>
-    let mounted = true
-
-    async function check() {
-      try {
-        const r = await fetch('/health/services', { signal: AbortSignal.timeout(3000) })
-        if (r.ok && mounted) setHealth(await r.json())
-        else if (mounted) setHealth({ tlda: { ok: true }, fleet: { ok: false, error: 'HTTP ' + r.status }, sync: { ok: true } })
-      } catch {
-        // If we can't reach /health/services, the tlda server itself is down
-        if (mounted) setHealth({ tlda: { ok: false }, fleet: { ok: false, error: 'unreachable' }, sync: { ok: false } })
-      }
-    }
-
-    check()
-    timer = setInterval(check, 15_000) // poll every 15s
-    return () => { mounted = false; clearInterval(timer) }
-  }, [])
-
-  return health
 }
 
 type SortKey = 'seen' | 'name' | 'status'
@@ -396,7 +363,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   const [showDead, setShowDead] = useState(false)
   const unreadCounts = useFleetUnreadCounts()
-  const serviceHealth = useServiceHealth()
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -594,15 +560,6 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
   }
   return <FleetAgentsInner shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
-
-function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
-  return (
-    <span className="fleet-health-dot-item" title={ok ? `${label}: ok` : `${label}: ${detail || 'down'}`}>
-      <span className={`fleet-health-indicator ${ok ? 'ok' : 'down'}`} />
-      <span className="fleet-health-label">{label}</span>
-    </span>
-  )
-}
 
 function AgentRow({
   agent,

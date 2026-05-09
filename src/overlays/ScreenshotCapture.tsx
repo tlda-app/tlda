@@ -9,7 +9,6 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { writeSignal } from '../useYjsSync'
-import { getHumanId } from '../fleet/fleet-data.mjs'
 import type { ScreenshotCaptureState } from '../hooks/useYjsSignals'
 import './RefViewer.css'
 

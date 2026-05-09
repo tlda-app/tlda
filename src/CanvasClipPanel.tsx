@@ -10,7 +10,7 @@
  * buttons and title.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
 import './CanvasClipPanel.css'

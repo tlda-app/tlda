@@ -27,7 +27,7 @@ import {
   useValue,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'

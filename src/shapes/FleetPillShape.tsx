@@ -20,8 +20,6 @@ const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
-const SNAP_THRESHOLD = 20 // px distance for edge snapping
-const SNAP_GAP = 10 // gap between shapes when snapped
 
 const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
@@ -34,54 +32,6 @@ const _snapState = {
   active: false, // true during drag
   expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
   prevSnapMode: undefined as boolean | undefined,
-}
-
-/**
- * Snap a point (top-left of new 400×600 chat) to nearby fleet shape edges.
- * Returns the snapped position and visual snap guide lines.
- */
-function snapDropPoint(editor: Editor, point: { x: number; y: number }, excludeId: TLShapeId): { x: number; y: number; lines: Array<{ axis: 'x' | 'y'; pos: number }> } {
-  const fleetShapes = editor.getCurrentPageShapes()
-    .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== excludeId)
-  if (fleetShapes.length === 0) return { ...point, lines: [] }
-
-  let { x, y } = point
-  const lines: Array<{ axis: 'x' | 'y'; pos: number }> = []
-
-  // Collect edges from all fleet shapes
-  const edges: { type: string; val: number }[] = []
-  for (const s of fleetShapes) {
-    const b = editor.getShapePageBounds(s.id)
-    if (!b) continue
-    edges.push({ type: 'x-left-to-right', val: b.x + b.w + SNAP_GAP })
-    edges.push({ type: 'x-right-to-left', val: b.x - SNAP_GAP - CHAT_W })
-    edges.push({ type: 'x-left-to-left', val: b.x })
-    edges.push({ type: 'y-top-to-top', val: b.y })
-    edges.push({ type: 'y-top-to-bottom', val: b.y + b.h + SNAP_GAP })
-    edges.push({ type: 'y-bottom-to-top', val: b.y - SNAP_GAP - CHAT_H })
-  }
-
-  // Find closest X snap
-  let bestXDist = SNAP_THRESHOLD
-  let snappedX = false
-  for (const e of edges) {
-    if (!e.type.startsWith('x-')) continue
-    const dist = Math.abs(e.val - x)
-    if (dist < bestXDist) { bestXDist = dist; x = e.val; snappedX = true }
-  }
-  if (snappedX) lines.push({ axis: 'x', pos: x })
-
-  // Find closest Y snap
-  let bestYDist = SNAP_THRESHOLD
-  let snappedY = false
-  for (const e of edges) {
-    if (!e.type.startsWith('y-')) continue
-    const dist = Math.abs(e.val - y)
-    if (dist < bestYDist) { bestYDist = dist; y = e.val; snappedY = true }
-  }
-  if (snappedY) lines.push({ axis: 'y', pos: y })
-
-  return { x, y, lines }
 }
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
@@ -390,8 +340,8 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     // Save previous state to restore on translate end.
     const pill = shape as any
     if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
-      _snapState.prevSnapMode = this.editor.getInstanceState().isSnapMode
-      this.editor.updateInstanceState({ isSnapMode: true })
+      _snapState.prevSnapMode = this.editor.user.getIsSnapMode()
+      this.editor.user.updateUserPreferences({ isSnapMode: true })
     }
   }
 
@@ -481,7 +431,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     }
     // Restore snap mode
     if (_snapState.prevSnapMode !== undefined) {
-      this.editor.updateInstanceState({ isSnapMode: _snapState.prevSnapMode })
+      this.editor.user.updateUserPreferences({ isSnapMode: _snapState.prevSnapMode })
     }
     _snapState.active = false
     _snapState.expanded = false

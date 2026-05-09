@@ -30,7 +30,7 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 import { isTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent, reconcileOptimistic } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -213,7 +213,7 @@ function currentDocVersion(panel: any): string | null {
  * The receiving side (fleet.mjs resolveChipTokens) looks up attachments by token to
  * expand them into formatted source-line references for agents.
  */
-function buildRefAttachments(text: string, editor: any): Array<{
+function buildRefAttachments(text: string, _editor: any): Array<{
   token: string; type: string; label: string;
   color?: string; file?: string; sourceLines?: any[]; content?: string
 }> {
@@ -1077,7 +1077,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const d0 = await res0.json()
           const targetRaw = (d0.events || [])[0]
           if (!targetRaw) throw new Error()
-          const target = convertChatEvent(targetRaw)
+          const target = convertChatEvent(targetRaw) as any
           matchEvent = target
 
           // For activity events, expand outward to find the group boundaries
@@ -1503,7 +1503,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               // Offset to avoid overlapping existing shared stickies
               let newX = 2000
               const sharedStickies = allShapes
-                .filter(s => (s as any).type === 'math-note' && (s as any).meta?.sharedDoc)
+                .filter((s: any) => s.type === 'math-note' && s.meta?.sharedDoc)
               for (const s of sharedStickies) {
                 const sb = mainEditor.getShapePageBounds(s.id)
                 if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {

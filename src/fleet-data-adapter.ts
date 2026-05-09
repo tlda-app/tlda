@@ -577,9 +577,9 @@ export function useFleetUnreadCounts(): Record<string, number> {
 
     ensureInit().then(() => {
       if (cancelled) return
-      setCounts(getUnreadCountsForHuman())
+      setCounts(getUnreadCountsForHuman() as Record<string, number>)
       unsub = subscribe('messages', null, () => {
-        setCounts(getUnreadCountsForHuman())
+        setCounts(getUnreadCountsForHuman() as Record<string, number>)
       })
     })
 

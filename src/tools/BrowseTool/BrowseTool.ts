@@ -20,8 +20,8 @@ export class BrowseTool extends SelectTool {
   static override children(): TLStateNodeConstructor[] {
     const parentChildren = super.children()
     return parentChildren.map(child => {
-      if (child.id === 'idle') return BrowseIdle
-      if (child.id === 'pointing_canvas') return BrowsePointingCanvas
+      if (child.id === 'idle') return BrowseIdle as unknown as TLStateNodeConstructor
+      if (child.id === 'pointing_canvas') return BrowsePointingCanvas as unknown as TLStateNodeConstructor
       return child
     })
   }

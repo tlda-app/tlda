@@ -13,14 +13,11 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import { useState, useCallback, useRef } from 'react'
-import { stopEventPropagation } from 'tldraw'
+import React, { useState, useCallback, useRef } from 'react'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import './FleetIconPill.css'
-
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
 const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 40          // px width of each preset tile
@@ -63,7 +60,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
     </g>
   )
 
-  const layouts: Record<LayoutId, JSX.Element> = {
+  const layouts: Record<LayoutId, React.JSX.Element> = {
     '3col': (
       // [agents/search] [chat] [chat+docview] | DOC
       <>
@@ -128,7 +125,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const [dragAnchor, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const aliveCount = agents.filter((a: any) => !a.dead && !a.human).length
 

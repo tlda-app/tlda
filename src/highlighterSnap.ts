@@ -336,28 +336,6 @@ function resolveTintColor(colorName: string): string {
   return isDarkMode() ? compensateForDarkMode(base) : base
 }
 
-/** Temporarily tint matched text elements, then fade back to original. */
-function flashTint(fragments: TextFragment[], colorName: string) {
-  const tintColor = resolveTintColor(colorName)
-
-  for (const f of fragments) {
-    const el = f.el as SVGElement
-    const original = el.style.fill || ''
-    el.style.fill = tintColor
-    el.setAttribute('data-hl-tint', '1')
-    // Hold for 1s, then fade over 2s
-    setTimeout(() => {
-      el.style.transition = 'fill 2s ease-out'
-      el.style.fill = original || ''
-      setTimeout(() => {
-        el.style.removeProperty('transition')
-        if (!original) el.style.removeProperty('fill')
-        el.removeAttribute('data-hl-tint')
-      }, 2200)
-    }, 1000)
-  }
-}
-
 /**
  * Show tint on text elements for a highlight shape (call on hover).
  * Returns a cleanup function to remove the tint.
@@ -608,7 +586,7 @@ function showUnresolvedCard(
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
   pageShapeId: string,
-  shapeId: string,
+  _shapeId: string,
 ) {
   const screenPos = editor.pageToScreen({ x: bounds.maxX, y: bounds.minY })
   const tintColor = TINT_COLORS[hlColor] || TINT_COLORS.yellow

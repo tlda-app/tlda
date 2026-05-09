@@ -7,10 +7,9 @@
  * the main canvas (pans with the document); vertical position is fixed.
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
-import { useFleetAgents } from '../fleet-data-adapter'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
@@ -125,7 +124,6 @@ export function FleetHUD({
     const s = mainEditor.getCurrentPageShapes()
     return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
   })
-  const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
@@ -383,8 +381,8 @@ export function FleetHUD({
         ctrlKey: e.ctrlKey,
         metaKey: e.metaKey,
         button: e.button,
-        buttons: e.buttons,
-      })
+        isPen: e.pointerType === 'pen',
+      } as any)
     }
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
@@ -422,10 +420,6 @@ export function FleetHUD({
       }
     }
   }, [expanded])
-
-  const aliveCount = useMemo(() => {
-    return agents.filter((a: any) => !a.dead && !a.human).length
-  }, [agents])
 
   // Emergency reset: when the Fleet button in the TOC is clicked, it
   // recreates the fleet shapes AND fires a `fleet-hud-reset` event.

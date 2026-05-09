@@ -6,7 +6,7 @@
  * imperative (outside React render cycles) to avoid TLDraw hooks crashes.
  */
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useRef, useCallback } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
 import { setSvgText, deleteSvgText, svgViewBoxStore } from '../stores'
@@ -113,7 +113,7 @@ class PageColumn {
   destroyed = false
   columnX: number
   private yOffset: number
-  private handleId: TLShapeId | null = null
+  handleId: TLShapeId | null = null
   private handlePos: { x: number; y: number } | null = null
   private handleUnsub: (() => void) | null = null
   private textLeftMarginPx: number | null = null  // set from page-1 SVG; null = use fallback

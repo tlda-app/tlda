@@ -23,8 +23,6 @@ export function HistoryTab() {
   const hasDiff = !!(ctx?.diffChanges && ctx.diffChanges.length > 0)
 
   const entries = ctx?.historyEntries || []
-  const isAtEnd = !ctx?.activeHistoryIdx || ctx.activeHistoryIdx < 0 || ctx.activeHistoryIdx >= entries.length - 1
-  const showCompare = !isAtEnd
 
   return (
     <div className="doc-panel-content">
