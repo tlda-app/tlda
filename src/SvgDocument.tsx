@@ -98,6 +98,7 @@ import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
+import { usePanMode } from './hooks/usePanMode'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
@@ -526,6 +527,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     whistleEnabled,
     hissEnabled,
   })
+
+  // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
+  usePanMode(editorRef)
 
   useYjsSignals({
     editorRef, document,
