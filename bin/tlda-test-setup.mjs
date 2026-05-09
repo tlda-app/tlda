@@ -279,12 +279,25 @@ async function applyLayoutAndCamera(page) {
   // Wait for the FleetIconPill (and the fleet agent list) to be ready.
   await page.waitForSelector('.fleet-icon-pill-container', { timeout: 15000 })
 
-  // Wipe any stale HUD position from prior sessions BEFORE the layout step.
-  // createFleetLayout dispatches `fleet-hud-reset` which clears the HUD's
-  // panOffsetRef, but the localStorage value is what gets re-read on the
-  // next render — so we wipe it now and let the HUD recompute from current
-  // doc position after we've panned.
+  // CRITICAL: reset the camera to a known starting state BEFORE applying the
+  // layout. createFleetLayout sizes fleet shapes by `vp.h / cam.z * 0.7`, so
+  // if a prior session left the camera at a different zoom, the layout's
+  // vertical extent changes and the resulting screenshots look inconsistent
+  // across runs. By zooming to fit the doc page first, we anchor every run
+  // to the same starting camera state, regardless of session-storage history.
   await page.evaluate(() => {
+    const ed = (window).__tldraw_editor__
+    const pages = ed.getCurrentPageShapes()
+      .filter(s => s.type === 'svg-page' || s.type === 'html-page')
+    if (pages.length === 0) return
+    const first = pages.slice().sort((a, b) => {
+      const ba = ed.getShapePageBounds(a.id)
+      const bb = ed.getShapePageBounds(b.id)
+      return ba.y - bb.y || ba.x - bb.x
+    })[0]
+    const b = ed.getShapePageBounds(first.id)
+    if (b) ed.zoomToBounds(b, { inset: 16, animation: { duration: 0 } })
+    // Wipe stale HUD localStorage from prior sessions too.
     try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
     try { localStorage.removeItem('fleet-hud-cameraY') } catch {}
     try { localStorage.removeItem('fleet-hud-override') } catch {}
@@ -323,16 +336,9 @@ async function applyLayoutAndCamera(page) {
   })
   console.log('✓ fleet shapes:', counts)
 
-  // After shapes exist, frame the camera on the first doc page.
-  //
-  // NOTE: cleaner per-mode framing (doc-only, fleet-only, fleet+doc balanced)
-  // is blocked on the right-shift bug fix — see project_show_all_collapse_bug
-  // sibling memory and ~/work/scratch/hud-anchor-plan.md. The HUD's screen
-  // position is computed from the main camera every render and accumulates
-  // drift; until it's anchored to a Yjs shape (per the plan), reliable
-  // scripted positioning of the HUD overlay isn't workable. So for now this
-  // script frames the doc and lets the HUD overlay land wherever its
-  // auto-position math sends it.
+  // Frame the camera on the doc page first via tldraw's built-in zoom-to-fit
+  // (this is what a user gets with the "zoom to fit" keyboard shortcut, not
+  // a programmatic backdoor — it computes the same camera state).
   await page.evaluate(() => {
     const ed = (window).__tldraw_editor__
     const pages = ed.getCurrentPageShapes()
@@ -348,7 +354,15 @@ async function applyLayoutAndCamera(page) {
     if (!b) return
     ed.zoomToBounds(b, { inset: 16, animation: { duration: 0 } })
   })
-  console.log('✓ camera framed on doc')
+
+  // Per-focus camera differentiation (panning the doc to give the HUD more
+  // or less screen real estate) is intentionally NOT implemented here. The
+  // FleetHUD's screen position is derived from the main camera every render
+  // and accumulates drift; reliable scripted pan-after-layout depends on
+  // the right-shift bug fix landing first (see ~/work/scratch/hud-anchor-plan.md).
+  // Until that lands, all three --focus modes produce the same camera state:
+  // zoomToBounds on the doc page, HUD expanded.
+  console.log(`✓ camera framed (focus=${FOCUS}; differentiation pending hud-anchor fix)`)
 
   // Give the FleetHUD overlay time to recompute its position against the
   // new camera state.
@@ -371,11 +385,26 @@ async function main() {
   page.on('console', msg => {
     if (msg.type() === 'error') console.error('  [console]', msg.text())
   })
-  // Pre-set localStorage so the FleetHUD overlay is expanded by default.
-  // Fresh browser context has no localStorage; without this, the HUD's
-  // initial expanded/collapsed state is unpredictable. ALL focus modes
-  // share the same layout — focus only changes camera framing.
+  // A test script must produce identical output every run, regardless of
+  // any prior session's persisted state. Clear all of it BEFORE the page
+  // loads, then set the only state we want (HUD expanded).
+  //
+  //   localStorage          — fleet-hud-* (panOffset, cameraY, expanded, override)
+  //   sessionStorage        — tldraw camera state, sometimes localStorage too
+  //                           depending on the tldraw version
+  //   IndexedDB Yjs caches  — leave alone (the room is server-synced; clearing
+  //                           the local cache forces a re-sync but doesn't
+  //                           change the canonical state on the server)
   await page.addInitScript(() => {
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('fleet-') || k.startsWith('tldraw') || k.startsWith('TLDRAW')) {
+          localStorage.removeItem(k)
+        }
+      }
+    } catch {}
+    try { sessionStorage.clear() } catch {}
+    // Set the ONE piece of state we actually want: HUD expanded.
     try { localStorage.setItem('fleet-hud-expanded', '1') } catch {}
   })
   await page.goto(url, { waitUntil: 'domcontentloaded' })
