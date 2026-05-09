@@ -455,6 +455,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-right: 4px;
 }
 
+/* --- Agent nicks are draggable --- */
+.fleet-chat-shape .agent-nick {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
 /* --- Nick colors --- */
 .fleet-chat-shape .nick-human { color: #9370db; }
 .fleet-chat-shape .nick-manager { color: var(--green); }

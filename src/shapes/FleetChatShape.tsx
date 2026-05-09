@@ -1818,7 +1818,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -2060,6 +2060,21 @@ function FleetChatInner({ shape }: { shape: any }) {
             pillId: null, pillType: 'file' as any, value: token,
             displayName: label, color: '#9370db',
             content: fileContent,
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
+      // Agent nick → drag as agent filter pill
+      if (!drag) {
+        const nickEl = target.closest('.agent-nick') as HTMLElement
+        if (nickEl) {
+          const agentId = nickEl.dataset.agentId || ''
+          const agentName = names[agentId] || agentId.replace('fleet:', '')
+          drag = {
+            pillId: null, pillType: 'agent' as any, value: agentName,
+            displayName: agentName, color: '#7a9ec8',
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
