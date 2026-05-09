@@ -12,7 +12,7 @@
 import MarkdownIt from 'markdown-it'
 import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
-import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename } from 'path'
 import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
@@ -354,6 +354,17 @@ ${content}
       addLog(`[markdown] Copied ${dir}/ to output`)
     }
   }
+
+  // Copy loose image files from source root (screenshots, etc.)
+  try {
+    const files = readdirSync(srcDir)
+    for (const f of files) {
+      if (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(f)) {
+        cpSync(join(srcDir, f), join(outDir, f))
+      }
+    }
+  } catch {}
+
 
   const pageInfo = [{ file: 'index.html', width: 800, height: 1200, title }]
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
