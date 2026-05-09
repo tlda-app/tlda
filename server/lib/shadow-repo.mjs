@@ -549,29 +549,28 @@ const _activeDviBuilds = new Map()
 const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
 
 /**
- * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
- * No-op if DVI already exists. Serializes concurrent callers for the same hash7.
+ * Compile shadow source at hash7 to a DVI file cached at
+ * history/shadow-{hash7}/<texBase>.dvi. No-op if DVI already exists.
+ * Serializes concurrent callers for the same hash7.
  */
 export async function ensureShadowDvi(name, hash7) {
+  const project = readProject(name)
+  const mainFile = project?.mainFile || 'main.tex'
+  const texBase = basename(mainFile, '.tex')
+
   const cacheDir = join(historyDir(name), `shadow-${hash7}`)
-  const dviFile = join(cacheDir, 'main.dvi')
+  const dviFile = join(cacheDir, `${texBase}.dvi`)
   if (existsSync(dviFile)) return
 
   const key = `${name}:${hash7}`
   if (!_activeDviBuilds.has(key)) {
     const promise = (async () => {
-      // Re-check under lock
       if (existsSync(dviFile)) return
-
-      const project = readProject(name)
-      const mainFile = project?.mainFile || 'main.tex'
-      const texBase = basename(mainFile, '.tex')
 
       console.log(`[shadow] Compiling ${name}@${hash7}...`)
       const tmpSrc = await checkoutSource(name, hash7)
       try {
         mkdirSync(cacheDir, { recursive: true })
-        // latexmk -dvi with draft graphicx (no figure loading), synctex for lookup
         try {
           await execAsync(
             `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
@@ -583,7 +582,6 @@ export async function ensureShadowDvi(name, hash7) {
         if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${name}@${hash7}`)
         copyFileSync(srcDvi, dviFile)
 
-        // Extract page count from log and save to meta.json
         let pages = null
         const logPath = join(tmpSrc, `${texBase}.log`)
         if (existsSync(logPath)) {
@@ -593,16 +591,11 @@ export async function ensureShadowDvi(name, hash7) {
         writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
         console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
 
-        // Generate lookup.json from synctex for label-based alignment
-        const project = readProject(name)
-        const mainFile = project?.mainFile || 'main.tex'
         const synctexFile = join(tmpSrc, `${texBase}.synctex.gz`)
-        const lookupPath = join(cacheDir, 'lookup.json')
+        const lookupPath = join(cacheDir, `${texBase}-lookup.json`)
         if (existsSync(synctexFile) && !existsSync(lookupPath)) {
           try {
-            // extract-synctex-lookup.mjs finds synctex.gz next to the tex file
             const texFilePath = join(tmpSrc, mainFile)
-            // If mainFile has a subdir, synctex.gz is in tmpSrc root — copy it alongside the tex
             const synctexDest = join(tmpSrc, dirname(mainFile), `${texBase}.synctex.gz`)
             if (synctexFile !== synctexDest && !existsSync(synctexDest)) {
               copyFileSync(synctexFile, synctexDest)
@@ -611,9 +604,11 @@ export async function ensureShadowDvi(name, hash7) {
               `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texFilePath}" "${lookupPath}"`,
               { timeout: 30000 },
             )
-            console.log(`[shadow] lookup.json ready for ${name}@${hash7}`)
+            // Save synctex.gz alongside lookup so ensure recipes find it.
+            copyFileSync(synctexFile, join(cacheDir, `${texBase}.synctex.gz`))
+            console.log(`[shadow] ${texBase}-lookup.json ready for ${name}@${hash7}`)
           } catch (e) {
-            console.warn(`[shadow] lookup.json generation failed for ${name}@${hash7}:`, e.message)
+            console.warn(`[shadow] lookup generation failed for ${name}@${hash7}:`, e.message)
           }
         }
       } finally {
@@ -636,12 +631,18 @@ export async function ensureShadowDvi(name, hash7) {
  */
 export async function buildShadowPage(name, hash7, pageNum) {
   const { ensure, historicalCtx } = await import('./ensure.mjs')
-  const ctx = historicalCtx(name, hash7)
-  return ensure(ctx, `page-${pageNum}.svg`)
+  const project = readProject(name)
+  const texBase = basename(project?.mainFile || 'main.tex', '.tex')
+  const ctx = historicalCtx(name, hash7, texBase)
+  return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
 
-export async function buildCurrentPage(name, pageNum, { targetBase } = {}) {
-  const { ensure, currentCtx, currentCtxForTarget } = await import('./ensure.mjs')
-  const ctx = targetBase ? currentCtxForTarget(name, targetBase) : currentCtx(name)
-  return ensure(ctx, `page-${pageNum}.svg`)
+export async function buildCurrentPage(name, pageNum, texBase) {
+  const { ensure, currentCtx } = await import('./ensure.mjs')
+  if (!texBase) {
+    const project = readProject(name)
+    texBase = basename(project?.mainFile || 'main.tex', '.tex')
+  }
+  const ctx = currentCtx(name, texBase)
+  return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }

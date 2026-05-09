@@ -574,7 +574,7 @@ app.use('/docs', (req, res, next) => {
   const name = parts[0]
   const filePath = parts.slice(1).join('/')
 
-  // Serve history snapshots: /docs/{name}/history/{snapshotId}/page-N.svg
+  // Serve history snapshots: /docs/{name}/history/{snapshotId}/<texBase>-page-N.svg
   if (filePath.startsWith('history/')) {
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
@@ -582,11 +582,12 @@ app.use('/docs', (req, res, next) => {
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
 
-    // On-demand shadow page generation: history/shadow-{hash7}/page-N.svg
-    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/page-(\d+)\.svg$/)
+    // On-demand shadow page generation: history/shadow-{hash7}/<texBase>-page-N.svg.
+    // texBase is required so we know which target's page to render.
+    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/(.+)-page-(\d+)\.svg$/)
     if (shadowPageMatch) {
       const hash7 = shadowPageMatch[2]
-      const pageNum = parseInt(shadowPageMatch[3], 10)
+      const pageNum = parseInt(shadowPageMatch[4], 10)
       try {
         const { buildShadowPage } = await import('./lib/shadow-repo.mjs')
         const svgPath = await buildShadowPage(name, hash7, pageNum)
@@ -647,38 +648,36 @@ app.use('/docs', (req, res, next) => {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  // On-demand current-column SVG: page-N.svg built lazily from output/main.dvi.
-  // For multi-target projects, the request is /docs/<project>/<targetBase>/page-N.svg
-  // and the DVI lives at output/<targetBase>/main.dvi.
-  // buildCurrentPage handles DVI staleness (via ensureCurrentDvi) and SVG staleness.
-  // We delegate to it whenever: SVG is missing, DVI is missing/stale, or source.stamp
-  // is newer than the DVI (source changed since last build).
-  const livePageMatch = filePath.match(/^page-(\d+)\.svg$/)
-  const livePageTargetMatch = filePath.match(/^([^/]+)\/page-(\d+)\.svg$/)
-  if (livePageMatch || livePageTargetMatch) {
-    const targetBase = livePageTargetMatch ? livePageTargetMatch[1] : null
-    const pageNum = parseInt(livePageMatch ? livePageMatch[1] : livePageTargetMatch[2], 10)
+  // On-demand current-column SVG: <texBase>-page-N.svg.
+  // Outputs are flat under output/, prefixed by target's texBase. The ensure
+  // system (via buildCurrentPage) decides whether to (re)compile the DVI and
+  // (re)render the page; we just check whether the file is on disk.
+  const livePageMatch = filePath.match(/^([^/]+)-page-(\d+)\.svg$/)
+  if (livePageMatch) {
+    const texBase = livePageMatch[1]
+    const pageNum = parseInt(livePageMatch[2], 10)
     const outputBase = join(PROJECTS_DIR, name, 'output')
-    const targetDir = targetBase ? join(outputBase, targetBase) : outputBase
-    const svgPath = join(targetDir, `page-${pageNum}.svg`)
-    const dviPath = join(targetDir, 'main.dvi')
+    const svgPath = join(outputBase, `${texBase}-page-${pageNum}.svg`)
+    const dviPath = join(outputBase, `${texBase}.dvi`)
     const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
+    const buildStampPath = join(outputBase, 'build.stamp')
     const svgExists = existsSync(svgPath)
     const dviExists = existsSync(dviPath)
+    const buildMtime = existsSync(buildStampPath) ? statSync(buildStampPath).mtimeMs : 0
+    const sourceNewerThanBuild = existsSync(stampPath) && statSync(stampPath).mtimeMs > buildMtime
     const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
     const needsBuild = !svgExists ||
       !dviExists ||
       statSync(svgPath).mtimeMs < dviMtime ||
-      (existsSync(stampPath) && statSync(stampPath).mtimeMs > dviMtime)
+      sourceNewerThanBuild
     if (needsBuild) {
       try {
         const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-        const built = await buildCurrentPage(name, pageNum, targetBase ? { targetBase } : undefined)
+        const built = await buildCurrentPage(name, pageNum, texBase)
         res.set('Cache-Control', 'no-cache')
         return res.sendFile(resolve(built), { dotfiles: 'allow' })
       } catch (e) {
-        const tag = targetBase ? `${name}/${targetBase} p${pageNum}` : `${name} p${pageNum}`
-        console.error(`[live] on-demand page failed: ${tag}: ${e.message}`)
+        console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
         return res.status(404).json({ error: 'Page unavailable', detail: e.message })
       }
     }

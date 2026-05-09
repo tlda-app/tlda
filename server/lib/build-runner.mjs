@@ -3,7 +3,7 @@
  *
  * Runs the build pipeline as child processes:
  *   1. latexmk → DVI + synctex
- *   2. Publish main.dvi to output/, clear stale SVGs, signal reload
+ *   2. Publish <texBase>.dvi to output/, clear stale SVGs, signal reload
  *   3. extract-preamble.js → macros.json
  *   4. extract-synctex-lookup.mjs → lookup.json
  *   5. compute-proof-pairing.mjs → proof-info.json
@@ -677,14 +677,14 @@ async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
 
 /** Phase 3: Extract macros from preamble. */
 async function extractMacros(ctx) {
-  const { texPath, buildDir, outDir, addLog, run } = ctx
+  const { texPath, buildDir, outDir, texBase, addLog, run } = ctx
   addLog('Extracting preamble macros...')
   try {
     await run(
       `node "${join(SCRIPTS_DIR, 'extract-preamble.js')}" "${texPath}" "${join(buildDir, 'macros.json')}"`,
       { cwd: PROJECT_ROOT },
     )
-    publishFile(join(buildDir, 'macros.json'), join(outDir, 'macros.json'))
+    publishFile(join(buildDir, 'macros.json'), join(outDir, `${texBase}-macros.json`))
   } catch (e) {
     addLog(`Macro extraction failed (non-fatal): ${e.message}`)
   }
@@ -711,7 +711,9 @@ async function extractSynctex(ctx) {
       `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${join(srcDir, mainFile)}" "${join(buildDir, 'lookup.json')}"`,
       { cwd: PROJECT_ROOT, timeout: 600000 },
     )
-    publishFile(join(buildDir, 'lookup.json'), join(outDir, 'lookup.json'))
+    publishFile(join(buildDir, 'lookup.json'), join(outDir, `${texBase}-lookup.json`))
+    // Also publish the synctex.gz so ensure recipes find <texBase>.synctex.gz alongside the dvi.
+    publishFile(synctexFile, join(outDir, `${texBase}.synctex.gz`))
     addLog(`Synctex done in ${((Date.now() - synctexStart) / 1000).toFixed(1)}s`)
     return true
   } catch (e) {
@@ -722,7 +724,7 @@ async function extractSynctex(ctx) {
 
 /** Phase 5: Compute proof pairing (depends on lookup.json). */
 async function computeProofPairing(ctx) {
-  const { texPath, buildDir, outDir, addLog, run } = ctx
+  const { texPath, buildDir, outDir, texBase, addLog, run } = ctx
   addLog('Computing proof pairing...')
   try {
     await run(
@@ -730,7 +732,7 @@ async function computeProofPairing(ctx) {
       `"${join(buildDir, 'lookup.json')}" "${join(buildDir, 'proof-info.json')}"`,
       { cwd: PROJECT_ROOT, timeout: 120000 },
     )
-    publishFile(join(buildDir, 'proof-info.json'), join(outDir, 'proof-info.json'))
+    publishFile(join(buildDir, 'proof-info.json'), join(outDir, `${texBase}-proof-info.json`))
   } catch (e) {
     addLog(`Proof pairing failed (non-fatal): ${e.message}`)
   }
@@ -746,7 +748,7 @@ async function generateSourceMap(ctx) {
   const { loadSynctex } = await import('./synctex-query.mjs')
 
   try {
-    const synctex = await loadSynctex(name)
+    const synctex = await loadSynctex(name, texBase)
     if (!synctex) { addLog('Source map: no synctex data'); return }
 
     // Build per-page line index: sorted list of { y, file, line }
@@ -793,7 +795,7 @@ async function generateSourceMap(ctx) {
     }
 
     const sourceMap = { labels, pages: pageIndex }
-    const outPath = join(outDir, 'source-map.json')
+    const outPath = join(outDir, `${texBase}-source-map.json`)
     writeFileSync(outPath, JSON.stringify(sourceMap))
     const sizeKB = Math.round(statSync(outPath).size / 1024)
     addLog(`Source map: ${labels.length} labels, ${Object.keys(pageIndex).length} pages (${sizeKB} KB)`)
@@ -823,17 +825,20 @@ function summarizeDiff(diffText, projectName) {
   try { texLines = readFileSync(texPath, 'utf8').split('\n') } catch { return null }
   const sections = buildSectionTree(texLines)
 
-  // 3. Load proof-info.json for result/proof line ranges
+  // Diff summary is keyed off the primary target's metadata.
+  const primaryTexBase = basename(mainFile, '.tex')
+
+  // 3. Load <primary>-proof-info.json for result/proof line ranges
   let proofPairs = []
   try {
-    const pi = JSON.parse(readFileSync(join(outDir, 'proof-info.json'), 'utf8'))
+    const pi = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-proof-info.json`), 'utf8'))
     proofPairs = pi.pairs || pi
   } catch {}
 
-  // 4. Load source-map.json labels for numbering
+  // 4. Load <primary>-source-map.json labels for numbering
   const labelNumbers = new Map()
   try {
-    const sm = JSON.parse(readFileSync(join(outDir, 'source-map.json'), 'utf8'))
+    const sm = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-source-map.json`), 'utf8'))
     for (const l of sm.labels || []) {
       labelNumbers.set(l.label, l.number)
     }
@@ -1091,7 +1096,7 @@ async function generateTheoremMap(ctx) {
 
   const tmpPath = join(buildDir, 'theorem-map.json')
   writeFileSync(tmpPath, JSON.stringify(map, null, 2))
-  publishFile(tmpPath, join(outDir, 'theorem-map.json'))
+  publishFile(tmpPath, join(outDir, `${texBase}-theorem-map.json`))
 
   addLog(`Theorem map: ${entries.length} entries`)
 }
@@ -1218,7 +1223,7 @@ function writeRelevantFiles(ctx) {
       }
     } catch {}
   }
-  const outPath = join(outDir, 'relevant-files.json')
+  const outPath = join(outDir, `${texBase}-relevant-files.json`)
   try {
     writeFileSync(outPath, JSON.stringify({
       generated_at: new Date().toISOString(),
@@ -1385,39 +1390,6 @@ export function emitDocArrived(name) {
   } catch {}
 }
 
-// ─── Lazy DVI ensure ─────────────────────────────────────────────────────────
-
-/**
- * Ensure the current DVI is up to date.
- * Triggered by buildCurrentPage when a page is requested.
- * If a source.stamp file exists that is newer than main.dvi, the project is
- * stale and a full build runs. Multiple concurrent callers share one build.
- */
-const _ensureCurrentDviInflight = new Map()
-
-export async function ensureCurrentDvi(name) {
-  const outDir = outputDir(name)
-  const dviFile = join(outDir, 'main.dvi')
-  const stampFile = join(projectDir(name), 'source.stamp')
-
-  const needsBuild = !existsSync(dviFile) ||
-    (existsSync(stampFile) && statSync(stampFile).mtimeMs > statSync(dviFile).mtimeMs)
-
-  if (!needsBuild) return dviFile
-
-  // Already building — coalesce
-  if (_ensureCurrentDviInflight.has(name)) return _ensureCurrentDviInflight.get(name)
-
-  const building = runBuild(name)
-    .then(() => {
-      emitDocArrived(name)
-      return dviFile
-    })
-    .finally(() => _ensureCurrentDviInflight.delete(name))
-  _ensureCurrentDviInflight.set(name, building)
-  return building
-}
-
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
@@ -1456,16 +1428,15 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
-  // Multi-target is derived purely from the source: tlda scans the primary
-  // mainFile for \externaldocument{X} references and adds each matching
-  // sibling X.tex as a secondary target. The user toggles arxiv-mode by
-  // editing \arxivtrue in source; xr loads/unloads accordingly; tlda
-  // builds one or two targets accordingly. No project.json field declares
-  // additional targets — the document is the source of truth.
+  // Targets are derived purely from the source: the primary mainFile plus
+  // any sibling X.tex pulled in by `\externaldocument{X}` (xr / xr-hyper).
+  // Single-target projects simply have a one-element list. There is no
+  // declaration in project.json — the document itself is the source of
+  // truth. Output naming uses each target's texBase as a flat prefix, so
+  // single-target and multi-target follow the same code path.
   const primary = project.mainFile || 'main.tex'
   const xrSiblings = detectXrSiblings(srcDir, primary)
   const mainFiles = [primary, ...xrSiblings]
-  const isMulti = mainFiles.length > 1
 
   // Validate all targets exist before starting any work.
   for (const mf of mainFiles) {
@@ -1505,6 +1476,8 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   ctx.texDir = join(srcDir, dirname(ctx.mainFile))
   ctx.buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
   mkdirSync(ctx.buildDir, { recursive: true })
+  // Output dir may not exist (e.g. after a wipe). All targets publish here.
+  mkdirSync(outDir, { recursive: true })
 
   try {
     // Snapshot current output in background — don't block the build
@@ -1521,29 +1494,26 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
     // Per-target phases (compile, publish DVI, extract macros / synctex /
-    // proof-pairing / theorem-map / source-map / relevant-files). Each
-    // target's outputs land in:
-    //   - flat: outDir/page-N.svg, outDir/main.dvi, outDir/macros.json, ...
-    //     (single-target projects only — preserves the legacy URL layout)
-    //   - subdir: outDir/<targetBase>/page-N.svg, outDir/<targetBase>/main.dvi, ...
-    //     (multi-target projects)
+    // proof-pairing / theorem-map / source-map / relevant-files). All
+    // outputs land flat in outDir, prefixed by texBase:
+    //   outDir/<texBase>.dvi
+    //   outDir/<texBase>-page-N.svg              (built lazily, by ensure)
+    //   outDir/<texBase>-{lookup,macros,proof-info,source-map,theorem-map,relevant-files}.json
     let totalPages = 0
-    const targetMeta = []   // [{ texBase, mainFile, expectedPages, targetOutDir }]
+    const targetMeta = []   // [{ texBase, mainFile, expectedPages }]
 
-    // Order targets by xr dependency so that documents read by
-    // \externaldocument{X} are built BEFORE the documents that reference
-    // them. Each pdflatex run reads X.aux at compile-time, so X.aux must be
-    // current. With mutually-referencing documents (cycle), declared order
-    // is preserved and a second pass converges cross-refs.
+    // Order targets by xr dependency: documents pulled in by
+    // \externaldocument{X} must be built BEFORE the documents that
+    // reference them, since each pdflatex run reads X.aux at compile-time.
+    // Mutual cross-refs (cycle) preserve declared order and converge with a
+    // second pass.
     const { ordered: orderedMainFiles, hasCycle, hasXrDeps } =
       orderTargetsByXrDeps(mainFiles, srcDir)
     if (orderedMainFiles.join(',') !== mainFiles.join(',')) {
       ctx.addLog(`Targets reordered for xr deps: ${orderedMainFiles.join(' → ')}`)
     }
-    // Two passes only if there's at least one xr cross-ref between
-    // targets — otherwise targets are independent and one pass is enough.
     const passCount = hasXrDeps ? 2 : 1
-    if (passCount > 1) ctx.addLog(`Multi-target xr cross-refs detected — running ${passCount} passes`)
+    if (passCount > 1) ctx.addLog(`xr cross-refs detected — running ${passCount} passes`)
 
     for (let pass = 0; pass < passCount; pass++) {
     const isFinalPass = pass === passCount - 1
@@ -1551,12 +1521,10 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       const tBase = basename(mf, '.tex')
       const tPath = join(srcDir, mf)
       const tDir = join(srcDir, dirname(mf))
-      const tOutDir = isMulti ? join(outDir, tBase) : outDir
-      mkdirSync(tOutDir, { recursive: true })
-      const tBuildDir = isMulti
-        ? join(tmpdir(), `tlda-build-${name}-${tBase}-${Date.now()}`)
-        : ctx.buildDir
-      if (isMulti) mkdirSync(tBuildDir, { recursive: true })
+      // Each target gets its own scratch buildDir; outDir is shared and
+      // collisions are avoided via texBase-prefixed filenames.
+      const tBuildDir = join(tmpdir(), `tlda-build-${name}-${tBase}-${Date.now()}`)
+      mkdirSync(tBuildDir, { recursive: true })
 
       const tCtx = {
         ...ctx,
@@ -1564,29 +1532,31 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         texBase: tBase,
         texPath: tPath,
         texDir: tDir,
-        outDir: tOutDir,
         buildDir: tBuildDir,
       }
 
       // Phase 1: LaTeX compilation
       status.phase = 'compiling'
-      signalBuildProgress(name, isMulti ? `compiling ${tBase}` : 'compiling', null)
+      signalBuildProgress(name, mainFiles.length > 1 ? `compiling ${tBase}` : 'compiling', null)
       const { expectedPages } = await compileLaTeX(tCtx)
 
       // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
       // SVGs are built lazily when pages are first requested.
       status.phase = 'converting'
       const dviFile = join(tBuildDir, `${tBase}.dvi`)
-      publishFile(dviFile, join(tOutDir, 'main.dvi'))
-      for (const f of readdirSync(tOutDir)) {
-        if (/^page-\d+\.svg$/.test(f)) {
-          try { unlinkSync(join(tOutDir, f)) } catch {}
+      publishFile(dviFile, join(outDir, `${tBase}.dvi`))
+      // Drop stale SVGs for THIS target only. Other targets' SVGs (different
+      // texBase prefix) are untouched.
+      const stalePagePrefix = `${tBase}-page-`
+      for (const f of readdirSync(outDir)) {
+        if (f.startsWith(stalePagePrefix) && /^.+-page-\d+\.svg$/.test(f)) {
+          try { unlinkSync(join(outDir, f)) } catch {}
         }
       }
-      tCtx.addLog(`DVI published${isMulti ? ` (${tBase})` : ''} — signaling reload`)
+      tCtx.addLog(`DVI published (${tBase}) — signaling reload`)
 
       // Phases 3-8: extract macros, synctex, proof pairing, theorem map,
-      // source map, relevant files (per-target, written to tOutDir).
+      // source map, relevant files (per-target, written under texBase prefix).
       await extractMacros(tCtx)
       status.phase = 'extracting'
       const hasSynctex = await extractSynctex(tCtx)
@@ -1595,21 +1565,27 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       await generateSourceMap(tCtx)
       writeRelevantFiles(tCtx)
 
-      // Only accumulate metadata on the final pass.
       if (isFinalPass) {
-        targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0, targetOutDir: tOutDir })
+        targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0 })
         totalPages += expectedPages ?? 0
       }
+
+      // Clean up this target's scratch build dir before the next iteration.
+      try { rmSync(tBuildDir, { recursive: true, force: true }) } catch {}
     }
     } // end pass loop
 
-    // Multi-target only: write a project-level union relevant-files.json
-    // covering every target's set, so the daemon's source-change filter
-    // sees all relevant inputs regardless of which target opened them.
-    if (isMulti) {
+    // Reorder targetMeta back into declared (reading) order — the loop
+    // iterates in topo / build order which puts xr-deps first. We want the
+    // primary first, dependents after.
+    targetMeta.sort((a, b) => mainFiles.indexOf(a.mainFile) - mainFiles.indexOf(b.mainFile))
+
+    // Project-level relevant-files union — daemon's source-change filter
+    // uses this to decide whether to rebuild. Combines every target's set.
+    {
       const union = new Set()
       for (const t of targetMeta) {
-        const p = join(t.targetOutDir, 'relevant-files.json')
+        const p = join(outDir, `${t.texBase}-relevant-files.json`)
         if (existsSync(p)) {
           try {
             const j = JSON.parse(readFileSync(p, 'utf8'))
@@ -1634,17 +1610,26 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Total pages across all targets — what the viewer reports as project.pages.
     const expectedPages = totalPages
 
-    // Finalize
+    // Finalize. `targets` always reflects the current target set so the
+    // viewer doesn't have to special-case single-target — it just renders
+    // a one-element list.
     updateProject(name, {
       pages: expectedPages,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
-      ...(isMulti && {
-        targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
-      }),
+      targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     })
     saveBuildCache(ctx)
     clearSynctexCache(name)
+
+    // Touch build.stamp — staleness counterpart to source.stamp. Replaces
+    // the previous role of `output/main.dvi` mtime (which broke once we
+    // had multiple per-target DVIs).
+    try {
+      writeFileSync(join(outDir, 'build.stamp'), new Date().toISOString())
+    } catch (e) {
+      ctx.addLog(`build.stamp write failed (non-fatal): ${e.message}`)
+    }
 
     // Append changelog entry with TeX diff
     try {

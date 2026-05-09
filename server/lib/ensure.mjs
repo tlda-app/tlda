@@ -2,22 +2,28 @@
  * ensure.mjs — make-like lazy build system for tlda.
  *
  * ensure(ctx, target) builds `target` if it is missing or stale relative to
- * its declared dependencies, recursively ensuring deps first.  Concurrent
+ * its declared dependencies, recursively ensuring deps first. Concurrent
  * callers for the same (name, version, target) share one in-flight promise.
  *
  * ctx = {
  *   name,      // project name
  *   version,   // null = current live version | hash7 = frozen historical snapshot
+ *   texBase,   // basename of this target's .tex file (e.g. 'arXiv_v2')
  *   outDir,    // directory where artifacts are read/written
  *   srcDir,    // source dir (current version only; null for historical)
  * }
  *
- * Targets recognised:
- *   main.dvi           — LaTeX compilation
- *   main.synctex.gz    — produced alongside main.dvi (same build step)
- *   page-N.svg         — dvisvgm for page N
- *   lookup.json        — synctex → line-label lookup table
- *   macros.json        — preamble macro extraction
+ * Targets are filenames inside ctx.outDir. All target filenames carry the
+ * texBase prefix — there is no "main.dvi" or bare "page-N.svg":
+ *
+ *   <texBase>.dvi          — LaTeX compilation
+ *   <texBase>.synctex.gz   — produced alongside the DVI
+ *   <texBase>-page-N.svg   — dvisvgm for page N
+ *   <texBase>-lookup.json  — synctex → line-label lookup table
+ *   <texBase>-macros.json  — preamble macro extraction
+ *
+ * Staleness counterpart for the live version: output/build.stamp, written
+ * by runBuild on success. Compared against source.stamp.
  */
 
 import { exec as execCb } from 'child_process'
@@ -30,7 +36,6 @@ import {
   copyFileSync, renameSync, rmSync,
 } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
-import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 
 import { projectDir, outputDir, sourceDir, readProject } from './project-store.mjs'
@@ -44,9 +49,40 @@ export function artifactPath(ctx, target) {
   return join(ctx.outDir, target)
 }
 
-/** source.stamp path — only meaningful for the current (live) version. */
+/** source.stamp path — touched by the daemon push handler when source changes. */
 function stampPath(name) {
   return join(projectDir(name), 'source.stamp')
+}
+
+/** build.stamp path — touched by runBuild on each successful build. */
+function buildStampPath(name) {
+  return join(outputDir(name), 'build.stamp')
+}
+
+// ─── Target name decoding ───────────────────────────────────────────────────
+
+/**
+ * Decode a target filename into { texBase, kind, pageNum? }. Returns null if
+ * the name doesn't match any known pattern. Recipes use this to derive deps.
+ */
+function decodeTarget(target) {
+  let m
+  if ((m = target.match(/^(.+)-page-(\d+)\.svg$/))) {
+    return { texBase: m[1], kind: 'svg', pageNum: parseInt(m[2], 10) }
+  }
+  if ((m = target.match(/^(.+)-lookup\.json$/))) {
+    return { texBase: m[1], kind: 'lookup' }
+  }
+  if ((m = target.match(/^(.+)-macros\.json$/))) {
+    return { texBase: m[1], kind: 'macros' }
+  }
+  if ((m = target.match(/^(.+)\.synctex\.gz$/))) {
+    return { texBase: m[1], kind: 'synctex' }
+  }
+  if ((m = target.match(/^(.+)\.dvi$/))) {
+    return { texBase: m[1], kind: 'dvi' }
+  }
+  return null
 }
 
 // ─── Staleness ───────────────────────────────────────────────────────────────
@@ -57,8 +93,8 @@ function stampPath(name) {
  * Rules:
  *  1. Target file missing → stale.
  *  2. Any dep file newer than target → stale.
- *  3. Current version only: if source.stamp is newer than main.dvi → stale
- *     (source changed since last build).
+ *  3. Live version: if source.stamp is newer than build.stamp, the whole
+ *     build is stale (any DVI artifact rebuilds).
  */
 function isStale(ctx, target, deps) {
   const tp = artifactPath(ctx, target)
@@ -66,27 +102,32 @@ function isStale(ctx, target, deps) {
 
   const tMtime = statSync(tp).mtimeMs
 
-  // Check declared dep files
   for (const dep of deps) {
     const dp = artifactPath(ctx, dep)
     if (!existsSync(dp)) return true
     if (statSync(dp).mtimeMs > tMtime) return true
   }
 
-  // For the live version, source.stamp drives DVI staleness.
-  if (!ctx.version && target === 'main.dvi') {
+  const decoded = decodeTarget(target)
+
+  // Live version: source.stamp newer than build.stamp drives DVI staleness.
+  if (!ctx.version && decoded?.kind === 'dvi') {
     const sp = stampPath(ctx.name)
-    if (existsSync(sp) && statSync(sp).mtimeMs > tMtime) return true
+    const bp = buildStampPath(ctx.name)
+    const buildMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0
+    if (existsSync(sp) && statSync(sp).mtimeMs > buildMtime) return true
   }
 
-  // For historical versions, synctex.gz and lookup.json are produced atomically
-  // by buildHistoricalDvi (which has access to source). A deficient lookup forces a
-  // full recompile. We check on both main.dvi AND main.synctex.gz so the staleness
-  // propagates correctly through the dep chain (lookup → synctex → dvi → recompile).
+  // Historical versions: synctex.gz and lookup.json are produced atomically
+  // by buildHistoricalDvi (which has access to source). A deficient lookup
+  // forces a full recompile. Staleness propagates through dvi → synctex →
+  // lookup so any consumer triggers the full chain.
   const LOOKUP_VERSION = 2
-  if (ctx.version && (target === 'main.dvi' || target === 'main.synctex.gz')) {
-    if (!existsSync(artifactPath(ctx, 'main.synctex.gz'))) return true
-    const lookupPath = artifactPath(ctx, 'lookup.json')
+  if (ctx.version && decoded && (decoded.kind === 'dvi' || decoded.kind === 'synctex')) {
+    const synctex = `${decoded.texBase}.synctex.gz`
+    const lookup = `${decoded.texBase}-lookup.json`
+    if (!existsSync(artifactPath(ctx, synctex))) return true
+    const lookupPath = artifactPath(ctx, lookup)
     if (!existsSync(lookupPath)) return true
     try {
       const data = JSON.parse(readFileSync(lookupPath, 'utf8'))
@@ -100,7 +141,7 @@ function isStale(ctx, target, deps) {
 
 // ─── In-flight coalescing ────────────────────────────────────────────────────
 
-const _inflight = new Map()  // key → Promise
+const _inflight = new Map()
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -121,9 +162,8 @@ async function _ensureImpl(ctx, target) {
   const recipe = findRecipe(target)
   if (!recipe) throw new Error(`[ensure] No recipe for target: ${target}`)
 
-  const deps = recipe.deps(ctx)
+  const deps = recipe.deps(target)
 
-  // Ensure all deps (parallel where independent)
   await Promise.all(deps.map(dep => ensure(ctx, dep)))
 
   if (!isStale(ctx, target, deps)) return artifactPath(ctx, target)
@@ -136,21 +176,18 @@ async function _ensureImpl(ctx, target) {
 
 function findRecipe(target) {
   for (const r of RECIPES) {
-    if (typeof r.match === 'string' ? r.match === target : r.match.test(target)) {
-      return r
-    }
+    if (r.match.test(target)) return r
   }
   return null
 }
 
 const RECIPES = [
-  // ── main.dvi ──────────────────────────────────────────────────────────────
-  // Produced by LaTeX compilation.  For historical versions, also produces
-  // main.synctex.gz (saved to outDir).  For the current version, synctex is
-  // managed by the full runBuild pipeline in build-runner.mjs.
+  // ── <texBase>.dvi ─────────────────────────────────────────────────────────
+  // Live: handed off to runBuild which builds the entire project.
+  // Historical: compiled in isolation from a checkout of the shadow source.
   {
-    match: 'main.dvi',
-    deps: () => [],   // staleness is driven by isStale() directly (source.stamp)
+    match: /^.+\.dvi$/,
+    deps: () => [],
     build: async (ctx) => {
       if (ctx.version) {
         await buildHistoricalDvi(ctx)
@@ -160,46 +197,55 @@ const RECIPES = [
     },
   },
 
-  // ── main.synctex.gz ───────────────────────────────────────────────────────
-  // Side-effect of main.dvi — same build step.
+  // ── <texBase>.synctex.gz ──────────────────────────────────────────────────
   {
-    match: 'main.synctex.gz',
-    deps: () => [],
-    build: async (ctx) => {
-      // Building main.dvi produces main.synctex.gz as a side-effect.
-      await ensure(ctx, 'main.dvi')
-      // After main.dvi is built, synctex.gz should exist.
-      if (!existsSync(artifactPath(ctx, 'main.synctex.gz'))) {
-        throw new Error(`[ensure] main.synctex.gz not produced for ${ctx.name}`)
+    match: /^.+\.synctex\.gz$/,
+    deps: (target) => {
+      const { texBase } = decodeTarget(target)
+      return [`${texBase}.dvi`]
+    },
+    build: async (ctx, target) => {
+      const synctex = artifactPath(ctx, target)
+      if (!existsSync(synctex)) {
+        throw new Error(`[ensure] ${target} not produced for ${ctx.name}`)
       }
     },
   },
 
-  // ── page-N.svg ────────────────────────────────────────────────────────────
+  // ── <texBase>-page-N.svg ──────────────────────────────────────────────────
   {
-    match: /^page-(\d+)\.svg$/,
-    deps: () => ['main.dvi'],
+    match: /^.+-page-\d+\.svg$/,
+    deps: (target) => {
+      const { texBase } = decodeTarget(target)
+      return [`${texBase}.dvi`]
+    },
     build: async (ctx, target) => {
-      const pageNum = parseInt(target.match(/\d+/)[0], 10)
+      const { pageNum } = decodeTarget(target)
       await buildSvgPage(ctx, pageNum, target)
     },
   },
 
-  // ── lookup.json ───────────────────────────────────────────────────────────
+  // ── <texBase>-lookup.json ─────────────────────────────────────────────────
   {
-    match: 'lookup.json',
-    deps: () => ['main.synctex.gz'],
-    build: async (ctx) => {
-      await buildLookup(ctx)
+    match: /^.+-lookup\.json$/,
+    deps: (target) => {
+      const { texBase } = decodeTarget(target)
+      return [`${texBase}.synctex.gz`]
+    },
+    build: async (ctx, target) => {
+      await buildLookup(ctx, target)
     },
   },
 
-  // ── macros.json ───────────────────────────────────────────────────────────
+  // ── <texBase>-macros.json ─────────────────────────────────────────────────
   {
-    match: 'macros.json',
-    deps: () => ['main.dvi'],
-    build: async (ctx) => {
-      await buildMacros(ctx)
+    match: /^.+-macros\.json$/,
+    deps: (target) => {
+      const { texBase } = decodeTarget(target)
+      return [`${texBase}.dvi`]
+    },
+    build: async (ctx, target) => {
+      await buildMacros(ctx, target)
     },
   },
 ]
@@ -207,9 +253,8 @@ const RECIPES = [
 // ─── Build steps ─────────────────────────────────────────────────────────────
 
 /**
- * Current version: trigger a full runBuild (which handles LaTeX, signals,
- * post-processing).  Uses dynamic import to break the circular dep:
- *   ensure.mjs → build-runner.mjs → shadow-repo.mjs → ensure.mjs
+ * Live version: trigger a full runBuild. Dynamic import breaks the cycle
+ * ensure.mjs → build-runner.mjs → shadow-repo.mjs → ensure.mjs.
  */
 async function buildCurrentDvi(ctx) {
   const { runBuild, emitDocArrived } = await import('./build-runner.mjs')
@@ -227,16 +272,13 @@ async function buildCurrentDvi(ctx) {
 async function buildHistoricalDvi(ctx) {
   const { checkoutSource } = await import('./shadow-repo.mjs')
 
-  const project = readProject(ctx.name)
-  const mainFile = project?.mainFile || 'main.tex'
-  const texBase = basename(mainFile, '.tex')
+  const texBase = ctx.texBase
 
   console.log(`[ensure] Compiling ${ctx.name}@${ctx.version}...`)
   mkdirSync(ctx.outDir, { recursive: true })
 
   const tmpSrc = await checkoutSource(ctx.name, ctx.version)
   try {
-    // Compile with synctex for downstream lookup.json
     const SHADOW_PRETEX = String.raw`\PassOptionsToPackage{draft}{graphicx}\PassOptionsToPackage{draft}{graphics}`
     try {
       await execAsync(
@@ -248,31 +290,27 @@ async function buildHistoricalDvi(ctx) {
     const srcDvi = join(tmpSrc, `${texBase}.dvi`)
     if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${ctx.name}@${ctx.version}`)
 
-    copyFileSync(srcDvi, artifactPath(ctx, 'main.dvi'))
+    copyFileSync(srcDvi, artifactPath(ctx, `${texBase}.dvi`))
 
-    // Save synctex.gz so lookup.json can be derived without re-running LaTeX
     const srcSynctex = join(tmpSrc, `${texBase}.synctex.gz`)
     if (existsSync(srcSynctex)) {
-      copyFileSync(srcSynctex, artifactPath(ctx, 'main.synctex.gz'))
+      copyFileSync(srcSynctex, artifactPath(ctx, `${texBase}.synctex.gz`))
     }
 
-    // Extract lookup.json NOW while source files are still present in tmpSrc.
-    // The synctex.gz references absolute paths in tmpSrc; once deleted they can't match.
     const srcTexFile = join(tmpSrc, `${texBase}.tex`)
-    const lookupPath = artifactPath(ctx, 'lookup.json')
+    const lookupPath = artifactPath(ctx, `${texBase}-lookup.json`)
     if (existsSync(srcSynctex) && existsSync(srcTexFile)) {
       try {
         await execAsync(
           `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${srcTexFile}" "${lookupPath}"`,
           { timeout: 30000 },
         )
-        console.log(`[ensure] lookup.json ready for ${ctx.name}@${ctx.version}`)
+        console.log(`[ensure] ${texBase}-lookup.json ready for ${ctx.name}@${ctx.version}`)
       } catch (e) {
-        console.warn(`[ensure] lookup.json extraction failed for ${ctx.name}@${ctx.version}: ${e.message.split('\n')[0]}`)
+        console.warn(`[ensure] lookup extraction failed for ${ctx.name}@${ctx.version}: ${e.message.split('\n')[0]}`)
       }
     }
 
-    // Extract page count and save meta.json
     let pages = null
     const logPath = join(tmpSrc, `${texBase}.log`)
     if (existsSync(logPath)) {
@@ -298,9 +336,10 @@ async function buildHistoricalDvi(ctx) {
   }
 }
 
-/** Run dvisvgm for one page, output to ctx.outDir/page-N.svg. */
+/** Run dvisvgm for one page → ctx.outDir/<texBase>-page-N.svg. */
 async function buildSvgPage(ctx, pageNum, target) {
-  const dviFile = artifactPath(ctx, 'main.dvi')
+  const { texBase } = decodeTarget(target)
+  const dviFile = artifactPath(ctx, `${texBase}.dvi`)
   const svgFile = artifactPath(ctx, target)
   const tmpSvg = svgFile + '.tmp'
 
@@ -309,10 +348,9 @@ async function buildSvgPage(ctx, pageNum, target) {
     `--output="${tmpSvg}" "${dviFile}"`,
     { cwd: ctx.outDir, timeout: 30000 },
   )
-  if (!existsSync(tmpSvg)) throw new Error(`dvisvgm did not produce page-${pageNum} for ${ctx.name}`)
+  if (!existsSync(tmpSvg)) throw new Error(`dvisvgm did not produce page-${pageNum} for ${ctx.name}/${texBase}`)
   renameSync(tmpSvg, svgFile)
 
-  // Patch image placeholders (current version only — has srcDir)
   if (ctx.srcDir) {
     try {
       await execAsync(
@@ -320,30 +358,34 @@ async function buildSvgPage(ctx, pageNum, target) {
         { timeout: 60000 },
       )
     } catch (e) {
-      console.warn(`[ensure] image patching failed for ${ctx.name} p${pageNum}: ${e.message.split('\n')[0]}`)
+      console.warn(`[ensure] image patching failed for ${ctx.name} ${texBase} p${pageNum}: ${e.message.split('\n')[0]}`)
     }
   }
 }
 
-/** Extract lookup.json from main.synctex.gz. */
-async function buildLookup(ctx) {
+/** Extract lookup.json from <texBase>.synctex.gz. */
+async function buildLookup(ctx, target) {
+  const { texBase } = decodeTarget(target)
   const project = readProject(ctx.name)
-  const mainFile = project?.mainFile || 'main.tex'
-  const synctexFile = artifactPath(ctx, 'main.synctex.gz')
-  const lookupPath = artifactPath(ctx, 'lookup.json')
+  // For multi-target, the target's mainFile may be a sibling of the
+  // primary mainFile. We assume <texBase>.tex exists at outDir-relative
+  // root (mirrors the source layout for sibling targets).
+  const mainFile = project?.mainFile && basename(project.mainFile, '.tex') === texBase
+    ? project.mainFile
+    : `${texBase}.tex`
+  const synctexFile = artifactPath(ctx, `${texBase}.synctex.gz`)
+  const lookupPath = artifactPath(ctx, target)
 
-  // extract-synctex-lookup.mjs expects the .tex file alongside the synctex
-  // Write a temporary tex stub to satisfy the path resolver
+  // The extractor expects the .tex file alongside the synctex. Write a
+  // stub at outDir so paths resolve.
   const texStub = join(ctx.outDir, mainFile)
   const texStubDir = dirname(texStub)
   mkdirSync(texStubDir, { recursive: true })
 
-  // The script only needs the tex path to locate synctex — write a stub if missing
   const stubCreated = !existsSync(texStub)
   if (stubCreated) writeFileSync(texStub, '')
 
-  // If synctex.gz is not alongside the tex, symlink it there
-  const synctexDest = join(ctx.outDir, dirname(mainFile), `${basename(mainFile, '.tex')}.synctex.gz`)
+  const synctexDest = join(ctx.outDir, dirname(mainFile), `${texBase}.synctex.gz`)
   const synctexLinked = synctexDest !== synctexFile && !existsSync(synctexDest)
   if (synctexLinked) {
     try { copyFileSync(synctexFile, synctexDest) } catch {}
@@ -354,61 +396,52 @@ async function buildLookup(ctx) {
       `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texStub}" "${lookupPath}"`,
       { timeout: 30000 },
     )
-    console.log(`[ensure] lookup.json ready for ${ctx.name}${ctx.version ? '@' + ctx.version : ''}`)
+    console.log(`[ensure] ${target} ready for ${ctx.name}${ctx.version ? '@' + ctx.version : ''}`)
   } finally {
     if (stubCreated) { try { rmSync(texStub) } catch {} }
     if (synctexLinked) { try { rmSync(synctexDest) } catch {} }
   }
 }
 
-/** Extract macros.json from the compiled DVI (runs extract-preamble.js). */
-async function buildMacros(ctx) {
-  // macros.json currently only makes sense for the current version
-  // (requires source files alongside the build artifacts)
+/** Extract macros.json from the preamble (live version only). */
+async function buildMacros(ctx, target) {
   if (!ctx.srcDir) return
-  const macrosPath = artifactPath(ctx, 'macros.json')
+  const macrosPath = artifactPath(ctx, target)
   try {
     await execAsync(
       `node "${join(SCRIPTS_DIR, 'extract-preamble.js')}" "${ctx.srcDir}" "${macrosPath}"`,
       { timeout: 30000 },
     )
   } catch (e) {
-    console.warn(`[ensure] macros.json build failed for ${ctx.name}: ${e.message.split('\n')[0]}`)
+    console.warn(`[ensure] macros build failed for ${ctx.name}: ${e.message.split('\n')[0]}`)
   }
 }
 
 // ─── Context factories ────────────────────────────────────────────────────────
 
-/** Build context for the current (live) version of a project. */
-export function currentCtx(name) {
+/**
+ * Build context for the live version of a project's target.
+ * texBase identifies which target — single-target projects pass the project's
+ * primary texBase; multi-target projects pass each sibling's texBase.
+ */
+export function currentCtx(name, texBase) {
+  if (!texBase) throw new Error('currentCtx requires texBase')
   return {
     name,
     version: null,
+    texBase,
     outDir: outputDir(name),
     srcDir: sourceDir(name),
   }
 }
 
-/**
- * Build context for the current (live) version of a *specific target* in a
- * multi-target project. Pages, macros, etc. are resolved against the
- * per-target subdir under output/.
- */
-export function currentCtxForTarget(name, targetBase) {
-  return {
-    name,
-    version: null,
-    targetBase,
-    outDir: join(outputDir(name), targetBase),
-    srcDir: sourceDir(name),
-  }
-}
-
 /** Build context for a frozen historical snapshot. */
-export function historicalCtx(name, hash7) {
+export function historicalCtx(name, hash7, texBase) {
+  if (!texBase) throw new Error('historicalCtx requires texBase')
   return {
     name,
     version: hash7,
+    texBase,
     outDir: join(projectDir(name), 'history', `shadow-${hash7}`),
     srcDir: null,
   }

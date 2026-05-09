@@ -542,9 +542,10 @@ router.get('/shadow/:hash7/lookup', requireRead, (req, res) => {
   const project = readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  // Use the make system: ensure lookup.json (chains: lookup → synctex → DVI → source)
-  const ctx = historicalCtx(name, hash7)
-  ensure(ctx, 'lookup.json')
+  // Use the ensure system: chains lookup → synctex → DVI → source.
+  const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+  const ctx = historicalCtx(name, hash7, texBase)
+  ensure(ctx, `${texBase}-lookup.json`)
     .then(lookupPath => {
       const data = readFileSync(lookupPath, 'utf8')
       res.setHeader('Content-Type', 'application/json')
@@ -814,12 +815,14 @@ router.post('/diff-region', requireRead, async (req, res) => {
     try { unlinkSync(tmpNew) } catch {}
   }
 
-  // 5. Load lookup tables (source line → PDF position)
+  // 5. Load lookup tables (source line → PDF position) for the primary target.
+  const primaryTexBase = (project?.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+
   let currentLookup = {}
-  try { currentLookup = JSON.parse(readFileSync(join(outputDir(name), 'lookup.json'), 'utf8')).lines ?? {} } catch {}
+  try { currentLookup = JSON.parse(readFileSync(join(outputDir(name), `${primaryTexBase}-lookup.json`), 'utf8')).lines ?? {} } catch {}
 
   let shadowLookup = {}
-  const shadowLookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'lookup.json')
+  const shadowLookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, `${primaryTexBase}-lookup.json`)
   if (existsSync(shadowLookupPath)) {
     try { shadowLookup = JSON.parse(readFileSync(shadowLookupPath, 'utf8')).lines ?? {} } catch {}
   }
@@ -947,8 +950,9 @@ router.get('/shadow/changelog', requireRead, async (req, res) => {
     return res.json({ commits: [], totalPages: 0 })
   }
 
-  // 1. Build file→pages map from current lookup.json
-  const lookupPath = join(outputDir(name), 'lookup.json')
+  // 1. Build file→pages map from the primary target's current lookup.json
+  const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+  const lookupPath = join(outputDir(name), `${primaryTexBase}-lookup.json`)
   const filePages = new Map()  // filename → Set<page>
   let totalPages = project.pages || 0
   if (existsSync(lookupPath)) {

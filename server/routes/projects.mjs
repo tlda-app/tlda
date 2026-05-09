@@ -217,9 +217,13 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
   }
 })
 
-// Preamble macros (KaTeX-compatible, parsed during build from main tex file)
+// Preamble macros (KaTeX-compatible, parsed during build from main tex file).
+// Outputs are now per-target — fetch the primary target's macros.
 router.get('/:name/macros', requireRead, (req, res) => {
-  const outputPath = join(getOutputDir(req.params.name), 'macros.json')
+  const project = readProject(req.params.name)
+  if (!project) return res.json({ macros: {} })
+  const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+  const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
   if (!existsSync(outputPath)) return res.json({ macros: {} })
   try {
     const data = JSON.parse(readFileSync(outputPath, 'utf8'))
@@ -339,17 +343,17 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // SVG/LaTeX format: mark source as stale so ensureCurrentDvi rebuilds on
-  // the next page request. No proactive build — Ensure does everything.
+  // SVG/LaTeX format: mark source as stale so the ensure system rebuilds on
+  // the next page request. No proactive build — ensure does everything.
   markProjectStale(name)
   broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
   return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
 }
 
 /**
- * Mark a project's source as stale. Writes a source.stamp file whose mtime is
- * checked by ensureCurrentDvi — if source.stamp is newer than main.dvi, the
- * next page request triggers a full LaTeX rebuild.
+ * Mark a project's source as stale. Writes a source.stamp file whose mtime
+ * is compared against output/build.stamp by the ensure system — if
+ * source.stamp is newer, the next page request triggers a full LaTeX rebuild.
  */
 function markProjectStale(name) {
   const dir = getProjectDir(name)
