@@ -640,8 +640,8 @@ export async function buildShadowPage(name, hash7, pageNum) {
   return ensure(ctx, `page-${pageNum}.svg`)
 }
 
-export async function buildCurrentPage(name, pageNum) {
-  const { ensure, currentCtx } = await import('./ensure.mjs')
-  const ctx = currentCtx(name)
+export async function buildCurrentPage(name, pageNum, { targetBase } = {}) {
+  const { ensure, currentCtx, currentCtxForTarget } = await import('./ensure.mjs')
+  const ctx = targetBase ? currentCtxForTarget(name, targetBase) : currentCtx(name)
   return ensure(ctx, `page-${pageNum}.svg`)
 }

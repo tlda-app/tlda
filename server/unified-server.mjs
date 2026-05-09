@@ -417,6 +417,58 @@ app.post('/api/voice/restart-chrome', async (req, res) => {
   }
 })
 
+// Lazy-start the whisper bridge. Browser hits this when voice=whisper is selected.
+// Chrome Web Speech is the default; whisper only spins up when explicitly requested.
+app.post('/api/voice/whisper/start', async (req, res) => {
+  try {
+    const WS = (await import('ws')).default
+    // Already up?
+    const alreadyUp = await new Promise(resolve => {
+      let done = false
+      try {
+        const ws = new WS('ws://127.0.0.1:8179')
+        ws.on('open', () => { done = true; ws.close(); resolve(true) })
+        ws.on('error', () => { if (!done) { done = true; resolve(false) } })
+        setTimeout(() => { if (!done) { done = true; try { ws.close() } catch {}; resolve(false) } }, 800)
+      } catch { resolve(false) }
+    })
+    if (alreadyUp) return res.json({ ok: true, started: false })
+
+    const { spawn } = await import('child_process')
+    const { openSync } = await import('fs')
+    const { dirname, join } = await import('path')
+    const { fileURLToPath } = await import('url')
+    const here = dirname(fileURLToPath(import.meta.url))
+    const tldaRoot = dirname(here)
+    const bridgeScript = join(tldaRoot, 'bin', 'whisper-bridge.mjs')
+    const logPath = join(process.env.HOME || '', '.config', 'tlda', 'whisper-bridge.log')
+    const fd = openSync(logPath, 'a')
+    const child = spawn('node', [bridgeScript], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      cwd: tldaRoot,
+    })
+    child.unref()
+    console.log('[voice] whisper bridge spawned (lazy-start, pid', child.pid, ')')
+    res.json({ ok: true, started: true, pid: child.pid })
+  } catch (err) {
+    console.error('[voice] whisper/start failed:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/voice/whisper/stop', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process')
+    try { execSync('pkill -f "whisper-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
+    try { execSync('pkill -f "whisper-stream " 2>/dev/null', { timeout: 3000 }) } catch {}
+    console.log('[voice] whisper bridge + stream stopped')
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
 // Services health — checks tlda server (self), fleet server, Yjs sync
 app.get('/health/services', async (req, res) => {
   const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
@@ -596,14 +648,20 @@ app.use('/docs', (req, res, next) => {
   }
 
   // On-demand current-column SVG: page-N.svg built lazily from output/main.dvi.
+  // For multi-target projects, the request is /docs/<project>/<targetBase>/page-N.svg
+  // and the DVI lives at output/<targetBase>/main.dvi.
   // buildCurrentPage handles DVI staleness (via ensureCurrentDvi) and SVG staleness.
   // We delegate to it whenever: SVG is missing, DVI is missing/stale, or source.stamp
   // is newer than the DVI (source changed since last build).
   const livePageMatch = filePath.match(/^page-(\d+)\.svg$/)
-  if (livePageMatch) {
-    const pageNum = parseInt(livePageMatch[1], 10)
-    const svgPath = join(PROJECTS_DIR, name, 'output', filePath)
-    const dviPath = join(PROJECTS_DIR, name, 'output', 'main.dvi')
+  const livePageTargetMatch = filePath.match(/^([^/]+)\/page-(\d+)\.svg$/)
+  if (livePageMatch || livePageTargetMatch) {
+    const targetBase = livePageTargetMatch ? livePageTargetMatch[1] : null
+    const pageNum = parseInt(livePageMatch ? livePageMatch[1] : livePageTargetMatch[2], 10)
+    const outputBase = join(PROJECTS_DIR, name, 'output')
+    const targetDir = targetBase ? join(outputBase, targetBase) : outputBase
+    const svgPath = join(targetDir, `page-${pageNum}.svg`)
+    const dviPath = join(targetDir, 'main.dvi')
     const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
     const svgExists = existsSync(svgPath)
     const dviExists = existsSync(dviPath)
@@ -615,11 +673,12 @@ app.use('/docs', (req, res, next) => {
     if (needsBuild) {
       try {
         const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-        const built = await buildCurrentPage(name, pageNum)
+        const built = await buildCurrentPage(name, pageNum, targetBase ? { targetBase } : undefined)
         res.set('Cache-Control', 'no-cache')
         return res.sendFile(resolve(built), { dotfiles: 'allow' })
       } catch (e) {
-        console.error(`[live] on-demand page failed: ${name} p${pageNum}: ${e.message}`)
+        const tag = targetBase ? `${name}/${targetBase} p${pageNum}` : `${name} p${pageNum}`
+        console.error(`[live] on-demand page failed: ${tag}: ${e.message}`)
         return res.status(404).json({ error: 'Page unavailable', detail: e.message })
       }
     }
@@ -1703,24 +1762,50 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'store-events') {
     const afterId = parseInt(msg.after || '0')
     const beforeId = msg.before ? parseInt(msg.before) : null
+    // Timestamp-based pagination (ISO strings). Used by get_thread/MCP.
+    const sinceTs = msg.since || null
+    const untilTs = msg.until || null
     const limit = Math.min(parseInt(msg.limit || '200'), 5000)
     const evtAgent = msg.agent || null
     const evtType = msg.event_type || null
     try {
       let events
+      let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
-        let where = '(from_id = ? OR to_id = ?)'
+        const where = '(from_id = ? OR to_id = ?)'
         const baseParams = [evtAgent, evtAgent]
-        const q = afterId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
-          : beforeId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
-          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-        events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
-          : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
-          : fleetStore.db.prepare(q).all(...baseParams, limit)
-        if (beforeId) events.reverse()
+        if (sinceTs || untilTs) {
+          // Timestamp pagination: filter by timestamp range, return earliest matches in
+          // chronological order. Also report `total` for the matching range so the
+          // caller can show "showing N of M".
+          const tsClauses = []
+          const tsParams = []
+          if (sinceTs) { tsClauses.push('timestamp > ?'); tsParams.push(sinceTs) }
+          if (untilTs) { tsClauses.push('timestamp <= ?'); tsParams.push(untilTs) }
+          const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
+          const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
+          events = fleetStore.db.prepare(q).all(...baseParams, ...tsParams, limit)
+          const totalRow = fleetStore.db.prepare(
+            `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
+          ).get(...baseParams, ...tsParams)
+          total = totalRow?.c ?? null
+        } else {
+          const q = afterId
+            ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
+            : beforeId
+            ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+            : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
+          events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
+            : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
+            : fleetStore.db.prepare(q).all(...baseParams, limit)
+          if (beforeId) events.reverse()
+          // total of all events for this agent (no time filter) so callers see "X of Y"
+          const totalRow = fleetStore.db.prepare(
+            `SELECT COUNT(*) AS c FROM events WHERE ${where}`
+          ).get(...baseParams)
+          total = totalRow?.c ?? null
+        }
       } else if (evtType) {
         events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`).all(evtType, afterId, limit)
       } else if (beforeId) {
@@ -1730,7 +1815,7 @@ async function handleFleetWsMessage(ws, msg) {
         events = fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = fleetStore.getLastEventId()
-      reply({ events, lastId })
+      reply({ events, lastId, total })
     } catch (e) { error(e.message) }
     return
   }

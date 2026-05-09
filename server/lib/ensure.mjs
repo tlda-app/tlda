@@ -389,6 +389,21 @@ export function currentCtx(name) {
   }
 }
 
+/**
+ * Build context for the current (live) version of a *specific target* in a
+ * multi-target project. Pages, macros, etc. are resolved against the
+ * per-target subdir under output/.
+ */
+export function currentCtxForTarget(name, targetBase) {
+  return {
+    name,
+    version: null,
+    targetBase,
+    outDir: join(outputDir(name), targetBase),
+    srcDir: sourceDir(name),
+  }
+}
+
 /** Build context for a frozen historical snapshot. */
 export function historicalCtx(name, hash7) {
   return {
