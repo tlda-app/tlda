@@ -1319,18 +1319,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-              // Recompute HUD panOffset ONLY if no saved position exists.
-              // With a saved panOffset (from a previous session), restoring from
-              // localStorage is correct — don't nuke it. Without one (first visit),
-              // we need to recompute after camera restoration so pageToScreen()
-              // uses the correct camera (commit 4031e60).
-              if (localStorage.getItem('fleet-hud-panOffset') === null) {
-                requestAnimationFrame(() => {
-                  requestAnimationFrame(() => {
-                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
-                  })
-                })
-              }
+
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds
