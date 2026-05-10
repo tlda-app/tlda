@@ -1578,6 +1578,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const termAutoPinnedRef = useRef(false)
+  const lastAttentionTsRef = useRef<string | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
@@ -2141,6 +2143,42 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return null
   }, [sendTargets, agents])
+
+  // Reset auto-pin tracking when the target agent changes
+  useEffect(() => {
+    termAutoPinnedRef.current = false
+    lastAttentionTsRef.current = null
+  }, [hoverTargetAgentId])
+
+  // Auto-pin terminal peek when the target agent hits a permission prompt
+  useEffect(() => {
+    if (!hoverTargetAgentId) return
+    const attentionEvt = [...liveEvents].reverse().find((e: any) =>
+      e._evType === 'terminal_attention' && e.from === hoverTargetAgentId
+    )
+    if (!attentionEvt?.timestamp) return
+    if (lastAttentionTsRef.current === attentionEvt.timestamp) return
+    lastAttentionTsRef.current = attentionEvt.timestamp
+    termAutoPinnedRef.current = true
+    setTermHoverPinned(true)
+    setTermHoverVisible(true)
+  }, [liveEvents, hoverTargetAgentId])
+
+  // Auto-unpin when the agent resumes (new activity after the attention event)
+  useEffect(() => {
+    if (!termAutoPinnedRef.current || !hoverTargetAgentId || !lastAttentionTsRef.current) return
+    const attn = lastAttentionTsRef.current
+    const hasResumed = liveEvents.some((e: any) =>
+      e.from === hoverTargetAgentId &&
+      (e._activity === true || (e._evType === 'chat' && e.from === hoverTargetAgentId)) &&
+      e.timestamp > attn
+    )
+    if (hasResumed) {
+      termAutoPinnedRef.current = false
+      setTermHoverPinned(false)
+      setTermHoverVisible(false)
+    }
+  }, [liveEvents, hoverTargetAgentId])
 
   // Detect impossible filter: filter is set but no AND group can match any known agent
   const isImpossibleFilter = useMemo(() => {

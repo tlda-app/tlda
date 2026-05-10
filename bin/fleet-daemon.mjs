@@ -501,13 +501,16 @@ async function checkForApprovalPrompt(agentId) {
   console.log(`[daemon] terminal_attention sent for ${label}: ${reason}`)
 }
 
-// Disabled until dismiss is reliable
-function scheduleApprovalCheck(agentId) {
-  return
-}
+const pendingApprovalChecks = new Map()  // agentId -> timeoutHandle
 
-// Periodic scan disabled — fires too aggressively, generates unkillable cards.
-// Terminal attention only triggers on tool_use events (scheduleApprovalCheck).
+function scheduleApprovalCheck(agentId) {
+  if (pendingApprovalChecks.has(agentId)) return  // already scheduled
+  const handle = setTimeout(() => {
+    pendingApprovalChecks.delete(agentId)
+    checkForApprovalPrompt(agentId)
+  }, 2000)
+  pendingApprovalChecks.set(agentId, handle)
+}
 
 // ---------- activity event buffer ----------
 
