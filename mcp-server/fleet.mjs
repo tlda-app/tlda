@@ -604,19 +604,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Task Management ----
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Auto-promotes caller to manager on first use. Agent is notified via fs.watch on state file.',
+      description: 'Assign a task to an agent. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name' },
-          description: { type: 'string', description: 'Short human-readable description (5-10 words)' },
+          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using spawn.' },
+          spawn: {
+            type: 'object',
+            description: 'Spawn a fresh agent and delegate in one call. Mutually exclusive with agent.',
+            properties: {
+              name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
+              cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
+              model: { type: 'string', description: 'Model override (default: sonnet)' },
+            },
+          },
+          description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
           friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
         },
-        required: ['agent', 'description', 'message'],
+        required: ['message'],
       },
     },
     // ---- Messaging ----
@@ -1403,8 +1412,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ---- delegate ----
   if (name === 'delegate') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not registered.' }], isError: true };
-    const { agent, description, message } = args;
-    if (!agent || !description) return { content: [{ type: 'text', text: 'Missing agent or description.' }], isError: true };
+
+    if (args.agent && args.spawn) {
+      return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
+    }
+
+    if (!args.agent && !args.spawn) {
+      return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
+    }
+
+    let agent = args.agent;
+    let spawnedInfo = null;
+
+    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
+    if (args.spawn) {
+      const spawnOpts = args.spawn;
+      const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
+      const agentCwd = spawnOpts.cwd || getAgentCwd();
+
+      const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
+      const cmdParts = [fleetSpawnScript, '--fresh'];
+      if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
+      if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
+      cmdParts.push('--no-attach', agentName);
+
+      let spawnOutput;
+      try {
+        spawnOutput = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      } catch (e) {
+        const msg = (e.stderr || e.stdout || e.message || '').trim();
+        return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
+      }
+
+      // fleet-spawn prints: "fleet-agentname (fleet:xxxxxxxx) spawned in /path"
+      const fleetIdMatch = spawnOutput.match(/\((fleet:[a-f0-9]+)\)/);
+      if (!fleetIdMatch) {
+        return { content: [{ type: 'text', text: `spawn output not parseable: ${spawnOutput}` }], isError: true };
+      }
+
+      agent = fleetIdMatch[1];
+      spawnedInfo = { agent_id: agent, friendly_name: agentName };
+    }
+
+    const { message } = args;
+    if (!message) return { content: [{ type: 'text', text: 'Missing message.' }], isError: true };
+
+    // Auto-derive description from message if not provided
+    let description = args.description;
+    if (!description) {
+      const firstSentence = message.match(/^[^.!?\n]{5,60}[.!?]/);
+      description = firstSentence ? firstSentence[0] : message.slice(0, 60).trimEnd();
+    }
 
     // Merge template + explicit criteria
     const templateCriteria = args.template ? (TASK_TEMPLATES[args.template] || []) : [];
@@ -1415,9 +1473,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const delegateBody = { from: AGENT_ID, agent, description, message: message || description, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined };
+      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -1425,11 +1482,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       if (!data.ok) return { content: [{ type: 'text', text: `Delegate failed: ${JSON.stringify(data)}` }], isError: true };
 
-      // Set friendly name if provided
+      // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
         await sendWS('rename', { agent, name: args.friendly_name })?.catch(() => {});
       }
 
+      if (spawnedInfo) {
+        return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
+      }
       return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Delegate failed (server unreachable): ${e.message}` }], isError: true };
