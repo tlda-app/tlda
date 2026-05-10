@@ -1176,6 +1176,30 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- jsonl-index: daemon pushes JSONL text entries for unified search ----
+  if (type === 'jsonl-index') {
+    try { fleetStore.insertSessionEntries(msg.entries || []) } catch (e) { error(e.message); return }
+    reply({ ok: true })
+    return
+  }
+
+  // ---- fleet-search: unified search across fleet events + session JSONL text ----
+  if (type === 'fleet-search') {
+    try {
+      const results = fleetStore.searchAll(msg.query || '', {
+        limit: msg.limit, agent: msg.agent, role: msg.role, since: msg.since,
+      })
+      const context = {}
+      if (msg.context_timestamps?.length) {
+        for (const ts of msg.context_timestamps) {
+          context[ts] = fleetStore.getChatContext(ts, msg.context_window || 3)
+        }
+      }
+      reply({ results, context })
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // Respawn a dead agent when a message is directed at them.
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
   function autoRespawnIfDead(agentId) {

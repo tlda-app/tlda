@@ -29,7 +29,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SearchIndex } from './dashboard/search-index.mjs';
+// SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
 // FleetStore import removed — MCP server is a REST client, no direct DB access
 import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
@@ -103,16 +103,6 @@ function tldaFetch(apiPath, opts = {}) {
   });
 }
 
-// Lazy search index — opened read-only on first search call
-let _searchIndex = null;
-function getSearchIndex() {
-  if (!_searchIndex) {
-    const dbPath = `${os.homedir()}/.claude/search-index.sqlite`;
-    if (!fs.existsSync(dbPath)) return null;
-    _searchIndex = new SearchIndex(dbPath);
-  }
-  return _searchIndex;
-}
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
 // All server fetches go through fleetFetch — adds a timeout so tool handlers
@@ -2604,11 +2594,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
-    const idx = getSearchIndex();
-    if (!idx) {
-      return { content: [{ type: 'text', text: 'Search index not available. The dashboard server builds the index — make sure it has run at least once.' }], isError: true };
-    }
-
     const query = args.query;
     if (!query || query.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
@@ -2620,58 +2605,56 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
 
-    let agentIds;
+    // Resolve agent filter to fleet ID(s)
+    let agentId;
     if (args.agent) {
-      const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
       let allAgents = [];
-      try {
-        const data = await sendWS('store-agents');
-        if (Array.isArray(data)) allAgents = data;
-      } catch {}
-      // Collect all matching agent IDs (friendly_name, session_id)
-      // Prefix match is intentional here — search_logs is read-only, broad matching is useful
+      try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch {}
       const matches = allAgents.filter(a =>
-        a.id === args.agent || a.friendly_name === args.agent ||
-        a.id.startsWith(args.agent)
+        a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
       );
-      const ids = new Set();
-      for (const a of matches) {
-        ids.add(a.id);
-        if (a.session_id) ids.add(a.session_id);
-        if (a.session_ids) for (const sid of a.session_ids) ids.add(sid);
-      }
-      if (ids.size === 0) {
-        // Try to resolve as a session ID prefix (8+ hex chars) — the entries table
-        // stores full UUIDs so an exact match on the prefix won't work.
-        if (/^[0-9a-f]{8}/i.test(args.agent)) {
-          try {
-            const rows = idx.db.prepare(
-              'SELECT DISTINCT session_id FROM entries WHERE session_id LIKE ? LIMIT 10'
-            ).all(args.agent.toLowerCase() + '%');
-            for (const r of rows) if (r.session_id) ids.add(r.session_id);
-          } catch {}
-        }
-        if (ids.size === 0) ids.add(args.agent); // last-resort fallback
-      }
-      agentIds = [...ids];
+      agentId = matches[0]?.id || args.agent;
     }
-    // Search session logs (entries_fts)
-    let sessionResults = idx.search(query, { project: args.project || undefined, agent: agentIds, role: args.role || undefined, limit, since: sinceTs });
 
-    // Search chat events (chat_events_fts)
-    // Pass context: 0 to searchChat — we handle context ourselves via getChatContext
-    let chatResults = [];
+    // Query the server's unified search (fleet events + session JSONL text)
+    let results = [];
+    let contextMap = {};
     try {
-      chatResults = idx.searchChat(query, { agent: agentIds, role: args.role || undefined, limit, context: 0, since: sinceTs });
-    } catch { /* chat FTS not yet built — degrade gracefully */ }
+      const contextTimestamps = [];
+      const data = await sendWS('fleet-search', {
+        query,
+        limit,
+        agent: agentId,
+        role: args.role || undefined,
+        since: sinceTs,
+      });
+      results = data?.results || [];
+      // Apply before filter
+      if (beforeTs) results = results.filter(r => !r.timestamp || r.timestamp < beforeTs);
 
-    // Apply `before` timestamp filter for pagination
-    if (beforeTs) {
-      sessionResults = sessionResults.filter(r => !r.timestamp || r.timestamp < beforeTs);
-      chatResults = chatResults.filter(r => !r.timestamp || r.timestamp < beforeTs);
+      // Fetch context for chat results if requested
+      if (contextWindow > 0) {
+        for (const r of results) {
+          if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
+        }
+        if (contextTimestamps.length > 0) {
+          const ctxData = await sendWS('fleet-search', {
+            query,
+            limit,
+            agent: agentId,
+            role: args.role || undefined,
+            since: sinceTs,
+            context_timestamps: contextTimestamps.slice(0, 10),
+            context_window: contextWindow,
+          });
+          contextMap = ctxData?.context || {};
+        }
+      }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
 
-    if (sessionResults.length === 0 && chatResults.length === 0) {
+    if (results.length === 0) {
       return { content: [{ type: 'text', text: `No results for "${query}".` }] };
     }
 
@@ -2689,107 +2672,79 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     };
 
     const fmtCtxMsg = (c) => {
-      const cFrom = resolveName(c.from);
-      const cTo = resolveName(c.to);
+      const cFrom = resolveName(c.from_id || c.from);
+      const cTo = resolveName(c.to_id || c.to);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
-      const text = c.text.length > 300 ? c.text.slice(0, 300) + '...' : c.text;
+      const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
     };
 
-    // Format session results
-    const sessionLines = sessionResults.map(r => {
-      const parts = [];
-      if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
-      if (r.source === 'events') {
+    const formatted = results.map(r => {
+      const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
+
+      if (r.source === 'fleet') {
         const from = resolveName(r.from);
-        parts.push(`[session] [${r.role}] ${from}`);
+        const to = resolveName(r.to);
+        const direction = to ? `${from} → ${to}` : from;
+        let text;
+        if (contextWindow > 0 && r.timestamp && contextMap[r.timestamp]) {
+          const ctx = contextMap[r.timestamp];
+          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
+          text = `=== Match ===\n${ctx.before.map(fmtCtxMsg).join('\n')}`;
+          if (ctx.before.length > 0) text += '\n';
+          text += matchLine;
+          if (ctx.after.length > 0) text += '\n' + ctx.after.map(fmtCtxMsg).join('\n');
+        } else {
+          const parts = [];
+          if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
+          parts.push(`[fleet] [${r.type}] ${direction}`);
+          parts.push(snippet);
+          text = parts.join(' | ');
+        }
+        return { timestamp: r.timestamp, text };
       } else {
-        const proj = r.project?.match(/work-(.+)$/)?.[1]?.replace(/-/g, '/') ?? r.project ?? '';
-        parts.push(`[session] [${r.role}] ${proj}`);
-        // Session UUIDs are intentionally not surfaced — agents should
-        // identify sessions by their owning agent name + timestamp, not by
-        // the Claude Code session ID. See get_thread for the rejection of
-        // session UUIDs as identifiers.
-      }
-      const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
-      parts.push(snippet);
-      return { timestamp: r.timestamp, text: parts.join(' | ') };
-    });
-
-    // Format chat results — with context from getChatContext when requested
-    const chatLines = chatResults.map(r => {
-      const from = resolveName(r.from);
-      const to = resolveName(r.to);
-      const direction = to ? `${from} → ${to}` : from;
-      const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
-
-      let text;
-      if (contextWindow > 0 && r.timestamp) {
-        // Rich context format
-        const ctx = idx.getChatContext(r.timestamp, contextWindow);
-        const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
-        const beforeLines = ctx.before.map(fmtCtxMsg);
-        const afterLines = ctx.after.map(fmtCtxMsg);
-
-        text = `=== Match ===\n`;
-        if (beforeLines.length > 0) text += beforeLines.join('\n') + '\n';
-        text += matchLine;
-        if (afterLines.length > 0) text += '\n' + afterLines.join('\n');
-      } else {
-        // Compact format (no context)
+        // session source
+        const agentName = resolveName(r.agentId) || r.agentId || '';
         const parts = [];
         if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
-        const sourceTag = r.source === 'terminal' ? 'terminal' : 'fleet chat';
-        parts.push(`[${sourceTag}] [${r.event_type}] ${direction}`);
+        parts.push(`[session] [${r.role}] ${agentName}`);
         parts.push(snippet);
-        text = parts.join(' | ');
+        return { timestamp: r.timestamp, text: parts.join(' | ') };
       }
-
-      return { timestamp: r.timestamp, text };
     });
 
-    // Merge and sort by timestamp descending
-    const allResults = [...sessionLines, ...chatLines]
-      .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
-      .slice(0, limit);
-
-    const stats = idx.stats();
-
     // For bounded calls, error if results hit the limit (would be silently truncated)
-    if (isBoundedSearch && allResults.length >= limit) {
+    if (isBoundedSearch && results.length >= limit) {
       return {
-        content: [{ type: 'text', text: `Bounded query returned ≥${limit} results — too many to return in one call. Narrow your time range (since: ${sinceTs}, before: ${beforeTs}) or use a more specific query.` }],
+        content: [{ type: 'text', text: `Bounded query returned ≥${limit} results — too many to return in one call. Narrow your time range.` }],
         isError: true,
       };
     }
 
-    // Log search event so dashboard can show what agents searched for
+    // Log search event
     const filters = [];
     if (args.agent) filters.push(`agent=${args.agent}`);
     if (args.role) filters.push(`role=${args.role}`);
-    if (args.project) filters.push(`project=${args.project}`);
     if (sinceTs) filters.push(`since=${sinceTs}`);
     if (beforeTs) filters.push(`before=${beforeTs}`);
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
-    const allSnippets = [...sessionResults, ...chatResults].slice(0, 5).map(r => {
-      return r.snippet.replace(/⟨⟨/g, '').replace(/⟩⟩/g, '');
-    });
     logEvent({
       type: 'search',
       from: AGENT_ID || 'unknown',
       query: args.query,
       filters: filters.join(', '),
-      resultCount: allResults.length,
-      snippets: allSnippets,
+      resultCount: results.length,
+      snippets: results.slice(0, 5).map(r => (r.snippet || '').replace(/⟨⟨/g, '').replace(/⟩⟩/g, '')),
     });
 
-    let header = `${allResults.length} results (${sessionResults.length} session, ${chatResults.length} chat) — index: ${stats.totalEntries} entries, ${stats.totalFiles} files`;
+    const fleetCount = results.filter(r => r.source === 'fleet').length;
+    const sessionCount = results.filter(r => r.source === 'session').length;
+    let header = `${results.length} results (${fleetCount} fleet, ${sessionCount} session)`;
     if (sinceTs) header += ` — since ${sinceTs}`;
     if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;
 
-    const separator = contextWindow > 0 ? '\n\n' : '\n\n';
-    return { content: [{ type: 'text', text: `${header}\n\n${allResults.map(r => r.text).join(separator)}` }] };
+    return { content: [{ type: 'text', text: `${header}\n\n${formatted.map(r => r.text).join('\n\n')}` }] };
   }
 
   // ---- get_thread ----

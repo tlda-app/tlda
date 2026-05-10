@@ -590,10 +590,12 @@ function syncSessionWatchers(agentList) {
     if (stored && stored.inode === inode) {
       offset = Math.min(stored.offset, stat.size)
     } else {
-      // New file (or rotated): start at EOF, no backfill.
+      // New file (or rotated): start at EOF for activity cards, but backfill
+      // all historical content to the search index.
       offset = stat.size
       cursors[sessionId] = { inode, offset }
       scheduleCursorSave()
+      backfillSearchEntries(agent.id, jsonlPath, sessionId)
     }
 
     try {
@@ -719,6 +721,57 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'tool_use')
     )
     if (hasToolUse) scheduleApprovalCheck(agentId)
+  }
+
+  // Extract text content for unified search and send to server.
+  const searchEntries = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let parsed
+    try { parsed = JSON.parse(line) } catch { continue }
+    if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
+    const ts = parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+    if (!ts) continue
+    const content = parsed.message?.content
+    let text = ''
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+    if (!text || text.length < 3) continue
+    searchEntries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
+  }
+  if (searchEntries.length > 0) sendMsg({ type: 'jsonl-index', entries: searchEntries })
+}
+
+// One-time backfill of a JSONL's full content to the search index.
+// Called when the daemon first starts watching a new session.
+function backfillSearchEntries(agentId, jsonlPath, sessionId) {
+  try {
+    const content = fs.readFileSync(jsonlPath, 'utf8')
+    const lines = content.split('\n')
+    const entries = []
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let parsed
+      try { parsed = JSON.parse(line) } catch { continue }
+      if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
+      const ts = parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+      if (!ts) continue
+      const c = parsed.message?.content
+      let text = ''
+      if (typeof c === 'string') text = c
+      else if (Array.isArray(c)) text = c.filter(x => x?.type === 'text').map(x => x.text).join('\n')
+      if (!text || text.length < 3) continue
+      entries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
+    }
+    if (entries.length > 0) {
+      // Send in batches of 200 to avoid large WS messages
+      for (let i = 0; i < entries.length; i += 200) {
+        sendMsg({ type: 'jsonl-index', entries: entries.slice(i, i + 200) })
+      }
+      console.log(`[daemon] search backfill: ${entries.length} entries for ${path.basename(jsonlPath)}`)
+    }
+  } catch (e) {
+    console.error(`[daemon] search backfill failed for ${sessionId}: ${e.message}`)
   }
 }
 
@@ -1419,33 +1472,10 @@ function startHeartbeat() {
   }, HEARTBEAT_INTERVAL_MS).unref?.() || _heartbeatTimer
 }
 
-// Periodically rebuild the search index so search_logs stays current.
-// Runs every 5 minutes. buildIncremental is idempotent and only indexes new content.
-let _searchRebuildTimer = null
-async function rebuildSearchIndex() {
-  try {
-    const { SearchIndex } = await import('../mcp-server/dashboard/search-index.mjs')
-    const idx = new SearchIndex(path.join(os.homedir(), '.claude', 'search-index.sqlite'))
-    const result = await idx.buildIncremental()
-    if (result.entriesAdded > 0) {
-      console.log(`[daemon] search index: +${result.entriesAdded} entries (${result.elapsed}s)`)
-    }
-  } catch (e) {
-    console.error(`[daemon] search index rebuild failed: ${e.message}`)
-  }
-}
-function startSearchRebuild() {
-  if (_searchRebuildTimer) return
-  // Initial build after 30s (let the daemon finish connecting first)
-  setTimeout(rebuildSearchIndex, 30_000)
-  _searchRebuildTimer = setInterval(rebuildSearchIndex, 5 * 60_000)
-}
-
 console.log(`[daemon] fleet-daemon ${VERSION} starting pid=${process.pid}`)
 console.log(`[daemon]   server      = ${SERVER}`)
 console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-startSearchRebuild()
 connect()
