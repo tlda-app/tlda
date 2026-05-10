@@ -616,6 +616,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Model override (default: sonnet)' },
+              effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
             },
           },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
@@ -750,6 +751,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
           model: { type: 'string', description: 'Model override. Default: sonnet.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
+          effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
         },
       },
     },
@@ -1433,6 +1435,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
       const cmdParts = [fleetSpawnScript, '--fresh'];
       if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
+      if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
       if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
       cmdParts.push('--no-attach', agentName);
 
@@ -2414,6 +2417,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     const cmdParts = [fleetSpawnScript];
     if (isFresh) cmdParts.push('--fresh');
     if (args.model) cmdParts.push('--model', args.model);
+    if (args.effort) cmdParts.push('--effort', args.effort);
     if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
     cmdParts.push('--no-attach');
     cmdParts.push(agentName);

@@ -8,6 +8,7 @@ Usage:
 Options:
   --model <model>    Override model (default: sonnet, or agent's stored model)
   --cwd <path>       Override working directory (fresh mode only)
+  --effort <level>   Effort level: low|medium|high|xhigh|max (default: inherit global config)
   --no-attach        Don't attach to the tmux session after spawning
   --help             Show this help
 """
@@ -231,7 +232,7 @@ def tmux_start(session, cwd, cmd):
     )
 
 
-def fresh_spawn(name, model, cwd):
+def fresh_spawn(name, model, cwd, effort=None):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = f"fleet-{name}"
@@ -250,6 +251,8 @@ def fresh_spawn(name, model, cwd):
     tmux_kill(sess)
 
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
+    if effort:
+        cmd += f" --effort '{effort}'"
     tmux_start(sess, cwd, cmd)
 
     if server_up:
@@ -319,7 +322,7 @@ def find_sessions_for_agent(fleet_id, cwd):
     return results
 
 
-def respawn(name, model_override, cwd_override, session_override=None):
+def respawn(name, model_override, cwd_override, session_override=None, effort=None):
     server_up = ensure_server()
 
     if not server_up:
@@ -361,6 +364,8 @@ def respawn(name, model_override, cwd_override, session_override=None):
         if server_up:
             ws_register(fleet_id, name, sess, cwd, model)
         cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
+        if effort:
+            cmd += f" --effort '{effort}'"
         tmux_start(sess, cwd, cmd)
         print(f"{sess} ({fleet_id}) spawned fresh in {cwd}")
         return sess
@@ -369,6 +374,8 @@ def respawn(name, model_override, cwd_override, session_override=None):
 
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --resume {resume_id}"
     cmd += f" --model '{model}'"
+    if effort:
+        cmd += f" --effort '{effort}'"
     tmux_start(sess, cwd, cmd)
 
     # Verify Claude actually started (didn't exit with "no conversation found")
@@ -403,15 +410,16 @@ def main():
     parser.add_argument("--fresh", action="store_true", help="Spawn a new agent instead of respawning")
     parser.add_argument("--model", default=None, help="Override model (default: sonnet)")
     parser.add_argument("--cwd", default=None, help="Override working directory")
+    parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
     parser.add_argument("--session", default=None, help="Resume a specific session ID (skip auto-detection)")
     parser.add_argument("--no-attach", action="store_true", help="Don't attach to tmux session after spawning")
     args = parser.parse_args()
 
     try:
         if args.fresh:
-            sess = fresh_spawn(args.name, args.model, args.cwd)
+            sess = fresh_spawn(args.name, args.model, args.cwd, args.effort)
         else:
-            sess = respawn(args.name, args.model, args.cwd, args.session)
+            sess = respawn(args.name, args.model, args.cwd, args.session, args.effort)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
