@@ -298,7 +298,7 @@ function extractActivityEvents(events) {
             const imgPath = `/tmp/tlda-ss-${block.id.replace(/[^a-z0-9]/gi, '_')}.png`
             fs.writeFileSync(imgPath, Buffer.from(block.imgData, 'base64'))
             text = text ? text + '\n\nimage:' + imgPath : 'image:' + imgPath
-          } catch {}
+          } catch { /* disk write failed — fall back to text-only prettyResult */ }
         }
         toolResults.set(block.id, text)
       }
