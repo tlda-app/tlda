@@ -83,10 +83,19 @@ function renderScheduleResult(text, input) {
 }
 
 function renderScreenshotResult(text) {
-  // Render a placeholder that the AnnotationViewer overlay will position over.
-  // Height matches how images display in chat (~200px).
-  const pageMatch = text.match(/page (\d+)/i)
-  const label = pageMatch ? `📷 p.${pageMatch[1]}` : '📷'
+  // Extract saved image path (injected by daemon as "image:/tmp/tlda-ss-*.png")
+  const pathMatch = text.match(/image:(\/tmp\/[^\s\n]+\.png)/i)
+  if (pathMatch) {
+    const imgPath = pathMatch[1]
+    const src = `/api/file?path=${encodeURIComponent(imgPath)}`
+    const label = text.split('\n')[0].trim() || 'Screenshot'
+    return `<div class="tool-pretty-result tool-pretty-screenshot">
+      <div class="pretty-result-header">${esc(label)}</div>
+      <img class="chat-image" src="${esc(src)}" alt="${esc(label)}" onerror="this.style.display='none'">
+    </div>`
+  }
+  // No image data — show compact label only
+  const label = text.trim() || '📷 screenshot'
   return `<div class="screenshot-placeholder" data-screenshot="true">
     <span class="screenshot-placeholder-label">${esc(label)}</span>
   </div>`

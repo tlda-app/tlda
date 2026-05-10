@@ -239,9 +239,13 @@ function parseSessionLine(jsonStr) {
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
     ev.blocks = content.map(c => {
       if (c.type === 'tool_result') {
-        const text = typeof c.content === 'string' ? c.content :
-          Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content)
-        return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false }
+        const items = typeof c.content === 'string' ? [{ type: 'text', text: c.content }] :
+          Array.isArray(c.content) ? c.content : []
+        const text = items.map(x => x.text || '').join('')
+        const imgItem = items.find(x => x.type === 'image')
+        const imgData = imgItem?.source?.type === 'base64' ? imgItem.source.data : (imgItem?.data || null)
+        const imgMime = imgItem?.source?.media_type || imgItem?.mimeType || 'image/png'
+        return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false, imgData, imgMime }
       }
       if (c.type === 'text') return { type: 'text', text: c.text }
       return { type: c.type }
@@ -271,7 +275,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
@@ -288,7 +292,15 @@ function extractActivityEvents(events) {
     if (!ev.blocks) continue
     for (const block of ev.blocks) {
       if (block.type === 'tool_result' && block.id) {
-        toolResults.set(block.id, block.text || '')
+        let text = block.text || ''
+        if (block.imgData) {
+          try {
+            const imgPath = `/tmp/tlda-ss-${block.id.replace(/[^a-z0-9]/gi, '_')}.png`
+            fs.writeFileSync(imgPath, Buffer.from(block.imgData, 'base64'))
+            text = text ? text + '\n\nimage:' + imgPath : 'image:' + imgPath
+          } catch { /* disk write failed — fall back to text-only prettyResult */ }
+        }
+        toolResults.set(block.id, text)
       }
     }
   }

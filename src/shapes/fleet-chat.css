@@ -958,6 +958,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: rgba(150, 150, 200, 0.4);
   font-size: 12px;
 }
+/* Screenshot tool result with inline image */
+.fleet-chat-shape .tool-pretty-screenshot .chat-image {
+  margin: 4px 0;
+  max-width: 100%;
+  cursor: zoom-in;
+}
 /* Thread messages — rendered like live chat lines inside a subtle frame */
 .fleet-chat-shape .tool-pretty-thread {
   border-left: 2px solid var(--accent, #7a9ec8);
