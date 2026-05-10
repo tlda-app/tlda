@@ -10,7 +10,7 @@
  *   - Chat top/bottom edge (EDGE_ZONE_PX): continuous chat scroll while cursor stays
  *   - Viewport edges (EDGE_ZONE_PX): continuous canvas pan while cursor stays
  *   - Hit-test priority: chat zone wins over canvas zone
- *   - Speed: linear ramp — 0 at zone boundary, max at the very edge
+ *   - Speed: shaped by the shared response-curve pref (same curve as foot cursor)
  *   - No visual affordance (invisible by design; Skip's preference)
  *
  * The Logitech Lift side button can send either button 3 or 4 depending on
@@ -23,13 +23,14 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import type { Editor } from 'tldraw'
+import { buildLookup } from '../curveEditor'
+import { getPref, subscribePref } from '../preferences'
 
 const CHAT_SCROLL_SENSITIVITY = 1.0
 
-// Edge-zone constants — tunable
-const EDGE_ZONE_PX = 40       // depth of top/bottom edge zone (chat and viewport)
-const CHAT_MAX_SPEED = 300    // chat scroll px/s at the very edge
-const CANVAS_MAX_SPEED = 400  // canvas pan screen-px/s at the very edge
+const EDGE_ZONE_PX = 40
+const CHAT_MAX_SPEED = 2000    // chat scroll px/s at the very edge
+const CANVAS_MAX_SPEED = 2500  // canvas pan screen-px/s at the very edge
 
 // Module-level so event handlers always see current value without closure staleness
 let panModeActive = false
@@ -41,6 +42,16 @@ function setPanMode(active: boolean) {
 
 export function usePanMode(editorRef: RefObject<Editor | null>) {
   const lastPosRef = useRef<{ x: number; y: number } | null>(null)
+  const curveRef = useRef<(x: number) => number>(buildLookup(getPref('response-curve').h1, getPref('response-curve').h2))
+
+  useEffect(() => {
+    const updateCurve = () => {
+      const c = getPref('response-curve')
+      curveRef.current = buildLookup(c.h1, c.h2)
+    }
+    updateCurve()
+    return subscribePref(updateCurve)
+  }, [])
 
   useEffect(() => {
     // RAF loop state (closure-scoped so cleanup can cancel it)
@@ -55,6 +66,8 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
 
       const pos = lastPosRef.current
       if (pos && dt > 0) {
+        const curveFn = curveRef.current
+
         // --- 1. Chat edge zones (innermost wins) ---
         let handledByChat = false
         const chatLogs = document.querySelectorAll('.fleet-chat-log')
@@ -70,10 +83,10 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
           let velocity = 0
           if (relY < EDGE_ZONE_PX) {
             // Top zone: scroll up (see older messages, scrollTop decreases)
-            velocity = -CHAT_MAX_SPEED * (1 - relY / EDGE_ZONE_PX)
+            velocity = -curveFn(1 - relY / EDGE_ZONE_PX) * CHAT_MAX_SPEED
           } else if (relY > h - EDGE_ZONE_PX) {
             // Bottom zone: scroll down (see newer messages, scrollTop increases)
-            velocity = CHAT_MAX_SPEED * (1 - (h - relY) / EDGE_ZONE_PX)
+            velocity = curveFn(1 - (h - relY) / EDGE_ZONE_PX) * CHAT_MAX_SPEED
           }
           if (velocity !== 0) {
             (el as HTMLElement).scrollTop += velocity * dt
@@ -91,15 +104,15 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
 
             // Left/right viewport edges → pan canvas left/right
             if (pos.x < EDGE_ZONE_PX) {
-              vx = -CANVAS_MAX_SPEED * (1 - pos.x / EDGE_ZONE_PX)
+              vx = -curveFn(1 - pos.x / EDGE_ZONE_PX) * CANVAS_MAX_SPEED
             } else if (pos.x > W - EDGE_ZONE_PX) {
-              vx = CANVAS_MAX_SPEED * (1 - (W - pos.x) / EDGE_ZONE_PX)
+              vx = curveFn(1 - (W - pos.x) / EDGE_ZONE_PX) * CANVAS_MAX_SPEED
             }
             // Top/bottom viewport edges → pan canvas up/down
             if (pos.y < EDGE_ZONE_PX) {
-              vy = -CANVAS_MAX_SPEED * (1 - pos.y / EDGE_ZONE_PX)
+              vy = -curveFn(1 - pos.y / EDGE_ZONE_PX) * CANVAS_MAX_SPEED
             } else if (pos.y > H - EDGE_ZONE_PX) {
-              vy = CANVAS_MAX_SPEED * (1 - (H - pos.y) / EDGE_ZONE_PX)
+              vy = curveFn(1 - (H - pos.y) / EDGE_ZONE_PX) * CANVAS_MAX_SPEED
             }
 
             if (vx !== 0 || vy !== 0) {

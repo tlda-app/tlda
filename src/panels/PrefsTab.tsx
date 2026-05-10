@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { getPref, setPref } from '../preferences'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
+import { CurveEditor } from '../components/CurveEditor'
 
 const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 
@@ -10,6 +11,7 @@ export function PrefsTab() {
   const [sources, setSources] = useState(() => getPref('docview-sources'))
   const [voiceColor, setVoiceColor] = useState(() => getPref('voice-note-color'))
   const [mathColor, setMathColor] = useState(() => getPref('math-note-color'))
+  const [curve, setCurve] = useState(() => getPref('response-curve'))
 
   const toggleSource = useCallback((src: string) => {
     const next = sources.includes(src)
@@ -67,6 +69,16 @@ export function PrefsTab() {
           </select>
           <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[mathColor] }} />
         </div>
+      </div>
+      <div className="prefs-section">
+        <div className="prefs-section-label">Edge-zone response curve</div>
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          Drag handles to shape scroll/pan velocity near viewport edges
+        </div>
+        <CurveEditor value={curve} onChange={h => {
+          setCurve(h)
+          setPref('response-curve', h)
+        }} />
       </div>
     </div>
   )
