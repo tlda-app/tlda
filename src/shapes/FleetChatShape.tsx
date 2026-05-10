@@ -2662,28 +2662,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
-                // Escape: clear if there's text, otherwise soft-interrupt any
-                // thinking sendTargets. Mirrors how Esc works in a terminal —
-                // you bail out of whatever the agent is currently doing so
-                // your next message lands at a real prompt instead of the
-                // unread queue.
+                // Escape: clear text if present. Interrupt escalation (soft/hard/kill)
+                // is handled entirely by the native keydown listener above.
                 if (e.key === 'Escape') {
                   e.preventDefault()
                   if (ta.value !== '') {
                     ta.value = ''
                     ta.style.height = ''
-                    return
-                  }
-                  // Interrupt all targeted agents — no thinkingAgents filter.
-                  // The native handler (useEffect above) handles the 3-tier
-                  // escalation (soft/hard/kill). This is the backup path.
-                  if (sendTargets.length === 0) return
-                  for (const target of sendTargets) {
-                    fetch(`${FLEET_API}/api/interrupt`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ agent: target }),
-                    }).catch(() => {})
                   }
                   return
                 }
