@@ -187,8 +187,8 @@ export function clearSynctexCache(projectName) {
  * @param {Array<{x: number, y: number}>} points - PDF coordinates along the path
  * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
  */
-export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = []) {
-  const data = await loadSynctex(projectName)
+export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = [], target = '') {
+  const data = await loadSynctex(projectName, target || undefined)
   if (!data || points.length === 0) return null
 
   // Filter to source .tex files

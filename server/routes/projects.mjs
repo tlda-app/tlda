@@ -204,12 +204,35 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
 // Synctex path-based lookup: trace highlight path through synctex records
 router.post('/:name/synctex-path', requireRead, async (req, res) => {
   const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
-  const { page, points, text, fragments } = req.body
+  const { page, points, text, fragments, target } = req.body
   if (!page || !points?.length) {
     return res.status(400).json({ error: 'Required: page, points[]' })
   }
   try {
-    const result = await getSourceFromPath(req.params.name, page, points, text || '', fragments || [])
+    // For multi-target projects, convert global page to local page within the target
+    let localPage = page
+    let resolvedTarget = target || ''
+    if (!resolvedTarget) {
+      // Client didn't send target — compute from project metadata
+      const project = readProject(req.params.name)
+      if (project?.targets?.length > 1) {
+        let offset = 0
+        for (const t of project.targets) {
+          if (page <= offset + t.pages) { resolvedTarget = t.texBase; break }
+          offset += t.pages
+        }
+      }
+    }
+    if (resolvedTarget) {
+      const project = readProject(req.params.name)
+      let offset = 0
+      for (const t of (project?.targets || [])) {
+        if (t.texBase === resolvedTarget) break
+        offset += t.pages
+      }
+      localPage = page - offset
+    }
+    const result = await getSourceFromPath(req.params.name, localPage, points, text || '', fragments || [], resolvedTarget)
     if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
     res.json(result)
   } catch (e) {
