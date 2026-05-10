@@ -437,13 +437,31 @@ function transformNonCode(html: string, transform: (text: string) => string): st
 const ChatMessageRow = memo(function ChatMessageRow({
   html,
   postProcess,
+  itemKey,
+  expandedRowsRef,
 }: {
   html: string
   postProcess: (html: string) => string
+  itemKey: string
+  expandedRowsRef: React.RefObject<Set<string>>
 }) {
   const processed = useMemo(() => postProcess(html), [html, postProcess])
-  return <div dangerouslySetInnerHTML={{ __html: processed }} />
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess)
+  const divRef = useRef<HTMLDivElement>(null)
+
+  // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
+  useLayoutEffect(() => {
+    const el = divRef.current
+    if (!el || !expandedRowsRef.current.has(itemKey)) return
+    const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
+    if (moreRows) {
+      moreRows.style.display = ''
+      const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+      if (btn) btn.textContent = 'collapse'
+    }
+  }, [processed, itemKey, expandedRowsRef])
+
+  return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey)
 
 
 function FleetChatInner({ shape }: { shape: any }) {
@@ -1360,6 +1378,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     hardLockedRef.current = hardLocked
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
+  // Tracks which chat rows have been expanded (by item key) so the state
+  // survives dangerouslySetInnerHTML re-renders.
+  const expandedRowsRef = useRef<Set<string>>(new Set())
   // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
   // virtualizer's inner div calls it again after measurement, catching the
   // race where scrollHeight grows after the initial scroll.
@@ -1620,10 +1641,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (expandBtn) {
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
-          moreRows.style.display = moreRows.style.display === 'none' ? '' : 'none'
-          expandBtn.textContent = moreRows.style.display === 'none'
-            ? expandBtn.textContent!
-            : 'collapse'
+          const wasExpanded = moreRows.style.display !== 'none'
+          moreRows.style.display = wasExpanded ? 'none' : ''
+          expandBtn.textContent = wasExpanded ? expandBtn.textContent! : 'collapse'
+          const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
+          if (itemKey) {
+            if (wasExpanded) expandedRowsRef.current.delete(itemKey)
+            else expandedRowsRef.current.add(itemKey)
+          }
         }
         return
       }
@@ -2399,7 +2424,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   ref={virtualizer.measureElement}
                   style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
                 >
-                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
+                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} itemKey={rawItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
                 </div>
               ))}
             </div>
