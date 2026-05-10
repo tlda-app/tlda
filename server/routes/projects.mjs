@@ -453,10 +453,10 @@ function syncRoomName(projectName) {
 }
 
 // GET /:name/shapes — list shapes, optionally filter by type
-router.get('/:name/shapes', requireRead, (req, res) => {
+router.get('/:name/shapes', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
-  const records = getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
+  const records = await getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
   res.json(records)
 })
 
@@ -631,11 +631,11 @@ const HIGHLIGHT_THEMES = {
   'light-blue':  { type: 'info', label: 'Note / reference' },
   'blue':        { type: 'info', label: 'Note / reference' },
 }
-router.get('/:name/highlight-feedback', requireRead, (req, res) => {
+router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
-  const records = getRoomRecords(syncRoomName(req.params.name), 'highlight')
+  const records = await getRoomRecords(syncRoomName(req.params.name), 'highlight')
   const feedback = records
     .filter(shape => shape.meta?.highlightText)
     .map(shape => {
@@ -694,11 +694,11 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
 })
 
 // GET /:name/shapes/:id — get a single shape
-router.get('/:name/shapes/:id', requireRead, (req, res) => {
+router.get('/:name/shapes/:id', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
-  const record = getRecord(syncRoomName(req.params.name), shapeId)
+  const record = await getRecord(syncRoomName(req.params.name), shapeId)
   if (!record) return res.status(404).json({ error: 'Shape not found' })
   res.json(record)
 })
@@ -989,7 +989,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
     // 6. Create highlight shape via putShape (on top of all existing shapes)
     const shapeId = `shape:hl-${Date.now().toString(36)}`
-    const allRecords = getRoomRecords(syncRoomName(req.params.name), null)
+    const allRecords = await getRoomRecords(syncRoomName(req.params.name), null)
     const maxIndex = allRecords
       .map(r => r.index || 'a0')
       .sort()

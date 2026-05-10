@@ -1819,57 +1819,33 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: 'get_feedback',
-      description: 'Get the latest feedback for a document on demand (whether or not it is new). Non-blocking peek.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman")',
-          },
-        },
-      },
-    },
-    {
       name: 'screenshot',
-      description: 'Take a screenshot of the viewer on demand. Sends a request via Yjs and waits for the viewer to capture and return the viewport image. If page is specified, scrolls there first.',
+      description: 'Capture an image of part of the viewer. Specify a target — viewport (current scroll position), screen (the user\'s entire visible area), an annotation region (via screenshotRef from a read_annotations result), or explicit canvas bounds. Always passes through the viewer\'s capture mechanism. There is no default — pick a target intentionally.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          target: {
             type: 'string',
-            description: 'Document name (e.g. "bregman")',
+            enum: ['viewport', 'screen'],
+            description: '"viewport" = the document area currently scrolled into view. "screen" = the user\'s entire visible viewport including UI chrome.',
+          },
+          ref: {
+            type: 'string',
+            description: 'Screenshot ref from an annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h"). Captures that region.',
           },
           page: {
             type: 'number',
-            description: 'Page number to scroll to before capturing (optional — captures current viewport if omitted)',
+            description: 'Page number to scroll to before capturing. Used with target="viewport".',
           },
+          x: { type: 'number', description: 'Canvas X of crop region (with y, w, h — explicit bounds capture).' },
+          y: { type: 'number', description: 'Canvas Y of crop region.' },
+          w: { type: 'number', description: 'Width of crop region.' },
+          h: { type: 'number', description: 'Height of crop region.' },
+          padding: { type: 'number', description: 'Extra pixels around the region (default: 200). Applied to ref or x/y/w/h captures.' },
+          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out.' },
         },
         required: ['doc'],
-      },
-    },
-    {
-      name: 'crop_screenshot',
-      description: 'Take a cropped screenshot of a specific document region. Pass a screenshotRef from an annotation attachment, or specify doc + bounds directly. Returns a PNG image.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          ref: {
-            type: 'string',
-            description: 'Screenshot ref string from annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h")',
-          },
-          doc: {
-            type: 'string',
-            description: 'Document name (required if ref is not provided)',
-          },
-          x: { type: 'number', description: 'Canvas X of crop region' },
-          y: { type: 'number', description: 'Canvas Y of crop region' },
-          w: { type: 'number', description: 'Width of crop region' },
-          h: { type: 'number', description: 'Height of crop region' },
-          padding: { type: 'number', description: 'Extra pixels around the region (default: 200)' },
-          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out' },
-        },
       },
     },
     {
@@ -1911,7 +1887,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations or get_feedback. Mutually exclusive with `options_file`.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
         required: ['doc'],
@@ -2302,7 +2278,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
-  'screenshot', 'crop_screenshot', 'get_feedback',
+  'screenshot',
   'flash_location', 'add_note',
   'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
@@ -2325,73 +2301,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'get_feedback') {
-    const docName = args?.doc;
-    // Try cached screenshot signal first
-    if (docName) {
-      try {
-        const screenshot = await readSignalRest(docName, 'signal:screenshot');
-        if (screenshot?.data) {
-          return {
-            content: [
-              { type: 'text', text: `Viewport screenshot (${Math.round(screenshot.data.length / 1024)}KB)` },
-              { type: 'image', data: screenshot.data, mimeType: screenshot.mimeType || 'image/png' },
-            ],
-          };
-        }
-      } catch {}
-    }
-    // Fallback to file
-    if (fs.existsSync(SCREENSHOT_PATH)) {
-      return {
-        content: [
-          { type: 'text', text: `Viewport screenshot: ${SCREENSHOT_PATH}` },
-          { type: 'image', data: fs.readFileSync(SCREENSHOT_PATH).toString('base64'), mimeType: 'image/png' },
-        ],
-      };
-    }
-    // Request screenshot on demand via signal broadcast + listen for response
-    if (docName) {
-      try {
-        await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now() });
-        const result = await new Promise((resolve) => {
-          const stream = connectSignalStream(docName, (signal) => {
-            if (signal.key === 'signal:screenshot' && signal.data) {
-              clearTimeout(timer);
-              stream.close();
-              resolve(signal);
-            }
-          });
-          const timer = setTimeout(() => {
-            stream.close();
-            resolve(null);
-          }, 8000);
-        });
-        if (result?.data) {
-          return {
-            content: [
-              { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
-              { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-            ],
-          };
-        }
-      } catch {}
-    }
-    return {
-      content: [{ type: 'text', text: 'No screenshot available. No viewer is connected — open the document in a browser or tap the ping button on the iPad.' }],
-    };
-  }
-
   if (name === 'screenshot') {
     const docName = args?.doc;
-    const targetPage = args?.page;
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
-    // Use signal-based capture (no puppeteer dependency)
+
+    // Resolve target → signal payload.
+    let bounds = null;
+    let mode = args?.target || null; // 'viewport' | 'screen' | null
+    let labelTag = '';
+
+    if (args?.ref) {
+      // tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>
+      const parts = args.ref.split(':');
+      const coordStr = parts[parts.length - 1];
+      const coords = coordStr.split(',').map(Number);
+      if (coords.length !== 4 || coords.some(isNaN)) {
+        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
+      }
+      bounds = { x: coords[0], y: coords[1], w: coords[2], h: coords[3] };
+      labelTag = ' (annotation region)';
+    } else if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
+      bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
+      labelTag = ' (bounds)';
+    } else if (mode === 'screen') {
+      labelTag = ' (screen)';
+    } else {
+      // Default to viewport when no other target is given.
+      mode = mode || 'viewport';
+      labelTag = mode === 'viewport' ? ' (viewport)' : ` (${mode})`;
+    }
+
+    const signalData = { timestamp: Date.now() };
+    if (bounds) signalData.bounds = bounds;
+    if (mode) signalData.mode = mode;
+    if (args?.page) signalData.page = args.page;
+    if (args?.shapeId) signalData.shapeId = args.shapeId;
+    if (args?.padding != null) signalData.padding = args.padding;
+
     try {
-      const signalData = { timestamp: Date.now() };
-      if (targetPage) signalData.page = targetPage;
       await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
       const result = await new Promise((resolve) => {
         const stream = connectSignalStream(docName, (signal) => {
@@ -2401,15 +2350,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             resolve(signal);
           }
         });
-        const timer = setTimeout(() => {
-          stream.close();
-          resolve(null);
-        }, 8000);
+        const timer = setTimeout(() => { stream.close(); resolve(null); }, 8000);
       });
       if (result?.data) {
         return {
           content: [
-            { type: 'text', text: `Screenshot${targetPage ? ` (page ${targetPage})` : ''} (${Math.round(result.data.length / 1024)}KB)` },
+            { type: 'text', text: `Screenshot${labelTag} (${Math.round(result.data.length / 1024)}KB)` },
             { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
           ],
         };
@@ -2420,62 +2366,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (e) {
       return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'crop_screenshot') {
-    let docName, bounds, padding = args?.padding || 200;
-    if (args?.ref) {
-      // Parse ref: "tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>"
-      const parts = args.ref.split(':');
-      // Expected: ["tlda-screenshot", "page", "page", "<x>,<y>,<w>,<h>"]
-      const coordStr = parts[parts.length - 1];
-      const coords = coordStr.split(',').map(Number);
-      if (coords.length !== 4 || coords.some(isNaN)) {
-        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
-      }
-      [bounds] = [{ x: coords[0], y: coords[1], w: coords[2], h: coords[3] }];
-      // Doc name must be provided separately when using ref
-      docName = args.doc;
-    } else {
-      docName = args?.doc;
-      if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
-        bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
-      }
-    }
-    if (!docName) {
-      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
-    }
-    if (!bounds) {
-      return { content: [{ type: 'text', text: 'Missing bounds — provide ref or x/y/w/h' }], isError: true };
-    }
-    try {
-      // Try signal-based capture first (non-disruptive, no puppeteer)
-      await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now(), bounds });
-      const result = await new Promise((resolve) => {
-        const stream = connectSignalStream(docName, (signal) => {
-          if (signal.key === 'signal:screenshot' && signal.data) {
-            clearTimeout(timer);
-            stream.close();
-            resolve(signal);
-          }
-        });
-        const timer = setTimeout(() => { stream.close(); resolve(null) }, 8000);
-      });
-      if (result?.data) {
-        return {
-          content: [
-            { type: 'text', text: `Cropped screenshot (${Math.round(result.data.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
-            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-          ],
-        };
-      }
-      return {
-        content: [{ type: 'text', text: 'No viewer responded — open the document in a browser first.' }],
-        isError: true,
-      };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Crop screenshot failed: ${e.message}` }], isError: true };
     }
   }
 

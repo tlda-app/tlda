@@ -242,10 +242,8 @@ export function useYjsSignals({
         // Find the most recent screenshot placeholder in any chat
         const placeholder = window.document.querySelector('.screenshot-placeholder') as HTMLElement | null
         if (!placeholder) {
-          // No placeholder visible — show as floating panel
-          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-            detail: { bounds: signal.bounds, shapeIds: [], label, pinned: true }
-          }))
+          // No placeholder visible — do not surface anything in Skip's viewer.
+          // The agent gets the screenshot in their own chat; no floating panel here.
           return
         }
         const rect = placeholder.getBoundingClientRect()
