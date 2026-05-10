@@ -579,7 +579,8 @@ export class FleetStore {
     // Store status in metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
     if (!row) return;
-    const metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    let metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    if (typeof metadata !== 'object' || metadata === null) metadata = {};
     metadata.status = { state, tool: tool || null, ts: ts || new Date().toISOString() };
     this.db.prepare('UPDATE agents SET metadata = ?, last_seen = ? WHERE id = ?')
       .run(JSON.stringify(metadata), new Date().toISOString(), id);
@@ -589,7 +590,8 @@ export class FleetStore {
     // Merge patch into agent metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
     if (!row) return;
-    const metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    let metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    if (typeof metadata !== 'object' || metadata === null) metadata = {};
     Object.assign(metadata, patch);
     this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
       .run(JSON.stringify(metadata), id);
