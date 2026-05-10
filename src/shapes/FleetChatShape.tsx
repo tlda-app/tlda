@@ -14,6 +14,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
+import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
@@ -54,9 +55,10 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
-function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
+function TerminalHoverPane({ agentId, pinned, anchorRect, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
   pinned: boolean
+  anchorRect: DOMRect
   onDismiss: () => void
   onMouseEnter: () => void
   onMouseLeave: () => void
@@ -196,7 +198,14 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
   return (
     <div
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
-      style={{ height }}
+      style={{
+        height,
+        position: 'fixed',
+        top: anchorRect.bottom,
+        left: anchorRect.left,
+        width: anchorRect.width,
+        zIndex: 9999,
+      }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}
@@ -1578,6 +1587,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const termInputAreaRef = useRef<HTMLDivElement>(null)
+  const [termAnchorRect, setTermAnchorRect] = useState<DOMRect | null>(null)
+  // Keep anchor rect in sync whenever the pane is shown or pinned
+  useEffect(() => {
+    if (!(termHoverVisible || termHoverPinned) || !termInputAreaRef.current) return
+    const update = () => {
+      if (termInputAreaRef.current) setTermAnchorRect(termInputAreaRef.current.getBoundingClientRect())
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(termInputAreaRef.current)
+    window.addEventListener('resize', update)
+    return () => { ro.disconnect(); window.removeEventListener('resize', update) }
+  }, [termHoverVisible, termHoverPinned])
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
@@ -2700,6 +2723,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
+          ref={termInputAreaRef}
           className="fleet-chat-input-area"
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
@@ -2708,11 +2732,12 @@ function FleetChatInner({ shape }: { shape: any }) {
             position: 'relative',
           }}
         >
-          {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
-          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && (
+          {/* Terminal hover pane — portaled to body to escape tl-canvas overflow:hidden */}
+          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && termAnchorRect && createPortal(
             <TerminalHoverPane
               agentId={hoverTargetAgentId}
               pinned={termHoverPinned}
+              anchorRect={termAnchorRect}
               onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
@@ -2721,7 +2746,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                 }
               }}
               onMouseLeave={() => setTermHoverVisible(false)}
-            />
+            />,
+            document.body
           )}
           <SendHint
             filter={filter}
