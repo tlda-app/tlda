@@ -109,7 +109,7 @@ export function renderChatLine(m, ctx) {
     const reason = esc(m._reason || 'needs attention')
     const agentCls = getNickClass(m.from)
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention" data-lc-type="attention">
+      <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
         <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span></div>
       </div></div>`
   }
@@ -122,7 +122,7 @@ export function renderChatLine(m, ctx) {
     const reason = esc(m._reason || 'requested attention')
     const agentCls = getNickClass(m.from)
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention" data-lc-type="attention">
+      <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
         <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span></div>
       </div></div>`
   }

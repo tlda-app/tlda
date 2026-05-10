@@ -51,11 +51,13 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
   ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
   : 'ws://localhost:5176'
 
-// Read-only terminal peek overlay — shown when hovering the terminal icon on a chat shape.
-// Mounts xterm.js + WebSocket when visible, cleans up on unmount.
-// No input bar — this is strictly a peek, not an interaction surface.
-function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
+// Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
+// Hover mode: read-only snapshot that resets on each server push.
+// Pinned mode: stays open, shows input bar for sending commands, resizable.
+function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
+  pinned: boolean
+  onDismiss: () => void
   onMouseEnter: () => void
   onMouseLeave: () => void
 }) {
@@ -63,7 +65,13 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const pinnedRef = useRef(pinned)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+  const [height, setHeight] = useState(210)
+  const [inputValue, setInputValue] = useState('')
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  useEffect(() => { pinnedRef.current = pinned }, [pinned])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -83,7 +91,7 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
         cyan: '#4ec9b0', brightCyan: '#4ec9b0',
         white: '#d4d4d4', brightWhite: '#ffffff',
       },
-      scrollback: 0,
+      scrollback: 100,
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
@@ -101,6 +109,13 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
     }
   }, [])
 
+  // Re-fit when height changes
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      try { fitRef.current?.fit() } catch {}
+    })
+  }, [height])
+
   useEffect(() => {
     if (!agentId) return
     wsRef.current?.close()
@@ -115,7 +130,9 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
       try {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'output' && msg.data && termRef.current) {
-          termRef.current.reset()
+          // Peek mode: reset each time so we always show the current screen bottom.
+          // Pinned mode: don't reset so user can scroll through accumulated output.
+          if (!pinnedRef.current) termRef.current.reset()
           termRef.current.write(msg.data)
         } else if (msg.type === 'error') {
           setStatus('error')
@@ -127,13 +144,61 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
     return () => { ws.close() }
   }, [agentId])
 
+  const sendInput = (data: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data }))
+    }
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    stopEventPropagation(e as any)
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      sendInput(inputValue + '\r')
+      setInputValue('')
+    } else if (e.key === 'c' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x03')
+      setInputValue('')
+    } else if (e.key === 'd' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x04')
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      sendInput('\t')
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      sendInput('\x1b[A')
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      sendInput('\x1b[B')
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      sendInput('\x1b')
+    }
+  }
+
+  const handleResizePointerDown = (e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    dragRef.current = { startY: e.clientY, startH: height }
+    dragCoordinator.claim(
+      (ev) => {
+        if (!dragRef.current) return
+        const delta = ev.clientY - dragRef.current.startY
+        setHeight(Math.max(100, dragRef.current.startH + delta))
+      },
+      () => { dragRef.current = null },
+    )
+  }
+
   const shortId = agentId.replace('fleet:', '')
 
   return (
     <div
-      className="fleet-terminal-hover-pane"
+      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
+      style={{ height }}
       onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
+      onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
     >
@@ -145,8 +210,51 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
         <span className="fleet-terminal-hover-title">{shortId}</span>
         {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
         {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
+        {pinned && (
+          <button
+            className="fleet-terminal-hover-close"
+            title="Close terminal"
+            onPointerDown={stopEventPropagation}
+            onClick={(e) => { stopEventPropagation(e as any); onDismiss() }}
+          >
+            ×
+          </button>
+        )}
       </div>
       <div ref={containerRef} className="fleet-terminal-hover-body" />
+      {pinned && status === 'connected' && (
+        <div className="fleet-terminal-hover-input-bar"
+          onPointerDown={stopEventPropagation}
+          onPointerMove={stopEventPropagation}
+        >
+          <span className="fleet-terminal-hover-prompt">$</span>
+          <input
+            className="fleet-terminal-hover-input"
+            type="text"
+            value={inputValue}
+            onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+            onKeyDown={handleInputKeyDown}
+            onKeyUp={(e) => stopEventPropagation(e as any)}
+            placeholder="type command…"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button
+            className="fleet-terminal-hover-ctrl-c"
+            title="Send Ctrl+C"
+            onPointerDown={(e) => { stopEventPropagation(e as any); sendInput('\x03') }}
+          >
+            ^C
+          </button>
+        </div>
+      )}
+      {pinned && (
+        <div
+          className="fleet-terminal-hover-resize-handle"
+          onPointerDown={handleResizePointerDown}
+          title="Drag to resize"
+        />
+      )}
     </div>
   )
 }
@@ -611,19 +719,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
-  // Terminal cards — set of agent IDs with open terminal cards.
-  // Clicking X removes the card entirely (no freeze snapshot — same content
-  // appears in activity cards, and terminal output is ephemeral) AND marks
-  // the triggering events as read on the server. The auto-open useEffect
-  // only opens cards for events that are still unread, so a dismissed
-  // event won't re-pop on reload.
-  const [terminalCards, setTerminalCards] = useState<Set<string>>(() => new Set())
-  const openTerminal = useCallback((agentId: string) => {
-    setTerminalCards(prev => new Set(prev).add(agentId))
-  }, [])
-  const closeTerminal = useCallback((agentId: string) => {
-    // Mark every unread terminal_card / terminal_attention event for this
-    // agent as read, so reload doesn't re-pop. Best-effort fire-and-forget.
+  // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
+  const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)
+  const [termCardPinnedId, setTermCardPinnedId] = useState<string | null>(null)
+  const termCardHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const dismissTermCard = useCallback((agentId: string) => {
+    // Mark terminal events from this agent as read when dismissed.
     const unreadEventIds = liveEvents
       .filter((e: any) =>
         (e._evType === 'terminal_card' || e._evType === 'terminal_attention') &&
@@ -638,22 +740,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
       }).catch(() => {})
     }
-    setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
+    setTermCardPinnedId(null)
+    setTermCardHoverId(null)
   }, [liveEvents])
-
-  // Auto-open terminal cards when an UNREAD "terminal_card" or
-  // "terminal_attention" event arrives. The read state is canonical
-  // (server-side via the unread table); dismissing a card marks the
-  // event read so a reload doesn't re-pop. New events for the same
-  // agent arrive as unread → fresh card pops.
-  useEffect(() => {
-    for (const e of liveEvents) {
-      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention')
-          && e.from && e.read !== true && !terminalCards.has(e.from)) {
-        openTerminal(e.from)
-      }
-    }
-  }, [liveEvents, terminalCards, openTerminal])
 
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
@@ -1487,6 +1576,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
   const [termHoverVisible, setTermHoverVisible] = useState(false)
+  const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
@@ -1528,6 +1618,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [scrollToBottom])
+
+  // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const onOver = (e: MouseEvent) => {
+      const card = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      const agentId = card?.dataset.agentId || null
+      if (agentId) {
+        if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null }
+        setTermCardHoverId(agentId)
+      }
+    }
+    const onOut = (e: MouseEvent) => {
+      const leaving = (e.target as HTMLElement).closest('.lc-terminal-card')
+      const entering = (e.relatedTarget as HTMLElement | null)?.closest?.('.lc-terminal-card')
+      if (leaving && !entering) {
+        termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200)
+      }
+    }
+    el.addEventListener('mouseover', onOver)
+    el.addEventListener('mouseout', onOut)
+    return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
+  }, [])
 
   // Scroll to bottom when new messages arrive or activity cards grow.
   //
@@ -1745,6 +1859,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcMsg) {
         lcMsg.classList.toggle('lc-message-collapsed')
         return
+      }
+      // Terminal lifecycle card — click to pin/unpin terminal
+      const termCard = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      if (termCard) {
+        const agentId = termCard.dataset.agentId
+        if (agentId) {
+          setTermCardPinnedId(prev => prev === agentId ? null : agentId)
+          return
+        }
       }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
@@ -2557,16 +2680,23 @@ function FleetChatInner({ shape }: { shape: any }) {
             ctx={ctx}
             rawItemsLength={rawItems.length}
           />
-          {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
-          {[...terminalCards].map(agentId => (
-            <TerminalCard
-              key={`terminal-${agentId}`}
-              agentId={agentId}
-              agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
-              onDismiss={() => closeTerminal(agentId)}
-            />
-          ))}
         </div>
+
+        {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
+        {(termCardPinnedId || termCardHoverId) && (() => {
+          const activeId = termCardPinnedId ?? termCardHoverId!
+          return (
+            <TerminalCard
+              key={`terminal-${activeId}`}
+              agentId={activeId}
+              agentName={agentNames[activeId] || activeId.replace('fleet:', '')}
+              pinned={!!termCardPinnedId}
+              onMouseEnter={() => { if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null } }}
+              onMouseLeave={() => { if (!termCardPinnedId) { termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200) } }}
+              onDismiss={() => dismissTermCard(activeId)}
+            />
+          )
+        })()}
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
@@ -2578,10 +2708,12 @@ function FleetChatInner({ shape }: { shape: any }) {
             position: 'relative',
           }}
         >
-          {/* Terminal hover pane — floats above the input area when the terminal icon is hovered */}
-          {termHoverVisible && hoverTargetAgentId && (
+          {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
+          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && (
             <TerminalHoverPane
               agentId={hoverTargetAgentId}
+              pinned={termHoverPinned}
+              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
                   clearTimeout(termHideTimerRef.current)
@@ -2630,8 +2762,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
             {hoverTargetAgentId && (
               <button
-                className="fleet-terminal-icon"
+                className={`fleet-terminal-icon${termHoverPinned ? ' active' : ''}`}
                 onPointerDown={stopEventPropagation}
+                onClick={(e) => {
+                  stopEventPropagation(e as any)
+                  setTermHoverPinned(p => !p)
+                  setTermHoverVisible(true)
+                }}
                 onMouseEnter={() => {
                   if (termHideTimerRef.current) {
                     clearTimeout(termHideTimerRef.current)
@@ -2640,9 +2777,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
-                  termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                  if (!termHoverPinned) {
+                    termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                  }
                 }}
-                title="Peek at terminal output"
+                title={termHoverPinned ? 'Click to unpin terminal' : 'Hover to peek · click to pin'}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="1" y="1" width="8" height="8" rx="1.5"/>
@@ -2724,7 +2863,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       targetId = sendTargets[0]
                     }
                     if (targetId) {
-                      openTerminal(targetId)
+                      setTermCardPinnedId(targetId)
                       ta.value = ''
                       ta.style.height = ''
                     }
