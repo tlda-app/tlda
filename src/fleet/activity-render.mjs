@@ -94,11 +94,9 @@ function renderScreenshotResult(text) {
       <img class="chat-image" src="${esc(src)}" alt="${esc(label)}" onerror="this.style.display='none'">
     </div>`
   }
-  // No image data — show compact label only
-  const label = text.trim() || '📷 screenshot'
-  return `<div class="screenshot-placeholder" data-screenshot="true">
-    <span class="screenshot-placeholder-label">${esc(label)}</span>
-  </div>`
+  // Screenshot failed or no image data
+  const label = text.trim() || 'screenshot failed'
+  return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
 }
 
 function renderThreadResult(text, ctx) {

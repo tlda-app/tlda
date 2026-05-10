@@ -284,6 +284,14 @@ if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
 }
 
+// Backfill session_entries from JSONL files (async, non-blocking).
+if (fleetStore) {
+  const CLAUDE_PROJECTS = join(os.homedir(), '.claude', 'projects')
+  fleetStore.backfillSessionEntries(CLAUDE_PROJECTS).then(({ indexed, skipped }) => {
+    if (indexed > 0) console.log(`[fleet-store] search backfill: indexed ${indexed} sessions (${skipped} already indexed)`)
+  }).catch(e => console.error('[fleet-store] search backfill failed:', e.message))
+}
+
 // Ensure server owner exists as a human agent in the DB on startup
 if (fleetStore) {
   fleetStore.upsertAgent({

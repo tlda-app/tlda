@@ -933,6 +933,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 4px 0;
   font-size: 11px;
   line-height: 1.4;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
 }
 .fleet-chat-shape .pretty-result-header {
   font-size: 10px;

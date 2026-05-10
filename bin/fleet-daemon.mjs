@@ -278,6 +278,22 @@ const ACTIVITY_NOISE = new Set([
 // Tools whose results should be captured and forwarded as pretty-printed cards
 const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
 
+function truncatePrettyResult(text, toolName) {
+  if (text.length <= 5000) return text
+  const tool = (toolName || '').toLowerCase()
+  if (tool.includes('get_thread') || tool.includes('thread')) {
+    const SEP = '\n\n---\n\n'
+    const msgs = text.split(SEP)
+    if (msgs.length > 8) {
+      const front = msgs.slice(0, 3)
+      const tail = msgs.slice(-5)
+      const hidden = msgs.length - 8
+      return front.join(SEP) + SEP + `… ${hidden} messages …` + SEP + tail.join(SEP)
+    }
+  }
+  return text.slice(0, 5000) + '\n\n… (truncated)'
+}
+
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
 // the same batch, we stash the activity event here. When the result arrives in
@@ -325,7 +341,7 @@ function extractActivityEvents(events) {
         if (PRETTY_PRINT_TOOLS.has(name) && block.id) {
           if (toolResults.has(block.id)) {
             const raw = toolResults.get(block.id)
-            evt.prettyResult = raw.length > 5000 ? raw.slice(0, 5000) + '\n\n… (truncated)' : raw
+            evt.prettyResult = truncatePrettyResult(raw, name)
           } else {
             // Result not in this batch — stash and wait
             pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
@@ -343,7 +359,7 @@ function extractActivityEvents(events) {
     const pending = pendingPrettyPrint.get(id)
     if (pending) {
       pendingPrettyPrint.delete(id)
-      const capped = resultText.length > 5000 ? resultText.slice(0, 5000) + '\n\n… (truncated)' : resultText
+      const capped = truncatePrettyResult(resultText, pending.evt.tool)
       result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
     }
   }

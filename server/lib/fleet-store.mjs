@@ -947,6 +947,70 @@ export class FleetStore {
     })();
   }
 
+  async backfillSessionEntries(projectsDir) {
+    const indexed = new Set(
+      this.db.prepare('SELECT DISTINCT session_id FROM session_entries').all().map(r => r.session_id)
+    );
+    let dirs;
+    try { dirs = fs.readdirSync(projectsDir); } catch { return { indexed: 0, skipped: 0 }; }
+
+    const agentMap = {};
+    for (const row of this.db.prepare('SELECT id, session_id, session_ids FROM agents').all()) {
+      if (row.session_id) agentMap[row.session_id] = row.id;
+      try { for (const sid of JSON.parse(row.session_ids || '[]')) agentMap[sid] = row.id; } catch {}
+    }
+
+    const allFiles = [];
+    for (const dir of dirs) {
+      const dirPath = path.join(projectsDir, dir);
+      let files;
+      try { files = fs.readdirSync(dirPath); } catch { continue; }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue;
+        const sessionId = file.slice(0, -6);
+        if (indexed.has(sessionId)) continue;
+        allFiles.push({ filePath: path.join(dirPath, file), sessionId });
+      }
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO session_entries (agent_id, session_id, role, timestamp, text)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    let totalIndexed = 0;
+    for (const { filePath, sessionId } of allFiles) {
+      const agentId = agentMap[sessionId] || 'unknown';
+      let content;
+      try { content = await fs.promises.readFile(filePath, 'utf8'); } catch { continue; }
+      const entries = [];
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        let parsed;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
+        const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null;
+        if (!ts) continue;
+        const c = parsed.message?.content;
+        let text = '';
+        if (typeof c === 'string') text = c;
+        else if (Array.isArray(c)) text = c.filter(x => x?.type === 'text').map(x => x.text).join('\n');
+        if (!text || text.length < 3) continue;
+        entries.push({ agentId, sessionId, role: parsed.type, timestamp: ts, text });
+      }
+      if (entries.length > 0) {
+        this.db.transaction(() => {
+          for (const e of entries) {
+            const t = e.text.length > 5000 ? e.text.slice(0, 5000) : e.text;
+            stmt.run(e.agentId, e.sessionId, e.role, e.timestamp, t);
+          }
+        })();
+        totalIndexed++;
+      }
+      await new Promise(r => setImmediate(r));
+    }
+    return { indexed: totalIndexed, skipped: allFiles.length - totalIndexed };
+  }
+
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).
   searchAll(query, { limit = 50, agent, role, since } = {}) {
     const ftsQuery = query.replace(/"/g, '""');

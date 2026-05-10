@@ -549,10 +549,8 @@ const DASHBOARD_URL = 'http://localhost:5176'
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
   try {
-    const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.results || data || []
+    const data = await _fleetWS('fleet-search', { query, limit })
+    return data?.results || []
   } catch { return [] }
 }
 
