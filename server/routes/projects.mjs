@@ -60,14 +60,14 @@ router.get('/meta', requireRead, (req, res) => {
 })
 
 // GET /health — check sync health for all docs that have a snapshot
-router.get('/health', requireRead, (req, res) => {
+router.get('/health', requireRead, async (req, res) => {
   const health = {}
   const dir = getProjectsDir()
   for (const project of listProjects()) {
     const snapPath = join(dir, project.name, 'sync-snapshot.json')
     if (!existsSync(snapPath)) continue
     try {
-      const room = getOrCreateRoom(syncRoomName(project.name))
+      const room = await getOrCreateRoom(syncRoomName(project.name))
       const snapshot = room.getCurrentSnapshot()
       const shapes = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
       health[project.name] = { ok: true, shapes }
@@ -457,12 +457,12 @@ router.get('/:name/shapes', requireRead, (req, res) => {
 })
 
 // GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
-router.get('/:name/shapes/at/:timestamp', requireRead, (req, res) => {
+router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const ts = parseInt(req.params.timestamp, 10)
   if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
-  const result = getShapesAt(req.params.name, ts)
+  const result = await getShapesAt(req.params.name, ts)
   res.json(result)
 })
 
@@ -557,11 +557,11 @@ router.post('/:name/sync/clear', requireRw, (req, res) => {
 })
 
 // GET /:name/sync/health — check if a doc's sync room can load without errors
-router.get('/:name/sync/health', requireRead, (req, res) => {
+router.get('/:name/sync/health', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
-    const room = getOrCreateRoom(syncRoomName(req.params.name))
+    const room = await getOrCreateRoom(syncRoomName(req.params.name))
     const snapshot = room.getCurrentSnapshot()
     const shapeCount = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
     res.json({ ok: true, shapes: shapeCount })
@@ -670,8 +670,8 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   // SSE keepalive to prevent proxy (Fly) from killing idle connections
   const keepalive = setInterval(() => res.write(':\n\n'), 15000)
 
-  // Ensure room exists so we get change notifications
-  getOrCreateRoom(syncRoomName(req.params.name))
+  // Ensure room exists so we get change notifications (fire-and-forget — SSE doesn't wait)
+  getOrCreateRoom(syncRoomName(req.params.name)).catch(() => {})
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
     // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff

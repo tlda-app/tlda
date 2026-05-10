@@ -813,7 +813,7 @@ function fanOutTerminalFrame(agentId, frame) {
   }
 }
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
   // Auth check: token from ?token= query param, Authorization header, or cookie
@@ -838,7 +838,7 @@ server.on('upgrade', (req, socket, head) => {
     const docName = url.pathname.slice(6)
     if (!docName) { socket.destroy(); return }
     const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const room = getOrCreateRoom(docName)
+    const room = await getOrCreateRoom(docName)
     syncWss.handleUpgrade(req, socket, head, (ws) => {
       room.handleSocketConnect({ sessionId, socket: ws })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
