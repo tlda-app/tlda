@@ -2170,7 +2170,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const attn = lastAttentionTsRef.current
     const hasResumed = liveEvents.some((e: any) =>
       e.from === hoverTargetAgentId &&
-      (e._activity === true || (e._evType === 'chat' && e.from === hoverTargetAgentId)) &&
+      (e._activity === true || ((e._evType === 'chat' || e.type === 'chat') && e.from === hoverTargetAgentId)) &&
       e.timestamp > attn
     )
     if (hasResumed) {
