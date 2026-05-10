@@ -2255,6 +2255,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
+/* Hard-lock scroll button — dim by default, highlighted when active */
+.fleet-shape .fleet-hardlock-btn {
+  font-size: 10px;
+  opacity: 0.25;
+}
+.fleet-shape .fleet-hardlock-btn.active {
+  opacity: 1 !important;
+  color: #4fc3f7;
+}
+
 /* --- Fleet DocView shape --- */
 /* Suppress tldraw hover/selection indicators on ALL shapes in the HUD */
 .fleet-hud .clip-panel-canvas .tl-shape-indicator { display: none !important; }

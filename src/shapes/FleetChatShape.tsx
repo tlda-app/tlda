@@ -1351,6 +1351,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  // Hard-locked mode: every content change scrolls to bottom unconditionally.
+  // Persisted to localStorage so it survives reloads.
+  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
+  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
+  const hardLockedRef = useRef(hardLocked)
+  useEffect(() => {
+    hardLockedRef.current = hardLocked
+    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
+  }, [hardLocked])
   // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
   // virtualizer's inner div calls it again after measurement, catching the
   // race where scrollHeight grows after the initial scroll.
@@ -1401,11 +1410,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (virtualizerTotalSize === 0) return
     const firstLoad = prevTotalSizeRef.current === 0
     prevTotalSizeRef.current = virtualizerTotalSize
-    if (firstLoad || isAtBottomRef.current) {
+    if (firstLoad || isAtBottomRef.current || hardLocked) {
       scrollToBottom()
       requestAnimationFrame(scrollToBottom)
     }
-  }, [virtualizerTotalSize, scrollToBottom])
+  }, [virtualizerTotalSize, scrollToBottom, hardLocked])
 
   // rawItems.length effect: reset prevTotalSizeRef on filter change / target switch
   // so the next load is treated as a first load. (filterKey effect handles this
@@ -1429,7 +1438,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (isAtBottomRef.current) {
+      if (isAtBottomRef.current || hardLockedRef.current) {
         requestAnimationFrame(scrollToBottom)
       }
     })
@@ -2340,6 +2349,17 @@ function FleetChatInner({ shape }: { shape: any }) {
               ? <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2h12v9H6l-4 3v-3z"/></svg>
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
+          </button>
+          <button
+            className={`fleet-hardlock-btn${hardLocked ? ' active' : ''}`}
+            onPointerDown={stopEventPropagation}
+            onClick={(e) => {
+              stopEventPropagation(e)
+              setHardLocked(prev => !prev)
+            }}
+            title={hardLocked ? 'Hard-locked to bottom — click for smart scroll' : 'Smart scroll — click to hard-lock'}
+          >
+            ⏬
           </button>
         </div>
 
