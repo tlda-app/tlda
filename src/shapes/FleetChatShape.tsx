@@ -611,19 +611,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
-  // Terminal cards — set of agent IDs with open terminal cards.
-  // Clicking X removes the card entirely (no freeze snapshot — same content
-  // appears in activity cards, and terminal output is ephemeral) AND marks
-  // the triggering events as read on the server. The auto-open useEffect
-  // only opens cards for events that are still unread, so a dismissed
-  // event won't re-pop on reload.
-  const [terminalCards, setTerminalCards] = useState<Set<string>>(() => new Set())
-  const openTerminal = useCallback((agentId: string) => {
-    setTerminalCards(prev => new Set(prev).add(agentId))
-  }, [])
-  const closeTerminal = useCallback((agentId: string) => {
-    // Mark every unread terminal_card / terminal_attention event for this
-    // agent as read, so reload doesn't re-pop. Best-effort fire-and-forget.
+  // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
+  const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)
+  const [termCardPinnedId, setTermCardPinnedId] = useState<string | null>(null)
+  const termCardHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const dismissTermCard = useCallback((agentId: string) => {
+    // Mark terminal events from this agent as read when dismissed.
     const unreadEventIds = liveEvents
       .filter((e: any) =>
         (e._evType === 'terminal_card' || e._evType === 'terminal_attention') &&
@@ -638,22 +632,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
       }).catch(() => {})
     }
-    setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
+    setTermCardPinnedId(null)
+    setTermCardHoverId(null)
   }, [liveEvents])
-
-  // Auto-open terminal cards when an UNREAD "terminal_card" or
-  // "terminal_attention" event arrives. The read state is canonical
-  // (server-side via the unread table); dismissing a card marks the
-  // event read so a reload doesn't re-pop. New events for the same
-  // agent arrive as unread → fresh card pops.
-  useEffect(() => {
-    for (const e of liveEvents) {
-      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention')
-          && e.from && e.read !== true && !terminalCards.has(e.from)) {
-        openTerminal(e.from)
-      }
-    }
-  }, [liveEvents, terminalCards, openTerminal])
 
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
@@ -1529,6 +1510,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => el.removeEventListener('scroll', onScroll)
   }, [scrollToBottom])
 
+  // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const onOver = (e: MouseEvent) => {
+      const card = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      const agentId = card?.dataset.agentId || null
+      if (agentId) {
+        if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null }
+        setTermCardHoverId(agentId)
+      }
+    }
+    const onOut = (e: MouseEvent) => {
+      const leaving = (e.target as HTMLElement).closest('.lc-terminal-card')
+      const entering = (e.relatedTarget as HTMLElement | null)?.closest?.('.lc-terminal-card')
+      if (leaving && !entering) {
+        termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200)
+      }
+    }
+    el.addEventListener('mouseover', onOver)
+    el.addEventListener('mouseout', onOut)
+    return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
+  }, [])
+
   // Scroll to bottom when new messages arrive or activity cards grow.
   //
   // rawItems.length alone is not enough: activity messages from the same
@@ -1745,6 +1750,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcMsg) {
         lcMsg.classList.toggle('lc-message-collapsed')
         return
+      }
+      // Terminal lifecycle card — click to pin/unpin terminal
+      const termCard = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      if (termCard) {
+        const agentId = termCard.dataset.agentId
+        if (agentId) {
+          setTermCardPinnedId(prev => prev === agentId ? null : agentId)
+          return
+        }
       }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
@@ -2557,16 +2571,23 @@ function FleetChatInner({ shape }: { shape: any }) {
             ctx={ctx}
             rawItemsLength={rawItems.length}
           />
-          {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
-          {[...terminalCards].map(agentId => (
-            <TerminalCard
-              key={`terminal-${agentId}`}
-              agentId={agentId}
-              agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
-              onDismiss={() => closeTerminal(agentId)}
-            />
-          ))}
         </div>
+
+        {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
+        {(termCardPinnedId || termCardHoverId) && (() => {
+          const activeId = termCardPinnedId ?? termCardHoverId!
+          return (
+            <TerminalCard
+              key={`terminal-${activeId}`}
+              agentId={activeId}
+              agentName={agentNames[activeId] || activeId.replace('fleet:', '')}
+              pinned={!!termCardPinnedId}
+              onMouseEnter={() => { if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null } }}
+              onMouseLeave={() => { if (!termCardPinnedId) { termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200) } }}
+              onDismiss={() => dismissTermCard(activeId)}
+            />
+          )
+        })()}
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
@@ -2739,7 +2760,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       targetId = sendTargets[0]
                     }
                     if (targetId) {
-                      openTerminal(targetId)
+                      setTermCardPinnedId(targetId)
                       ta.value = ''
                       ta.style.height = ''
                     }

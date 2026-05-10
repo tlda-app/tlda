@@ -556,6 +556,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-right: 2px;
 }
 
+/* --- Terminal lifecycle card — hover to peek, click to pin --- */
+.fleet-chat-shape .lc-terminal-card {
+  cursor: pointer;
+}
+.fleet-chat-shape .lc-terminal-card:hover {
+  border-color: rgba(86, 156, 214, 0.4);
+}
+
 /* --- Lifecycle cards --- */
 .fleet-chat-shape .lifecycle-card {
   display: inline-block;
