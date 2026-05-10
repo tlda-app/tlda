@@ -1176,12 +1176,13 @@ async function handleFleetWsMessage(ws, msg) {
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
   function autoRespawnIfDead(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
-    if (!agent?.dead || !agent.friendly_name) return
+    if (!agent?.dead) return
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) return
-    sendRpc(machineIds[0], 'spawn', { name: agent.friendly_name, respawn: true })
-      .catch(e => console.warn(`[auto-respawn] failed for ${agent.friendly_name}: ${e.message}`))
-    console.log(`[auto-respawn] waking ${agent.friendly_name} (${agentId})`)
+    // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
+    sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
+      .catch(e => console.warn(`[auto-respawn] failed for ${agentId}: ${e.message}`))
+    console.log(`[auto-respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
   }
 
   if (type === 'chat') {

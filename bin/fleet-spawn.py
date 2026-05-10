@@ -262,62 +262,71 @@ def fresh_spawn(name, model, cwd, effort=None):
     return sess
 
 
-def derive_project_hash(cwd):
-    """Derive the Claude Code project hash from a cwd path.
-    Claude replaces / with - (the leading / becomes the leading -)."""
-    return cwd.replace("/", "-")
-
-
-def find_sessions_for_agent(fleet_id, cwd):
-    """Scan JSONLs in the Claude project dir for ones where this fleet_id
-    was the LAST agent to register. Uses structural matching (toolUseResult
-    containing 'Registered fleet:XXXX as agent') rather than raw string grep,
-    so mentions of the fleet ID in chat/logs don't cause false matches.
+def find_sessions_for_agent(fleet_id, session_id_hint=None):
+    """Find JSONL files for this agent.
+    Fast path: search ~/.claude/projects/*/<session_id_hint>.jsonl by filename —
+    no file reading, just directory listings across ~50 project dirs.
+    Fallback: scan all JSONL contents for ones where fleet_id was the last to register.
     Returns list of (session_id, mtime, fpath) sorted by mtime descending."""
-    import json, re
-    project_hash = derive_project_hash(cwd)
-    project_dir = os.path.expanduser(f"~/.claude/projects/{project_hash}")
-    if not os.path.isdir(project_dir):
-        return []
+    import glob as globmod, json, re
+    projects_base = os.path.expanduser("~/.claude/projects")
 
+    # Fast path: search by known session_id (from DB's session_id field)
+    if session_id_hint:
+        matches = globmod.glob(os.path.join(projects_base, "*", f"{session_id_hint}.jsonl"))
+        if matches:
+            results = []
+            for fpath in matches:
+                try:
+                    mtime = os.path.getmtime(fpath)
+                    results.append((session_id_hint, mtime, fpath))
+                except OSError:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[1], reverse=True)
+                return results
+
+    # Fallback: content scan across all project dirs
+    if not os.path.isdir(projects_base):
+        return []
     register_pattern = re.compile(r'Registered (fleet:\w+)')
     results = []
-    for fname in os.listdir(project_dir):
-        if not fname.endswith(".jsonl"):
+    for project_hash in os.listdir(projects_base):
+        project_dir = os.path.join(projects_base, project_hash)
+        if not os.path.isdir(project_dir):
             continue
-        fpath = os.path.join(project_dir, fname)
-        session_id = fname[:-6]  # strip .jsonl
-        try:
-            mtime = os.path.getmtime(fpath)
-        except OSError:
-            continue
-        # Parse JSONL entries looking for register() tool results.
-        # Track the last fleet ID that registered in this session.
-        last_registered_id = None
-        try:
-            with open(fpath, "r", errors="replace") as f:
-                for line in f:
-                    if "Registered fleet:" not in line:
-                        continue
-                    try:
-                        d = json.loads(line.strip())
-                        tur = d.get("toolUseResult")
-                        if not tur:
+        for fname in os.listdir(project_dir):
+            if not fname.endswith(".jsonl"):
+                continue
+            fpath = os.path.join(project_dir, fname)
+            sid = fname[:-6]
+            try:
+                mtime = os.path.getmtime(fpath)
+            except OSError:
+                continue
+            last_registered_id = None
+            try:
+                with open(fpath, "r", errors="replace") as f:
+                    for line in f:
+                        if "Registered fleet:" not in line:
                             continue
-                        items = tur if isinstance(tur, list) else [tur]
-                        for item in items:
-                            text = item.get("text", "") if isinstance(item, dict) else str(item)
-                            m = register_pattern.search(text)
-                            if m:
-                                last_registered_id = m.group(1)
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-        except OSError:
-            continue
-
-        if last_registered_id == fleet_id:
-            results.append((session_id, mtime, fpath))
-
+                        try:
+                            d = json.loads(line.strip())
+                            tur = d.get("toolUseResult")
+                            if not tur:
+                                continue
+                            items = tur if isinstance(tur, list) else [tur]
+                            for item in items:
+                                text = item.get("text", "") if isinstance(item, dict) else str(item)
+                                m = register_pattern.search(text)
+                                if m:
+                                    last_registered_id = m.group(1)
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+            except OSError:
+                continue
+            if last_registered_id == fleet_id:
+                results.append((sid, mtime, fpath))
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
@@ -331,7 +340,11 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
         sys.exit(1)
 
     agents = api_get("/api/store/agents")
-    agent = next((a for a in agents if a.get("friendly_name") == name), None)
+    # Accept either a friendly name or a fleet ID (e.g. "fleet:abc123") directly
+    if name.startswith("fleet:"):
+        agent = next((a for a in agents if a.get("id") == name), None)
+    else:
+        agent = next((a for a in agents if a.get("friendly_name") == name), None)
     if not agent:
         print(f"Error: No agent named '{name}' found.")
         print(f"Use --fresh to create a new agent: fleet-spawn --fresh {name}")
@@ -348,9 +361,8 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     model = resolve_model(model_override or (meta.get("model") if isinstance(meta, dict) else None) or DEFAULT_MODEL)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    # Find the most recent session by scanning JSONLs for this agent's fleet_id.
-    # This is the source of truth — not the DB's session_id field.
-    sessions = find_sessions_for_agent(fleet_id, cwd)
+    # Find JSONL: fast path uses session_id from DB, fallback does full content scan.
+    sessions = find_sessions_for_agent(fleet_id, agent.get("session_id"))
 
     if session_override:
         resume_id = session_override

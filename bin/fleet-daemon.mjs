@@ -546,11 +546,25 @@ function syncSessionWatchers(agentList) {
     let bestMtime = 0
     for (const sid of candidateIds) {
       if (otherAgentSessions.has(sid)) continue
-      const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+      let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+      let foundStat = null
       try {
-        const stat = fs.statSync(p)
-        if (stat.mtimeMs > bestMtime) { bestMtime = stat.mtimeMs; jsonlPath = p }
-      } catch {}
+        foundStat = fs.statSync(p)
+      } catch {
+        // Not in cwd-derived dir — global search across all project dirs.
+        // Needed when agent's JSONL is in a worktree-specific project dir
+        // that doesn't match the stripped canonical cwd.
+        try {
+          for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+            const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
+            try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
+          }
+        } catch {}
+      }
+      if (foundStat && foundStat.mtimeMs > bestMtime) {
+        bestMtime = foundStat.mtimeMs
+        jsonlPath = p
+      }
     }
     if (!jsonlPath) continue
 
@@ -1262,12 +1276,17 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'daemon-evict') {
-    const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
-    console.warn(`[daemon] evicted: ${msg.reason || 'unknown'}${replacedBy} — will reconnect`)
+    if (msg.replaced_by_boot_id) {
+      // Another live daemon took our slot — exit rather than loop-reconnecting.
+      console.warn(`[daemon] evicted by newer daemon (boot_id=${msg.replaced_by_boot_id}) — exiting`)
+      shutdown('evicted-by-newer-daemon')
+      return
+    }
+    // No replacement boot_id = server restarted and lost our connection.
+    // Reconnect — the daemon should survive server restarts.
+    console.warn(`[daemon] evicted (${msg.reason || 'unknown'}) — reconnecting`)
     teardownWatchers()
     try { ws.close() } catch {}
-    // Don't exit — reconnect. Server restarts cause transient evictions;
-    // the daemon should survive and re-register when the server is back.
     scheduleReconnect()
     return
   }
@@ -1339,6 +1358,19 @@ async function handleVersionCommitted(msg) {
 // ---------- lifecycle ----------
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+
+// Singleton check — only one daemon per machine at a time.
+try {
+  const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
+  if (existingPid && existingPid !== process.pid) {
+    try {
+      process.kill(existingPid, 0)  // signal 0 = existence check only
+      console.error(`[daemon] already running (pid=${existingPid}) — exiting`)
+      process.exit(0)
+    } catch { /* stale PID file — previous daemon is gone, continue */ }
+  }
+} catch { /* no PID file — first start, continue */ }
+
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
 function shutdown(signal) {
