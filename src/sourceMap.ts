@@ -35,35 +35,58 @@ let _loaded = false
 let _loading: Promise<void> | null = null
 
 /**
- * Load the source map for a document. Call once at document init.
+ * Load source maps for a document. For multi-target docs, fetches per-target
+ * source-maps and merges them with global page offsets. For single-target docs,
+ * fetches the bare source-map.json alias (which resolves to the primary target).
  */
-export function load(docName: string): Promise<void> {
+export function load(docName: string, targets?: Array<{ name: string; pages: number }>): Promise<void> {
   if (_loaded && _docName === docName) return Promise.resolve()
   if (_loading) return _loading
   _docName = docName
-  _loading = fetch(`/docs/${docName}/source-map.json`)
-    .then(r => {
-      if (!r.ok) throw new Error(`${r.status}`)
-      return r.json()
-    })
-    .then(data => {
-      // Labels
-      _labels = data.labels || []
+  _loading = (async () => {
+    try {
+      if (targets && targets.length > 1) {
+        // Multi-target: load each target's source-map and merge with page offsets
+        const allLabels: Label[] = []
+        const allPages: Record<string, PageEntry[]> = {}
+        let pageOffset = 0
+        for (const target of targets) {
+          try {
+            const r = await fetch(`/docs/${docName}/${target.name}-source-map.json`)
+            if (!r.ok) { pageOffset += target.pages; continue }
+            const data = await r.json()
+            for (const l of (data.labels || []) as Label[]) {
+              allLabels.push({ ...l, page: l.page + pageOffset })
+            }
+            for (const [pageStr, entries] of Object.entries(data.pages || {})) {
+              const globalPage = parseInt(pageStr) + pageOffset
+              allPages[String(globalPage)] = entries as PageEntry[]
+            }
+          } catch { /* skip failed target */ }
+          pageOffset += target.pages
+        }
+        _labels = allLabels
+        _pages = allPages
+      } else {
+        // Single-target or fallback: bare alias resolves to primary target's file
+        const r = await fetch(`/docs/${docName}/source-map.json`)
+        if (!r.ok) throw new Error(`${r.status}`)
+        const data = await r.json()
+        _labels = data.labels || []
+        _pages = data.pages || {}
+      }
       _labelsByName.clear()
       _labelsByNumber.clear()
       for (const l of _labels) {
         _labelsByName.set(l.label, l)
         if (l.number) _labelsByNumber.set(l.number, l)
       }
-      // Page index
-      _pages = data.pages || {}
       _loaded = true
-      const pageCount = Object.keys(_pages).length
-      console.log(`[sourceMap] Loaded: ${_labels.length} labels, ${pageCount} pages`)
-    })
-    .catch(e => {
-      console.warn(`[sourceMap] Failed to load source-map.json: ${e.message}`)
-    })
+      console.log(`[sourceMap] Loaded: ${_labels.length} labels, ${Object.keys(_pages).length} pages`)
+    } catch (e: any) {
+      console.warn(`[sourceMap] Failed to load: ${e.message}`)
+    }
+  })()
   return _loading
 }
 
