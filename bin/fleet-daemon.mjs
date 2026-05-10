@@ -736,7 +736,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     let parsed
     try { parsed = JSON.parse(line) } catch { continue }
     if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
-    const ts = parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+    const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
     if (!ts) continue
     const content = parsed.message?.content
     let text = ''
@@ -760,7 +760,7 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
       let parsed
       try { parsed = JSON.parse(line) } catch { continue }
       if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
-      const ts = parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+      const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
       if (!ts) continue
       const c = parsed.message?.content
       let text = ''
@@ -804,6 +804,19 @@ function readFileForUpload(fullPath) {
   return { content: data.toString('base64'), encoding: 'base64' }
 }
 
+function startPolling(state, rel) {
+  const full = path.join(state.sourceDir, rel)
+  if (!fs.existsSync(full)) return
+  fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
+    if (curr.mtimeMs === prev.mtimeMs) return
+    state.onFileChange(rel, true)
+  })
+}
+
+function stopPolling(state, rel) {
+  try { fs.unwatchFile(path.join(state.sourceDir, rel)) } catch {}
+}
+
 function syncSourceWatchers(projectList) {
   const activeNames = new Set()
   for (const p of projectList) {
@@ -811,36 +824,34 @@ function syncSourceWatchers(projectList) {
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
 
-    // watchFiles: the set of files the build actually reads (from .fls).
-    // If null (no prior build), fall back to just the main file.
+    // watchSet: relative paths the build reads (from .fls). Falls back to
+    // mainFile before the first build. Absolute paths derived via state.sourceDir.
     const watchSet = new Set(
-      p.watchFiles
-        ? p.watchFiles
-        : p.mainFile ? [p.mainFile] : []
+      p.watchFiles?.length ? p.watchFiles : p.mainFile ? [p.mainFile] : []
     )
 
-    // If watcher already exists, just update its watch set (the .fls
-    // may have changed after a build). Don't recreate the watcher.
     if (sourceWatchers.has(p.name)) {
       const existing = sourceWatchers.get(p.name)
+      // Add pollers for files newly in the set; remove pollers for files leaving.
+      for (const rel of existing.watchSet) if (!watchSet.has(rel)) stopPolling(existing, rel)
+      for (const rel of watchSet) if (!existing.watchSet.has(rel)) startPolling(existing, rel)
       existing.watchSet = watchSet
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, polledFiles: [] }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null }
 
-    // Handler shared by both fs.watch and fs.watchFile
+    // Reads state.watchSet dynamically so filtering stays current after updates.
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
-      if (watchSet.size > 0) {
-        if (!watchSet.has(filename)) return
+      if (state.watchSet.size > 0) {
+        if (!state.watchSet.has(filename)) return
       } else {
         if (!isSourceFile(filename)) return
       }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
       state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
-      // If the polling backup caught this, fs.watch is stale — recreate it
       if (fromPoll) {
         console.warn(`[daemon] fs.watch stale for ${p.name} — recreating`)
         try { state.watcher?.close() } catch {}
@@ -849,37 +860,23 @@ function syncSourceWatchers(projectList) {
         } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
       }
     }
+    state.onFileChange = onFileChange
 
     try {
-      // Primary: fs.watch (instant, kernel events — can go stale on macOS)
       state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => onFileChange(filename, false))
-
-      // Backup: fs.watchFile on each watched file (polling, never goes stale)
-      const filesToPoll = watchSet.size > 0 ? [...watchSet] : (p.mainFile ? [p.mainFile] : [])
-      for (const rel of filesToPoll) {
-        const full = path.join(p.sourceDir, rel)
-        if (!fs.existsSync(full)) continue
-        fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
-          if (curr.mtimeMs === prev.mtimeMs) return
-          onFileChange(rel, true)
-        })
-        state.polledFiles.push(full)
-      }
+      for (const rel of watchSet) startPolling(state, rel)
 
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched, ${state.polledFiles.length} polled)`)
-
-      // On connect, push only the watched files (not the whole directory).
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files)`)
       pushWatchedFiles(p.name, p.sourceDir, watchSet)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
     }
   }
-  // Stop watching projects we no longer own.
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
       try { state.watcher?.close() } catch {}
-      for (const f of (state.polledFiles || [])) fs.unwatchFile(f)
+      for (const rel of state.watchSet) stopPolling(state, rel)
       sourceWatchers.delete(name)
     }
   }
@@ -1242,7 +1239,10 @@ function teardownWatchers() {
   for (const [, pw] of pathWatchers) { try { pw.watcher.close() } catch {} }
   pathWatchers.clear()
   agentPaths.clear()
-  for (const [, s] of sourceWatchers) { try { s.watcher.close() } catch {} }
+  for (const [, s] of sourceWatchers) {
+    try { s.watcher?.close() } catch {}
+    for (const rel of (s.watchSet || [])) stopPolling(s, rel)
+  }
   sourceWatchers.clear()
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
