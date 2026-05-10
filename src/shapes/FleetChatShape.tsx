@@ -181,20 +181,15 @@ function TerminalHoverPane({ agentId, pinned, onPin, onDismiss, onMouseEnter, on
 
   const handleResizePointerDown = (e: React.PointerEvent) => {
     stopEventPropagation(e)
-    e.currentTarget.setPointerCapture(e.pointerId)
     dragRef.current = { startY: e.clientY, startH: height }
-    const onMove = (ev: PointerEvent) => {
-      if (!dragRef.current) return
-      const delta = ev.clientY - dragRef.current.startY
-      setHeight(Math.max(100, dragRef.current.startH + delta))
-    }
-    const onUp = () => {
-      dragRef.current = null
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
+    dragCoordinator.claim(
+      (ev) => {
+        if (!dragRef.current) return
+        const delta = ev.clientY - dragRef.current.startY
+        setHeight(Math.max(100, dragRef.current.startH + delta))
+      },
+      () => { dragRef.current = null },
+    )
   }
 
   const shortId = agentId.replace('fleet:', '')
