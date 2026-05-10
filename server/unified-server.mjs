@@ -1172,6 +1172,18 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // Respawn a dead agent when a message is directed at them.
+  // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
+  function autoRespawnIfDead(agentId) {
+    const agent = fleetStore.getAgent?.(agentId)
+    if (!agent?.dead || !agent.friendly_name) return
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) return
+    sendRpc(machineIds[0], 'spawn', { name: agent.friendly_name, respawn: true })
+      .catch(e => console.warn(`[auto-respawn] failed for ${agent.friendly_name}: ${e.message}`))
+    console.log(`[auto-respawn] waking ${agent.friendly_name} (${agentId})`)
+  }
+
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
@@ -1244,6 +1256,7 @@ async function handleFleetWsMessage(ws, msg) {
     reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
     const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
     broadcastEvent('fleet-event', inserted)
+    autoRespawnIfDead(to)
     return
   }
 
@@ -1315,6 +1328,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
+    autoRespawnIfDead(resolved.id)
     return
   }
 
@@ -2268,4 +2282,24 @@ server.listen(PORT, HOST, () => {
   console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
+
+  // Idle-hibernation: kill tmux panes for agents that haven't been seen in a while.
+  // The process dies, RAM is freed. Auto-respawn fires when anyone next messages them.
+  const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
+  setInterval(() => {
+    if (!fleetStore) return
+    const cutoff = new Date(Date.now() - IDLE_HIBERNATE_MS).toISOString()
+    const idle = fleetStore.db.prepare(
+      "SELECT * FROM agents WHERE dead = 0 AND human = 0 AND last_seen < ? AND tmux_session IS NOT NULL"
+    ).all(cutoff)
+    for (const agent of idle) {
+      const machineIds = [...daemonConnections.keys()]
+      if (machineIds.length === 0) continue
+      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing`)
+      sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+        .catch(() => {})
+      fleetStore.markDead(agent.id)
+    }
+    if (idle.length > 0) broadcastState()
+  }, 5 * 60 * 1000).unref()  // check every 5 minutes
 })

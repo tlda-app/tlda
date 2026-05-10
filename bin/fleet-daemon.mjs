@@ -1063,7 +1063,7 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 // Periodically check if agents' claude processes are still running.
 // If not, mark them dead on the server and kill orphan tmux sessions.
 let _deathCheckInterval = null
-const DEATH_CHECK_MS = 30_000  // check every 30s
+const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
 async function checkAgentLiveness() {
   if (!agents.length) return
@@ -1089,12 +1089,12 @@ async function checkAgentLiveness() {
     }
 
     // Tmux exists — check if a claude process is running in it
+    let claudeAlive = false
     try {
       const { stdout } = await execFileP('tmux',
         ['list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
         { timeout: 3000, encoding: 'utf8' })
       const panePids = stdout.trim().split('\n').filter(Boolean)
-      let claudeAlive = false
       for (const pid of panePids) {
         try {
           const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
@@ -1102,16 +1102,18 @@ async function checkAgentLiveness() {
           if (children.trim()) { claudeAlive = true; break }
         } catch {}  // pgrep exits non-zero when no match
       }
-      if (!claudeAlive) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
-        try {
-          await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-        } catch {}
-        // Kill the orphan tmux session
-        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
-        agent.dead = true
-      }
     } catch {}
+
+    if (!claudeAlive) {
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
+      try {
+        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
+      } catch {}
+      try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+      agent.dead = true
+      continue
+    }
+
   }
 }
 
