@@ -110,7 +110,11 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const DAEMON_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+const DAEMON_SCRIPT = (() => {
+  const d = dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  return m ? join(m[1], 'bin', 'fleet-daemon.mjs') : join(d, '..', 'bin', 'fleet-daemon.mjs')
+})()
 // Crash-loop guard: if the daemon dies fast >= MAX_RAPID_RESPAWNS times in a
 // row, give up until manual intervention. The supervisor would otherwise
 // hot-loop and burn CPU + log spam if the daemon has a startup crash.

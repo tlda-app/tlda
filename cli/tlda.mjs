@@ -550,6 +550,11 @@ async function cmdPush() {
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const _cliDir = dirname(fileURLToPath(import.meta.url))
+const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
+const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
+  : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -560,7 +565,7 @@ async function ensureFleetDaemonRunning() {
     const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
     try { process.kill(pid, 0); return } catch {} // stale pid → fall through
   }
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
   if (!existsSync(daemonScript)) return // not installed; silently skip
   const { spawn: cpSpawn } = await import('child_process')
   const { openSync: fsOpenSync } = await import('fs')
@@ -582,7 +587,7 @@ async function ensureFleetDaemonRunning() {
 }
 
 async function cmdFleetWatch(sub) {
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
 
   if (sub === 'stop') {
     if (existsSync(FLEET_DAEMON_PIDFILE)) {
