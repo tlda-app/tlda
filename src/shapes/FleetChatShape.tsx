@@ -1898,6 +1898,78 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
+  // Unquote context menu: right-click on <code> spans inside chat messages
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function matchesUnquotePattern(text: string): boolean {
+      if (!text || text.length > 500) return false
+      // URLs (http/https)
+      if (/^https?:\/\/\S+/.test(text)) return true
+      // Absolute paths starting with /
+      if (/^\/\S+/.test(text)) return true
+      // Home-dir paths
+      if (/^~\/\S+/.test(text)) return true
+      // Relative .md paths (word/path.md)
+      if (/^[\w.-]+(?:\/[\w.-]+)+\.md$/.test(text)) return true
+      return false
+    }
+
+    let menu: HTMLElement | null = null
+
+    function dismissMenu() {
+      menu?.remove()
+      menu = null
+    }
+
+    function onContextMenu(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      const codeEl = target.closest('code') as HTMLElement | null
+      if (!codeEl) { dismissMenu(); return }
+      if (!codeEl.closest('.chat-line')) { dismissMenu(); return }
+
+      const text = codeEl.textContent || ''
+      if (!matchesUnquotePattern(text)) { dismissMenu(); return }
+
+      e.preventDefault()
+      e.stopPropagation()
+      dismissMenu()
+
+      const m = document.createElement('div')
+      m.className = 'unquote-context-menu'
+      m.style.left = `${e.clientX}px`
+      m.style.top = `${e.clientY}px`
+      const item = document.createElement('div')
+      item.className = 'unquote-menu-item'
+      item.textContent = 'Unquote'
+      item.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        dismissMenu()
+        const rendered = renderMarkdownUtil(esc(text))
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = rendered
+        codeEl.replaceWith(...Array.from(wrapper.childNodes))
+      })
+      m.appendChild(item)
+      document.body.appendChild(m)
+      menu = m
+
+      // Dismiss on outside click or escape
+      const onOutside = (ev: MouseEvent) => {
+        if (!m.contains(ev.target as Node)) { dismissMenu(); document.removeEventListener('click', onOutside, true) }
+      }
+      const onKey = (ev: KeyboardEvent) => {
+        if (ev.key === 'Escape') { dismissMenu(); document.removeEventListener('keydown', onKey) }
+      }
+      setTimeout(() => document.addEventListener('click', onOutside, true), 0)
+      document.addEventListener('keydown', onKey)
+    }
+
+    logEl.addEventListener('contextmenu', onContextMenu)
+    return () => { logEl.removeEventListener('contextmenu', onContextMenu); dismissMenu() }
+  }, [])
+
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
   // synthetic keydown for Escape, so we attach directly at the target element.
   // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
