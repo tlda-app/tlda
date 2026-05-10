@@ -1541,9 +1541,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0;
   transition: opacity 0.2s;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 14px;
   flex-shrink: 0;
-  width: 12px;
+  width: 18px;
   text-align: center;
   background: none;
   border: none;

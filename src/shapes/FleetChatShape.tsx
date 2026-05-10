@@ -2873,8 +2873,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             >
               <svg
                 width="10"
-                height={hardLocked ? 14 : 10}
-                viewBox={`0 0 10 ${hardLocked ? 14 : 10}`}
+                height="14"
+                viewBox="0 0 10 14"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth="1.5"
@@ -3166,7 +3166,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     })
                   }
                   sendWithRetry(1)
-                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
+                })
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
@@ -3204,14 +3204,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                     })
                   }
                   sendWithRetry(1)
-                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
+                })
               }}
               style={{
                 width: '100%',
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px',
+                padding: '4px 8px 4px 22px',
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
