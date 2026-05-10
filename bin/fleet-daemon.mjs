@@ -589,11 +589,17 @@ function syncSessionWatchers(agentList) {
     let offset
     if (stored && stored.inode === inode) {
       offset = Math.min(stored.offset, stat.size)
+      // Backfill search index if not done yet for this session.
+      if (!stored.searchBackfilled) {
+        stored.searchBackfilled = true
+        scheduleCursorSave()
+        backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      }
     } else {
       // New file (or rotated): start at EOF for activity cards, but backfill
       // all historical content to the search index.
       offset = stat.size
-      cursors[sessionId] = { inode, offset }
+      cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
       backfillSearchEntries(agent.id, jsonlPath, sessionId)
     }
