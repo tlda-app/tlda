@@ -2308,8 +2308,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* Terminal hover pane — read-only terminal peek, floats below input area */
-.fleet-terminal-hover-pane {
-  /* position, top, left, width, height all set via inline style (portaled to body) */
+.fleet-chat-shape .fleet-terminal-hover-pane {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  /* height is set via inline style from React state */
   background: rgba(13, 13, 20, 0.96);
   border: 1px solid rgba(80, 80, 110, 0.35);
   border-radius: 0 0 4px 4px;
@@ -2323,7 +2327,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   -webkit-backdrop-filter: blur(4px);
 }
 
-.fleet-terminal-hover-header {
+.fleet-chat-shape .fleet-terminal-hover-header {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -2334,7 +2338,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   min-height: 18px;
 }
 
-.fleet-terminal-hover-title {
+.fleet-chat-shape .fleet-terminal-hover-title {
   flex: 1;
   color: rgba(168, 168, 192, 0.6);
   font-size: 9px;
@@ -2343,18 +2347,18 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   white-space: nowrap;
 }
 
-.fleet-terminal-hover-status {
+.fleet-chat-shape .fleet-terminal-hover-status {
   color: rgba(168, 168, 192, 0.4);
   font-size: 9px;
   flex-shrink: 0;
 }
 
-.fleet-terminal-hover-status.error {
+.fleet-chat-shape .fleet-terminal-hover-status.error {
   color: rgba(228, 85, 85, 0.7);
 }
 
-.fleet-terminal-hover-pin,
-.fleet-terminal-hover-close {
+.fleet-chat-shape .fleet-terminal-hover-pin,
+.fleet-chat-shape .fleet-terminal-hover-close {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2369,16 +2373,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: color 0.15s;
 }
 
-.fleet-terminal-hover-pin:hover,
-.fleet-terminal-hover-close:hover {
+.fleet-chat-shape .fleet-terminal-hover-pin:hover,
+.fleet-chat-shape .fleet-terminal-hover-close:hover {
   color: rgba(168, 168, 192, 0.8);
 }
 
-.fleet-terminal-hover-pin.active {
+.fleet-chat-shape .fleet-terminal-hover-pin.active {
   color: rgba(120, 160, 240, 0.8);
 }
 
-.fleet-terminal-hover-body {
+.fleet-chat-shape .fleet-terminal-hover-body {
   flex: 1;
   min-height: 0;
   padding: 2px;
@@ -2386,16 +2390,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   box-sizing: border-box;
 }
 
-.fleet-terminal-hover-body .xterm {
+.fleet-chat-shape .fleet-terminal-hover-body .xterm {
   height: 100%;
 }
 
 /* Peek mode: no scroll. Pinned mode: allow scroll. */
-.fleet-terminal-hover-pane:not(.fleet-terminal-hover-pane-pinned) .fleet-terminal-hover-body .xterm-viewport {
+.fleet-chat-shape .fleet-terminal-hover-pane:not(.fleet-terminal-hover-pane-pinned) .fleet-terminal-hover-body .xterm-viewport {
   overflow-y: hidden !important;
 }
 
-.fleet-terminal-hover-input-bar {
+.fleet-chat-shape .fleet-terminal-hover-input-bar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2405,13 +2409,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   flex-shrink: 0;
 }
 
-.fleet-terminal-hover-prompt {
+.fleet-chat-shape .fleet-terminal-hover-prompt {
   color: rgba(100, 200, 120, 0.7);
   font-size: 9px;
   flex-shrink: 0;
 }
 
-.fleet-terminal-hover-input {
+.fleet-chat-shape .fleet-terminal-hover-input {
   flex: 1;
   background: none;
   border: none;
@@ -2422,11 +2426,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 0;
 }
 
-.fleet-terminal-hover-input::placeholder {
+.fleet-chat-shape .fleet-terminal-hover-input::placeholder {
   color: rgba(168, 168, 192, 0.25);
 }
 
-.fleet-terminal-hover-ctrl-c {
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c {
   background: none;
   border: none;
   padding: 1px 4px;
@@ -2438,11 +2442,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: color 0.15s;
 }
 
-.fleet-terminal-hover-ctrl-c:hover {
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c:hover {
   color: rgba(228, 85, 85, 0.7);
 }
 
-.fleet-terminal-hover-resize-handle {
+.fleet-chat-shape .fleet-terminal-hover-resize-handle {
   height: 4px;
   cursor: ns-resize;
   background: rgba(80, 80, 110, 0.15);
@@ -2450,7 +2454,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: background 0.15s;
 }
 
-.fleet-terminal-hover-resize-handle:hover {
+.fleet-chat-shape .fleet-terminal-hover-resize-handle:hover {
   background: rgba(120, 160, 240, 0.3);
 }
 
