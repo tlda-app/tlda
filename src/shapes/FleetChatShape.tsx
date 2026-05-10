@@ -54,10 +54,9 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
-function TerminalHoverPane({ agentId, pinned, onPin, onDismiss, onMouseEnter, onMouseLeave }: {
+function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
   pinned: boolean
-  onPin: () => void
   onDismiss: () => void
   onMouseEnter: () => void
   onMouseLeave: () => void
@@ -211,18 +210,6 @@ function TerminalHoverPane({ agentId, pinned, onPin, onDismiss, onMouseEnter, on
         <span className="fleet-terminal-hover-title">{shortId}</span>
         {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
         {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
-        <button
-          className={`fleet-terminal-hover-pin${pinned ? ' active' : ''}`}
-          title={pinned ? 'Unpin terminal' : 'Pin terminal open'}
-          onPointerDown={stopEventPropagation}
-          onClick={(e) => { stopEventPropagation(e as any); onPin() }}
-        >
-          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <line x1="5" y1="1" x2="5" y2="7" />
-            <line x1="3" y1="3" x2="7" y2="3" />
-            <line x1="4" y1="9" x2="6" y2="9" />
-          </svg>
-        </button>
         {pinned && (
           <button
             className="fleet-terminal-hover-close"
@@ -2726,7 +2713,6 @@ function FleetChatInner({ shape }: { shape: any }) {
             <TerminalHoverPane
               agentId={hoverTargetAgentId}
               pinned={termHoverPinned}
-              onPin={() => setTermHoverPinned(p => !p)}
               onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
@@ -2776,8 +2762,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
             {hoverTargetAgentId && (
               <button
-                className="fleet-terminal-icon"
+                className={`fleet-terminal-icon${termHoverPinned ? ' active' : ''}`}
                 onPointerDown={stopEventPropagation}
+                onClick={(e) => {
+                  stopEventPropagation(e as any)
+                  setTermHoverPinned(p => !p)
+                  setTermHoverVisible(true)
+                }}
                 onMouseEnter={() => {
                   if (termHideTimerRef.current) {
                     clearTimeout(termHideTimerRef.current)
@@ -2790,7 +2781,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
                   }
                 }}
-                title="Peek at terminal output"
+                title={termHoverPinned ? 'Click to unpin terminal' : 'Hover to peek · click to pin'}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="1" y="1" width="8" height="8" rx="1.5"/>
