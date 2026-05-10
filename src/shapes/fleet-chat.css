@@ -2307,17 +2307,17 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.55;
 }
 
-/* Terminal hover pane — read-only terminal peek, floats above input area */
+/* Terminal hover pane — read-only terminal peek, floats below input area */
 .fleet-chat-shape .fleet-terminal-hover-pane {
   position: absolute;
-  bottom: 100%;
+  top: 100%;
   left: 0;
   right: 0;
-  height: 130px;
+  height: 210px;
   background: rgba(13, 13, 20, 0.96);
   border: 1px solid rgba(80, 80, 110, 0.35);
-  border-radius: 4px 4px 0 0;
-  border-bottom: none;
+  border-radius: 0 0 4px 4px;
+  border-top: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;

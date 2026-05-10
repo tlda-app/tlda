@@ -10,6 +10,7 @@ import {
   defaultBindingUtils,
   HighlightShapeUtil,
 } from 'tldraw'
+import { Circle2d } from '@tldraw/editor'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
@@ -818,10 +819,35 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
-    // it draws a blue path outline that competes with our text glow effect
+    // it draws a blue path outline that competes with our text glow effect.
+    // Also guards against crashes when a highlight shape has empty segments:
+    // TLDraw's HighlightRenderer and getGeometry both crash with TypeError when
+    // there are no drawing points — getShapeDot(undefined) and getStrokeOutlinePoints([])
+    // both access undefined.x / undefined.runningLength respectively.
+    // This can happen when a shape is created in a transient state (e.g. via the
+    // native color picker interaction) before drawing data has been added.
     class QuietHighlightShapeUtil extends HighlightShapeUtil {
+      private static hasPoints(shape: any): boolean {
+        return shape.props.segments?.some((s: any) => s.points?.length > 0)
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       override indicator() { return null as any }
+      override getGeometry(shape: any) {
+        if (!QuietHighlightShapeUtil.hasPoints(shape)) {
+          return new Circle2d({ x: 0, y: 0, radius: 0.1, isFilled: false })
+        }
+        return super.getGeometry(shape)
+      }
+      override component(shape: any) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (!QuietHighlightShapeUtil.hasPoints(shape)) return null as any
+        return super.component(shape)
+      }
+      override backgroundComponent(shape: any) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (!QuietHighlightShapeUtil.hasPoints(shape)) return null as any
+        return super.backgroundComponent(shape)
+      }
     }
     const utils = defaultShapeUtils.map(u =>
       u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
