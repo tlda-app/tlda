@@ -5,6 +5,8 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
+export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
+
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
   for (const id of ids) {
@@ -16,9 +18,10 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
 
 /**
  * Nuke all fleet shapes and recreate the default 3-column layout.
- * Also clears the HUD position override and proxy shape so a wedged HUD
- * (off-canvas, broken size, etc.) gets fully reset. This is the
- * emergency-recovery escape hatch from any layout-mode mess.
+ * Also creates the HUD anchor shape (shape:fleet-hud-anchor) encoding the
+ * desired screen position of the fleet overlay. The anchor replaces the old
+ * localStorage panOffset/cameraY system — it's an invisible 1×1 geo shape
+ * whose page coordinates are updated by FleetHUD to track camera changes.
  *
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
@@ -31,19 +34,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
-
-  // Clear HUD position override so the wrap reverts to auto-layout. Without
-  // this the HUD might still render at a wedged position even after the
-  // shapes are recreated.
-  try { localStorage.removeItem('fleet-hud-override') } catch {}
-  // Force a global reload of the FleetHUD's hudOverride state. The simplest
-  // signal: dispatch a custom event the FleetHUD listens for. We also nuke
-  // any leftover proxy shape from a half-finished layout-mode entry.
-  try {
-    const proxy = editor.getCurrentPageShapes().find(s => s.id === 'shape:fleet-hud-proxy')
-    if (proxy) editor.deleteShape(proxy.id)
-  } catch {}
-  try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
 
   // Fall back to most-recently-active agents only if no existing filter to restore
   const humanId = getHumanId()
@@ -188,19 +178,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     // Split L/R: left margin has agents+search + wide chat (3/4) + docview (1/4).
     // Right margin has a wide chat (full height). Chats are 1.5x wider than 3-col.
     const chatWide = Math.round(chatW3 * 1.5) // 615
-    // The left group right edge (in page coords) is what the overlay camera
-    // uses to compute its X offset. We need to place the right-margin chat
-    // at a page X such that, under the overlay camera, it appears at the
-    // right edge of the screen.
-    //
-    // Overlay camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRightEdge
-    // where leftGroupRightEdge = anchorX + leftW + gap + chatWide
-    // Screen position of right chat = rightChatPageX + camX
-    // We want it at: screenW - chatWide - MARGIN_GAP
-    //
-    // So: rightChatPageX = (screenW - chatWide - MARGIN_GAP) - camX
-    //   = (screenW - chatWide - MARGIN_GAP) - (docLeftScreen - MARGIN_GAP - leftGroupRight)
-    //   = screenW - chatWide - docLeftScreen + leftGroupRight
     const leftGroupRight = anchorX + leftW + gap + chatWide
     const MARGIN_GAP = 20
     // Find document right edge on screen to position the right-margin chat
@@ -222,10 +199,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       }
       docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
     }
-    // Camera X will be: docLeftScreen - MARGIN_GAP - leftGroupRight
-    // Right chat screen position = rightChatX + camX
-    // We want right chat left edge at: docRightScreen + MARGIN_GAP
-    // So: rightChatX = docRightScreen + MARGIN_GAP - camX
     const camX = docLeftScreen - MARGIN_GAP - leftGroupRight
     const rightChatX = docRightScreen + MARGIN_GAP - camX
 
@@ -257,7 +230,91 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   }
   editor.createShapes(shapes)
 
+  // Create/update the HUD anchor shape encoding the desired fleet overlay position.
+  // The anchor is an invisible 1×1 geo shape. Its page coordinates are updated by
+  // FleetHUD on camera changes to keep pageToScreen(anchor) constant — which keeps
+  // the overlay at a fixed screen position. On reload, Yjs restores the anchor and
+  // the correct overlayCam is derived without any localStorage/delta accumulation.
+  _createHudAnchor(editor, anchorX, anchorY, pageShapes)
+
   // Don't center the main canvas on fleet shapes — that disrupts the user's
   // document position. The HUD overlay handles fleet shape visibility
   // independently via its own camera.
+}
+
+/**
+ * Create or update the HUD anchor shape at the correct position for the current layout.
+ * The anchor's pageToScreen() gives the desired screen position of fleetBounds.x (left
+ * clip edge of the overlay). FleetHUD derives overlayCam from it:
+ *   overlayCam.x = pageToScreen(anchor).x - fleetBounds.x
+ *   overlayCam.y = pageToScreen(anchor).y - fleetBounds.y
+ */
+function _createHudAnchor(editor: Editor, fleetAnchorX: number, fleetAnchorY: number, pageShapes: any[]) {
+  const cam = editor.getCamera()
+  const PAD = 20
+  const MARGIN_GAP = 20
+  const TOP_PAD = 80
+
+  // fleetBounds.x = fleetAnchorX - PAD (the left clip edge including padding)
+  const fleetBoundsX = fleetAnchorX - PAD
+  const fleetBoundsY = fleetAnchorY - PAD
+
+  // Compute the desired overlayCam.x using the same logic as the old FleetHUD init:
+  // the right edge of the left fleet group sits MARGIN_GAP px left of the document.
+  let overlayCamX: number
+  if (pageShapes.length > 0) {
+    let minPageX = Infinity
+    for (const ps of pageShapes) {
+      const b = editor.getShapePageBounds(ps.id)
+      if (b && b.x < minPageX) minPageX = b.x
+    }
+    const docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
+    // Compute leftGroupRight from fleet shapes (variant-agnostic)
+    const fleetShapes = editor.getCurrentPageShapes()
+      .filter(s => ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'].includes(s.type as string))
+    let leftGroupRight = fleetBoundsX + (editor.getShapePageBounds(fleetShapes[0]?.id)?.w ?? 1000) + PAD
+    if (fleetShapes.length > 0) {
+      const rights = fleetShapes.map(s => {
+        const b = editor.getShapePageBounds(s.id)
+        return b ? b.x + b.w : 0
+      }).sort((a, b) => a - b)
+      // Left group = shapes whose right edge is within 1500px of the leftmost fleet shape
+      const leftGroupShapes = rights.filter(r => r - fleetBoundsX < 1500)
+      if (leftGroupShapes.length > 0) leftGroupRight = Math.max(...leftGroupShapes)
+    }
+    overlayCamX = docLeftScreen - MARGIN_GAP - leftGroupRight
+  } else {
+    // No page shapes yet — place fleet group centered in viewport
+    overlayCamX = 0
+  }
+
+  // overlayCam.y: fleet group top at TOP_PAD on screen
+  const overlayCamY = TOP_PAD - fleetBoundsY
+
+  // TLDraw: screenX = (pageX + cam.x) * cam.z  →  pageX = screenX / cam.z - cam.x
+  const anchorScreenX = overlayCamX + fleetBoundsX
+  const anchorScreenY = overlayCamY + fleetBoundsY  // = TOP_PAD
+  const anchorShapeX = anchorScreenX / cam.z - cam.x
+  const anchorShapeY = anchorScreenY / cam.z - cam.y
+
+  const existing = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+  if (existing) {
+    editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+    editor.updateShape({
+      id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: true,
+      x: anchorShapeX, y: anchorShapeY,
+      meta: { cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z },
+    })
+  } else {
+    editor.createShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      x: anchorShapeX,
+      y: anchorShapeY,
+      opacity: 0,
+      isLocked: true,
+      meta: { cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z },
+      props: { w: 1, h: 1, geo: 'rectangle' },
+    })
+  }
 }
