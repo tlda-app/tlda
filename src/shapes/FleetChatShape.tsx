@@ -2350,17 +2350,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
           </button>
-          <button
-            className={`fleet-hardlock-btn${hardLocked ? ' active' : ''}`}
-            onPointerDown={stopEventPropagation}
-            onClick={(e) => {
-              stopEventPropagation(e)
-              setHardLocked(prev => !prev)
-            }}
-            title={hardLocked ? 'Hard-locked to bottom — click for smart scroll' : 'Smart scroll — click to hard-lock'}
-          >
-            ⏬
-          </button>
         </div>
 
         {/* Filter editor — full overlay showing DNF expression */}
@@ -2451,9 +2440,36 @@ function FleetChatInner({ shape }: { shape: any }) {
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Hard-lock scroll toggle — magnet icon, left of textarea */}
+            <button
+              className="fleet-hardlock-toggle"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                setHardLocked(prev => !prev)
+              }}
+              title={hardLocked ? 'Hard-locked scroll — click for smart scroll' : 'Smart scroll — click to hard-lock'}
+            >
+              <svg
+                width="10"
+                height={hardLocked ? 14 : 10}
+                viewBox={`0 0 10 ${hardLocked ? 14 : 10}`}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
+                {hardLocked && <>
+                  <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
+                  <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
+                </>}
+              </svg>
+            </button>
             <textarea
               ref={inputRef as any}
-              placeholder={sendTargets.length > 0 ? `→ ${sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(', ')}` : ''}
+              placeholder=""
               rows={1}
               autoCorrect="off"
               autoCapitalize="off"
@@ -2758,7 +2774,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px',
+                padding: '4px 8px 4px 20px',
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
