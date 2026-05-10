@@ -2277,6 +2277,94 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.55;
 }
 
+/* Terminal peek icon — same family as magnet, positioned just right of it */
+.fleet-chat-shape .fleet-terminal-icon {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-terminal-icon:hover {
+  opacity: 0.55;
+}
+
+/* Terminal hover pane — read-only terminal peek, floats above input area */
+.fleet-chat-shape .fleet-terminal-hover-pane {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 130px;
+  background: rgba(13, 13, 20, 0.96);
+  border: 1px solid rgba(80, 80, 110, 0.35);
+  border-radius: 4px 4px 0 0;
+  border-bottom: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 50;
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  background: rgba(20, 20, 30, 0.8);
+  border-bottom: 1px solid rgba(80, 80, 110, 0.2);
+  flex-shrink: 0;
+  min-height: 18px;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-title {
+  flex: 1;
+  color: rgba(168, 168, 192, 0.6);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status {
+  color: rgba(168, 168, 192, 0.4);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status.error {
+  color: rgba(228, 85, 85, 0.7);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body {
+  flex: 1;
+  min-height: 0;
+  padding: 2px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body .xterm {
+  height: 100%;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body .xterm-viewport {
+  overflow-y: hidden !important;
+}
+
 /* --- Fleet DocView shape --- */
 /* Suppress tldraw hover/selection indicators on ALL shapes in the HUD */
 .fleet-hud .clip-panel-canvas .tl-shape-indicator { display: none !important; }

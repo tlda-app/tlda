@@ -35,6 +35,8 @@ import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, r
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
+import { Terminal } from 'xterm'
+import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import './fleet-chat.css'
@@ -42,6 +44,112 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+
+// ---- Terminal hover pane ----
+
+const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
+  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  : 'ws://localhost:5176'
+
+// Read-only terminal peek overlay — shown when hovering the terminal icon on a chat shape.
+// Mounts xterm.js + WebSocket when visible, cleans up on unmount.
+// No input bar — this is strictly a peek, not an interaction surface.
+function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
+  agentId: string
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+
+  useEffect(() => {
+    if (!containerRef.current) return
+    const term = new Terminal({
+      fontSize: 10,
+      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d0d14',
+        foreground: '#c8c8d8',
+        cursor: '#c8c8d8',
+        black: '#1e1e1e', brightBlack: '#555',
+        red: '#f44747', brightRed: '#f44747',
+        green: '#6a9955', brightGreen: '#6a9955',
+        yellow: '#dcdcaa', brightYellow: '#dcdcaa',
+        blue: '#569cd6', brightBlue: '#569cd6',
+        magenta: '#c678dd', brightMagenta: '#c678dd',
+        cyan: '#4ec9b0', brightCyan: '#4ec9b0',
+        white: '#d4d4d4', brightWhite: '#ffffff',
+      },
+      scrollback: 0,
+      convertEol: true,
+      cursorBlink: false,
+      disableStdin: true,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(containerRef.current)
+    requestAnimationFrame(() => { try { fit.fit() } catch {} })
+    termRef.current = term
+    fitRef.current = fit
+    return () => {
+      term.dispose()
+      termRef.current = null
+      fitRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!agentId) return
+    wsRef.current?.close()
+    setStatus('connecting')
+    const ws = new WebSocket(`${TERM_HOVER_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    wsRef.current = ws
+    ws.onopen = () => {
+      setStatus('connected')
+      try { fitRef.current?.fit() } catch {}
+    }
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data)
+        if (msg.type === 'output' && msg.data && termRef.current) {
+          termRef.current.reset()
+          termRef.current.write(msg.data)
+        } else if (msg.type === 'error') {
+          setStatus('error')
+        }
+      } catch {}
+    }
+    ws.onerror = () => setStatus('error')
+    ws.onclose = () => {}
+    return () => { ws.close() }
+  }, [agentId])
+
+  const shortId = agentId.replace('fleet:', '')
+
+  return (
+    <div
+      className="fleet-terminal-hover-pane"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onPointerDown={stopEventPropagation}
+      onPointerMove={stopEventPropagation}
+    >
+      <div className="fleet-terminal-hover-header">
+        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ opacity: 0.5, flexShrink: 0 }}>
+          <polyline points="2,2 5,5 8,2" />
+          <line x1="2" y1="8" x2="8" y2="8" />
+        </svg>
+        <span className="fleet-terminal-hover-title">{shortId}</span>
+        {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
+        {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
+      </div>
+      <div ref={containerRef} className="fleet-terminal-hover-body" />
+    </div>
+  )
+}
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
 // where path is relative to the dropped folder root (e.g. "figures/foo.png")
@@ -1378,6 +1486,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     hardLockedRef.current = hardLocked
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
+  const [termHoverVisible, setTermHoverVisible] = useState(false)
+  const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
@@ -1767,6 +1877,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     return [...seen]
   }, [filterKey])
   sendTargetsRef.current = sendTargets
+
+  // Resolve the first send target to a fleet ID with an active tmux_session.
+  // The terminal icon is hidden when this is null.
+  const hoverTargetAgentId = useMemo(() => {
+    for (const label of sendTargets) {
+      const fleetId = label.startsWith('fleet:') ? label
+        : agents.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))?.id || label
+      const agent = agents.find((a: any) => a.id === fleetId)
+      if (agent?.tmux_session && !agent?.dead) return fleetId
+    }
+    return null
+  }, [sendTargets, agents])
 
   // Detect impossible filter: filter is set but no AND group can match any known agent
   const isImpossibleFilter = useMemo(() => {
@@ -2456,6 +2578,19 @@ function FleetChatInner({ shape }: { shape: any }) {
             position: 'relative',
           }}
         >
+          {/* Terminal hover pane — floats above the input area when the terminal icon is hovered */}
+          {termHoverVisible && hoverTargetAgentId && (
+            <TerminalHoverPane
+              agentId={hoverTargetAgentId}
+              onMouseEnter={() => {
+                if (termHideTimerRef.current) {
+                  clearTimeout(termHideTimerRef.current)
+                  termHideTimerRef.current = null
+                }
+              }}
+              onMouseLeave={() => setTermHoverVisible(false)}
+            />
+          )}
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
@@ -2492,6 +2627,30 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </>}
               </svg>
             </button>
+            {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
+            {hoverTargetAgentId && (
+              <button
+                className="fleet-terminal-icon"
+                onPointerDown={stopEventPropagation}
+                onMouseEnter={() => {
+                  if (termHideTimerRef.current) {
+                    clearTimeout(termHideTimerRef.current)
+                    termHideTimerRef.current = null
+                  }
+                  setTermHoverVisible(true)
+                }}
+                onMouseLeave={() => {
+                  termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                }}
+                title="Peek at terminal output"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="1" width="8" height="8" rx="1.5"/>
+                  <polyline points="2.5,4 4.5,6 2.5,8"/>
+                  <line x1="5.5" y1="8" x2="7.5" y2="8"/>
+                </svg>
+              </button>
+            )}
             <textarea
               ref={inputRef as any}
               placeholder=""
