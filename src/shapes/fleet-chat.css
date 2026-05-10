@@ -1927,7 +1927,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   right: 0;
   bottom: 0;
   /* Must exactly match textarea: same padding, border, font */
-  padding: 4px 8px 4px 20px;
+  padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: 4px;
   font-size: 11px;

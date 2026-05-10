@@ -2125,16 +2125,6 @@ html[data-theme="dark"] .fleet-chat-input input:focus {
 }
 .voice-note-btn:hover { opacity: 0.5; }
 
-.voice-note-btn.recording {
-  background: rgba(239, 100, 100, 0.18);
-  color: rgba(180, 60, 60, 0.7);
-  opacity: 1;
-}
-.voice-note-btn.placing {
-  background: rgba(255, 200, 64, 0.18);
-  color: rgba(160, 120, 0, 0.7);
-  opacity: 1;
-}
 
 body.phone-mode .voice-note-btn {
   bottom: calc(57px + env(safe-area-inset-bottom));
