@@ -399,6 +399,9 @@ export function connect() {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
         }
         notify('messages', event)
+      } else if (eventType === 'event-update') {
+        const ev = _events.find(e => e._dbId === data.id)
+        if (ev) { ev.text = data.text; notify('messages', null) }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
         for (const ev of _events) {

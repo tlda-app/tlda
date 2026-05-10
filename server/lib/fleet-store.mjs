@@ -863,6 +863,10 @@ export class FleetStore {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
   }
 
+  updateEventText(eventId, newText) {
+    this.db.prepare('UPDATE events SET text = ? WHERE id = ?').run(newText, eventId);
+  }
+
   getEventById(eventId) {
     const row = this.db.prepare(`SELECT ${this._EVT} FROM events WHERE id = ?`).get(eventId);
     if (!row) return null;

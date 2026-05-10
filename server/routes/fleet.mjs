@@ -742,6 +742,58 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     })
   })
 
+  // --- POST /api/unquote-file ---
+  // Tier 2 unquote: daemon reads the file, uploads it, server patches event text and re-broadcasts.
+  // Body: { eventId, path, agentId }
+  router.post('/api/unquote-file', async (req, res) => {
+    const { eventId, path: filePath, agentId } = req.body || {}
+    if (!eventId || !filePath || !agentId) {
+      return res.status(400).json({ error: 'eventId, path, and agentId required' })
+    }
+    const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
+    if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
+
+    const route = resolveRpc('resolve-file', agent)
+    if (route.via === 'none') return res.status(503).json({ ok: false, error: route.error })
+
+    let result
+    try {
+      result = await sendRpc(route.machine_id, 'resolve-file', {
+        path: filePath,
+        cwd: agent.cwd,
+        server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
+      })
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message })
+    }
+
+    // Patch the event text: replace `filePath` (with or without backticks) with rendered form
+    const event = fleetStore.getEventById?.(parseInt(eventId, 10))
+    if (event && event.text) {
+      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(filePath)
+      const fileName = path.basename(filePath)
+      const url = result.url || ''
+      const backtickForms = [`\`${filePath}\``, filePath]
+      let newText = event.text
+      for (const form of backtickForms) {
+        if (newText.includes(form)) {
+          const replacement = isImage && url
+            ? `![${fileName}](${url})`
+            : url || filePath
+          newText = newText.replace(form, replacement)
+          break
+        }
+      }
+      if (newText !== event.text) {
+        fleetStore.updateEventText(parseInt(eventId, 10), newText)
+        // Broadcast as event-update so clients patch in-place rather than deduplicating
+        broadcastEvent('event-update', { id: parseInt(eventId, 10), text: newText })
+      }
+    }
+
+    res.json({ ok: true, url: result.url })
+  })
+
   // --- POST /api/fleet-event ---
   router.post('/api/fleet-event', (req, res) => {
     const event = req.body

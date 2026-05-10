@@ -1903,6 +1903,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogRef.current
     if (!logEl) return
 
+    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
+
     function matchesUnquotePattern(text: string): boolean {
       if (!text || text.length > 500) return false
       // URLs (http/https)
@@ -1916,6 +1918,17 @@ function FleetChatInner({ shape }: { shape: any }) {
       return false
     }
 
+    function isImagePath(text: string): boolean {
+      const ext = text.split('.').pop()?.toLowerCase() || ''
+      return IMAGE_EXTS.has(ext)
+    }
+
+    function isRemote(): boolean {
+      const h = window.location.hostname
+      return h !== 'localhost' && h !== '127.0.0.1'
+        && !h.startsWith('192.168.') && !h.startsWith('10.') && !h.startsWith('100.')
+    }
+
     let menu: HTMLElement | null = null
 
     function dismissMenu() {
@@ -1923,11 +1936,50 @@ function FleetChatInner({ shape }: { shape: any }) {
       menu = null
     }
 
+    function applyTier1(codeEl: HTMLElement, text: string) {
+      const rendered = renderMarkdownUtil(esc(text))
+      const wrapper = document.createElement('span')
+      wrapper.innerHTML = rendered
+      codeEl.replaceWith(...Array.from(wrapper.childNodes))
+    }
+
+    async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
+      // Show spinner in place while the daemon round-trip happens
+      const spinner = document.createElement('span')
+      spinner.textContent = '⏳'
+      spinner.style.opacity = '0.6'
+      codeEl.replaceWith(spinner)
+
+      try {
+        const resp = await fetch('/api/unquote-file', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        // Server patches DB + broadcasts event-update; fleet-data.mjs will
+        // trigger a re-render. Replace spinner with interim rendering using the URL.
+        const { url } = await resp.json()
+        const rendered = renderMarkdownUtil(esc(url || text))
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = rendered
+        spinner.replaceWith(...Array.from(wrapper.childNodes))
+      } catch {
+        // Graceful fallback: restore as plain text
+        const fallback = document.createElement('span')
+        fallback.textContent = text
+        fallback.title = 'Unquote failed — file not found or daemon unreachable'
+        fallback.style.opacity = '0.5'
+        spinner.replaceWith(fallback)
+      }
+    }
+
     function onContextMenu(e: MouseEvent) {
       const target = e.target as HTMLElement
       const codeEl = target.closest('code') as HTMLElement | null
       if (!codeEl) { dismissMenu(); return }
-      if (!codeEl.closest('.chat-line')) { dismissMenu(); return }
+      const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
+      if (!chatLine) { dismissMenu(); return }
 
       const text = codeEl.textContent || ''
       if (!matchesUnquotePattern(text)) { dismissMenu(); return }
@@ -1946,10 +1998,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       item.addEventListener('click', (ev) => {
         ev.stopPropagation()
         dismissMenu()
-        const rendered = renderMarkdownUtil(esc(text))
-        const wrapper = document.createElement('span')
-        wrapper.innerHTML = rendered
-        codeEl.replaceWith(...Array.from(wrapper.childNodes))
+
+        const needsTier2 = isImagePath(text) && isRemote()
+        if (needsTier2) {
+          const eventId = chatLine.dataset.msgId || ''
+          const agentId = chatLine.dataset.msgFrom || ''
+          applyTier2(codeEl, text, eventId, agentId)
+        } else {
+          applyTier1(codeEl, text)
+        }
       })
       m.appendChild(item)
       document.body.appendChild(m)

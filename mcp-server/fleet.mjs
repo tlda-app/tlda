@@ -36,6 +36,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
+import { uploadFileToServer } from './lib/chat-file-processing.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1577,14 +1578,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     for (const att of inlineAttachments) {
       if (att.path && fs.existsSync(att.path)) {
         try {
-          const buf = fs.readFileSync(att.path);
-          const res = await fleetFetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
-            method: 'POST',
-            headers: { 'x-filename': encodeURIComponent(att.name) },
-            body: buf,
-          });
-          const data = await res.json();
-          if (data.url) att.url = data.url;
+          const { url } = await uploadFileToServer(att.path, `http://127.0.0.1:${dashPortUpload}`)
+          att.url = url
         } catch {}
       }
     }
