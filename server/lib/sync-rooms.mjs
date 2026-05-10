@@ -861,7 +861,7 @@ export async function getShapesAt(projectName, timestamp) {
   try {
     const content = await readFile(logPath, 'utf-8')
     const lines = content.split('\n')
-    const BATCH = 10_000
+    const BATCH = 500
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       if (!line) continue
@@ -869,7 +869,7 @@ export async function getShapesAt(projectName, timestamp) {
         const entry = JSON.parse(line)
         if (entry) entries.push(entry)
       } catch {}
-      // Yield to event loop every BATCH lines so WebSocket/HTTP work isn't starved
+      // Yield to event loop every BATCH lines; 500 lines ≈ 15ms at typical parse rates
       if (i > 0 && i % BATCH === 0) await new Promise(r => setImmediate(r))
     }
   } catch (e) {
