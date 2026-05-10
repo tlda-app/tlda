@@ -51,11 +51,14 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
   ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
   : 'ws://localhost:5176'
 
-// Read-only terminal peek overlay — shown when hovering the terminal icon on a chat shape.
-// Mounts xterm.js + WebSocket when visible, cleans up on unmount.
-// No input bar — this is strictly a peek, not an interaction surface.
-function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
+// Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
+// Hover mode: read-only snapshot that resets on each server push.
+// Pinned mode: stays open, shows input bar for sending commands, resizable.
+function TerminalHoverPane({ agentId, pinned, onPin, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
+  pinned: boolean
+  onPin: () => void
+  onDismiss: () => void
   onMouseEnter: () => void
   onMouseLeave: () => void
 }) {
@@ -63,7 +66,13 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const pinnedRef = useRef(pinned)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+  const [height, setHeight] = useState(210)
+  const [inputValue, setInputValue] = useState('')
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  useEffect(() => { pinnedRef.current = pinned }, [pinned])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -83,7 +92,7 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
         cyan: '#4ec9b0', brightCyan: '#4ec9b0',
         white: '#d4d4d4', brightWhite: '#ffffff',
       },
-      scrollback: 0,
+      scrollback: 100,
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
@@ -101,6 +110,13 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
     }
   }, [])
 
+  // Re-fit when height changes
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      try { fitRef.current?.fit() } catch {}
+    })
+  }, [height])
+
   useEffect(() => {
     if (!agentId) return
     wsRef.current?.close()
@@ -115,7 +131,9 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
       try {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'output' && msg.data && termRef.current) {
-          termRef.current.reset()
+          // Peek mode: reset each time so we always show the current screen bottom.
+          // Pinned mode: don't reset so user can scroll through accumulated output.
+          if (!pinnedRef.current) termRef.current.reset()
           termRef.current.write(msg.data)
         } else if (msg.type === 'error') {
           setStatus('error')
@@ -127,13 +145,66 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
     return () => { ws.close() }
   }, [agentId])
 
+  const sendInput = (data: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data }))
+    }
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    stopEventPropagation(e as any)
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      sendInput(inputValue + '\r')
+      setInputValue('')
+    } else if (e.key === 'c' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x03')
+      setInputValue('')
+    } else if (e.key === 'd' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x04')
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      sendInput('\t')
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      sendInput('\x1b[A')
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      sendInput('\x1b[B')
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      sendInput('\x1b')
+    }
+  }
+
+  const handleResizePointerDown = (e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { startY: e.clientY, startH: height }
+    const onMove = (ev: PointerEvent) => {
+      if (!dragRef.current) return
+      const delta = ev.clientY - dragRef.current.startY
+      setHeight(Math.max(100, dragRef.current.startH + delta))
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   const shortId = agentId.replace('fleet:', '')
 
   return (
     <div
-      className="fleet-terminal-hover-pane"
+      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
+      style={{ height }}
       onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
+      onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
     >
@@ -145,8 +216,63 @@ function TerminalHoverPane({ agentId, onMouseEnter, onMouseLeave }: {
         <span className="fleet-terminal-hover-title">{shortId}</span>
         {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
         {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
+        <button
+          className={`fleet-terminal-hover-pin${pinned ? ' active' : ''}`}
+          title={pinned ? 'Unpin terminal' : 'Pin terminal open'}
+          onPointerDown={stopEventPropagation}
+          onClick={(e) => { stopEventPropagation(e as any); onPin() }}
+        >
+          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <line x1="5" y1="1" x2="5" y2="7" />
+            <line x1="3" y1="3" x2="7" y2="3" />
+            <line x1="4" y1="9" x2="6" y2="9" />
+          </svg>
+        </button>
+        {pinned && (
+          <button
+            className="fleet-terminal-hover-close"
+            title="Close terminal"
+            onPointerDown={stopEventPropagation}
+            onClick={(e) => { stopEventPropagation(e as any); onDismiss() }}
+          >
+            ×
+          </button>
+        )}
       </div>
       <div ref={containerRef} className="fleet-terminal-hover-body" />
+      {pinned && status === 'connected' && (
+        <div className="fleet-terminal-hover-input-bar"
+          onPointerDown={stopEventPropagation}
+          onPointerMove={stopEventPropagation}
+        >
+          <span className="fleet-terminal-hover-prompt">$</span>
+          <input
+            className="fleet-terminal-hover-input"
+            type="text"
+            value={inputValue}
+            onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+            onKeyDown={handleInputKeyDown}
+            onKeyUp={(e) => stopEventPropagation(e as any)}
+            placeholder="type command…"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button
+            className="fleet-terminal-hover-ctrl-c"
+            title="Send Ctrl+C"
+            onPointerDown={(e) => { stopEventPropagation(e as any); sendInput('\x03') }}
+          >
+            ^C
+          </button>
+        </div>
+      )}
+      {pinned && (
+        <div
+          className="fleet-terminal-hover-resize-handle"
+          onPointerDown={handleResizePointerDown}
+          title="Drag to resize"
+        />
+      )}
     </div>
   )
 }
@@ -1468,6 +1594,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
   const [termHoverVisible, setTermHoverVisible] = useState(false)
+  const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
@@ -2599,10 +2726,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             position: 'relative',
           }}
         >
-          {/* Terminal hover pane — floats above the input area when the terminal icon is hovered */}
-          {termHoverVisible && hoverTargetAgentId && (
+          {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
+          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && (
             <TerminalHoverPane
               agentId={hoverTargetAgentId}
+              pinned={termHoverPinned}
+              onPin={() => setTermHoverPinned(p => !p)}
+              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
                   clearTimeout(termHideTimerRef.current)
@@ -2661,7 +2791,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
-                  termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                  if (!termHoverPinned) {
+                    termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                  }
                 }}
                 title="Peek at terminal output"
               >
