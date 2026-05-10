@@ -46,6 +46,9 @@
 .fleet-hud-wrap .clip-panel-canvas {
   background: transparent !important;
   pointer-events: auto;
+  /* HUD shapes need overflow so the terminal hover pane can extend below the chat shape */
+  overflow: visible !important;
+  clip-path: none !important;
 }
 
 /* Full-viewport overlay pointer-events architecture:
