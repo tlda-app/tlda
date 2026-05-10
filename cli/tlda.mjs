@@ -1928,7 +1928,11 @@ ${tokenEnvLines.join('\n')}
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
     }
-    // No fallback — if /health doesn't respond, the server is already dead.
+    // Also kill any zombie server processes that aren't bound to the port
+    // (e.g., old servers from worktrees that failed to bind but are still running
+    // their daemon-supervisor loops). pkill is safe here — unified-server.mjs is unique.
+    try { execSync('pkill -f "server/unified-server.mjs"', { stdio: 'pipe' }) } catch {}
+    // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
     for (let i = 0; i < 20; i++) {
