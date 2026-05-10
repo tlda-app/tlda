@@ -53,11 +53,17 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
     return tb - ta
   })
-  const [agent1, agent2] = sorted.slice(0, 2)
-  const name1 = agent1?.friendly_name as string | undefined
-  const name2 = agent2?.friendly_name as string | undefined
-  const filter1: [string, string][][] = existingChatFilters[0] ?? (name1 ? [[['from', name1]], [['to', name1]]] : [])
-  const filter2: [string, string][][] = existingChatFilters[1] ?? (name2 ? [[['from', name2]], [['to', name2]]] : [])
+  const panelCount = variant === 'grid' ? 4 : variant === 'wide' ? 1 : 2
+  const topAgents = sorted.slice(0, panelCount)
+  const makeFilter = (i: number): [string, string][][] => {
+    if (existingChatFilters[i]) return existingChatFilters[i]!
+    const name = topAgents[i]?.friendly_name as string | undefined
+    return name ? [[['from', name]], [['to', name]]] : []
+  }
+  const filter1 = makeFilter(0)
+  const filter2 = makeFilter(1)
+  const filter3 = makeFilter(2)
+  const filter4 = makeFilter(3)
 
   const leftW = 340
   const gap = 10
@@ -111,10 +117,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       props: { w: leftW, h: searchH },
     },
   ]
-  // Resolve up to 4 filters for grid layout
-  const filter3: [string, string][][] = existingChatFilters[2] ?? []
-  const filter4: [string, string][][] = existingChatFilters[3] ?? []
-
   if (variant === 'wide') {
     // Agents+search left, one wide chat right
     const chatWide = Math.round(chatW3 * 2)
