@@ -1927,7 +1927,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   right: 0;
   bottom: 0;
   /* Must exactly match textarea: same padding, border, font */
-  padding: 4px 8px;
+  padding: 4px 8px 4px 20px;
   border: 1px solid transparent;
   border-radius: 4px;
   font-size: 11px;
@@ -2255,14 +2255,26 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Hard-lock scroll button — dim by default, highlighted when active */
-.fleet-shape .fleet-hardlock-btn {
-  font-size: 10px;
-  opacity: 0.25;
+/* Hard-lock scroll toggle — magnet icon, left of textarea */
+.fleet-chat-shape .fleet-hardlock-toggle {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
 }
-.fleet-shape .fleet-hardlock-btn.active {
-  opacity: 1 !important;
-  color: #4fc3f7;
+.fleet-chat-shape .fleet-hardlock-toggle:hover {
+  opacity: 0.55;
 }
 
 /* --- Fleet DocView shape --- */
