@@ -1177,8 +1177,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
-          // Load source map (labels index) for ref resolution
-          sourceMap.load(document.name)
+          // Load source map (labels index) for ref resolution.
+          // For multi-target docs, pass targets so per-target source-maps are merged
+          // with global page offsets — the bare alias only covers the primary target.
+          sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
 
           setNavigateToAnchor((anchorId: string, title: string) => {
             let page = -1

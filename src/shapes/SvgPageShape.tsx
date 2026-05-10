@@ -10,7 +10,8 @@ import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
 import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
-import { getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
@@ -187,6 +188,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
       if (!res.ok) return
       const newText = await res.text()
       if (newText !== svgText) setSvgText(shape.id as string, newText)
+      // Populate anchorIndex and viewBox store from <view> elements.
+      // Enables ref-click navigation for pages that haven't been through a reload cycle.
+      const parser = new DOMParser()
+      const svgDoc = parser.parseFromString(newText, 'image/svg+xml')
+      const svgEl = svgDoc.querySelector('svg')
+      if (svgEl) {
+        const vb = svgEl.getAttribute('viewBox')
+        if (vb) {
+          const parts = vb.split(/\s+/).map(Number)
+          if (parts.length === 4) {
+            svgViewBoxStore.set(shape.id as string, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+          }
+        }
+      }
+      for (const view of svgDoc.querySelectorAll('view')) {
+        const id = view.getAttribute('id')
+        if (id) {
+          anchorIndex.set(id, { pageShapeId: shape.id as string, viewBox: view.getAttribute('viewBox') || undefined })
+        }
+      }
     }).catch(() => {}) // AbortError is expected when scrolling fast
   }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
