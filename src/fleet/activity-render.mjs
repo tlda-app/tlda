@@ -159,12 +159,11 @@ function renderSearchResult(text, ctx) {
   }
   const header = parts[0]
   const results = parts.slice(1)
-  const PREVIEW_COUNT = 5
-  const hasMore = results.length > PREVIEW_COUNT
-  const rows = results.slice(0, PREVIEW_COUNT).map((r, i) => {
-    // Parse "timestamp | [source] [role] agent | snippet" format
+  const SEARCH_FRONT = 3
+  const SEARCH_TAIL = 3
+  const renderRow = (r, globalIdx) => {
     const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
-    const stripe = i % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
+    const stripe = globalIdx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
     if (pipeMatch) {
       const ts = pipeMatch[1].trim()
       const source = pipeMatch[2].trim()
@@ -177,39 +176,29 @@ function renderSearchResult(text, ctx) {
         <span class="pretty-search-snippet">${highlightedSnippet}</span>
       </div>`
     }
-    // Fallback: unstructured result
     const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
     return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
-  }).join('')
-  // Render remaining rows hidden, with expand button
-  let moreHtml = ''
+  }
+  // Show first FRONT + gap marker + last TAIL so both ends are visible.
+  // Lets Skip see the timestamp the agent ended at — if the agent stopped early,
+  // the tail timestamps reveal the gap vs. the actual latest message.
+  const hasMore = results.length > SEARCH_FRONT + SEARCH_TAIL
+  let rows = ''
   if (hasMore) {
-    const hiddenRows = results.slice(PREVIEW_COUNT).map((r, i) => {
-      const idx = i + PREVIEW_COUNT
-      const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
-      const stripe = idx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
-      if (pipeMatch) {
-        const ts = pipeMatch[1].trim()
-        const source = pipeMatch[2].trim()
-        const snippet = pipeMatch[3].trim()
-        const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-        const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
-        return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
-          <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
-          <span class="pretty-search-source">${esc(source)}</span>
-          <span class="pretty-search-snippet">${highlightedSnippet}</span>
-        </div>`
-      }
-      const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-      return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
-    }).join('')
-    moreHtml = `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-      + `<div class="pretty-expand-btn">${results.length - PREVIEW_COUNT} more — show all</div>`
+    const hiddenCount = results.length - SEARCH_FRONT - SEARCH_TAIL
+    const tailStart = results.length - SEARCH_TAIL
+    const hiddenRows = results.slice(SEARCH_FRONT, tailStart).map((r, i) => renderRow(r, i + SEARCH_FRONT)).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} more …</div>`
+      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = results.slice(0, SEARCH_FRONT).map((r, i) => renderRow(r, i)).join('')
+      + gapMarker
+      + results.slice(-SEARCH_TAIL).map((r, i) => renderRow(r, tailStart + i)).join('')
+  } else {
+    rows = results.map((r, i) => renderRow(r, i)).join('')
   }
   return `<div class="tool-pretty-result tool-pretty-search">
     <div class="pretty-result-header">${esc(header)}</div>
     ${rows}
-    ${moreHtml}
   </div>`
 }
 
