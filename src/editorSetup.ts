@@ -632,7 +632,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             setTimeout(checkSnap, 200)
             return
           }
-          snapHighlighterToText(editor, shape.id, document.name)
+          snapHighlighterToText(editor, shape.id, document.name, document.targets)
           // Process highlight for feedback integration (understanding-line updates + signal)
           processHighlightFeedback(editor, shape.id, document.name)
         }
