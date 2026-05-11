@@ -65,6 +65,10 @@ function formatModel(model: string | null | undefined): string {
   return `${m[1]}${m[2]}${m[3]}`
 }
 
+function formatEffort(effort: string): string {
+  return `${effort} effort`
+}
+
 
 function agentDisplayName(agent: any): string {
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
@@ -542,7 +546,7 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
-  const effortStr: string = meta.effort || ''
+  const effortStr = meta.effort ? formatEffort(meta.effort) : ''
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
