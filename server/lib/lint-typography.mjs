@@ -1,67 +1,39 @@
-// Typography lint for .tex files — flags grammatically wrong patterns.
-// Currently catches: comma immediately before \qwhere, \qfor, or \qand
-// inside display math environments. These macros are conjunctions and
-// a preceding comma is always a grammar error.
+// Grammar lint for .tex files — non-grammatical commas and colons.
+//
+// Wraps lint-typography.py, which substitutes math with grammatical
+// placeholders (so spaCy can parse prose containing math as normal English),
+// then uses spaCy's dependency tree to flag violations.
 
-const ENV_NAMES = [
-  'equation', 'equation\\*',
-  'align', 'align\\*',
-  'gather', 'gather\\*',
-  'multline', 'multline\\*',
-  'eqnarray', 'eqnarray\\*',
-  'flalign', 'flalign\\*',
-  'alignat', 'alignat\\*',
-  'subequations',
-  'cases',
-]
-const ENV_BEGIN_RE = new RegExp(`\\\\begin\\{(${ENV_NAMES.join('|')})\\}`)
-const ENV_END_RE = new RegExp(`\\\\end\\{(${ENV_NAMES.join('|')})\\}`)
+import { spawnSync } from 'node:child_process'
+import { writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-// Also treat \[ ... \] as display math.
-const DISPLAY_OPEN_RE = /\\\[/
-const DISPLAY_CLOSE_RE = /\\\]/
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const HELPER = join(__dirname, 'lint-typography.py')
 
-// Comma immediately before \qwhere, \qfor, or \qand (with optional whitespace).
-const COMMA_BEFORE_CONJUNCTION_RE = /,\s*\\q(where|for|and)\b/g
-
-function stripComment(line) {
-  return line.replace(/(?<!\\)%.*$/, '')
+function runHelper(filePath) {
+  const result = spawnSync('python3', [HELPER, filePath], { encoding: 'utf8' })
+  if (result.status !== 0) {
+    console.error('[lint-typography] helper failed:', result.stderr || `exit ${result.status}`)
+    return []
+  }
+  try {
+    return JSON.parse(result.stdout || '[]')
+  } catch (e) {
+    console.error('[lint-typography] failed to parse helper output:', e.message)
+    return []
+  }
 }
 
 // Lint a full text. Returns [{file, line, pattern, snippet}].
 export function lintText(text, file = '<text>') {
-  const results = []
-  const lines = text.split('\n')
-  let inDisplay = false
-  let bracketDepth = 0 // for \[ ... \]
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
-    const line = stripComment(raw)
-
-    // Track display math state
-    if (!inDisplay) {
-      if (ENV_BEGIN_RE.test(line)) { inDisplay = true; continue }
-      if (DISPLAY_OPEN_RE.test(line)) { bracketDepth++; inDisplay = true; continue }
-      continue
-    }
-
-    // Inside display math
-    if (ENV_END_RE.test(line)) { inDisplay = false; continue }
-    if (DISPLAY_CLOSE_RE.test(line)) {
-      bracketDepth = Math.max(0, bracketDepth - 1)
-      if (bracketDepth === 0) inDisplay = false
-      // still check this line before closing
-    }
-
-    COMMA_BEFORE_CONJUNCTION_RE.lastIndex = 0
-    let m
-    while ((m = COMMA_BEFORE_CONJUNCTION_RE.exec(line)) !== null) {
-      const snippet = line.slice(Math.max(0, m.index - 20), m.index + 40).trim()
-      results.push({ file, line: i + 1, pattern: 'comma-before-conjunction', snippet })
-    }
-  }
-  return results
+  const dir = mkdtempSync(join(tmpdir(), 'lint-typography-'))
+  const tmpFile = join(dir, 'input.tex')
+  writeFileSync(tmpFile, text)
+  const raw = runHelper(tmpFile)
+  return raw.map((f) => ({ ...f, file, pattern: f.kind || 'typography' }))
 }
 
 // Parse a unified diff and return only the added lines per file with their
