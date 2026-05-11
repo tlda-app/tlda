@@ -600,18 +600,19 @@ function AgentRow({
         </span>
       </div>
 
-      {/* Expanded detail: model/effort, tasks, last message */}
+      {/* Expanded detail: first task inline with model/effort, remaining tasks, last message */}
       {expanded && (
         <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
-          {(modelStr || effortStr) && (
-            <div className="fleet-agents-detail-meta">
-              {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
-              {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
-            </div>
-          )}
-          {tasks.length === 0 ? (
-            <div className="fleet-agents-detail-task">(no task)</div>
-          ) : tasks.map((t: any, i: number) => (
+          <div className="fleet-agents-detail-task fleet-agents-detail-firstrow">
+            {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
+            {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
+            <span>
+              {tasks.length === 0
+                ? '(no task)'
+                : tasks[0].title || tasks[0].description || '(untitled task)'}
+            </span>
+          </div>
+          {tasks.slice(1).map((t: any, i: number) => (
             <div key={t.id || i} className="fleet-agents-detail-task">
               {t.title || t.description || '(untitled task)'}
             </div>
