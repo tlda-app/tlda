@@ -925,6 +925,29 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
+      } else if (m.metadata?.type === 'build_result') {
+        flushActivity()
+        const { name: docName, hash, summary, lintFindings = [] } = m.metadata as any
+        const hasDetails = !!(summary || lintFindings.length > 0)
+        const lintCount = lintFindings.length
+        const lintBadge = lintCount > 0
+          ? `<span class="build-result-lint-badge">${lintCount} finding${lintCount !== 1 ? 's' : ''}</span>`
+          : ''
+        const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
+        const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
+        const toggle = hasDetails ? `<span class="build-result-toggle">▾</span>` : ''
+        const html = `<div class="build-result-card">` +
+          `<div class="build-result-header">` +
+          `<span class="build-result-icon">🔨</span>` +
+          `<span class="build-result-title">Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong></span>` +
+          lintBadge +
+          toggle +
+          `</div>` +
+          (hasDetails
+            ? `<div class="build-result-body">${summaryHtml}${lintHtml}</div>`
+            : '') +
+          `</div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m.metadata?.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
@@ -1872,6 +1895,15 @@ function FleetChatInner({ shape }: { shape: any }) {
           return
         }
       }
+      // Build result card — toggle expand/collapse
+      const buildHeader = (e.target as HTMLElement).closest('.build-result-header') as HTMLElement
+      if (buildHeader) {
+        const card = buildHeader.closest('.build-result-card') as HTMLElement
+        if (card) {
+          card.classList.toggle('build-result-expanded')
+          return
+        }
+      }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
@@ -2250,7 +2282,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {

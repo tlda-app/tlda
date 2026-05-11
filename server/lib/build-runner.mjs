@@ -1709,53 +1709,55 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
           if (diffOutput.trim()) {
             const summary = summarizeDiff(diffOutput, name)
             console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+            // Broadcast viewer signal regardless of lint
             if (summary) {
-              // Emit as global event — unified-server.mjs routes to fleet chat
-              emitGlobalEvent('build-chat', {
-                name,
-                hash: result.hash.slice(0, 7),
-                text: `**Build ${result.hash.slice(0, 7)}:**\n${summary}`,
-              })
-              // Also broadcast as a signal for the viewer
               broadcastSignal(`doc-${name}`, 'signal:build-summary', {
                 hash: result.hash.slice(0, 7),
                 summary,
                 timestamp: Date.now(),
               })
-              // BYOL linters: run scripts from ~/.config/tlda/linters/
-              // Each script receives the diff on stdin, TLDA_SRCDIR set to the shadow dir.
-              // Any stdout output is posted to fleet chat as a build finding.
-              try {
-                const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
-                if (existsSync(lintersDir)) {
-                  const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
-                  for (const script of scripts) {
-                    const scriptPath = join(lintersDir, script)
-                    try {
-                      const output = await new Promise((resolve, reject) => {
-                        const child = spawn(process.execPath, [scriptPath], {
-                          env: { ...process.env, TLDA_SRCDIR: shadowDir },
-                          stdio: ['pipe', 'pipe', 'inherit'],
-                        })
-                        const chunks = []
-                        child.stdout.on('data', d => chunks.push(d))
-                        child.stdin.write(diffOutput)
-                        child.stdin.end()
-                        child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
-                        child.on('error', reject)
+            }
+            // BYOL linters: collect all findings, then emit ONE build-card event.
+            const lintFindings = []
+            try {
+              const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
+              if (existsSync(lintersDir)) {
+                const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
+                for (const script of scripts) {
+                  const scriptPath = join(lintersDir, script)
+                  try {
+                    const output = await new Promise((resolve, reject) => {
+                      const child = spawn(process.execPath, [scriptPath], {
+                        env: { ...process.env, TLDA_SRCDIR: shadowDir },
+                        stdio: ['pipe', 'pipe', 'inherit'],
                       })
-                      if (output) {
-                        emitGlobalEvent('build-chat', { name, hash: result.hash.slice(0, 7), text: output })
-                        console.log(`[build:${name}] Lint (${script}): output posted`)
-                      }
-                    } catch (scriptErr) {
-                      console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
+                      const chunks = []
+                      child.stdout.on('data', d => chunks.push(d))
+                      child.stdin.write(diffOutput)
+                      child.stdin.end()
+                      child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
+                      child.on('error', reject)
+                    })
+                    if (output) {
+                      lintFindings.push({ source: script, text: output })
+                      console.log(`[build:${name}] Lint (${script}): ${output.split('\n')[0]}`)
                     }
+                  } catch (scriptErr) {
+                    console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
                   }
                 }
-              } catch (lintErr) {
-                console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
               }
+            } catch (lintErr) {
+              console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
+            }
+            // Emit single build-card event (aggregates summary + all lint findings)
+            if (summary || lintFindings.length > 0) {
+              emitGlobalEvent('build-card', {
+                name,
+                hash: result.hash.slice(0, 7),
+                summary: summary || null,
+                lintFindings,
+              })
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)

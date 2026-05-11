@@ -327,13 +327,19 @@ onGlobalEvent((event) => {
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
   }
-  if (event?.type === 'build-chat' && fleetStore && event.text) {
-    // Send build notifications only to agents monitoring this doc (via monitor_add)
-    if (event.name) {
-      const subs = tldaFeedback.subscribers(event.name)
-      for (const agentId of subs) {
-        fleetStore.chat('fleet:tlda', agentId, event.text)
-      }
+  if (event?.type === 'build-card' && fleetStore && event.name) {
+    // Send a single compact build card to agents monitoring this doc (via monitor_add)
+    const subs = tldaFeedback.subscribers(event.name)
+    const { name: docName, hash, summary, lintFindings = [] } = event
+    const text = `Build ${hash} — ${docName}`
+    for (const agentId of subs) {
+      fleetStore.chat('fleet:tlda', agentId, text, {
+        type: 'build_result',
+        name: docName,
+        hash,
+        summary: summary || null,
+        lintFindings,
+      })
     }
   }
 })
