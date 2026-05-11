@@ -1900,7 +1900,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
-  // Unquote context menu: right-click on <code> spans inside chat messages
+  // Unquote: double-click on <code> spans inside chat messages.
+  // Uses dblclick on logEl (bubble phase) — consistent with how plan-approve, lc-message
+  // expand, and image lightbox work. The document-level pointerdown handler already calls
+  // markEventAsHandled for <code> elements (they're not draggable), so TLDraw never sees
+  // a selection-triggering event from these clicks. No holes needed in CanvasClipPanel's gates.
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
@@ -1909,13 +1913,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     function matchesUnquotePattern(text: string): boolean {
       if (!text || text.length > 500) return false
-      // URLs (http/https)
       if (/^https?:\/\/\S+/.test(text)) return true
-      // Absolute paths starting with /
       if (/^\/\S+/.test(text)) return true
-      // Home-dir paths
       if (/^~\/\S+/.test(text)) return true
-      // Relative .md paths (word/path.md)
       if (/^[\w.-]+(?:\/[\w.-]+)+\.md$/.test(text)) return true
       return false
     }
@@ -1931,13 +1931,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         && !h.startsWith('192.168.') && !h.startsWith('10.') && !h.startsWith('100.')
     }
 
-    let menu: HTMLElement | null = null
-
-    function dismissMenu() {
-      menu?.remove()
-      menu = null
-    }
-
     function applyTier1(codeEl: HTMLElement, text: string) {
       const rendered = renderMarkdownUtil(esc(text))
       const wrapper = document.createElement('span')
@@ -1946,7 +1939,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
-      // Show spinner in place while the daemon round-trip happens
       const spinner = document.createElement('span')
       spinner.textContent = '⏳'
       spinner.style.opacity = '0.6'
@@ -1959,15 +1951,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        // Server patches DB + broadcasts event-update; fleet-data.mjs will
-        // trigger a re-render. Replace spinner with interim rendering using the URL.
         const { url } = await resp.json()
         const rendered = renderMarkdownUtil(esc(url || text))
         const wrapper = document.createElement('span')
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
       } catch {
-        // Graceful fallback: restore as plain text
         const fallback = document.createElement('span')
         fallback.textContent = text
         fallback.title = 'Unquote failed — file not found or daemon unreachable'
@@ -1976,57 +1965,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
-    function onContextMenu(e: MouseEvent) {
+    function onDblClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const codeEl = target.closest('code') as HTMLElement | null
-      if (!codeEl) { dismissMenu(); return }
+      if (!codeEl) return
       const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
-      if (!chatLine) { dismissMenu(); return }
+      if (!chatLine) return
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { dismissMenu(); return }
+      if (!matchesUnquotePattern(text)) return
 
       e.preventDefault()
       e.stopPropagation()
-      dismissMenu()
 
-      const m = document.createElement('div')
-      m.className = 'unquote-context-menu'
-      m.style.left = `${e.clientX}px`
-      m.style.top = `${e.clientY}px`
-      const item = document.createElement('div')
-      item.className = 'unquote-menu-item'
-      item.textContent = 'Unquote'
-      item.addEventListener('click', (ev) => {
-        ev.stopPropagation()
-        dismissMenu()
-
-        const needsTier2 = isImagePath(text) && isRemote()
-        if (needsTier2) {
-          const eventId = chatLine.dataset.msgId || ''
-          const agentId = chatLine.dataset.msgFrom || ''
-          applyTier2(codeEl, text, eventId, agentId)
-        } else {
-          applyTier1(codeEl, text)
-        }
-      })
-      m.appendChild(item)
-      document.body.appendChild(m)
-      menu = m
-
-      // Dismiss on outside click or escape
-      const onOutside = (ev: MouseEvent) => {
-        if (!m.contains(ev.target as Node)) { dismissMenu(); document.removeEventListener('click', onOutside, true) }
+      const needsTier2 = isImagePath(text) && isRemote()
+      if (needsTier2) {
+        const eventId = chatLine.dataset.msgId || ''
+        const agentId = chatLine.dataset.msgFrom || ''
+        applyTier2(codeEl, text, eventId, agentId)
+      } else {
+        applyTier1(codeEl, text)
       }
-      const onKey = (ev: KeyboardEvent) => {
-        if (ev.key === 'Escape') { dismissMenu(); document.removeEventListener('keydown', onKey) }
-      }
-      setTimeout(() => document.addEventListener('click', onOutside, true), 0)
-      document.addEventListener('keydown', onKey)
     }
 
-    logEl.addEventListener('contextmenu', onContextMenu)
-    return () => { logEl.removeEventListener('contextmenu', onContextMenu); dismissMenu() }
+    logEl.addEventListener('dblclick', onDblClick)
+    return () => logEl.removeEventListener('dblclick', onDblClick)
   }, [])
 
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
