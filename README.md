@@ -188,6 +188,20 @@ The fleet daemon watches every agent's tool calls. When an agent tries to edit a
 
 Skill invocations (via the `Skill` tool) are tracked alongside file reads — you can require `"skill:partner-not-soloist"` as a prerequisite just like a file path.
 
+### Chat controls
+
+**Scroll to bottom:** When you've scrolled up in a chat panel, a ↓ button appears in the bottom-right corner of the log. Click to jump to the latest messages.
+
+**Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
+
+**Interrupting an agent:** With the chat input focused and filtered to an agent (their name chip in the input bar), pressing Escape interrupts the agent. Three escalating tiers:
+
+| Presses | Action |
+|---------|--------|
+| 1×Esc | Soft interrupt — sends Escape to the tmux session |
+| 2×Esc | Hard interrupt — sends a forceful interrupt signal |
+| 3×Esc | Kill session — tmux kill-session; agent dies immediately |
+
 ### Arranging the canvas
 
 Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
