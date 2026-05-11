@@ -1914,11 +1914,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (/^https?:\/\/\S+/.test(text)) return true
       if (/^\/\S+/.test(text)) return true
       if (/^~\/\S+/.test(text)) return true
+      // Relative paths: no spaces, contains / or ends with a known file extension
+      if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
       return false
     }
 
     function isFilePath(text: string): boolean {
-      return text.startsWith('/') || text.startsWith('~/')
+      return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {
