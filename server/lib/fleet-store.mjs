@@ -1025,17 +1025,20 @@ export class FleetStore {
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     eParams.push(limit);
     const eventRows = runQuery(`
-      SELECT e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
+      SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
              snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet
       FROM events_fts f JOIN events e ON e.id = f.rowid
       WHERE ${eClauses.join(' AND ')}
       ORDER BY e.timestamp DESC LIMIT ?
     `, eParams).map(r => ({
       source: 'fleet',
+      id: r.id,
       type: r.type,
       timestamp: r.timestamp,
       from: r.from,
       to: r.to,
+      text: r.text,
+      metadata: r.metadata ? JSON.parse(r.metadata) : null,
       snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
     }));
 
@@ -1047,17 +1050,19 @@ export class FleetStore {
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
     sParams.push(limit);
     const sessionRows = runQuery(`
-      SELECT s.agent_id, s.session_id, s.role, s.timestamp,
+      SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
              snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet
       FROM session_entries_fts f JOIN session_entries s ON s.id = f.rowid
       WHERE ${sClauses.join(' AND ')}
       ORDER BY s.timestamp DESC LIMIT ?
     `, sParams).map(r => ({
       source: 'session',
+      id: r.id,
       agentId: r.agent_id,
       sessionId: r.session_id,
       role: r.role,
       timestamp: r.timestamp,
+      text: r.text,
       snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
     }));
 
