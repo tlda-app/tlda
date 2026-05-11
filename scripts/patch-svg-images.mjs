@@ -348,7 +348,7 @@ function patchSvg(svgPath, srcDir) {
 // --- Main ---
 
 const svgFiles = readdirSync(SVG_DIR)
-  .filter(f => /^page-\d+\.svg$/.test(f))
+  .filter(f => /page-\d+\.svg$/.test(f))
   .sort()
 
 let totalPatched = 0

@@ -81,14 +81,8 @@ function generateStubPdfs(buildDir, addLog) {
   const svgFiles = findSvgFigures(buildDir)
   for (const svgPath of svgFiles) {
     const pdfPath = svgPath.replace(/\.svg$/, '.pdf')
-    // Skip if PDF already exists and is newer
-    if (existsSync(pdfPath)) {
-      try {
-        const svgStat = statSync(svgPath)
-        const pdfStat = statSync(pdfPath)
-        if (pdfStat.mtimeMs >= svgStat.mtimeMs) continue
-      } catch {}
-    }
+    // Always generate stub from SVG dimensions — never trust existing PDFs.
+    // Real figure PDFs may have wrong/unreadable MediaBox (e.g. corrupted cairo output).
     // Parse SVG dimensions
     const head = readFileSync(svgPath, 'utf8').slice(0, 500)
     let w, h
@@ -102,21 +96,29 @@ function generateStubPdfs(buildDir, addLog) {
       if (wm && hm) { w = parseFloat(wm[1]); h = parseFloat(hm[1]) }
     }
     if (!w || !h) continue
-    // Write minimal PDF — just enough for LaTeX to read the MediaBox
-    const pdf = `%PDF-1.0
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj
-xref
-0 4
-0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>
-startxref
-190
-%%EOF`
+    // Write minimal PDF with correct xref byte offsets so pdflatex can read the MediaBox.
+    // Hardcoded offsets break when w/h vary in length — compute them dynamically.
+    const obj1 = '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
+    const obj2 = '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n'
+    const obj3 = `3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj\n`
+    const hdr = '%PDF-1.0\n'
+    const off1 = hdr.length
+    const off2 = off1 + obj1.length
+    const off3 = off2 + obj2.length
+    const xrefOffset = off3 + obj3.length
+    const pad = (n) => String(n).padStart(10, '0')
+    const pdf = hdr + obj1 + obj2 + obj3 +
+      `xref\n0 4\n0000000000 65535 f \n${pad(off1)} 00000 n \n${pad(off2)} 00000 n \n${pad(off3)} 00000 n \n` +
+      `trailer<</Size 4/Root 1 0 R>>\nstartxref\n${xrefOffset}\n%%EOF`
     writeFileSync(pdfPath, pdf)
+    // Write .bb file for graphicx in DVI mode — latex cannot read PDF MediaBox,
+    // so without this it falls back to a square placeholder (width × width).
+    const bbPath = svgPath.replace(/\.svg$/, '.bb')
+    const bb = `%%BoundingBox: 0 0 ${Math.ceil(w)} ${Math.ceil(h)}\n%%HiResBoundingBox: 0.0 0.0 ${w} ${h}\n`
+    writeFileSync(bbPath, bb)
     count++
   }
-  if (count > 0) addLog(`Generated ${count} stub PDF(s) from SVG figures`)
+  if (count > 0) addLog(`Generated ${count} stub PDF(s) + .bb files from SVG figures`)
 }
 
 /** Recursively find .svg files in a directory (skipping node_modules, hidden dirs). */
