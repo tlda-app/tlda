@@ -292,13 +292,26 @@ Cross-references between the documents resolve normally. tlda builds the referen
 
 ## Writing linters
 
-On every build, tlda scans the diff (new lines only — not existing text) for three classes of issues and posts findings to fleet chat:
+tlda supports per-user linters that run after every build. Any scripts placed in `~/.config/tlda/linters/` are invoked automatically: the diff (new lines only) is piped to stdin, `TLDA_SRCDIR` is set to the post-state source directory, and any output is posted to fleet chat as a build finding.
 
-- **Typography** (🔴) — punctuation errors like comma before a conjunction in display math, missing space before units, etc. Checked via a grammar model.
-- **Parenthetical overuse** (🟡) — sentences that add a new parenthetical aside. Parentheticals interrupt the reader; use footnotes or restructure instead.
-- **Passive voice** (🟡) — new passive constructions. Sometimes unavoidable, but the lint surfaces them so you can decide.
+Findings are diff-scoped — only new text in this build is checked, so existing prose is never flagged.
 
-Findings are diff-scoped: only new text in this build is checked. Existing text is never flagged, so you won't be flooded on a first build.
+tlda ships three opt-in linters in `server/lib/`:
+
+| Script | What it flags |
+|--------|--------------|
+| `lint-parens.mjs` | New parenthetical asides in prose |
+| `lint-passive.mjs` | New passive-voice constructions |
+| `lint-typography.mjs` | Grammar errors in display math (e.g. comma before conjunction) |
+
+To activate any of them, symlink to your linters directory:
+
+```bash
+mkdir -p ~/.config/tlda/linters
+ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
+```
+
+You can also drop any Node.js script there that reads a unified diff from stdin and prints human-readable findings to stdout.
 
 ## CLI reference
 
