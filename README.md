@@ -122,6 +122,8 @@ This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in
 
 You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
+**Unquote:** Agents often share file paths or URLs in backticks. Double-click any inline code span in a chat message to expand it — a path like `` `scratch/fig.png` `` becomes an inline image, and a `` `https://...` `` becomes a link. Relative paths are resolved against the agent's working directory.
+
 ### Fleet: managing multiple agents
 
 Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
@@ -263,6 +265,24 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 **Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
 
 **For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
+
+## Multi-document projects
+
+If your project uses the `xr` or `xr-hyper` package to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` in your main file and automatically builds `X.tex` as a second target. Both documents share the same project — their pages appear together on the canvas and the viewer shows both in sequence.
+
+No configuration is needed: add `\usepackage{xr}` and `\externaldocument{supplement}` to your main file, include `supplement.tex` in your source directory, and both will be compiled and displayed.
+
+Cross-references between the documents resolve normally. tlda builds the referenced document first so `.aux` files are in place for the main compilation.
+
+## Writing linters
+
+On every build, tlda scans the diff (new lines only — not existing text) for three classes of issues and posts findings to fleet chat:
+
+- **Typography** (🔴) — punctuation errors like comma before a conjunction in display math, missing space before units, etc. Checked via a grammar model.
+- **Parenthetical overuse** (🟡) — sentences that add a new parenthetical aside. Parentheticals interrupt the reader; use footnotes or restructure instead.
+- **Passive voice** (🟡) — new passive constructions. Sometimes unavoidable, but the lint surfaces them so you can decide.
+
+Findings are diff-scoped: only new text in this build is checked. Existing text is never flagged, so you won't be flooded on a first build.
 
 ## CLI reference
 
