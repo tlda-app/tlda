@@ -1669,11 +1669,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-search-result {
   padding: 4px 10px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
-  cursor: pointer;
   transition: background 0.1s;
 }
 .fleet-search-result:hover {
   background: rgba(128, 128, 128, 0.06);
+}
+.fleet-search-result mark {
+  background: rgba(255, 220, 80, 0.25);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);

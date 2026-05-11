@@ -12,6 +12,7 @@ import {
   stopEventPropagation,
   useEditor,
   useValue,
+  createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useRef, useMemo, useLayoutEffect, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
@@ -26,6 +27,8 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
+import { dropPillOnTarget } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -71,6 +74,76 @@ const nickHex = ['#7a9ec8','#9370db','#c8956a','#6aafb0','#b87a95','#c8b060']
 const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
+
+function getNickColorForId(id: string, agents: any[]): string {
+  if (!id) return nickHex[0]
+  const a = agents.find((a: any) => a.id === id)
+  if (a?.human) return '#8bc87a'
+  if (!nickHexMap.has(id)) {
+    const idx = nickIdx % nickHex.length
+    nickMap.set(id, nickColors[idx])
+    nickHexMap.set(id, nickHex[idx])
+    nickIdx++
+  }
+  return nickHexMap.get(id)!
+}
+
+const DRAG_THRESHOLD = 4
+interface DragState {
+  pillId: string | null; pillType: 'agent'
+  value: string; displayName: string; color: string
+  startX: number; startY: number; started: boolean
+}
+
+function usePillDrag() {
+  const editor = useEditor()
+  const dragRef = useRef<DragState | null>(null)
+  const startDrag = useCallback((e: React.PointerEvent, value: string, displayName: string, color: string) => {
+    stopEventPropagation(e)
+    e.preventDefault()
+    dragRef.current = { pillId: null, pillType: 'agent', value, displayName, color, startX: e.clientX, startY: e.clientY, started: false }
+    dragCoordinator.claim(
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        if (!drag) return
+        const dx = ev.clientX - drag.startX, dy = ev.clientY - drag.startY
+        if (!drag.started) {
+          if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+          drag.started = true
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const measureEl = document.createElement('span')
+          measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+          measureEl.textContent = drag.displayName
+          document.body.appendChild(measureEl)
+          const pw = measureEl.offsetWidth, ph = measureEl.offsetHeight
+          document.body.removeChild(measureEl)
+          const pillId = createShapeId()
+          editor.run(() => {
+            editor.createShape({ id: pillId, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2, props: { w: pw, h: ph, pillType: 'agent', value: drag.value, displayName: drag.displayName, color: drag.color } })
+          }, { history: 'ignore' })
+          drag.pillId = pillId as unknown as string
+          editor.cancel()
+          return
+        }
+        if (drag.pillId) {
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pillShape = editor.getShape(drag.pillId as any) as any
+          const pw = pillShape?.props?.w || 70, ph = pillShape?.props?.h || 18
+          editor.run(() => { editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2 }) }, { history: 'ignore' })
+        }
+      },
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        dragRef.current = null
+        if (!drag || !drag.started || !drag.pillId) return
+        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+        editor.run(() => { try { editor.deleteShapes([drag.pillId as any]) } catch {} }, { history: 'ignore' })
+      }
+    )
+  }, [editor])
+  return { startDrag }
+}
 
 function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
@@ -239,6 +312,14 @@ function truncate(text: string, max: number): string {
   return plain.slice(0, max) + '…'
 }
 
+function formatSnippet(raw: string, max = 180): string {
+  if (!raw) return ''
+  const clean = raw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+  const truncated = clean.length > max ? clean.slice(0, max) + '…' : clean
+  // esc() escapes &<>"  — ⟨⟩ are Unicode so pass through unescaped
+  return esc(truncated).replace(/⟨⟨/g, '<mark>').replace(/⟩⟩/g, '</mark>')
+}
+
 // Parse inline keyword filters from query string
 // Returns { query, filters } where query is the remaining FTS text
 // and filters has from, agent, before, after fields
@@ -319,6 +400,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [editor])
 
   const agents = useFleetAgents()
+  const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [docResults, setDocResults] = useState<any[]>([])
@@ -428,8 +510,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
   // Build a DNF filter for the agent involved in a search result
   const openChatForResult = useCallback((result: any) => {
-    // Build filter: [[["name", agentFriendlyName]]]
-    const name = agentName(result.from)
+    const name = agentName(result.from || result.agentId || '')
     const filter: [string, string][][] = [[['name', name]]]
     setChatView({ agentFilter: filter, scrollToTs: result.timestamp })
   }, [agentName])
@@ -615,55 +696,54 @@ function FleetSearchInner({ shape }: { shape: any }) {
               type to search fleet history
             </div>
           )}
-          {results.map((r: any, i: number) => (
-            <div
-              key={i}
-              className="fleet-search-result"
-              onPointerDown={(e) => { stopEventPropagation(e) }}
-              onPointerUp={(e) => {
-                e.stopPropagation()
-                openChatForResult(r)
-              }}
-            >
-              {/* Timestamp + sender */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                marginBottom: 1,
-              }}>
-                <span style={{ fontSize: 9, opacity: 0.5 }}>
-                  {formatTime(r.timestamp)}
-                </span>
-                <span style={{
-                  fontSize: 10,
-                  fontWeight: 500,
-                  opacity: 0.7,
-                }}>
-                  {agentName(r.from)}
-                </span>
-                {r.to && (
-                  <>
-                    <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
-                    <span style={{ fontSize: 10, opacity: 0.5 }}>
-                      {agentName(r.to)}
-                    </span>
-                  </>
-                )}
+          {results.map((r: any, i: number) => {
+            const fromId = r.from || r.agentId || ''
+            const fromName = agentName(fromId)
+            const toName = r.to ? agentName(r.to) : null
+            const fromColor = getNickColorForId(fromId, agents)
+            const toColor = r.to ? getNickColorForId(r.to, agents) : null
+            return (
+              <div
+                key={i}
+                className="fleet-search-result"
+                onPointerDown={(e) => { stopEventPropagation(e) }}
+              >
+                {/* Header row: timestamp + colored draggable nicks + open-thread button */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                  <span style={{ fontSize: 9, opacity: 0.4, flexShrink: 0 }}>
+                    {formatTime(r.timestamp)}
+                  </span>
+                  <span
+                    className="agent-nick"
+                    style={{ fontSize: 9, fontWeight: 500, color: fromColor, cursor: 'grab', padding: '1px 5px', borderRadius: 2, background: `${fromColor}22`, flexShrink: 0, touchAction: 'none', userSelect: 'none' }}
+                    onPointerDown={(e) => startDrag(e, fromName, fromName, fromColor)}
+                    title="Drag to filter chat"
+                  >{fromName}</span>
+                  {toName && toColor && (
+                    <>
+                      <span style={{ fontSize: 8, opacity: 0.2, flexShrink: 0 }}>→</span>
+                      <span
+                        className="agent-nick"
+                        style={{ fontSize: 9, color: toColor, cursor: 'grab', padding: '1px 5px', borderRadius: 2, background: `${toColor}15`, flexShrink: 0, touchAction: 'none', userSelect: 'none' }}
+                        onPointerDown={(e) => startDrag(e, toName, toName, toColor)}
+                        title="Drag to filter chat"
+                      >{toName}</span>
+                    </>
+                  )}
+                  <span
+                    style={{ marginLeft: 'auto', fontSize: 9, opacity: 0.25, cursor: 'pointer', flexShrink: 0, padding: '0 2px', lineHeight: 1 }}
+                    onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
+                    title="Open in chat"
+                  >↗</span>
+                </div>
+                {/* Snippet with highlighted match regions */}
+                <div
+                  style={{ fontSize: 10, opacity: 0.65, lineHeight: 1.35, wordBreak: 'break-word', maxHeight: 52, overflow: 'hidden' }}
+                  dangerouslySetInnerHTML={{ __html: formatSnippet(r.snippet || r.text || r.message || r.body || '', 180) }}
+                />
               </div>
-              {/* Message preview */}
-              <div style={{
-                fontSize: 10,
-                opacity: 0.7,
-                lineHeight: 1.3,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {truncate(r.snippet || r.text || r.message || r.body || '', 120)}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
         )}
 
