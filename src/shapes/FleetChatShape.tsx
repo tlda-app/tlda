@@ -3222,7 +3222,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px 4px 22px',
+                padding: '4px 8px',
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
