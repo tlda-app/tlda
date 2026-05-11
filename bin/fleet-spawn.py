@@ -85,15 +85,20 @@ def ensure_server():
     return False
 
 
-def ws_register(fleet_id, name, tmux_session, cwd, model=None):
+def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None):
     """Pre-register agent via WS so it appears in the panel before Claude starts."""
     ws_url = f"ws://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
         ws = websocket.create_connection(ws_url, timeout=3)
         msg = {"type": "register", "id": fleet_id, "name": name,
                "tmux_session": tmux_session, "cwd": cwd}
+        meta = {}
         if model:
-            msg["metadata"] = {"model": model}
+            meta["model"] = model
+        if effort:
+            meta["effort"] = effort
+        if meta:
+            msg["metadata"] = meta
         ws.send(json.dumps(msg))
         ws.close()
     except Exception as e:
@@ -246,7 +251,7 @@ def fresh_spawn(name, model, cwd, effort=None):
             print(f"Error: agent '{name}' already exists ({existing[0]['id']}). "
                   f"Use respawn: fleet-spawn {name}", file=sys.stderr)
             sys.exit(1)
-        ws_register(fleet_id, name, sess, cwd, model)
+        ws_register(fleet_id, name, sess, cwd, model, effort)
 
     tmux_kill(sess)
 
@@ -374,7 +379,7 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
         print(f"No resumable session for {name} ({fleet_id}) — spawning fresh.", file=sys.stderr)
         tmux_kill(sess)
         if server_up:
-            ws_register(fleet_id, name, sess, cwd, model)
+            ws_register(fleet_id, name, sess, cwd, model, effort)
         cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
         if effort:
             cmd += f" --effort '{effort}'"
@@ -409,6 +414,49 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     return sess
 
 
+def refresh_spawn(name, model_override, cwd_override, effort=None):
+    """Spawn a fresh session for an existing agent — same fleet ID, no --resume.
+    Breaks the compaction loop: agent re-registers with a clean JSONL."""
+    server_up = ensure_server()
+
+    if not server_up:
+        print(f"Error: fleet server is down — can't look up agent '{name}' to refresh.", file=sys.stderr)
+        sys.exit(1)
+
+    agents = api_get("/api/store/agents")
+    if name.startswith("fleet:"):
+        agent = next((a for a in agents if a.get("id") == name), None)
+    else:
+        agent = next((a for a in agents if a.get("friendly_name") == name), None)
+    if not agent:
+        print(f"Error: No agent named '{name}' found. Use --fresh to create a new agent.", file=sys.stderr)
+        sys.exit(1)
+
+    fleet_id = agent["id"]
+    cwd = cwd_override or agent.get("cwd") or os.getcwd()
+    meta = agent.get("metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    model = resolve_model(model_override or (meta.get("model") if isinstance(meta, dict) else None) or DEFAULT_MODEL)
+    if not effort:
+        effort = meta.get("effort") if isinstance(meta, dict) else None
+    sess = agent.get("tmux_session") or f"fleet-{name}"
+
+    tmux_kill(sess)
+    ws_register(fleet_id, name, sess, cwd, model, effort)
+
+    cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
+    if effort:
+        cmd += f" --effort '{effort}'"
+    tmux_start(sess, cwd, cmd)
+
+    print(f"{sess} ({fleet_id}) refreshed in {cwd}")
+    return sess
+
+
 def main():
     # The keystroke-injection child is invoked as a sub-process by
     # tmux_start; handle it before argparse so it doesn't conflict with
@@ -420,6 +468,7 @@ def main():
     parser = argparse.ArgumentParser(description="Spawn or respawn fleet agents")
     parser.add_argument("name", help="Agent friendly name")
     parser.add_argument("--fresh", action="store_true", help="Spawn a new agent instead of respawning")
+    parser.add_argument("--refresh", action="store_true", help="Fresh session for existing agent (same fleet ID, breaks compaction loops)")
     parser.add_argument("--model", default=None, help="Override model (default: sonnet)")
     parser.add_argument("--cwd", default=None, help="Override working directory")
     parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
@@ -430,6 +479,8 @@ def main():
     try:
         if args.fresh:
             sess = fresh_spawn(args.name, args.model, args.cwd, args.effort)
+        elif args.refresh:
+            sess = refresh_spawn(args.name, args.model, args.cwd, args.effort)
         else:
             sess = respawn(args.name, args.model, args.cwd, args.session, args.effort)
     except ValueError as e:

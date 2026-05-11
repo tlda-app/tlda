@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, killSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, killSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
@@ -52,12 +52,17 @@ type SortKey = 'seen' | 'name' | 'status'
 
 const STALE_THRESHOLD = 600_000  // 10 minutes
 
-function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
-  if (agent.dead) return 'dead'
-  if (agent.human) return 'dead'
+function agentCategory(agent: any): 'alive' | 'stale' {
   const ts = agent.last_seen ? new Date(agent.last_seen).getTime() : 0
   if (Date.now() - ts > STALE_THRESHOLD) return 'stale'
   return 'alive'
+}
+
+function formatModel(model: string | null | undefined): string {
+  if (!model) return ''
+  const m = model.match(/claude-(\w+)-(\d+)-(\d+)/)
+  if (!m) return model.replace('claude-', '')
+  return `${m[1]}${m[2]}${m[3]}`
 }
 
 
@@ -324,44 +329,34 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
-  // Categorize and sort agents — stale agents are inline, not collapsed
-  const { activeAgents, deadAgents } = useMemo(() => {
-    const active: any[] = []
-    const dead: any[] = []
+  // Flat sorted agent list — all non-human agents, no dead/alive split
+  const sortedAgents = useMemo(() => {
+    const list: any[] = []
     for (const a of agents) {
       if (a.human) continue
       const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
-      const enriched = { ...a, _ts: ts }
-      const cat = agentCategory(a)
-      if (cat === 'dead') dead.push(enriched)
-      else active.push(enriched) // alive + stale together
+      list.push({ ...a, _ts: ts })
     }
     const dir = sortAsc ? 1 : -1
-    const sortFn = (a: any, b: any) => {
+    list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
-        const order = { alive: 0, stale: 1, dead: 2 }
-        const ca = order[agentCategory(a) as keyof typeof order] ?? 1
-        const cb = order[agentCategory(b) as keyof typeof order] ?? 1
+        const order = { alive: 0, stale: 1 }
+        const ca = order[agentCategory(a)] ?? 1
+        const cb = order[agentCategory(b)] ?? 1
         return dir * (ca - cb) || b._ts - a._ts
       }
-      // 'seen' — default (sortAsc=false) is most-recent-first. The math
-      // here is inverted relative to name/status so that the "desc" arrow
-      // on the header means "most recent at top" (what anyone would want).
       return dir * (a._ts - b._ts)
-    }
-    active.sort(sortFn)
-    dead.sort((a: any, b: any) => b._ts - a._ts)
-    return { activeAgents: active, deadAgents: dead }
+    })
+    return list
   }, [agents, sortKey, sortAsc])
 
-  const staleCount = useMemo(() => activeAgents.filter(a => agentCategory(a) === 'stale').length, [activeAgents])
-  const aliveCount = activeAgents.length - staleCount
+  const staleCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'stale').length, [sortedAgents])
+  const aliveCount = sortedAgents.length - staleCount
 
   // Fetch last messages for visible agents
-  const lastMessages = useLastMessages(activeAgents)
+  const lastMessages = useLastMessages(sortedAgents)
 
-  const [showDead, setShowDead] = useState(false)
   const unreadCounts = useFleetUnreadCounts()
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
@@ -444,64 +439,23 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
-        {/* Agent rows — scrollable. Alive + stale inline, only dead collapses */}
+        {/* Agent rows — scrollable flat list */}
         <div className="fleet-agents-body">
-          {activeAgents.length === 0 && deadAgents.length === 0 ? (
+          {sortedAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
-          ) : (
-            <>
-              {activeAgents.map((agent: any) => {
-                const isStale = agentCategory(agent) === 'stale'
-                return (
-                  <AgentRow
-                    key={agent.id}
-                    agent={agent}
-                    tasks={getTasksForAgent(agent.id)}
-                    unreadCount={unreadCounts[agent.id] || 0}
-                    dimmed={isStale}
-                    canRespawn={isStale}
-                    expanded={expandedId === agent.id}
-                    lastMessage={lastMessages[agentDisplayName(agent)] || ''}
-                    onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
-                    onStartDrag={startDrag}
-                  />
-                )
-              })}
-
-              {deadAgents.length > 0 && (
-                <>
-                  <div
-                    className="fleet-agents-section-header"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => {
-                      e.stopPropagation()
-                      setShowDead(!showDead)
-                    }}
-                  >
-                    <span className="fleet-agents-section-toggle">
-                      {showDead ? '▾' : '▸'}
-                    </span>
-                    <span>dead</span>
-                    <span className="fleet-agents-section-count">({deadAgents.length})</span>
-                  </div>
-                  {showDead && deadAgents.map((agent: any) => (
-                    <AgentRow
-                      key={agent.id}
-                      agent={agent}
-                      tasks={getTasksForAgent(agent.id)}
-                      unreadCount={unreadCounts[agent.id] || 0}
-                      dimmed
-                      canRespawn
-                      expanded={expandedId === agent.id}
-                      lastMessage=""
-                      onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
-                      onStartDrag={startDrag}
-                    />
-                  ))}
-                </>
-              )}
-            </>
-          )}
+          ) : sortedAgents.map((agent: any) => (
+            <AgentRow
+              key={agent.id}
+              agent={agent}
+              tasks={getTasksForAgent(agent.id)}
+              unreadCount={unreadCounts[agent.id] || 0}
+              dimmed={agentCategory(agent) === 'stale'}
+              expanded={expandedId === agent.id}
+              lastMessage={lastMessages[agentDisplayName(agent)] || ''}
+              onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
+              onStartDrag={startDrag}
+            />
+          ))}
         </div>
 
         {/* Footer */}
@@ -565,7 +519,6 @@ function AgentRow({
   agent,
   tasks,
   dimmed,
-  canRespawn,
   unreadCount,
   expanded,
   lastMessage,
@@ -575,7 +528,6 @@ function AgentRow({
   agent: any
   tasks: any[]
   dimmed?: boolean
-  canRespawn?: boolean
   unreadCount: number
   expanded: boolean
   lastMessage: string
@@ -588,13 +540,16 @@ function AgentRow({
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)
+  const meta = agent.metadata || {}
+  const modelStr = formatModel(meta.model)
+  const effortStr: string = meta.effort || ''
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const nameOpacity = agent.dead ? 0.4 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
+  const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
-      {/* Line 1: compact row. Click anywhere to expand (name + labels are draggable, respawn is its own action) */}
+      {/* Line 1: compact row */}
       <div
         className="fleet-agents-row-main"
         onPointerDown={(e) => stopEventPropagation(e)}
@@ -605,25 +560,19 @@ function AgentRow({
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
-        {/* Kill/respawn — single button left of name, on hover. Live → ×, dead → ⟳ */}
-        {(agent.dead ? canRespawn : true) && (
-          <span
-            className={agent.dead ? 'fleet-agents-respawn-btn' : 'fleet-agents-kill-btn'}
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              if (agent.dead) respawnAgent(agent.id)
-              else killSession(agent.id)
-            }}
-            title={agent.dead ? 'Respawn agent' : 'Kill agent session'}
-          >
-            {agent.dead ? '⟳' : '×'}
-          </span>
-        )}
-
-        {/* Agent name — draggable (drag to create pill filter). Stops row click via onStartDrag's stopEventPropagation */}
+        {/* Kill button — shown on hover */}
         <span
-          className={`fleet-agents-col-name fleet-agents-pill`}
+          className="fleet-agents-kill-btn"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => { e.stopPropagation(); killSession(agent.id) }}
+          title="Kill agent session"
+        >
+          ×
+        </span>
+
+        {/* Agent name — draggable */}
+        <span
+          className="fleet-agents-col-name fleet-agents-pill"
           style={{ color, opacity: nameOpacity }}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
         >
@@ -651,9 +600,15 @@ function AgentRow({
         </span>
       </div>
 
-      {/* Expanded detail: all tasks + last message */}
+      {/* Expanded detail: model/effort, tasks, last message */}
       {expanded && (
         <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
+          {(modelStr || effortStr) && (
+            <div className="fleet-agents-detail-meta">
+              {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
+              {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
+            </div>
+          )}
           {tasks.length === 0 ? (
             <div className="fleet-agents-detail-task">(no task)</div>
           ) : tasks.map((t: any, i: number) => (

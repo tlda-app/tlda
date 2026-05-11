@@ -733,12 +733,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent.',
+      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops).',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent name to respawn (default behavior).' },
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
+          refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
           model: { type: 'string', description: 'Model override. Default: sonnet.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
@@ -2333,6 +2334,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
 
     const isFresh = !!args.fresh;
+    const isRefresh = !!args.refresh;
     const agentName = isFresh ? args.name : args.agent;
     if (!agentName) {
       return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
@@ -2341,6 +2343,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
     const cmdParts = [fleetSpawnScript];
     if (isFresh) cmdParts.push('--fresh');
+    if (isRefresh) cmdParts.push('--refresh');
     if (args.model) cmdParts.push('--model', args.model);
     if (args.effort) cmdParts.push('--effort', args.effort);
     if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));

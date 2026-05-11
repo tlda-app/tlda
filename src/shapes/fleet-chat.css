@@ -1434,6 +1434,23 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.fleet-agents-shape .fleet-agents-detail-meta {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.fleet-agents-shape .fleet-agents-detail-model {
+  opacity: 0.7;
+  background: rgba(122, 158, 200, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+.fleet-agents-shape .fleet-agents-detail-effort {
+  opacity: 0.55;
+  background: rgba(147, 112, 219, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 
 /* --- Column widths --- */
 
