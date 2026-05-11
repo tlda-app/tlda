@@ -124,6 +124,8 @@ function findPlaceholders(svgText) {
             if (textY < top - eps || textY > bottom + eps) continue
             // Corners must align: horiz x-range ≈ vert x-range
             if (Math.abs(h1.x - left) > eps || Math.abs(h1.x + h1.w - right) > eps) continue
+            // Horiz y-range must match vert y-range (rejects shared borders from overlapping stacked figures)
+            if (Math.abs(top - v1.y) > eps || Math.abs(bottom - (v1.y + v1.h)) > eps) continue
 
             const w = right - left
             const h = bottom - top
