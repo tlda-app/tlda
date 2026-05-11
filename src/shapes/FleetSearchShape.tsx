@@ -25,6 +25,8 @@ import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
+// @ts-ignore — vanilla JS module
+import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
@@ -238,7 +240,7 @@ function EmbeddedChatView({ agentFilter, scrollToTs, onBack }: {
   }, [renderedHtml, scrollToTs])
 
   return (
-    <div className="fleet-search-embedded-chat">
+    <div className="fleet-search-embedded-chat fleet-chat-shape">
       <div
         className="fleet-search-chat-back"
         onPointerDown={(e) => e.stopPropagation()}
@@ -283,13 +285,6 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
 
 
 
-function formatSnippet(raw: string, max = 180): string {
-  if (!raw) return ''
-  const clean = raw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
-  const truncated = clean.length > max ? clean.slice(0, max) + '…' : clean
-  // esc() escapes &<>"  — ⟨⟩ are Unicode so pass through unescaped
-  return esc(truncated).replace(/⟨⟨/g, '<mark>').replace(/⟩⟩/g, '</mark>')
-}
 
 // Parse inline keyword filters from query string
 // Returns { query, filters } where query is the remaining FTS text
@@ -670,46 +665,32 @@ function FleetSearchInner({ shape }: { shape: any }) {
             </div>
           )}
           {results.map((r: any, i: number) => {
-            const fromId = r.from || r.agentId || ''
-            const fromName = agentName(fromId)
-            const toId = r.to || ''
-            const toName = toId ? agentName(toId) : null
-            const fromNickClass = ctx.getNickClass(fromId)
-            const toNickClass = toId ? ctx.getNickClass(toId) : null
-            const fromColor = ctx.getAgentColor(fromId)
-            const toColor = toId ? ctx.getAgentColor(toId) : null
-            const snippetHtml = formatSnippet(r.snippet || r.text || r.message || r.body || '', 200)
+            // text comes from new server; fall back to snippet for old server
+            const text = r.text ?? r.snippet ?? ''
+            // Build a proper event object for renderChatLine
+            const rawEvent = r.source === 'session'
+              ? { type: r.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: r.agentId, to: null, text, timestamp: r.timestamp, id: r.id }
+              : { ...r, text, id: r.id }
+            const msgObj = convertChatEvent(rawEvent)
+            const lineHtml = renderChatLine(msgObj, ctx)
+            if (!lineHtml) return null
             return (
               <div
                 key={i}
-                className="chat-line fleet-search-result"
-                data-msg-ts={r.timestamp}
-                data-msg-from={fromId}
-                onPointerDown={(e) => { stopEventPropagation(e) }}
+                className="fleet-search-result"
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  // Delegate nick drags to startDrag
+                  const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
+                  if (nick) {
+                    const agentId = nick.dataset.agentId || ''
+                    const name = agentName(agentId)
+                    const color = ctx.getAgentColor(agentId)
+                    startDrag(e, name, name, color)
+                  }
+                }}
               >
-                <span className="chat-ts">{timeShort(r.timestamp)}</span>
-                {' '}
-                <span
-                  className={`agent-nick ${fromNickClass}`}
-                  data-agent-id={fromId}
-                  onPointerDown={(e) => startDrag(e, fromName, fromName, fromColor)}
-                  style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                  title="Drag to filter chat"
-                >{fromName}</span>
-                {toName && toNickClass && toColor && <>
-                  {' → '}
-                  <span
-                    className={`agent-nick ${toNickClass}`}
-                    data-agent-id={toId}
-                    onPointerDown={(e) => startDrag(e, toName, toName, toColor)}
-                    style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
-                  >{toName}</span>
-                </>}
-                {' '}
-                <span
-                  className="search-result-snippet"
-                  dangerouslySetInnerHTML={{ __html: snippetHtml }}
-                />
+                <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
                 <span
                   className="search-result-open"
                   onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
