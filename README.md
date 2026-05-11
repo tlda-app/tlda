@@ -142,6 +142,52 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
+### Eliza: automated agent coaching
+
+Eliza is a lightweight pseudo-agent (`bin/eliza.mjs`) that watches your outgoing chat messages and sends corrective nudges to agents when it detects frustration signals. It's a pure regex decision tree — no LLM, no latency, just pattern matching → chat dispatch. Auto-starts with `tlda server start`.
+
+**How it works:**
+
+When you send a message to an agent, eliza scans it for trigger phrases. On a match it sends the agent a directive (referencing the relevant skill) before you have to escalate.
+
+| Trigger phrase | What eliza sends |
+|----------------|-----------------|
+| "does that make sense" | Reflect back before proceeding |
+| "slow down" | Read `partner-not-soloist` |
+| "cop-out" | State the precise claim, prove it step by step |
+| "I'm struggling" | Slow down, be more explicit |
+| "you don't understand" | 🛑 STOP — reflect back, don't propose solutions |
+| "that's useless" | Ask what's needed instead |
+| "rude" | Read `partner-not-soloist` + `respond-before-acting` |
+| "hurtful" / "feel stupid" | 🛑 Full stop — acknowledge, listen |
+| "I'm not talking to you until" | Meet the stated condition first |
+| "bro" / "wtf" (standalone) | Re-read CLAUDE.md, say what went wrong |
+
+**Education tracking:**
+
+On re-fire (after a cooldown), eliza checks whether the agent invoked the referenced skill since the last nudge. If they did, the message says "you read it but the pattern is recurring." If they didn't, it says "you were nudged X minutes ago and still haven't read it."
+
+**Cooldowns:** 60 seconds by default, 120 seconds for "does that make sense" (high false-positive rate). Only one trigger fires per message.
+
+**Qualification rules** (`~/.claude/qualifications.json`):
+
+The fleet daemon watches every agent's tool calls. When an agent tries to edit a file without having Read the required prerequisite files, it fires a warning to you in chat. Example config:
+
+```json
+{
+  "rules": [
+    {
+      "edit": "**/*.tex",
+      "requires": ["~/.claude/reference/math-implementation.md"]
+    }
+  ]
+}
+```
+
+Skill invocations (via the `Skill` tool) are tracked alongside file reads — you can require `"skill:partner-not-soloist"` as a prerequisite just like a file path.
+
+**Logs:** `~/.config/tlda/eliza.log` · **PID:** `~/.config/tlda/eliza.pid`
+
 ### Arranging the canvas
 
 Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
