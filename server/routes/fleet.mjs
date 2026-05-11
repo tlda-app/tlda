@@ -12,7 +12,6 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { processMessageText } from '../../mcp-server/lib/message-processing.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -756,23 +755,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
 
     const route = resolveRpc('rechat', agent)
+    if (route.via === 'none') return res.status(503).json({ ok: false, error: route.error })
 
     let result
-    if (route.via === 'none') {
-      // No daemon reachable for this agent — run processMessageText locally.
-      // File paths in rawText are absolute and accessible on this machine.
-      const serverBase = `http://127.0.0.1:${process.env.PORT || 5176}`
-      result = await processMessageText(rawText, agent.cwd || os.homedir(), serverBase)
-    } else {
-      try {
-        result = await sendRpc(route.machine_id, 'rechat', {
-          text: rawText,
-          cwd: agent.cwd,
-          server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
-        })
-      } catch (e) {
-        return res.status(502).json({ ok: false, error: e.message })
-      }
+    try {
+      result = await sendRpc(route.machine_id, 'rechat', {
+        text: rawText,
+        cwd: agent.cwd,
+        server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
+      })
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message })
     }
 
     const { resolvedMessage, inlineAttachments } = result
