@@ -1925,10 +1925,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       return IMAGE_EXTS.has(ext)
     }
 
-    function isRemote(): boolean {
-      const h = window.location.hostname
-      return h !== 'localhost' && h !== '127.0.0.1'
-        && !h.startsWith('192.168.') && !h.startsWith('10.') && !h.startsWith('100.')
+    function isMarkdownPath(text: string): boolean {
+      return text.split('.').pop()?.toLowerCase() === 'md'
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {
@@ -1951,8 +1949,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        const { url } = await resp.json()
-        const rendered = renderMarkdownUtil(esc(url || text))
+        const { url, content } = await resp.json()
+        const rendered = isMarkdownPath(text) && content
+          ? renderMarkdownUtil(content)
+          : renderMarkdownUtil(esc(url || text))
         const wrapper = document.createElement('span')
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
@@ -1978,7 +1978,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.preventDefault()
       e.stopPropagation()
 
-      const needsTier2 = isImagePath(text) && isRemote()
+      const needsTier2 = isImagePath(text) || isMarkdownPath(text)
       if (needsTier2) {
         const eventId = chatLine.dataset.msgId || ''
         const agentId = chatLine.dataset.msgFrom || ''

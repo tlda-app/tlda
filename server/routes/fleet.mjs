@@ -771,6 +771,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const event = fleetStore.getEventById?.(parseInt(eventId, 10))
     if (event && event.text) {
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(filePath)
+      const isMarkdown = /\.md$/i.test(filePath)
       const fileName = path.basename(filePath)
       const url = result.url || ''
       const backtickForms = [`\`${filePath}\``, filePath]
@@ -779,7 +780,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         if (newText.includes(form)) {
           const replacement = isImage && url
             ? `![${fileName}](${url})`
-            : url || filePath
+            : isMarkdown && result.content
+              ? result.content
+              : url || filePath
           newText = newText.replace(form, replacement)
           break
         }
@@ -791,7 +794,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       }
     }
 
-    res.json({ ok: true, url: result.url })
+    res.json({ ok: true, url: result.url, content: result.content || null })
   })
 
   // --- POST /api/fleet-event ---

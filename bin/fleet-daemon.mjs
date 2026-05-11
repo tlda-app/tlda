@@ -1223,7 +1223,10 @@ async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   const abs = resolveFilePath(filePath, cwd)
   if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
   const serverBase = server_url || `http://127.0.0.1:5176`
-  return await uploadFileToServer(abs, serverBase)
+  const result = await uploadFileToServer(abs, serverBase)
+  const ext = path.extname(abs).slice(1).toLowerCase()
+  if (ext === 'md') result.content = fs.readFileSync(abs, 'utf8')
+  return result
 }
 
 const RPC_HANDLERS = {
