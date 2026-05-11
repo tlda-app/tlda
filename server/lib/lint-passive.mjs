@@ -94,3 +94,29 @@ export function lintDiff(diffText, readFile) {
   }
   return results
 }
+
+// Standalone CLI — pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+  const { readFileSync } = await import('fs')
+  const { join } = await import('path')
+  const srcDir = process.env.TLDA_SRCDIR || ''
+  const diffText = readFileSync(0, 'utf8')
+  const findings = lintDiff(diffText, (file) => {
+    if (!srcDir) return null
+    try { return readFileSync(join(srcDir, file), 'utf8') } catch { return null }
+  })
+  if (findings.length > 0) {
+    const grouped = new Map()
+    for (const f of findings) {
+      if (!grouped.has(f.file)) grouped.set(f.file, [])
+      grouped.get(f.file).push(f)
+    }
+    const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
+    for (const [file, items] of grouped) {
+      const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
+      lines.push(`- \`${file}\`: ${detail}`)
+    }
+    lines.push('Passive voice in math prose makes the reader work harder. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" over "is bounded by …" / "is given by …".')
+    process.stdout.write(lines.join('\n') + '\n')
+  }
+}
