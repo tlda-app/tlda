@@ -1667,18 +1667,38 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-search-result {
-  padding: 4px 10px;
+  padding: 4px 10px !important;
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
   transition: background 0.1s;
+  font-size: 10px !important;
+  line-height: 1.4 !important;
 }
 .fleet-search-result:hover {
   background: rgba(128, 128, 128, 0.06);
 }
-.fleet-search-result mark {
+.fleet-search-result mark,
+.fleet-search-result .search-result-snippet mark {
   background: rgba(255, 220, 80, 0.25);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
+}
+.search-result-snippet {
+  opacity: 0.7;
+}
+.search-result-open {
+  float: right;
+  font-size: 9px;
+  opacity: 0.25;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: opacity 0.15s;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.fleet-search-result:hover .search-result-open {
+  opacity: 0.6;
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);

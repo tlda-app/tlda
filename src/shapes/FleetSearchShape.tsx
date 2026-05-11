@@ -20,7 +20,7 @@ import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
@@ -75,18 +75,6 @@ const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
-function getNickColorForId(id: string, agents: any[]): string {
-  if (!id) return nickHex[0]
-  const a = agents.find((a: any) => a.id === id)
-  if (a?.human) return '#8bc87a'
-  if (!nickHexMap.has(id)) {
-    const idx = nickIdx % nickHex.length
-    nickMap.set(id, nickColors[idx])
-    nickHexMap.set(id, nickHex[idx])
-    nickIdx++
-  }
-  return nickHexMap.get(id)!
-}
 
 const DRAG_THRESHOLD = 4
 interface DragState {
@@ -293,17 +281,6 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-function formatTime(ts: string | number): string {
-  if (!ts) return ''
-  const d = new Date(ts)
-  const now = new Date()
-  const sameDay = d.toDateString() === now.toDateString()
-  if (sameDay) {
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
-    ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
 
 function truncate(text: string, max: number): string {
   if (!text) return ''
@@ -400,6 +377,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [editor])
 
   const agents = useFleetAgents()
+  const tasks = useFleetTasks()
+  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
   const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
@@ -644,7 +623,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
           />
         ) : (
         <div
-          className="fleet-search-results"
+          className="fleet-search-results fleet-chat-shape"
           style={{
             flex: 1,
             overflowY: 'auto',
@@ -699,48 +678,49 @@ function FleetSearchInner({ shape }: { shape: any }) {
           {results.map((r: any, i: number) => {
             const fromId = r.from || r.agentId || ''
             const fromName = agentName(fromId)
-            const toName = r.to ? agentName(r.to) : null
-            const fromColor = getNickColorForId(fromId, agents)
-            const toColor = r.to ? getNickColorForId(r.to, agents) : null
+            const toId = r.to || ''
+            const toName = toId ? agentName(toId) : null
+            const fromNickClass = ctx.getNickClass(fromId)
+            const toNickClass = toId ? ctx.getNickClass(toId) : null
+            const fromColor = ctx.getAgentColor(fromId)
+            const toColor = toId ? ctx.getAgentColor(toId) : null
+            const snippetHtml = formatSnippet(r.snippet || r.text || r.message || r.body || '', 200)
             return (
               <div
                 key={i}
-                className="fleet-search-result"
+                className="chat-line fleet-search-result"
+                data-msg-ts={r.timestamp}
+                data-msg-from={fromId}
                 onPointerDown={(e) => { stopEventPropagation(e) }}
               >
-                {/* Header row: timestamp + colored draggable nicks + open-thread button */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                  <span style={{ fontSize: 9, opacity: 0.4, flexShrink: 0 }}>
-                    {formatTime(r.timestamp)}
-                  </span>
+                <span className="chat-ts">{timeShort(r.timestamp)}</span>
+                {' '}
+                <span
+                  className={`agent-nick ${fromNickClass}`}
+                  data-agent-id={fromId}
+                  onPointerDown={(e) => startDrag(e, fromName, fromName, fromColor)}
+                  style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                  title="Drag to filter chat"
+                >{fromName}</span>
+                {toName && toNickClass && toColor && <>
+                  {' → '}
                   <span
-                    className="agent-nick"
-                    style={{ fontSize: 9, fontWeight: 500, color: fromColor, cursor: 'grab', padding: '1px 5px', borderRadius: 2, background: `${fromColor}22`, flexShrink: 0, touchAction: 'none', userSelect: 'none' }}
-                    onPointerDown={(e) => startDrag(e, fromName, fromName, fromColor)}
-                    title="Drag to filter chat"
-                  >{fromName}</span>
-                  {toName && toColor && (
-                    <>
-                      <span style={{ fontSize: 8, opacity: 0.2, flexShrink: 0 }}>→</span>
-                      <span
-                        className="agent-nick"
-                        style={{ fontSize: 9, color: toColor, cursor: 'grab', padding: '1px 5px', borderRadius: 2, background: `${toColor}15`, flexShrink: 0, touchAction: 'none', userSelect: 'none' }}
-                        onPointerDown={(e) => startDrag(e, toName, toName, toColor)}
-                        title="Drag to filter chat"
-                      >{toName}</span>
-                    </>
-                  )}
-                  <span
-                    style={{ marginLeft: 'auto', fontSize: 9, opacity: 0.25, cursor: 'pointer', flexShrink: 0, padding: '0 2px', lineHeight: 1 }}
-                    onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
-                    title="Open in chat"
-                  >↗</span>
-                </div>
-                {/* Snippet with highlighted match regions */}
-                <div
-                  style={{ fontSize: 10, opacity: 0.65, lineHeight: 1.35, wordBreak: 'break-word', maxHeight: 52, overflow: 'hidden' }}
-                  dangerouslySetInnerHTML={{ __html: formatSnippet(r.snippet || r.text || r.message || r.body || '', 180) }}
+                    className={`agent-nick ${toNickClass}`}
+                    data-agent-id={toId}
+                    onPointerDown={(e) => startDrag(e, toName, toName, toColor)}
+                    style={{ cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+                  >{toName}</span>
+                </>}
+                {' '}
+                <span
+                  className="search-result-snippet"
+                  dangerouslySetInnerHTML={{ __html: snippetHtml }}
                 />
+                <span
+                  className="search-result-open"
+                  onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
+                  title="Open in chat"
+                >↗</span>
               </div>
             )
           })}
