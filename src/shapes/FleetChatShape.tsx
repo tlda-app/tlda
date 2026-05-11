@@ -1956,22 +1956,30 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     let lastClickEl: HTMLElement | null = null
     let lastClickTime = 0
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+    function clearPending() {
+      if (lastClickEl) lastClickEl.classList.remove('code-unquote-pending')
+      lastClickEl = null
+      lastClickTime = 0
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+    }
 
     function onClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const codeEl = target.closest('code') as HTMLElement | null
-      if (!codeEl) { lastClickEl = null; return }
+      if (!codeEl) { clearPending(); return }
 
       const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
-      if (!chatLine) { lastClickEl = null; return }
+      if (!chatLine) { clearPending(); return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { lastClickEl = null; return }
+      if (!matchesUnquotePattern(text)) { clearPending(); return }
 
       const now = Date.now()
       if (lastClickEl === codeEl && now - lastClickTime < 500) {
         // Second click within 500ms on the same element = double-click
-        lastClickEl = null
+        clearPending()
         e.preventDefault()
         e.stopPropagation()
         if (isFilePath(text)) {
@@ -1982,8 +1990,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           applyTier1(codeEl, text)
         }
       } else {
+        clearPending()
         lastClickEl = codeEl
         lastClickTime = now
+        codeEl.classList.add('code-unquote-pending')
+        pendingTimer = setTimeout(clearPending, 1000)
       }
     }
 

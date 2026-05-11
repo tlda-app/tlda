@@ -526,6 +526,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 12px;
   font-family: 'SF Mono','Menlo',monospace;
 }
+.fleet-chat-shape .chat-line code.code-unquote-pending {
+  background: color-mix(in srgb, var(--blue) 25%, transparent);
+  outline: 1px solid var(--blue);
+  cursor: pointer;
+}
 .fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
 
 /* --- Lists in chat --- */
