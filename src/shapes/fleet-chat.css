@@ -1728,27 +1728,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Embedded chat view in search --- */
 
-.fleet-search-embedded-chat {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
 .fleet-search-chat-back {
+  background: none;
+  border: none;
   padding: 4px 10px;
   font-size: 9px;
+  font-family: inherit;
+  color: inherit;
   opacity: 0.5;
   cursor: pointer;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
-  flex-shrink: 0;
   transition: opacity 0.15s;
 }
 .fleet-search-chat-back:hover {
-  opacity: 0.8;
-}
-.fleet-search-embedded-chat .fleet-chat-log {
-  font-size: 10px;
-  padding: 4px 0;
+  opacity: 0.9;
 }
 
 /* Highlight a chat line when scrolled to from search */
