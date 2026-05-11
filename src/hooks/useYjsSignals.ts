@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -133,6 +133,16 @@ export function useYjsSignals({
           lookupSnapshotRef.current = await loadLookup(document.name)
         })
       }
+    })
+  }, [document])
+
+  // Re-fetch visible pages when source files change — triggers the ensure system
+  // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.
+  useEffect(() => {
+    return onSourceChangedSignal(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      reloadPages(editor, document, null)
     })
   }, [document])
 
