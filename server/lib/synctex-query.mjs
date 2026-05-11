@@ -191,10 +191,13 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   const data = await loadSynctex(projectName, target || undefined)
   if (!data || points.length === 0) return null
 
-  // Filter to source .tex files
+  // Filter to source .tex files that actually exist on disk.
+  // The synctex wrapper file (e.g. <texBase>-wrapped.tex written to a now-deleted
+  // temp build dir) ends in .tex but no longer exists — exclude it so we don't
+  // return null when a hit record maps to the ephemeral wrapper.
   const sourceFileIds = new Set()
-  for (const [id, path] of data.inputMap) {
-    if (path.endsWith('.tex')) sourceFileIds.add(id)
+  for (const [id, filePath] of data.inputMap) {
+    if (filePath.endsWith('.tex') && existsSync(filePath)) sourceFileIds.add(id)
   }
 
   // Get all synctex records on this page from source files
