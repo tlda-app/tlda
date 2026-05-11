@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """
-Grammar linter for .tex files: non-grammatical commas and colons.
+Grammar linter for .tex files using spaCy.
 
-Substitutes math with grammatical placeholders so spaCy can parse prose
-containing math as normal English, then uses the dependency tree to flag
-violations.
+Substitutes ALL math (inline and display alike) with grammatically typed
+English placeholders so spaCy can check sentence structure:
+  - Math terms → "M" (noun placeholder)
+  - Relation operators → English verbs ("equals", "is at most", …)
+  - \\qwhere/\\qfor/\\qand → their English words
 
-Flags:
-  colon-before-display   — colon immediately before a display equation
-  comma-before-display   — comma immediately before a display equation
-  comma-before-conjunction — comma before \\qwhere/\\qfor/\\qand in display math
+Display environment tags are stripped so display content flows into the same
+text stream as prose. The display/inline distinction is irrelevant to grammar.
+
+Rules detected:
+  colon-before-display     — colon immediately before display math
+  comma-before-display     — comma immediately before display math
+  comma-before-conjunction — comma before \\qwhere/\\qfor/\\qand
 
 Usage:
     python3 lint-typography.py <tex-file>
-
-Outputs JSON to stdout: [{file, line, kind, snippet}, ...]
+Output:
+    JSON array of {file, line, kind, snippet} to stdout.
 """
 
 import json
@@ -23,190 +28,227 @@ import sys
 
 import spacy
 
-# Display environment names
-_DISPLAY_ENV_NAMES = (
+# --------------------------------------------------------------------------
+# LaTeX environment / structure regexes
+# --------------------------------------------------------------------------
+
+_DISPLAY_ENVS = (
     r'equation\*?|align\*?|gather\*?|multline\*?|'
     r'eqnarray\*?|flalign\*?|alignat\*?|subequations|cases'
 )
-ENV_BEGIN_RE = re.compile(rf'\\begin\{{({_DISPLAY_ENV_NAMES})\}}')
-ENV_END_RE   = re.compile(rf'\\end\{{({_DISPLAY_ENV_NAMES})\}}')
-DISPLAY_OPEN_RE  = re.compile(r'^\s*\\\[')
-DISPLAY_CLOSE_RE = re.compile(r'^\s*\\\]')
+ENV_BEGIN_RE  = re.compile(rf'\\begin\{{({_DISPLAY_ENVS})\}}')
+ENV_END_RE    = re.compile(rf'\\end\{{({_DISPLAY_ENVS})\}}')
+DISPLAY_OPEN  = re.compile(r'^\s*\\\[')
+DISPLAY_CLOSE = re.compile(r'^\s*\\\]')
+COMMENT_RE    = re.compile(r'(?<!\\)%.*$')
 
-COMMENT_RE = re.compile(r'(?<!\\)%.*$')
+# Inline math — greedily matches $...$ and $$...$$
+INLINE_MATH_RE = re.compile(r'\$\$[^$]*\$\$|\$[^$\n]*\$')
 
-INLINE_MATH_RE = [
-    re.compile(r'\$\$[^$]*\$\$'),
-    re.compile(r'\$[^$\n]*\$'),
-    re.compile(r'\\\([^)]*\\\)'),
-]
+# \\q-conjunction macros (inside math, never in prose)
+CONJUNCTION_RE = re.compile(r'\\q(where|for|and)\b')
 
-CONJUNCTION_COMMA_RE = re.compile(r',\s*\\q(where|for|and)\b')
+# Comma immediately before \\qwhere/\\qfor/\\qand in the source
+COMMA_CONJ_RE = re.compile(r',\s*\\q(where|for|and)\b')
 
-# Placeholder that spaCy will tag as a noun (all-caps proper noun heuristic)
-DISPLAY_PLACEHOLDER = 'DISPLAYMATH'
+# --------------------------------------------------------------------------
+# Substitution helpers
+# --------------------------------------------------------------------------
 
-
-def strip_comment(line):
+def strip_comment(line: str) -> str:
     return COMMENT_RE.sub('', line).rstrip()
 
 
-def is_display_opener(line):
-    s = line.strip()
-    return bool(DISPLAY_OPEN_RE.match(s) or ENV_BEGIN_RE.search(s))
+def _math_to_english(s: str) -> str:
+    """
+    Replace LaTeX math tokens with English placeholders.
+
+    Done in a single pass using a substitution function so that we can
+    expand relation operators into English verbs before replacing the
+    remaining identifiers/commands with the noun placeholder "M".
+
+    \\q-macros are expanded to their English words FIRST (before the
+    identifier-replacement pass) so they don't get clobbered.
+    """
+    # 1. Expand conjunction macros to English
+    s = CONJUNCTION_RE.sub(lambda m: m.group(1), s)  # \qwhere → where, etc.
+
+    # 2. Expand relation operators to English verbs
+    s = re.sub(r'\\(?:le|leq|leqslant)\b', ' is_at_most ', s)
+    s = re.sub(r'\\(?:ge|geq|geqslant)\b', ' is_at_least ', s)
+    s = re.sub(r'\\(?:ne|neq)\b',          ' is_not ',      s)
+    s = re.sub(r'\\in\b',                  ' in ',          s)
+    s = re.sub(r'\\notin\b',               ' not_in ',      s)
+    s = re.sub(r'(?<![=<>!])=(?!=)',       ' equals ',      s)
+    s = re.sub(r'\\approx\b',             ' approximately_equals ', s)
+
+    # 3. Strip alignment markers and line-break macros
+    s = re.sub(r'\\\\', ' ', s)
+    s = re.sub(r'&', ' ', s)
+
+    # 4. Protect known English words from the identifier sweep below.
+    #    These come from conjunction expansion or relation-verb substitution.
+    KEEP_WORDS = {'where', 'for', 'and', 'in', 'not_in',
+                  'equals', 'is_at_most', 'is_at_least', 'is_not',
+                  'approximately_equals'}
+    # Tokenize and rebuild, replacing only non-kept tokens
+    def replace_token(tok):
+        # Multi-word tokens (underscored) are our synthetic verbs — keep them
+        if '_' in tok:
+            return tok
+        if tok.lower() in KEEP_WORDS:
+            return tok
+        # LaTeX command
+        if tok.startswith('\\'):
+            return 'M'
+        # Pure alphabetic identifier → noun placeholder
+        if re.fullmatch(r'[a-zA-Z]\w*', tok):
+            return 'M'
+        # Number → noun placeholder
+        if re.fullmatch(r'\d+\.?\d*(?:[eE][+-]?\d+)?', tok):
+            return 'M'
+        return tok
+
+    tokens = re.split(r'(\s+)', s)
+    rebuilt = []
+    for tok in tokens:
+        if re.fullmatch(r'\s+', tok):
+            rebuilt.append(tok)
+            continue
+        # The tok may be a compound like "\\frac{1}{2}" — extract the command
+        # part and replace the whole thing, since we already stripped args above
+        m = re.match(r'\\[a-zA-Z*]+(?:\{[^}]*\}|\[[^\]]*\])*', tok)
+        if m:
+            rebuilt.append('M')
+            continue
+        rebuilt.append(replace_token(tok))
+
+    s = ''.join(rebuilt)
+    # Clean up punctuation that's purely structural in LaTeX
+    s = re.sub(r'[{}()\[\]^_]', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
 
 
-def is_display_closer(line):
-    s = line.strip()
-    return bool(DISPLAY_CLOSE_RE.match(s) or ENV_END_RE.search(s))
-
-
-def is_blank_or_comment(line):
-    s = line.strip()
-    return s == '' or s.startswith('%')
-
-
-def substitute_inline_math(line):
-    """Replace inline math and q-macros so the line is parseable English."""
-    s = line
-    for pat in INLINE_MATH_RE:
-        s = pat.sub(' M ', s)
-    # Expand q-conjunction macros to their English words
-    s = s.replace(r'\qwhere', 'where')
-    s = s.replace(r'\qfor', 'for')
-    s = s.replace(r'\qand', 'and')
-    # Strip common LaTeX wrappers, preserving their text content
-    s = re.sub(r'\\(?:emph|textbf|textit|texttt|mathit|mathrm)\{([^}]*)\}', r' \1 ', s)
+def substitute_inline_math(line: str) -> str:
+    """Replace $...$ spans and common LaTeX wrappers in a prose line."""
+    s = INLINE_MATH_RE.sub(lambda m: ' ' + _math_to_english(m.group()[1:-1]) + ' ', line)
+    # Strip common text wrappers, keeping their content
+    s = re.sub(r'\\(?:emph|textbf|textit|texttt|text)\{([^}]*)\}', r' \1 ', s)
     s = re.sub(r'\\(?:cite[ptes]?|ref|eqref|label|cref|Cref|autoref|pageref)\{[^}]*\}', ' ', s)
-    return s
+    # Strip other macro calls without losing their arguments as noise
+    s = re.sub(r'\\[a-zA-Z]+\*?(?:\{[^}]*\}|\[[^\]]*\])*', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
 
 
-def linearize(lines):
+# --------------------------------------------------------------------------
+# Build a substituted text with line-number tracking
+# --------------------------------------------------------------------------
+
+def build_substituted_lines(raw_lines):
     """
-    Convert TeX source into a list of (orig_line_number, prose_text) pairs
-    suitable for spaCy parsing.
+    Yield (orig_lineno, substituted_text) for each original line.
 
-    Display environments are collapsed into a single DISPLAYMATH token
-    appended to whatever prose line immediately preceded them, preserving
-    the comma or colon that may have ended that line.  This lets spaCy
-    see "We have, DISPLAYMATH" and parse the punctuation in context.
-
-    Inline math is replaced with "M" (a noun).
+    Display environment tags are stripped and their content is processed with
+    _math_to_english so it flows into the text stream.  Inline math in prose
+    lines is substituted via substitute_inline_math.
     """
-    result = []          # list of (1-indexed line number, text)
-    pending_line = None  # (line_no, text) of the last non-blank prose line
     in_display = False
     bracket_depth = 0
 
-    for i, raw in enumerate(lines, start=1):
+    for i, raw in enumerate(raw_lines, start=1):
         line = strip_comment(raw)
 
         if in_display:
-            if is_display_closer(line):
+            if ENV_END_RE.search(line):
+                in_display = False
+                continue          # skip the \end tag line itself
+            if DISPLAY_CLOSE.match(line.strip()):
                 bracket_depth = max(0, bracket_depth - 1)
-                if bracket_depth == 0 or ENV_END_RE.search(line):
+                if bracket_depth == 0:
                     in_display = False
-                    # Append placeholder to the prose line that opened the display
-                    if pending_line is not None:
-                        ln, text = pending_line
-                        result.append((ln, text + ' ' + DISPLAY_PLACEHOLDER + '.'))
-                        pending_line = None
-            # Inside display — skip content
+                continue          # skip the \] line itself
+            # Inside display — substitute math, keep conjunctions as English
+            subst = _math_to_english(line)
+            if subst:
+                yield (i, subst)
             continue
 
-        if is_blank_or_comment(line):
-            if pending_line is not None:
-                result.append(pending_line)
-                pending_line = None
+        if ENV_BEGIN_RE.search(line):
+            in_display = True
+            # Yield a BEGIN sentinel so callers can detect display boundaries
+            yield (i, '__DISPLAY__')
             continue
-
-        if is_display_opener(line):
+        if DISPLAY_OPEN.match(line.strip()):
             in_display = True
             bracket_depth += 1
-            # Don't flush pending_line yet — wait until display closes
-            # so we can append DISPLAYMATH to it
-            if pending_line is None:
-                # Display with no preceding prose line
-                pending_line = (i, DISPLAY_PLACEHOLDER + '.')
-            # else keep existing pending_line, will get DISPLAYMATH appended on close
+            yield (i, '__DISPLAY__')
             continue
 
-        # Regular prose line
-        if pending_line is not None:
-            result.append(pending_line)
-        subst = substitute_inline_math(line).strip()
+        if not line.strip() or line.strip().startswith('%'):
+            yield (i, '')
+            continue
+
+        # Prose line
+        subst = substitute_inline_math(line)
         if subst:
-            pending_line = (i, subst)
+            yield (i, subst)
         else:
-            pending_line = None
-
-    if pending_line is not None:
-        result.append(pending_line)
-
-    return result
+            yield (i, '')
 
 
-def check_punct_before_display(nlp, linearized, file_label):
+# --------------------------------------------------------------------------
+# Pre-pass: comma/colon before display (structural, no spaCy needed)
+# --------------------------------------------------------------------------
+
+def check_punct_before_display(raw_lines, file_label):
     """
-    Use spaCy to flag colon or comma immediately before a DISPLAYMATH token.
-    These are always grammar errors: the equation IS part of the sentence,
-    not something introduced by a colon or separated by a comma.
+    Detect prose line ending with ':' or ',' immediately before a display.
+    (Walks the original source; display/inline distinction fully captured by
+    LaTeX structure.)
     """
     findings = []
-    for line_no, text in linearized:
-        if DISPLAY_PLACEHOLDER not in text:
+
+    def is_display_opener(line):
+        s = line.strip()
+        return bool(DISPLAY_OPEN.match(s) or ENV_BEGIN_RE.search(s))
+
+    def is_blank_or_comment(line):
+        s = line.strip()
+        return s == '' or s.startswith('%')
+
+    for i, line in enumerate(raw_lines):
+        stripped = strip_comment(line)
+        if not (stripped.endswith(':') or stripped.endswith(',')):
             continue
-        doc = nlp(text)
-        for tok in doc:
-            if tok.text == DISPLAY_PLACEHOLDER:
-                # Look at the token immediately before it
-                if tok.i > 0:
-                    prev = doc[tok.i - 1]
-                    if prev.text in (':', ','):
-                        kind = ('colon-before-display' if prev.text == ':'
-                                else 'comma-before-display')
-                        # Build snippet from the original linearized text
-                        snippet = text[:text.index(DISPLAY_PLACEHOLDER)].strip()[-60:]
-                        findings.append({
-                            'file': file_label,
-                            'line': line_no,
-                            'kind': kind,
-                            'snippet': snippet.strip(),
-                        })
+        punct = stripped[-1]
+        j = i + 1
+        while j < len(raw_lines) and is_blank_or_comment(raw_lines[j]):
+            j += 1
+        if j < len(raw_lines) and is_display_opener(raw_lines[j]):
+            kind = 'colon-before-display' if punct == ':' else 'comma-before-display'
+            findings.append({
+                'file': file_label,
+                'line': i + 1,
+                'kind': kind,
+                'snippet': stripped[-60:].strip(),
+            })
     return findings
 
 
-def check_comma_before_conjunction(lines, file_label):
+# --------------------------------------------------------------------------
+# Pre-pass: comma before \\q-conjunction (structural, no spaCy needed)
+# --------------------------------------------------------------------------
+
+def check_comma_before_conjunction(raw_lines, file_label):
     """
-    Inside display math blocks, flag comma before \\qwhere/\\qfor/\\qand.
-    These macros are conjunctions — a preceding comma is always a grammar error.
+    Detect comma before \\qwhere/\\qfor/\\qand anywhere in the source.
+    These macros only appear inside math, so any comma before them is wrong.
     """
     findings = []
-    in_display = False
-    bracket_depth = 0
-
-    for i, raw in enumerate(lines, start=1):
-        line = strip_comment(raw)
-
-        if not in_display:
-            if ENV_BEGIN_RE.search(line):
-                in_display = True
-                continue
-            if DISPLAY_OPEN_RE.match(line.strip()):
-                in_display = True
-                bracket_depth += 1
-                continue
-            continue
-
-        if ENV_END_RE.search(line):
-            in_display = False
-            continue
-        if DISPLAY_CLOSE_RE.match(line.strip()):
-            bracket_depth = max(0, bracket_depth - 1)
-            if bracket_depth == 0:
-                in_display = False
-
-        m = CONJUNCTION_COMMA_RE.search(line)
+    for i, line in enumerate(raw_lines, start=1):
+        m = COMMA_CONJ_RE.search(line)
         if m:
             snippet = line[max(0, m.start() - 20):m.start() + 40].strip()
             findings.append({
@@ -215,18 +257,95 @@ def check_comma_before_conjunction(lines, file_label):
                 'kind': 'comma-before-conjunction',
                 'snippet': snippet,
             })
+    return findings
+
+
+# --------------------------------------------------------------------------
+# spaCy pass: check substituted prose for structural grammar violations
+# --------------------------------------------------------------------------
+
+def check_grammar_with_spacy(raw_lines, file_label, nlp):
+    """
+    Build a substituted text, run spaCy on each paragraph, and look for
+    grammar violations that the pre-passes don't catch.
+
+    Current rules implemented here:
+      - PUNCT (: or ,) immediately before a __DISPLAY__ sentinel →
+        colon-before-display / comma-before-display
+        (This is a fallback; the pre-pass above should catch most cases.)
+    """
+    findings = []
+    # Build (lineno, text) list
+    subst_lines = list(build_substituted_lines(raw_lines))
+
+    # Group into paragraphs (split on blank lines)
+    paragraphs = []   # list of [(lineno, text), ...]
+    current = []
+    for lineno, text in subst_lines:
+        if text == '':
+            if current:
+                paragraphs.append(current)
+                current = []
+        else:
+            current.append((lineno, text))
+    if current:
+        paragraphs.append(current)
+
+    for para in paragraphs:
+        # Join paragraph lines into a single string, tracking token→lineno map
+        combined = ' '.join(text for _, text in para)
+        # Run spaCy
+        try:
+            doc = nlp(combined)
+        except Exception:
+            continue
+
+        # Rule: PUNCT (, or :) before DISPLAY sentinel
+        tokens = list(doc)
+        for idx, tok in enumerate(tokens):
+            if tok.text == '__DISPLAY__' and idx > 0:
+                prev = tokens[idx - 1]
+                if prev.text in (':', ','):
+                    # Find the line number — use the line that contributed __DISPLAY__
+                    display_line = next(
+                        (ln for ln, t in para if '__DISPLAY__' in t), para[0][0]
+                    )
+                    # The offending punct is on the line before the display
+                    punct_line = display_line - 1
+                    kind = 'colon-before-display' if prev.text == ':' else 'comma-before-display'
+                    # Build snippet from the combined text around the punct
+                    start = max(0, prev.idx - 30)
+                    snippet = combined[start:prev.idx + 20].strip()
+                    findings.append({
+                        'file': file_label,
+                        'line': punct_line,
+                        'kind': kind,
+                        'snippet': snippet[-60:],
+                    })
 
     return findings
 
 
-def lint_text(text, file_label='<text>'):
+# --------------------------------------------------------------------------
+# Main lint entry point
+# --------------------------------------------------------------------------
+
+def lint_text(text: str, file_label: str = '<text>'):
     nlp = spacy.load('en_core_web_sm')
-    lines = text.split('\n')
-    linearized = linearize(lines)
+    raw_lines = text.split('\n')
 
     findings = []
-    findings += check_punct_before_display(nlp, linearized, file_label)
-    findings += check_comma_before_conjunction(lines, file_label)
+    findings += check_punct_before_display(raw_lines, file_label)
+    findings += check_comma_before_conjunction(raw_lines, file_label)
+    # spaCy pass catches anything the pre-passes miss and provides the
+    # infrastructure for future grammar rules.
+    spacy_findings = check_grammar_with_spacy(raw_lines, file_label, nlp)
+    # Deduplicate with pre-pass results (same line + kind)
+    pre_keys = {(f['line'], f['kind']) for f in findings}
+    for f in spacy_findings:
+        if (f['line'], f['kind']) not in pre_keys:
+            findings.append(f)
+
     return findings
 
 
@@ -234,10 +353,10 @@ def main():
     if len(sys.argv) < 2:
         print('usage: lint-typography.py <tex-file>', file=sys.stderr)
         sys.exit(2)
-    with open(sys.argv[1], 'r', encoding='utf-8') as f:
-        text = f.read()
-    findings = lint_text(text, sys.argv[1])
-    json.dump(findings, sys.stdout)
+    with open(sys.argv[1], 'r', encoding='utf-8') as fh:
+        text = fh.read()
+    results = lint_text(text, sys.argv[1])
+    json.dump(results, sys.stdout)
 
 
 if __name__ == '__main__':
