@@ -594,6 +594,25 @@ app.use('/docs', (req, res, next) => {
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
 
+    // Compat: bare history/{dir}/page-N.svg → resolve to the right texBase version
+    // for multi-target projects (client code that predates multi-target naming).
+    const bareHistPageMatch = filePath.match(/^(history\/[^/]+)\/page-(\d+)\.svg$/)
+    if (bareHistPageMatch) {
+      const globalPage = parseInt(bareHistPageMatch[2], 10)
+      const project = readProject(name)
+      if (project?.targets?.length > 1) {
+        let offset = 0
+        for (const t of project.targets) {
+          const localPage = globalPage - offset
+          if (localPage >= 1 && localPage <= t.pages) {
+            return res.redirect(302, `/docs/${name}/${bareHistPageMatch[1]}/${t.texBase}-page-${localPage}.svg`)
+          }
+          offset += t.pages
+        }
+      }
+      // Fall through for single-target or no match
+    }
+
     // On-demand shadow page generation: history/shadow-{hash7}/<texBase>-page-N.svg.
     // texBase is required so we know which target's page to render.
     const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/(.+)-page-(\d+)\.svg$/)
@@ -658,6 +677,25 @@ app.use('/docs', (req, res, next) => {
       console.error(`[docs] Error generating combined HTML for ${name}:`, e.message)
     }
     return res.status(404).json({ error: 'Not found' })
+  }
+
+  // Compat alias: bare page-N.svg → resolve to the right <texBase>-page-N.svg
+  // for multi-target projects. Client code that predates multi-target naming still
+  // requests /docs/{name}/page-N.svg; this translates to the canonical file.
+  if (/^page-\d+\.svg$/.test(filePath)) {
+    const globalPage = parseInt(filePath.match(/\d+/)[0], 10)
+    const project = readProject(name)
+    if (project?.targets?.length > 1) {
+      let offset = 0
+      for (const t of project.targets) {
+        const localPage = globalPage - offset
+        if (localPage >= 1 && localPage <= t.pages) {
+          return res.redirect(302, `/docs/${name}/${t.texBase}-page-${localPage}.svg`)
+        }
+        offset += t.pages
+      }
+    }
+    // Single-target or no match: fall through to direct file serve
   }
 
   // On-demand current-column SVG: <texBase>-page-N.svg.

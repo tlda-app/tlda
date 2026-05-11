@@ -230,7 +230,10 @@ export function killAllBuilds() {
 // Pretex commands injected before \documentclass.
 // draft mode for graphicx (placeholder boxes instead of images),
 // hypertex driver for hyperref, and ensure hyperref loads.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+// DeclareGraphicsRule tells dvips driver (used by pdflatex --output-format=dvi)
+// to read bounding box for .pdf files from the .bb companion file we generate.
+// Without this, dvips falls back to width×width square placeholders.
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{begindocument}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
