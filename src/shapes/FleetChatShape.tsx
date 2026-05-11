@@ -927,7 +927,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
-        const { name: docName, hash, summary, lintFindings = [] } = m.metadata as any
+        const { name: docName, hash, summary, lintFindings = [] } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
