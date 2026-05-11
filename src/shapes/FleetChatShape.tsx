@@ -1901,10 +1901,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [])
 
   // Unquote: double-click on <code> spans inside chat messages.
-  // Uses dblclick on logEl (bubble phase) — consistent with how plan-approve, lc-message
-  // expand, and image lightbox work. The document-level pointerdown handler already calls
-  // markEventAsHandled for <code> elements (they're not draggable), so TLDraw never sees
-  // a selection-triggering event from these clicks. No holes needed in CanvasClipPanel's gates.
+  // TLDraw intercepts the native dblclick event in its capture-phase handler on .tl-canvas,
+  // so we detect double-click via two consecutive click events on the same <code> element.
+  // click events reach bubble phase normally (markEventAsHandled on pointerdown handles TLDraw).
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
@@ -1955,30 +1954,41 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
-    function onDblClick(e: MouseEvent) {
+    let lastClickEl: HTMLElement | null = null
+    let lastClickTime = 0
+
+    function onClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const codeEl = target.closest('code') as HTMLElement | null
-      if (!codeEl) return
+      if (!codeEl) { lastClickEl = null; return }
+
       const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
-      if (!chatLine) return
+      if (!chatLine) { lastClickEl = null; return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) return
+      if (!matchesUnquotePattern(text)) { lastClickEl = null; return }
 
-      e.preventDefault()
-      e.stopPropagation()
-
-      if (isFilePath(text)) {
-        const eventId = chatLine.dataset.msgId || ''
-        const agentId = chatLine.dataset.msgFrom || ''
-        applyTier2(codeEl, text, eventId, agentId)
+      const now = Date.now()
+      if (lastClickEl === codeEl && now - lastClickTime < 500) {
+        // Second click within 500ms on the same element = double-click
+        lastClickEl = null
+        e.preventDefault()
+        e.stopPropagation()
+        if (isFilePath(text)) {
+          const eventId = chatLine.dataset.msgId || ''
+          const agentId = chatLine.dataset.msgFrom || ''
+          applyTier2(codeEl, text, eventId, agentId)
+        } else {
+          applyTier1(codeEl, text)
+        }
       } else {
-        applyTier1(codeEl, text)
+        lastClickEl = codeEl
+        lastClickTime = now
       }
     }
 
-    logEl.addEventListener('dblclick', onDblClick)
-    return () => logEl.removeEventListener('dblclick', onDblClick)
+    logEl.addEventListener('click', onClick)
+    return () => logEl.removeEventListener('click', onClick)
   }, [])
 
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
