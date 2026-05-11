@@ -13,8 +13,9 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { TLShapeId, Editor } from 'tldraw'
-import { fetchShadowTimeBounds, fetchAdjacentShadowVersion, fetchShadowMeta, versionAtTime } from '../historyStore'
+import { fetchShadowTimeBounds, fetchAdjacentShadowVersion, fetchShadowMeta, versionAtTime, fetchShadowChangelog } from '../historyStore'
 import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
+import type { ChangelogCommit } from '../overlays/SpaceTimeDots'
 import type { SvgDocument } from '../svgDocumentLoader'
 
 import { usePageColumn } from './usePageColumn'
@@ -83,6 +84,8 @@ export function useShadowOverlay(
   const [shadowYOffset, setShadowYOffset] = useState(0)
   // Incrementing this re-runs the alignment effect without changing activeVersion
   const [alignCounter, setAlignCounter] = useState(0)
+  // Changelog: per-commit page-level change data for the space-time overlay
+  const [changelog, setChangelog] = useState<{ commits: ChangelogCommit[]; totalPages: number }>({ commits: [], totalPages: 0 })
   // Ref so the alignment effect always reads the latest pages without re-triggering
   const documentRef = useRef(document)
   documentRef.current = document
@@ -95,6 +98,14 @@ export function useShadowOverlay(
   }, [docName])
 
   useEffect(() => { fetchBounds() }, [fetchBounds])
+
+  // Fetch changelog when scrubber becomes visible
+  useEffect(() => {
+    if (!visible) return
+    fetchShadowChangelog(docName).then(data => {
+      if (data) setChangelog(data)
+    })
+  }, [visible, docName])
 
   // Startup cleanup: sweep orphan shadow shapes left over from previous sessions.
   // Runs 1.5s after mount to ensure Yjs has synced and the editor is available.
@@ -339,6 +350,7 @@ export function useShadowOverlay(
     shadowVisible: visible,
     shadowColumnX: columnX,
     shadowYOffset,
+    shadowChangelog: changelog,
     showShadowOverlay: show,
     hideShadowOverlay: hide,
     toggleShadowOverlay: toggle,

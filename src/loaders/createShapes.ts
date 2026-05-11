@@ -11,6 +11,15 @@ import type { SvgDocument } from './types'
  * Also handles diff documents (SVG + old page overlay).
  */
 export function createSvgShapes(editor: Editor, document: SvgDocument): boolean {
+  // Remove stale svg-page shapes not in the current document layout
+  // (handles single-target → multi-target transitions where shape IDs change)
+  const expectedIds = new Set(document.pages.map(p => p.shapeId))
+  const stalePages = editor.getCurrentPageShapes()
+    .filter(s => (s.type as string) === 'svg-page' && !expectedIds.has(s.id))
+  if (stalePages.length > 0) {
+    editor.deleteShapes(stalePages.map(s => s.id))
+  }
+
   // Find which pages are missing (snapshot may have partial set)
   const missingPages = document.pages.filter((page) => !editor.getShape(page.shapeId))
   if (missingPages.length === 0) return true

@@ -11,6 +11,7 @@
 //   setVoiceTarget(textarea, sendTargets, agentNames)
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
@@ -422,6 +423,16 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
         if (_filling) return
+        // Plain Enter sends the message. The stop→onend→start restart path is
+        // unreliable in Safari (webkitSpeechRecognition silently fails to resume),
+        // so do the same thing double-tap-right-shift does: hardResetVoice + start.
+        // Suppress the textarea-clear input event that would otherwise call enterEdit().
+        if (e.key === 'Enter' && !e.shiftKey && _recording) {
+          _filling = true
+          afterSend()
+          setTimeout(() => { _filling = false }, 50)
+          return
+        }
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
           enterEdit()
         }
@@ -622,27 +633,15 @@ function _setupRecognition() {
       if (sendMatch) {
         const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
         if (cleanText && _accumulator && _accumulator.onSend) {
-          // Accumulator send — deliver committed text to onSend callback
-          _state = 'edit'
-          _generation++
-          _left = _interim = _right = ''
           _accumulator.onSend(cleanText)
           showHud('sent', '#7ab8a0')
           fadeHud(2500)
-          // Force a fresh session — Chrome's continuous mode keeps cumulative
-          // e.results; without resetting, stale finals leak into the next message.
-          if (_recording && _recognition) {
-            _editStopped = true
-            try { _recognition.stop() } catch {}
-          }
+          afterSend()
           return
         }
         if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
-          _state = 'edit'
-          _generation++
-          _left = _interim = _right = ''
           _filling = true
           if (_activeTextarea) {
             _activeTextarea.value = ''
@@ -652,12 +651,7 @@ function _setupRecognition() {
           _activeSendFn(_activeSendTargets, cleanText)
           showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
           fadeHud(2500)
-          // Force a fresh session — Chrome's continuous mode keeps cumulative
-          // e.results; without resetting, stale finals leak into the next message.
-          if (_recording && _recognition) {
-            _editStopped = true
-            try { _recognition.stop() } catch {}
-          }
+          afterSend()
           return
         }
       }
@@ -838,22 +832,15 @@ function onWhisperMessage(event) {
     if (sendMatch) {
       const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
       if (cleanText && _accumulator && _accumulator.onSend) {
-        _state = 'edit'
-        _generation++
-        _left = _interim = _right = ''
-        flushWhisperBridge()
         _accumulator.onSend(cleanText)
         showHud('sent', '#7ab8a0')
         fadeHud(2500)
+        afterSend()
         return
       }
       if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
         const who = targetLabel()
         const wordCount = cleanText.split(/\s+/).length
-        _state = 'edit'
-        _generation++
-        _left = _interim = _right = ''
-        flushWhisperBridge()
         _filling = true
         if (_activeTextarea) {
           _activeTextarea.value = ''
@@ -863,6 +850,7 @@ function onWhisperMessage(event) {
         _activeSendFn(_activeSendTargets, cleanText)
         showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
         fadeHud(2500)
+        afterSend()
         return
       }
     }
@@ -913,6 +901,30 @@ function disconnectWhisperBridge() {
     _whisperWs.close()
     _whisperWs = null
     _whisperConnected = false
+  }
+}
+
+// --- After-send state reset ---
+// Called after any send (Enter key or voice-send keyword) to prepare for the
+// next message. Resets text buffers and handles recognition restart.
+// One function, called from all send paths — no parallel implementations.
+function afterSend() {
+  _state = 'edit'
+  _left = _interim = _right = ''
+  if (_backend === 'whisper-stream') {
+    flushWhisperBridge()
+    return
+  }
+  if (!_recording) return
+  if (_isSafari) {
+    // Safari: webkitSpeechRecognition is unreliable after stop/start; full reset needed.
+    hardResetVoice().then(() => startRecording())
+  } else {
+    // Chrome: keep recognition running — no restart gap, no warmup delay.
+    // _editStopped gates the next 100ms to drop any in-flight finals from the
+    // old message; after that the next word starts a fresh message naturally.
+    _editStopped = true
+    setTimeout(() => { _editStopped = false }, 100)
   }
 }
 
@@ -1095,41 +1107,36 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Detect whisper-stream bridge (non-blocking — never delay voice init)
-  // Detect whisper-stream bridge and set backend.
-  // If URL has &voice=chrome, force Chrome. Otherwise whisper-stream is default
-  // when the bridge is available. Set _backend eagerly so right-shift doesn't
-  // trigger a SpeechRecognition (and browser mic prompt) during the async check.
+  // Chrome Web Speech is the default voice backend.
+  // Whisper is opt-in via &voice=whisper — and only then do we ask the
+  // server to lazy-start the whisper bridge (it stays off otherwise).
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  if (urlVoice !== 'chrome') {
-    // Optimistically assume whisper — prevents Chrome mic prompt on Safari.
-    // If the bridge isn't running, we'll fall back to Chrome in the onerror.
+  if (urlVoice === 'whisper') {
     _backend = 'whisper-stream'
-  }
-  try {
-    const testWs = new WebSocket(WHISPER_BRIDGE_URL)
-    testWs.onopen = () => {
-      testWs.close()
-      _whisperAvailable = true
-      if (urlVoice === 'chrome') {
-        console.log('voice: staying on Chrome (via URL param)')
-      } else {
-        _backend = 'whisper-stream'
-        console.log('voice: using whisper-stream backend')
+    try {
+      await fetch('/api/voice/whisper/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: whisper lazy-start request failed', err)
+    }
+    try {
+      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+      testWs.onopen = () => {
+        testWs.close()
+        _whisperAvailable = true
+        console.log('voice: using whisper-stream backend (via URL param)')
         connectWhisperBridge()
         if (_recording) showRecordingHud()
       }
-    }
-    testWs.onerror = () => {
-      testWs.close()
-      // Bridge not available — fall back to Chrome
-      if (_backend === 'whisper-stream' && !_whisperAvailable) {
-        _backend = 'chrome'
-        console.log('voice: whisper bridge not available, using Chrome')
+      testWs.onerror = () => {
+        testWs.close()
+        if (!_whisperAvailable) {
+          _backend = 'chrome'
+          console.log('voice: whisper bridge not available, falling back to Chrome')
+        }
       }
+    } catch {
+      _backend = 'chrome'
     }
-  } catch {
-    _backend = 'chrome'
   }
 
   if (!SpeechRecognition && _backend === 'chrome') {

@@ -89,7 +89,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
 
 // --- Heading parsing ---
 
-export type TocLevel = 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection'
+export type TocLevel = 'part' | 'chapter' | 'section' | 'subsection' | 'subsubsection' | 'divider'
 
 export interface TocEntry {
   level: TocLevel
@@ -99,7 +99,7 @@ export interface TocEntry {
 }
 
 
-export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appendixLine?: { line: number; file?: string } }): TocEntry[] {
+export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appendixLine?: { line: number; file?: string } }, opts?: { skipAppendixDivider?: boolean }): TocEntry[] {
   const headings: TocEntry[] = []
   const sectionRe = /\\(sub)*section\*?\{([^}]*)\}/
 
@@ -151,16 +151,9 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
   }
 
   for (const [lineStr, entry] of Object.entries(lines)) {
-    // Handle both plain line numbers and multi-file keys ("file.tex:N")
-    let lineNum: number
-    const colonIdx = lineStr.lastIndexOf(':')
-    if (colonIdx > 0 && lineStr.slice(0, colonIdx).includes('.')) {
-      // Multi-file key — use page position for sorting
-      lineNum = entry.page * 10000 + Math.round(entry.y)
-    } else {
-      lineNum = parseInt(lineStr)
-      if (isNaN(lineNum)) continue
-    }
+    // Sort key: always use page position for consistent ordering across
+    // plain line numbers and multi-file keys ("file.tex:N")
+    const lineNum = entry.page * 10000 + Math.round(entry.y)
 
     const m = entry.content.match(sectionRe)
     if (!m) continue
@@ -179,12 +172,13 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
 
   headings.sort((a, b) => a.line - b.line)
 
-  // Insert synthetic "Appendix" section heading
-  if (appendixEntry) {
+  // Insert a divider before appendix sections (visual separator, not a parent)
+  // Skip when multi-target — the supplement target already gets its own divider
+  if (appendixEntry && !opts?.skipAppendixDivider) {
     const insertIdx = headings.findIndex(h => h.entry.page >= appendixEntry!.page)
     if (insertIdx >= 0) {
       headings.splice(insertIdx, 0, {
-        level: 'part',
+        level: 'divider',
         title: 'Appendix',
         line: headings[insertIdx].line - 1,
         entry: appendixEntry,

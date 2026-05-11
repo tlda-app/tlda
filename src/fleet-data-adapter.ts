@@ -23,11 +23,13 @@ import {
   loadBefore,
   matchesFilter,
   respawnAgent as _respawnAgent,
+  killSession as _killSession,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
   injectOptimisticEvent as _injectOptimisticEvent,
   updateOptimisticEvent as _updateOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
+  fleetWS as _fleetWS,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -369,9 +371,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
-      if (cancelled || !filter) return
+      if (cancelled) return
 
+      // null filter = all agents; non-null = only agents matching the current chat filter
       function inFilter(agentId: string): boolean {
+        if (!filter) return true
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
@@ -545,10 +549,8 @@ const DASHBOARD_URL = 'http://localhost:5176'
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
   try {
-    const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.results || data || []
+    const data = await _fleetWS('fleet-search', { query, limit })
+    return data?.results || []
   } catch { return [] }
 }
 
@@ -575,9 +577,9 @@ export function useFleetUnreadCounts(): Record<string, number> {
 
     ensureInit().then(() => {
       if (cancelled) return
-      setCounts(getUnreadCountsForHuman())
+      setCounts(getUnreadCountsForHuman() as Record<string, number>)
       unsub = subscribe('messages', null, () => {
-        setCounts(getUnreadCountsForHuman())
+        setCounts(getUnreadCountsForHuman() as Record<string, number>)
       })
     })
 
@@ -646,8 +648,10 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
 
 export const sendMessage = _sendMessage
 export const respawnAgent = _respawnAgent
+export const killSession = _killSession
 export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
+export const fleetWS = _fleetWS
 export { loadBefore, fetchHistory }

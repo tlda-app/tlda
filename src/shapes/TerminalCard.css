@@ -24,6 +24,19 @@
   border-color: #2a2a2a;
 }
 
+/* Pinned state */
+.terminal-card.terminal-card-pinned {
+  border-color: #569cd6;
+  box-shadow: 0 0 6px rgba(86, 156, 214, 0.2);
+}
+
+.terminal-card-pin-label {
+  font-size: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
 /* Header */
 .terminal-card-header {
   display: flex;

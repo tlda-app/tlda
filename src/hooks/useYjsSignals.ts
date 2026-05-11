@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -9,67 +9,6 @@ import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
-import { PDF_HEIGHT } from '../layoutConstants'
-
-// SyncTeX y=0 is at the TeX reference point, 72pt from the top of the page
-const SYNCTEX_VIEWBOX_OFFSET = 72
-
-function _extractLabel(content: string | undefined): string | null {
-  if (!content) return null
-  const m = content.match(/\\label\{([^}]+)\}/)
-  return m ? m[1] : null
-}
-
-/** Find the label nearest to targetY (canvas coords) that appears in the lookup. */
-function _nearestLabel(
-  lines: LookupData['lines'],
-  pages: SvgDocument['pages'],
-  targetY: number,
-): { label: string; canvasY: number } | null {
-  let bestLabel: string | null = null
-  let bestCanvasY = 0
-  let bestDist = Infinity
-  for (const entry of Object.values(lines)) {
-    const label = _extractLabel(entry.content)
-    if (!label) continue
-    const pg = pages[entry.page - 1]
-    if (!pg) continue
-    const scaleY = pg.bounds.height / PDF_HEIGHT
-    const canvasY = pg.bounds.y + (entry.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY
-    const dist = Math.abs(canvasY - targetY)
-    if (dist < bestDist) { bestDist = dist; bestLabel = label; bestCanvasY = canvasY }
-  }
-  return bestLabel ? { label: bestLabel, canvasY: bestCanvasY } : null
-}
-
-/**
- * Scroll so that `anchorLabel` appears at the same position relative to
- * the viewport center as it did before the rebuild (delta = pre-rebuild
- * labelCanvasY − vpCenterY; positive = label was below center).
- */
-function _applyScrollAnchor(
-  editor: Editor,
-  pages: SvgDocument['pages'],
-  newLines: LookupData['lines'],
-  anchorLabel: string,
-  anchorDelta: number,
-) {
-  // Build label → entry map
-  const labelMap = new Map<string, { page: number; y: number }>()
-  for (const entry of Object.values(newLines)) {
-    const label = _extractLabel(entry.content)
-    if (label) labelMap.set(label, entry)
-  }
-  const entry = labelMap.get(anchorLabel)
-  if (!entry) return
-  const pg = pages[entry.page - 1]
-  if (!pg) return
-  const scaleY = pg.bounds.height / PDF_HEIGHT
-  const newLabelCanvasY = pg.bounds.y + (entry.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY
-  const targetCenterY = newLabelCanvasY - anchorDelta
-  const vp = editor.getViewportPageBounds()
-  editor.centerOnPoint({ x: vp.x + vp.w / 2, y: targetCenterY }, { animation: { duration: 200 } })
-}
 
 export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
@@ -311,12 +250,10 @@ export function useYjsSignals({
 
       function showAtPlaceholder() {
         // Find the most recent screenshot placeholder in any chat
-        const placeholder = document.querySelector('.screenshot-placeholder') as HTMLElement | null
+        const placeholder = window.document.querySelector('.screenshot-placeholder') as HTMLElement | null
         if (!placeholder) {
-          // No placeholder visible — show as floating panel
-          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-            detail: { bounds: signal.bounds, shapeIds: [], label, pinned: true }
-          }))
+          // No placeholder visible — do not surface anything in Skip's viewer.
+          // The agent gets the screenshot in their own chat; no floating panel here.
           return
         }
         const rect = placeholder.getBoundingClientRect()
@@ -339,7 +276,7 @@ export function useYjsSignals({
       showAtPlaceholder()
 
       // Track scroll in the chat log to move the overlay
-      const chatLog = document.querySelector('.fleet-chat-log')
+      const chatLog = window.document.querySelector('.fleet-chat-log')
       if (chatLog) {
         const onScroll = () => showAtPlaceholder()
         chatLog.addEventListener('scroll', onScroll, { passive: true })

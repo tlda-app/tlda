@@ -181,7 +181,7 @@ export class BrowseIdle extends StateNode {
       // Mark scrubber interactions as handled — prevents TLDraw from calling
       // setPointerCapture on the canvas, which would steal the drag from the
       // range input and make the slider unresponsive.
-      if (target?.closest('.shadow-scrubber')) {
+      if (target?.closest('.shadow-scrubber-container')) {
         this.editor.markEventAsHandled(e)
         return
       }

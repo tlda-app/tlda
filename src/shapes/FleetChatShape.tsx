@@ -17,20 +17,16 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-// @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-// @ts-ignore — vanilla JS module
-import { isTldaUrl } from '../fleet/tldaUrl.mjs'
-// @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent, reconcileOptimistic } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -39,12 +35,229 @@ import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, r
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
+import { Terminal } from 'xterm'
+import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
+import { broadcastSharedDoc } from '../useYjsSync'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+
+// ---- Terminal hover pane ----
+
+const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
+  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  : 'ws://localhost:5176'
+
+// Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
+// Hover mode: read-only snapshot that resets on each server push.
+// Pinned mode: stays open, shows input bar for sending commands, resizable.
+function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
+  agentId: string
+  pinned: boolean
+  onDismiss: () => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const pinnedRef = useRef(pinned)
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+  const [height, setHeight] = useState(210)
+  const [inputValue, setInputValue] = useState('')
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  useEffect(() => { pinnedRef.current = pinned }, [pinned])
+
+  useEffect(() => {
+    if (!containerRef.current) return
+    const term = new Terminal({
+      fontSize: 10,
+      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d0d14',
+        foreground: '#c8c8d8',
+        cursor: '#c8c8d8',
+        black: '#1e1e1e', brightBlack: '#555',
+        red: '#f44747', brightRed: '#f44747',
+        green: '#6a9955', brightGreen: '#6a9955',
+        yellow: '#dcdcaa', brightYellow: '#dcdcaa',
+        blue: '#569cd6', brightBlue: '#569cd6',
+        magenta: '#c678dd', brightMagenta: '#c678dd',
+        cyan: '#4ec9b0', brightCyan: '#4ec9b0',
+        white: '#d4d4d4', brightWhite: '#ffffff',
+      },
+      scrollback: 100,
+      convertEol: true,
+      cursorBlink: false,
+      disableStdin: true,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(containerRef.current)
+    requestAnimationFrame(() => { try { fit.fit() } catch {} })
+    termRef.current = term
+    fitRef.current = fit
+    return () => {
+      term.dispose()
+      termRef.current = null
+      fitRef.current = null
+    }
+  }, [])
+
+  // Re-fit when height changes
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      try { fitRef.current?.fit() } catch {}
+    })
+  }, [height])
+
+  useEffect(() => {
+    if (!agentId) return
+    wsRef.current?.close()
+    setStatus('connecting')
+    const ws = new WebSocket(`${TERM_HOVER_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    wsRef.current = ws
+    ws.onopen = () => {
+      setStatus('connected')
+      try { fitRef.current?.fit() } catch {}
+    }
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data)
+        if (msg.type === 'output' && msg.data && termRef.current) {
+          // Peek mode: reset each time so we always show the current screen bottom.
+          // Pinned mode: don't reset so user can scroll through accumulated output.
+          if (!pinnedRef.current) termRef.current.reset()
+          termRef.current.write(msg.data)
+        } else if (msg.type === 'error') {
+          setStatus('error')
+        }
+      } catch {}
+    }
+    ws.onerror = () => setStatus('error')
+    ws.onclose = () => {}
+    return () => { ws.close() }
+  }, [agentId])
+
+  const sendInput = (data: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data }))
+    }
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    stopEventPropagation(e as any)
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      sendInput(inputValue + '\r')
+      setInputValue('')
+    } else if (e.key === 'c' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x03')
+      setInputValue('')
+    } else if (e.key === 'd' && e.ctrlKey) {
+      e.preventDefault()
+      sendInput('\x04')
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      sendInput('\t')
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      sendInput('\x1b[A')
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      sendInput('\x1b[B')
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      sendInput('\x1b')
+    }
+  }
+
+  const handleResizePointerDown = (e: React.PointerEvent) => {
+    stopEventPropagation(e)
+    dragRef.current = { startY: e.clientY, startH: height }
+    dragCoordinator.claim(
+      (ev) => {
+        if (!dragRef.current) return
+        const delta = ev.clientY - dragRef.current.startY
+        setHeight(Math.max(100, dragRef.current.startH + delta))
+      },
+      () => { dragRef.current = null },
+    )
+  }
+
+  const shortId = agentId.replace('fleet:', '')
+
+  return (
+    <div
+      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
+      style={{ height }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={pinned ? undefined : onMouseLeave}
+      onPointerDown={stopEventPropagation}
+      onPointerMove={stopEventPropagation}
+    >
+      <div className="fleet-terminal-hover-header">
+        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ opacity: 0.5, flexShrink: 0 }}>
+          <polyline points="2,2 5,5 8,2" />
+          <line x1="2" y1="8" x2="8" y2="8" />
+        </svg>
+        <span className="fleet-terminal-hover-title">{shortId}</span>
+        {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
+        {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
+        {pinned && (
+          <button
+            className="fleet-terminal-hover-close"
+            title="Close terminal"
+            onPointerDown={stopEventPropagation}
+            onClick={(e) => { stopEventPropagation(e as any); onDismiss() }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+      <div ref={containerRef} className="fleet-terminal-hover-body" />
+      {pinned && status === 'connected' && (
+        <div className="fleet-terminal-hover-input-bar"
+          onPointerDown={stopEventPropagation}
+          onPointerMove={stopEventPropagation}
+        >
+          <span className="fleet-terminal-hover-prompt">$</span>
+          <input
+            className="fleet-terminal-hover-input"
+            type="text"
+            value={inputValue}
+            onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+            onKeyDown={handleInputKeyDown}
+            onKeyUp={(e) => stopEventPropagation(e as any)}
+            placeholder="type command…"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <button
+            className="fleet-terminal-hover-ctrl-c"
+            title="Send Ctrl+C"
+            onPointerDown={(e) => { stopEventPropagation(e as any); sendInput('\x03') }}
+          >
+            ^C
+          </button>
+        </div>
+      )}
+      {pinned && (
+        <div
+          className="fleet-terminal-hover-resize-handle"
+          onPointerDown={handleResizePointerDown}
+          title="Drag to resize"
+        />
+      )}
+    </div>
+  )
+}
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
 // where path is relative to the dropped folder root (e.g. "figures/foo.png")
@@ -212,7 +425,7 @@ function currentDocVersion(panel: any): string | null {
  * The receiving side (fleet.mjs resolveChipTokens) looks up attachments by token to
  * expand them into formatted source-line references for agents.
  */
-function buildRefAttachments(text: string, editor: any): Array<{
+function buildRefAttachments(text: string, _editor: any): Array<{
   token: string; type: string; label: string;
   color?: string; file?: string; sourceLines?: any[]; content?: string
 }> {
@@ -303,6 +516,73 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
+/**
+ * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
+ * When thinking stops, the text fades out but the space remains.
+ * When the next message arrives (rawItemsLength changes), the space collapses.
+ */
+function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
+  thinkingAgents: Map<string, number>
+  compactingAgents: Map<string, number>
+  ctx: any
+  rawItemsLength: number
+}) {
+  const hasActive = thinkingAgents.size > 0 || compactingAgents.size > 0
+  // Track "recently stopped" — keep the space until rawItems changes
+  const prevActiveRef = useRef(hasActive)
+  const [ghost, setGhost] = useState(false) // true = text hidden, space kept
+  const ghostRawItemsRef = useRef(rawItemsLength)
+
+  // Transition: active → ghost (text fades, space stays)
+  if (prevActiveRef.current && !hasActive && !ghost) {
+    setGhost(true)
+    ghostRawItemsRef.current = rawItemsLength
+  }
+  prevActiveRef.current = hasActive
+
+  // Clear ghost when new messages arrive
+  useEffect(() => {
+    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
+      setGhost(false)
+    }
+  }, [ghost, rawItemsLength])
+
+  // Also clear ghost after a timeout in case no message comes
+  useEffect(() => {
+    if (!ghost) return
+    const t = setTimeout(() => setGhost(false), 3000)
+    return () => clearTimeout(t)
+  }, [ghost])
+
+  if (!hasActive && !ghost) return null
+
+  return (
+    <div style={{
+      padding: '0 8px',
+      fontSize: 11,
+      flexShrink: 0,
+      opacity: ghost ? 0 : 0.6,
+      transition: 'opacity 0.2s',
+    }}>
+      {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
+        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+          {' '}<span className="thinking-text">thinking…</span>
+          {' '}<ElapsedTime startMs={startTs} />
+        </div>
+      ))}
+      {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
+        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
+          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+          {' '}<span className="thinking-text">compacting…</span>
+          {' '}<ElapsedTime startMs={startTs} />
+        </div>
+      ))}
+      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
+    </div>
+  )
+}
+
 // --- Nick color system (matches dashboard) ---
 
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
@@ -351,6 +631,21 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 }
 
 
+// Apply a text transform only to non-code regions of HTML.
+// Iterates alternating tag and text segments; tracks <code>/<pre> nesting depth
+// so that transforms are never applied to content inside code spans or blocks.
+function transformNonCode(html: string, transform: (text: string) => string): string {
+  let inCode = 0
+  return html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) inCode++
+      else if (/^<\/(code|pre)>/i.test(segment)) inCode = Math.max(0, inCode - 1)
+      return segment
+    }
+    return inCode > 0 ? segment : transform(segment)
+  })
+}
+
 // --- Virtual chat message row ---
 // Defined outside FleetChatInner so React.memo comparisons are stable.
 // Receives raw rendered HTML from renderChatLine/renderActivityGroup and a
@@ -358,13 +653,31 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 const ChatMessageRow = memo(function ChatMessageRow({
   html,
   postProcess,
+  itemKey,
+  expandedRowsRef,
 }: {
   html: string
   postProcess: (html: string) => string
+  itemKey: string
+  expandedRowsRef: React.RefObject<Set<string>>
 }) {
   const processed = useMemo(() => postProcess(html), [html, postProcess])
-  return <div dangerouslySetInnerHTML={{ __html: processed }} />
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess)
+  const divRef = useRef<HTMLDivElement>(null)
+
+  // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
+  useLayoutEffect(() => {
+    const el = divRef.current
+    if (!el || !expandedRowsRef.current.has(itemKey)) return
+    const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
+    if (moreRows) {
+      moreRows.style.display = ''
+      const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+      if (btn) btn.textContent = 'collapse'
+    }
+  }, [processed, itemKey, expandedRowsRef])
+
+  return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey)
 
 
 function FleetChatInner({ shape }: { shape: any }) {
@@ -406,19 +719,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
-  // Terminal cards — set of agent IDs with open terminal cards.
-  // Clicking X removes the card entirely (no freeze snapshot — same content
-  // appears in activity cards, and terminal output is ephemeral) AND marks
-  // the triggering events as read on the server. The auto-open useEffect
-  // only opens cards for events that are still unread, so a dismissed
-  // event won't re-pop on reload.
-  const [terminalCards, setTerminalCards] = useState<Set<string>>(() => new Set())
-  const openTerminal = useCallback((agentId: string) => {
-    setTerminalCards(prev => new Set(prev).add(agentId))
-  }, [])
-  const closeTerminal = useCallback((agentId: string) => {
-    // Mark every unread terminal_card / terminal_attention event for this
-    // agent as read, so reload doesn't re-pop. Best-effort fire-and-forget.
+  // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
+  const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)
+  const [termCardPinnedId, setTermCardPinnedId] = useState<string | null>(null)
+  const termCardHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const dismissTermCard = useCallback((agentId: string) => {
+    // Mark terminal events from this agent as read when dismissed.
     const unreadEventIds = liveEvents
       .filter((e: any) =>
         (e._evType === 'terminal_card' || e._evType === 'terminal_attention') &&
@@ -433,28 +740,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
       }).catch(() => {})
     }
-    setTerminalCards(prev => { const next = new Set(prev); next.delete(agentId); return next })
+    setTermCardPinnedId(null)
+    setTermCardHoverId(null)
   }, [liveEvents])
-
-  // Auto-open terminal cards when an UNREAD "terminal_card" or
-  // "terminal_attention" event arrives. The read state is canonical
-  // (server-side via the unread table); dismissing a card marks the
-  // event read so a reload doesn't re-pop. New events for the same
-  // agent arrive as unread → fresh card pops.
-  useEffect(() => {
-    for (const e of liveEvents) {
-      if ((e._evType === 'terminal_card' || e._evType === 'terminal_attention')
-          && e.from && e.read !== true && !terminalCards.has(e.from)) {
-        openTerminal(e.from)
-      }
-    }
-  }, [liveEvents, terminalCards, openTerminal])
 
   // Input history (up/down arrow navigation like terminal)
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const lastEscRef = useRef<number>(0)
+  const escCountRef = useRef<number>(0)
   // Keep sendTargets accessible from native event listener without re-registering
   const sendTargetsRef = useRef<string[]>([])
 
@@ -479,22 +774,56 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
     setOlderEvents([])
-    userScrolledUp.current = false; setShowScrollBtn(false)
+    isAtBottomRef.current = true
+    setShowScrollBtn(false)
+    prevTotalSizeRef.current = 0
   }, [filterKey])
 
-  // Auto-load history when filter gives empty results (no live messages for this agent)
-  const autoLoadedRef = useRef<string | null>(null)
+  // Resolve a friendly name/label to a fleet ID for DB queries.
+  const resolveToFleetId = useCallback((label: string): string => {
+    if (label.startsWith('fleet:')) return label
+    const agent = agents.find((a: any) =>
+      a.friendly_name === label || a.id === label || (a.labels || []).includes(label)
+    )
+    return agent?.id || label
+  }, [agents])
+
+  // Fetch per-agent history on mount / filter change.
+  // The global event buffer (MAX_EVENTS=150) is shared across all agents.
+  // A quiet agent's messages may not be in the buffer at all, making the
+  // chat appear empty. Fix: always fetch agent-specific history from the DB.
+  const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (liveEvents.length > 0 || olderEvents.length > 0) return
     if (!dnfFilter || dnfFilter.length === 0) return
-    // Derive agent name from filter for loadBefore
     const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel || autoLoadedRef.current === filterKey) return
-    autoLoadedRef.current = filterKey
-    loadBefore(firstLabel, new Date().toISOString(), 50).then((older: any[]) => {
-      if (older.length > 0) setOlderEvents(older)
+    if (!firstLabel) return
+    const fleetId = resolveToFleetId(firstLabel)
+    // Include the resolved fleet ID in the guard key so we re-fetch
+    // when the agents list populates and resolution changes
+    const loadKey = `${filterKey}:${fleetId}`
+    if (historyLoadedRef.current === loadKey) return
+    historyLoadedRef.current = loadKey
+    loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
+      if (older.length > 0) {
+        // Deduplicate against live events already in the buffer.
+        // convertChatEvent stores DB id in _dbId, not id.
+        setOlderEvents(prev => {
+          const existingIds = new Set([
+            ...prev.map((e: any) => e._dbId || e._tempId),
+            ...liveEvents.map((e: any) => e._dbId || e._tempId),
+          ])
+          const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
+          if (fresh.length > 0) {
+            isAtBottomRef.current = true
+            setShowScrollBtn(false)
+            return [...fresh, ...prev]
+          }
+          return prev
+        })
+      }
     })
-  }, [liveEvents.length, olderEvents.length, dnfFilter, filterKey])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dnfFilter, filterKey, resolveToFleetId])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -576,6 +905,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This replaces the old joined renderedHtml string and enables virtualization.
   type RawItem = { key: string; html: string }
   const rawItems = useMemo(() => {
+    // Extend ctx with thinking state so renderChatLine can apply queued styling
+    const renderCtx = { ...ctx, thinkingAgents }
     const items: RawItem[] = []
     let activityGroup: any[] = []
     function flushActivity() {
@@ -583,7 +914,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
       items.push({
         key,
-        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`,
+        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
       })
       activityGroup = []
     }
@@ -596,10 +927,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       } else if (m.metadata?.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
-        const agentObjs: any[] = ctx.getAgents()
+        const agentObjs: any[] = renderCtx.getAgents()
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
         const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
-        const planBodyHtml = ctx.renderMarkdown(esc(m.text || ''))
+        const planBodyHtml = renderCtx.renderMarkdown(esc(m.text || ''))
         const html = `<div class="plan-card" data-agent-id="${esc(agentId)}">` +
           `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
           `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
@@ -611,7 +942,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
       } else {
         flushActivity()
-        const html = renderChatLine(m, ctx)
+        const html = renderChatLine(m, renderCtx)
         if (html) {
           items.push({ key: `${m.timestamp}:${m.from}`, html })
         }
@@ -620,14 +951,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx])
+  }, [chatMessages, ctx, thinkingAgents])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
   // for visible items, so the cost scales with the viewport not the message count.
   const postProcess = useCallback((html: string): string => {
-    // Turn «type:label» reference tokens into chips BEFORE linkifyDocRefs
-    html = html.replace(/«(.+?)»/g, (_match, inner) => {
+    // Turn «type:label» reference tokens into chips — only in non-code regions
+    // and not when immediately preceded by a quote character (quoted = literal).
+    html = transformNonCode(html, (text) => text.replace(/(?<!["'])«(.+?)»/g, (_match, inner) => {
       const token = `«${inner}»`
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
@@ -687,17 +1019,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const cls = isAnnotation ? 'ref-chip ref-chip-annotation' : 'ref-chip'
       const tokenAttr = ` data-token="${token.replace(/"/g, '&quot;')}"`
       return `<span class="${cls}"${tokenAttr}${boundsAttr}${shapeAttr}${highlightAttr}${screenshotAttr}>${colorDot}${displayEsc}${locBadge}${preview}</span>`
-    })
-    // Convert tlda URLs to ref-chips
-    html = html.replace(
-      /<a\s[^>]*href="(https?:\/\/[^"]*\?[^"]*\bdoc=([^"&\s]+)[^"]*)"[^>]*>[^<]*<\/a>/g,
-      (_match, url, docName) => {
-        if (!isTldaUrl(url)) return _match
-        const safeDoc = decodeURIComponent(docName).replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const openUrl = url.replace(/"/g, '&quot;')
-        return `<span class="ref-chip ref-chip-doc" data-doc="${safeDoc}" data-url="${openUrl}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${safeDoc}</span>`
-      }
-    )
+    }))
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
@@ -756,6 +1078,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       const isMd = /\.md$/i.test(chipUrl || chipPath)
       if (isMd && chipUrl) {
         e.stopPropagation()
+        // Prevent auto-scroll from pushing the chip out of view when the expand card grows the content.
+        // isAtBottomRef is declared later but accessed at call time (ref identity is stable).
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        isAtBottomRef.current = false
         // Toggle: if already expanded, collapse
         const existing = mdChip.nextElementSibling as HTMLElement | null
         if (existing?.classList.contains('md-expand-card')) {
@@ -973,7 +1299,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const d0 = await res0.json()
           const targetRaw = (d0.events || [])[0]
           if (!targetRaw) throw new Error()
-          const target = convertChatEvent(targetRaw)
+          const target = convertChatEvent(targetRaw) as any
           matchEvent = target
 
           // For activity events, expand outward to find the group boundaries
@@ -1233,150 +1559,262 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
-  // Auto-scroll to bottom on new messages — stop when user scrolls up, resume on send.
-  // Key distinction: only set userScrolledUp when scrollTop actually decreases (user scrolled up),
-  // NOT when scrollTop stays the same but scrollHeight grew (content pushed them away from bottom).
-  // The old autoScrollingRef approach was racy — virtualizer fires scroll events after the rAF
-  // reset, falsely tripping the "user scrolled up" flag for KaTeX-heavy messages.
-  const userScrolledUp = useRef(false)
+  // Auto-scroll to bottom — event-driven, not every frame.
+  // CanvasClipPanel already routes wheel events to .fleet-chat-log via
+  // scrollable.scrollTop += e.deltaY, so we must NOT fight it with a
+  // continuous rAF loop. Instead: scroll to bottom when new content arrives
+  // or the container resizes, but only if the user hasn't scrolled up.
+  const isAtBottomRef = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [autoscrollPaused, setAutoscrollPaused] = useState(false)
-  const autoscrollPausedRef = useRef(false)
-  useEffect(() => { autoscrollPausedRef.current = autoscrollPaused }, [autoscrollPaused])
-  const lastScrollTopRef = useRef(0)
+  // Hard-locked mode: every content change scrolls to bottom unconditionally.
+  // Persisted to localStorage so it survives reloads.
+  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
+  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
+  const hardLockedRef = useRef(hardLocked)
+  useEffect(() => {
+    hardLockedRef.current = hardLocked
+    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
+  }, [hardLocked])
+  const [termHoverVisible, setTermHoverVisible] = useState(false)
+  const [termHoverPinned, setTermHoverPinned] = useState(false)
+  const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const termAutoPinnedRef = useRef(false)
+  const lastAttentionTsRef = useRef<string | null>(null)
+  // Tracks which chat rows have been expanded (by item key) so the state
+  // survives dangerouslySetInnerHTML re-renders.
+  const expandedRowsRef = useRef<Set<string>>(new Set())
+  // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
+  // virtualizer's inner div calls it again after measurement, catching the
+  // race where scrollHeight grows after the initial scroll.
+  const scrollSuppressUntilRef = useRef(0)
+  const scrollToBottom = useCallback(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    scrollSuppressUntilRef.current = Date.now() + 100
+    isAtBottomRef.current = true
+  }, [])
+
+  // Track whether user is at bottom (within 30px threshold).
+  // Also detect container resizes (e.g. textarea growing via field-sizing: content)
+  // which shrink the chat log without the user scrolling.
+  const prevClientHeightRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
-
-    // Scroll event: only used to RESET userScrolledUp when the user comes back
-    // to the bottom. Never used to SET it — that's the job of wheel/touch handlers
-    // below. Programmatic scrollTop changes (virtualizer corrections, textarea
-    // collapse clamping) fire scroll events too; using those to set userScrolledUp
-    // caused false positives that permanently suppressed auto-scroll.
+    prevClientHeightRef.current = el.clientHeight
     const onScroll = () => {
-      const prevTop = lastScrollTopRef.current
-      lastScrollTopRef.current = el.scrollTop
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      // Resume auto-scroll when user reaches the bottom
-      if (distFromBottom <= 10 && autoscrollPausedRef.current) {
-        setAutoscrollPaused(false)
-        userScrolledUp.current = false
-        setShowScrollBtn(false)
+      if (Date.now() < scrollSuppressUntilRef.current) return
+      const ch = el.clientHeight
+      const resized = ch !== prevClientHeightRef.current
+      prevClientHeightRef.current = ch
+      const dist = el.scrollHeight - el.scrollTop - ch
+      const atBottom = dist < 30
+      if (resized && isAtBottomRef.current && !atBottom) {
+        scrollToBottom()
+        return
       }
-      // Detect scroll-up: scrollTop decreased AND we're far from bottom.
-      // This catches Magic Mouse / trackpad gestures that send tiny deltaY
-      // values the wheel handler misses.
-      if (el.scrollTop < prevTop - 1 && distFromBottom > 50 && !autoscrollPausedRef.current) {
-        setAutoscrollPaused(true)
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
-      }
+      isAtBottomRef.current = atBottom
+      setShowScrollBtn(!atBottom)
     }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [scrollToBottom])
 
-    // Wheel event: belt-and-suspenders with onScroll above.
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0 && !autoscrollPausedRef.current) {
-        setAutoscrollPaused(true)
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
+  // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const onOver = (e: MouseEvent) => {
+      const card = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      const agentId = card?.dataset.agentId || null
+      if (agentId) {
+        if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null }
+        setTermCardHoverId(agentId)
       }
     }
-
-    // Touch events: wheel doesn't fire on iOS/iPad for touch scrolling.
-    // Track swipe direction via touchstart/touchmove.
-    let touchStartY = 0
-    const onTouchStart = (e: TouchEvent) => { touchStartY = e.touches[0].clientY }
-    const onTouchMove = (e: TouchEvent) => {
-      // Finger moves DOWN the screen → content scrolls UP → user reading old messages
-      if (e.touches[0].clientY - touchStartY > 10 && !autoscrollPausedRef.current) {
-        setAutoscrollPaused(true)
-        userScrolledUp.current = true
-        setShowScrollBtn(true)
+    const onOut = (e: MouseEvent) => {
+      const leaving = (e.target as HTMLElement).closest('.lc-terminal-card')
+      const entering = (e.relatedTarget as HTMLElement | null)?.closest?.('.lc-terminal-card')
+      if (leaving && !entering) {
+        termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200)
       }
     }
-
-    el.addEventListener('scroll', onScroll)
-    el.addEventListener('wheel', onWheel, { passive: true })
-    el.addEventListener('touchstart', onTouchStart, { passive: true })
-    el.addEventListener('touchmove', onTouchMove, { passive: true })
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchmove', onTouchMove)
-    }
+    el.addEventListener('mouseover', onOver)
+    el.addEventListener('mouseout', onOut)
+    return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
   }, [])
 
-  // When the chat log's own height changes (e.g. the textarea grows and eats into
-  // the available space, or the user resizes the shape), scroll to bottom so the
-  // last message stays visible — unless the user has intentionally scrolled up.
+  // Scroll to bottom when new messages arrive or activity cards grow.
+  //
+  // rawItems.length alone is not enough: activity messages from the same
+  // agent merge into a single rawItem, so a burst of tool-call events can
+  // make scrollHeight grow by hundreds of px without changing rawItems.length.
+  // Tracking getTotalSize() catches both new items AND measurement updates.
+  const virtualizerTotalSize = virtualizer.getTotalSize()
+  const prevTotalSizeRef = useRef(0)
+  useEffect(() => {
+    if (virtualizerTotalSize === 0) return
+    const firstLoad = prevTotalSizeRef.current === 0
+    prevTotalSizeRef.current = virtualizerTotalSize
+    if (firstLoad || isAtBottomRef.current || hardLocked) {
+      scrollToBottom()
+      requestAnimationFrame(scrollToBottom)
+    }
+  }, [virtualizerTotalSize, scrollToBottom, hardLocked])
+
+  // rawItems.length effect: reset prevTotalSizeRef on filter change / target switch
+  // so the next load is treated as a first load. (filterKey effect handles this
+  // for the target-switch case; this handles in-flight rawItems resets.)
+  useEffect(() => {
+    if (rawItems.length === 0) prevTotalSizeRef.current = 0
+  }, [rawItems.length])
+
+  // ResizeObserver on the inner content div (virtualizer total-size container).
+  // When the virtualizer measures a new item, this div's height changes, which
+  // updates scrollHeight. We scroll to bottom at that point if we should be
+  // pinned there. Observing the outer scroll container wouldn't work — its
+  // visible size is fixed, only scrollHeight changes.
+  //
+  // hasMessages re-runs the effect when messages first arrive: el.firstElementChild
+  // changes identity (empty-state div → virtualizer total-size div) and the observer
+  // must re-attach to the new element. Without this, the observer watches the detached
+  // empty-state div and misses all virtualizer height updates during initial load.
+  const hasMessages = rawItems.length > 0
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (userScrolledUp.current || autoscrollPausedRef.current) return
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
+      if (isAtBottomRef.current || hardLockedRef.current) {
+        requestAnimationFrame(scrollToBottom)
+      }
     })
     ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
     return () => ro.disconnect()
-  }, [autoscrollPaused])
+  }, [scrollToBottom, hasMessages])
 
-  // Scroll to last item when new messages arrive (virtualizer-aware).
-  // Using scrollToIndex handles dynamic heights correctly; raw scrollTop assignment
-  // would land at the estimated position, not the actual bottom after measurement.
+  // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
+  // Track which messages we've already processed to avoid duplicates.
+  const sharedDocProcessed = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!userScrolledUp.current && !autoscrollPausedRef.current && rawItems.length > 0) {
-      virtualizer.scrollToIndex(rawItems.length - 1, { align: 'end', behavior: 'auto' })
-      // Fallback: direct scrollTop in case scrollToIndex fires before the container
-      // has a stable height (e.g. initial mount before virtualizer measures the element),
-      // or when an existing item grows (activity cards, etc.) without adding new items.
-      requestAnimationFrame(() => {
-        const el = chatLogRef.current
-        if (el) {
-          el.scrollTop = el.scrollHeight
-          lastScrollTopRef.current = el.scrollTop
+    if (chatMessages.length === 0) return
+    const mainEditor = (window as any).__tldraw_editor__ as any
+    if (!mainEditor) return
+
+    // Only process the last few messages to avoid re-processing old history
+    const recentMessages = chatMessages.slice(-3)
+    for (const m of recentMessages) {
+      const msgKey = `${m.timestamp}:${m.from}`
+      if (sharedDocProcessed.current.has(msgKey)) continue
+      sharedDocProcessed.current.add(msgKey)
+
+      // Skip messages from the human user — only auto-display agent-shared files
+      if (m.from && !m.from.startsWith('fleet:')) continue
+
+      // Extract .md file paths from message text and inline attachments
+      const mdPaths: string[] = []
+
+      // Check inline attachments
+      if (m._inlineAttachments) {
+        for (const att of m._inlineAttachments) {
+          if (att?.path && /\.md$/i.test(att.path)) {
+            mdPaths.push(att.path)
+          }
         }
-      })
-    }
-  // rawItems identity changes whenever any message content changes (not just length),
-  // so this fires for growing activity cards and in-place updates too.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawItems])
+      }
 
-  // When the virtualizer measures items taller than the initial estimate (65px),
-  // getTotalSize() grows AFTER the rawItems effect already fired — so the initial
-  // scroll lands short of the true bottom. Chase it by scrolling whenever totalSize
-  // changes and the user hasn't intentionally scrolled up.
-  const virtualizerTotalSize = virtualizer.getTotalSize()
-  useEffect(() => {
-    if (userScrolledUp.current || autoscrollPausedRef.current) return
-    const el = chatLogRef.current
-    if (!el) return
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (dist > 1) {
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [virtualizerTotalSize])
+      // Check message text for absolute .md paths
+      const text = m.text || ''
+      const absPathMatches = text.match(/\/Users\/\w+\/[\w/._-]+\.md/g)
+      if (absPathMatches) {
+        for (const p of absPathMatches) {
+          if (!mdPaths.includes(p)) mdPaths.push(p)
+        }
+      }
+      // Check [file:/path.md] syntax
+      const fileRefMatches = text.match(/\[file:(\/[\w/._-]+\.md)\]/g)
+      if (fileRefMatches) {
+        for (const match of fileRefMatches) {
+          const p = match.slice(6, -1) // strip [file: and ]
+          if (!mdPaths.includes(p)) mdPaths.push(p)
+        }
+      }
 
-  // After images inside the log load, they expand the scroll height. Scroll to
-  // bottom if we were close enough that we should follow new content.
-  useEffect(() => {
-    const logEl = chatLogRef.current
-    if (!logEl) return
-    function onImgLoad(e: Event) {
-      if ((e.target as HTMLElement).tagName !== 'IMG') return
-      if (userScrolledUp.current || autoscrollPausedRef.current) return
-      const el = logEl!
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) {
-        el.scrollTop = el.scrollHeight
+      if (mdPaths.length === 0) continue
+
+      // Create a sticky for each .md file found
+      for (const filePath of mdPaths) {
+        ;(async () => {
+          try {
+            const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`)
+            if (!res.ok) return
+            const content = await res.text()
+            if (!content.trim()) return
+
+            // Check if a shared sticky for this file already exists — update it instead
+            const allShapes = mainEditor.getCurrentPageShapes()
+            let existingId: string | null = null
+            for (const s of allShapes) {
+              if ((s as any).type === 'math-note' && (s as any).meta?.sharedDocPath === filePath) {
+                existingId = s.id
+                break
+              }
+            }
+
+            if (existingId) {
+              // Update existing sticky content
+              mainEditor.updateShape({
+                id: existingId,
+                type: 'math-note',
+                props: { text: content },
+              })
+              broadcastSharedDoc(existingId, filePath)
+            } else {
+              // Create new sticky off to the right of the document
+              // Offset to avoid overlapping all existing math-notes and fleet-docview panels
+              let newX = 2000
+              const blockers = allShapes.filter((s: any) =>
+                s.type === 'math-note' ||
+                s.type === 'fleet-docview'
+              )
+              for (const s of blockers) {
+                const sb = mainEditor.getShapePageBounds(s.id)
+                if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {
+                  newX = sb.x + sb.w + 30
+                }
+              }
+              const stickyId = createShapeId()
+              mainEditor.createShape({
+                id: stickyId,
+                type: 'math-note' as any,
+                x: newX,
+                y: 100,
+                isLocked: false,
+                props: {
+                  w: 550,
+                  h: 400,
+                  text: content,
+                  color: 'light-violet',
+                  autoSize: true,
+                },
+                meta: {
+                  sharedDocPath: filePath,
+                  sharedDoc: true,
+                  fromAgent: m.from,
+                  createdAt: Date.now(),
+                },
+              })
+              broadcastSharedDoc(stickyId, filePath)
+            }
+          } catch (e) {
+            console.error('[fleet] Failed to create shared doc sticky:', e)
+          }
+        })()
       }
     }
-    logEl.addEventListener('load', onImgLoad, true)
-    return () => logEl.removeEventListener('load', onImgLoad, true)
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages])
 
   // Lightbox: click on chat-image opens full-size overlay
   useEffect(() => {
@@ -1424,15 +1862,28 @@ function FleetChatInner({ shape }: { shape: any }) {
         lcMsg.classList.toggle('lc-message-collapsed')
         return
       }
+      // Terminal lifecycle card — click to pin/unpin terminal
+      const termCard = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
+      if (termCard) {
+        const agentId = termCard.dataset.agentId
+        if (agentId) {
+          setTermCardPinnedId(prev => prev === agentId ? null : agentId)
+          return
+        }
+      }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
-          moreRows.style.display = moreRows.style.display === 'none' ? '' : 'none'
-          expandBtn.textContent = moreRows.style.display === 'none'
-            ? expandBtn.textContent!
-            : 'collapse'
+          const wasExpanded = moreRows.style.display !== 'none'
+          moreRows.style.display = wasExpanded ? 'none' : ''
+          expandBtn.textContent = wasExpanded ? expandBtn.textContent! : 'collapse'
+          const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
+          if (itemKey) {
+            if (wasExpanded) expandedRowsRef.current.delete(itemKey)
+            else expandedRowsRef.current.add(itemKey)
+          }
         }
         return
       }
@@ -1449,8 +1900,113 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
+  // Unquote: double-click on <code> spans inside chat messages.
+  // TLDraw intercepts the native dblclick event in its capture-phase handler on .tl-canvas,
+  // so we detect double-click via two consecutive click events on the same <code> element.
+  // click events reach bubble phase normally (markEventAsHandled on pointerdown handles TLDraw).
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function matchesUnquotePattern(text: string): boolean {
+      if (!text || text.length > 500) return false
+      if (/^https?:\/\/\S+/.test(text)) return true
+      if (/^\/\S+/.test(text)) return true
+      if (/^~\/\S+/.test(text)) return true
+      return false
+    }
+
+    function isFilePath(text: string): boolean {
+      return text.startsWith('/') || text.startsWith('~/')
+    }
+
+    function applyTier1(codeEl: HTMLElement, text: string) {
+      const rendered = renderMarkdownUtil(esc(text))
+      const wrapper = document.createElement('span')
+      wrapper.innerHTML = rendered
+      codeEl.replaceWith(...Array.from(wrapper.childNodes))
+    }
+
+    async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
+      const spinner = document.createElement('span')
+      spinner.textContent = '⏳'
+      spinner.style.opacity = '0.6'
+      codeEl.replaceWith(spinner)
+
+      try {
+        const resp = await fetch('/api/unquote-file', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        const { resolvedMessage, inlineAttachments } = await resp.json()
+        const rendered = resolveInlineAttachments(resolvedMessage, inlineAttachments || [], renderMarkdownUtil)
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = rendered
+        spinner.replaceWith(...Array.from(wrapper.childNodes))
+      } catch {
+        const fallback = document.createElement('span')
+        fallback.textContent = text
+        fallback.title = 'Unquote failed — file not found or daemon unreachable'
+        fallback.style.opacity = '0.5'
+        spinner.replaceWith(fallback)
+      }
+    }
+
+    let lastClickEl: HTMLElement | null = null
+    let lastClickTime = 0
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+    function clearPending() {
+      if (lastClickEl) lastClickEl.classList.remove('code-unquote-pending')
+      lastClickEl = null
+      lastClickTime = 0
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+    }
+
+    function onClick(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      const codeEl = target.closest('code') as HTMLElement | null
+      if (!codeEl) { clearPending(); return }
+
+      const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
+      if (!chatLine) { clearPending(); return }
+
+      const text = codeEl.textContent || ''
+      if (!matchesUnquotePattern(text)) { clearPending(); return }
+
+      const now = Date.now()
+      if (lastClickEl === codeEl && now - lastClickTime < 1000) {
+        // Second click within 500ms on the same element = double-click
+        clearPending()
+        e.preventDefault()
+        e.stopPropagation()
+        if (isFilePath(text)) {
+          const eventId = chatLine.dataset.msgId || ''
+          const agentId = chatLine.dataset.msgFrom || ''
+          applyTier2(codeEl, text, eventId, agentId)
+        } else {
+          applyTier1(codeEl, text)
+        }
+      } else {
+        clearPending()
+        lastClickEl = codeEl
+        lastClickTime = now
+        codeEl.classList.add('code-unquote-pending')
+        pendingTimer = setTimeout(clearPending, 1000)
+      }
+    }
+
+    logEl.addEventListener('click', onClick)
+    return () => logEl.removeEventListener('click', onClick)
+  }, [])
+
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
   // synthetic keydown for Escape, so we attach directly at the target element.
+  // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
+  // 3×Esc = kill session (tmux kill-session, agent dies immediately).
+  // No thinkingAgents dependency — if you're mashing Escape at an agent, you mean it.
   useEffect(() => {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
@@ -1463,12 +2019,22 @@ function FleetChatInner({ shape }: { shape: any }) {
       const now = Date.now()
       const agent = targets[0]
       if (now - lastEscRef.current < 500) {
-        // Hard interrupt: Esc twice within 500ms
+        escCountRef.current++
+      } else {
+        escCountRef.current = 1
+      }
+      lastEscRef.current = now
+      const count = escCountRef.current
+      if (count >= 3) {
+        // Kill session: 3×Esc — tmux kill-session, agent dies immediately
+        escCountRef.current = 0
         lastEscRef.current = 0
+        fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+      } else if (count === 2) {
+        // Hard interrupt: 2×Esc — Escape+poll loop
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
       } else {
-        // Soft interrupt: single Esc
-        lastEscRef.current = now
+        // Soft interrupt: 1×Esc — single Escape to tmux
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
       }
     }
@@ -1476,21 +2042,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ta.removeEventListener('keydown', onEscKey)
   }, [])
 
-  // When textarea grows (multi-line input), keep chat scrolled to bottom
-  useEffect(() => {
-    const ta = inputRef.current as HTMLTextAreaElement | null
-    if (!ta) return
-    let prevHeight = ta.offsetHeight
-    const ro = new ResizeObserver(() => {
-      const newHeight = ta.offsetHeight
-      if (newHeight > prevHeight && chatLogRef.current && !userScrolledUp.current && !autoscrollPausedRef.current) {
-        chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-      }
-      prevHeight = newHeight
-    })
-    ro.observe(ta)
-    return () => ro.disconnect()
-  }, [])
+  // Textarea resize is handled by CSS field-sizing: content.
+  // The chat log ResizeObserver catches the container shrink and scrolls to bottom.
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -1552,6 +2105,54 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  // Resolve the first send target to a fleet ID with an active tmux_session.
+  // The terminal icon is hidden when this is null.
+  const hoverTargetAgentId = useMemo(() => {
+    for (const label of sendTargets) {
+      const fleetId = label.startsWith('fleet:') ? label
+        : agents.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))?.id || label
+      const agent = agents.find((a: any) => a.id === fleetId)
+      if (agent?.tmux_session && !agent?.dead) return fleetId
+    }
+    return null
+  }, [sendTargets, agents])
+
+  // Reset auto-pin tracking when the target agent changes
+  useEffect(() => {
+    termAutoPinnedRef.current = false
+    lastAttentionTsRef.current = null
+  }, [hoverTargetAgentId])
+
+  // Auto-pin terminal peek when the target agent hits a permission prompt
+  useEffect(() => {
+    if (!hoverTargetAgentId) return
+    const attentionEvt = [...liveEvents].reverse().find((e: any) =>
+      e._evType === 'terminal_attention' && e.from === hoverTargetAgentId
+    )
+    if (!attentionEvt?.timestamp) return
+    if (lastAttentionTsRef.current === attentionEvt.timestamp) return
+    lastAttentionTsRef.current = attentionEvt.timestamp
+    termAutoPinnedRef.current = true
+    setTermHoverPinned(true)
+    setTermHoverVisible(true)
+  }, [liveEvents, hoverTargetAgentId])
+
+  // Auto-unpin when the agent resumes (new activity after the attention event)
+  useEffect(() => {
+    if (!termAutoPinnedRef.current || !hoverTargetAgentId || !lastAttentionTsRef.current) return
+    const attn = lastAttentionTsRef.current
+    const hasResumed = liveEvents.some((e: any) =>
+      e.from === hoverTargetAgentId &&
+      (e._activity === true || ((e._evType === 'chat' || e.type === 'chat') && e.from === hoverTargetAgentId)) &&
+      e.timestamp > attn
+    )
+    if (hasResumed) {
+      termAutoPinnedRef.current = false
+      setTermHoverPinned(false)
+      setTermHoverVisible(false)
+    }
+  }, [liveEvents, hoverTargetAgentId])
+
   // Detect impossible filter: filter is set but no AND group can match any known agent
   const isImpossibleFilter = useMemo(() => {
     if (filter.length === 0) return false
@@ -1570,7 +2171,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey, agents])
 
   // Derive a loadBefore agent: use first agent in filter
-  const loadBeforeAgent = sendTargets[0] ?? undefined
+  const loadBeforeAgent = sendTargets[0] ? resolveToFleetId(sendTargets[0]) : undefined
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
@@ -1646,7 +2247,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -1894,6 +2495,21 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
+      // Agent nick → drag as agent filter pill
+      if (!drag) {
+        const nickEl = target.closest('.agent-nick') as HTMLElement
+        if (nickEl) {
+          const agentId = nickEl.dataset.agentId || ''
+          const agentName = names[agentId] || agentId.replace('fleet:', '')
+          drag = {
+            pillId: null, pillType: 'agent' as any, value: agentName,
+            displayName: agentName, color: '#7a9ec8',
+            startX: e.clientX, startY: e.clientY,
+            started: false, captureEl: logEl, pointerId: e.pointerId,
+          }
+        }
+      }
+
       if (!drag) return
 
       e.stopImmediatePropagation()
@@ -2067,8 +2683,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const after = ta.value.slice(pos)
       const insert = (before && !before.endsWith('\n') ? '\n' : '') + text + (after && !after.startsWith('\n') ? '\n' : '')
       ta.value = before + insert + after
-      ta.style.height = 'auto'
-      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+      // field-sizing: content handles auto-resize
       ta.focus()
     }
     const filterHandler = (e: Event) => {
@@ -2159,12 +2774,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages */}
+        {/* Messages — scroll container. Textarea is OUTSIDE (flex sibling). */}
         <div
           ref={chatLogRef}
           className="fleet-chat-log"
           style={{
             flex: 1,
+            minHeight: 0,  // Allow flex item to shrink below content height
             overflowY: 'auto',
             overflowX: 'hidden',
             padding: '4px 0',
@@ -2193,111 +2809,36 @@ function FleetChatInner({ shape }: { shape: any }) {
                   ref={virtualizer.measureElement}
                   style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
                 >
-                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} />
+                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} itemKey={rawItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
                 </div>
               ))}
             </div>
           )}
-          {[...thinkingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={agentId} className="chat-line chat-thinking">
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">thinking…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
-          {[...compactingAgents.entries()].map(([agentId, startTs]) => (
-              <div key={`compact-${agentId}`} className="chat-line chat-thinking">
-                <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-                {' '}<span className="thinking-text">compacting…</span>
-                {' '}<ElapsedTime startMs={startTs} />
-              </div>
-            ))}
-          {/* Terminal cards — interactive terminal embeds for agent tmux sessions */}
-          {[...terminalCards].map(agentId => (
+          <ThinkingStatus
+            thinkingAgents={thinkingAgents}
+            compactingAgents={compactingAgents}
+            ctx={ctx}
+            rawItemsLength={rawItems.length}
+          />
+        </div>
+
+        {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
+        {(termCardPinnedId || termCardHoverId) && (() => {
+          const activeId = termCardPinnedId ?? termCardHoverId!
+          return (
             <TerminalCard
-              key={`terminal-${agentId}`}
-              agentId={agentId}
-              agentName={agentNames[agentId] || agentId.replace('fleet:', '')}
-              onDismiss={() => closeTerminal(agentId)}
+              key={`terminal-${activeId}`}
+              agentId={activeId}
+              agentName={agentNames[activeId] || activeId.replace('fleet:', '')}
+              pinned={!!termCardPinnedId}
+              onMouseEnter={() => { if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null } }}
+              onMouseLeave={() => { if (!termCardPinnedId) { termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200) } }}
+              onDismiss={() => dismissTermCard(activeId)}
             />
-          ))}
-        </div>
+          )
+        })()}
 
-
-        {/* Auto-scroll pause/play + scroll-to-bottom buttons */}
-        <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
-          {/* Pause/play toggle — always visible */}
-          <button
-            onPointerDown={stopEventPropagation}
-            onClick={(e) => {
-              stopEventPropagation(e)
-              setAutoscrollPaused(p => !p)
-            }}
-            style={{
-              position: 'absolute',
-              right: showScrollBtn ? 34 : 8,
-              bottom: 4,
-              width: 22,
-              height: 22,
-              borderRadius: '50%',
-              border: 'none',
-              background: 'transparent',
-              color: 'rgba(200, 200, 200, 1)',
-              opacity: autoscrollPaused ? 0.7 : 0.35,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 12,
-              lineHeight: 1,
-              padding: 0,
-              transition: 'opacity 0.2s, right 0.1s',
-            }}
-            title={autoscrollPaused ? 'Resume auto-scroll' : 'Pause auto-scroll'}
-          >
-            {autoscrollPaused ? '▶' : '⏸'}
-          </button>
-          {/* Scroll-to-bottom — appears when user has scrolled up */}
-          {showScrollBtn && (
-            <button
-              className="fleet-scroll-bottom-btn"
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                stopEventPropagation(e)
-                const el = chatLogRef.current
-                if (el) el.scrollTop = el.scrollHeight
-                userScrolledUp.current = false; setShowScrollBtn(false)
-                setAutoscrollPaused(false)
-              }}
-              style={{
-                position: 'absolute',
-                right: 8,
-                bottom: 4,
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                border: 'none',
-                background: 'transparent',
-                color: 'rgba(200, 200, 200, 1)',
-                opacity: 0.35,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                fontWeight: 'bold',
-                lineHeight: 1,
-                padding: 0,
-                transition: 'opacity 0.2s',
-              }}
-              title="Scroll to bottom"
-            >
-              ▼
-            </button>
-          )}
-        </div>
-
-        {/* Input */}
+        {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
           className="fleet-chat-input-area"
           style={{
@@ -2307,6 +2848,21 @@ function FleetChatInner({ shape }: { shape: any }) {
             position: 'relative',
           }}
         >
+          {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
+          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && (
+            <TerminalHoverPane
+              agentId={hoverTargetAgentId}
+              pinned={termHoverPinned}
+              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
+              onMouseEnter={() => {
+                if (termHideTimerRef.current) {
+                  clearTimeout(termHideTimerRef.current)
+                  termHideTimerRef.current = null
+                }
+              }}
+              onMouseLeave={() => setTermHoverVisible(false)}
+            />
+          )}
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
@@ -2316,9 +2872,67 @@ function FleetChatInner({ shape }: { shape: any }) {
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Hard-lock scroll toggle — magnet icon, left of textarea */}
+            <button
+              className="fleet-hardlock-toggle"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                setHardLocked(prev => !prev)
+              }}
+              title={hardLocked ? 'Hard-locked scroll — click for smart scroll' : 'Smart scroll — click to hard-lock'}
+            >
+              <svg
+                width="10"
+                height="14"
+                viewBox="0 0 10 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
+                {hardLocked && <>
+                  <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
+                  <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
+                </>}
+              </svg>
+            </button>
+            {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
+            {hoverTargetAgentId && (
+              <button
+                className={`fleet-terminal-icon${termHoverPinned ? ' active' : ''}`}
+                onPointerDown={stopEventPropagation}
+                onClick={(e) => {
+                  stopEventPropagation(e as any)
+                  setTermHoverPinned(p => !p)
+                  setTermHoverVisible(true)
+                }}
+                onMouseEnter={() => {
+                  if (termHideTimerRef.current) {
+                    clearTimeout(termHideTimerRef.current)
+                    termHideTimerRef.current = null
+                  }
+                  setTermHoverVisible(true)
+                }}
+                onMouseLeave={() => {
+                  if (!termHoverPinned) {
+                    termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
+                  }
+                }}
+                title={termHoverPinned ? 'Click to unpin terminal' : 'Hover to peek · click to pin'}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="1" width="8" height="8" rx="1.5"/>
+                  <polyline points="2.5,4 4.5,6 2.5,8"/>
+                  <line x1="5.5" y1="8" x2="7.5" y2="8"/>
+                </svg>
+              </button>
+            )}
             <textarea
               ref={inputRef as any}
-              placeholder={sendTargets.length > 0 ? `→ ${sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(', ')}` : ''}
+              placeholder=""
               rows={1}
               autoCorrect="off"
               autoCapitalize="off"
@@ -2327,26 +2941,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
-                // Escape: clear if there's text, otherwise soft-interrupt any
-                // thinking sendTargets. Mirrors how Esc works in a terminal —
-                // you bail out of whatever the agent is currently doing so
-                // your next message lands at a real prompt instead of the
-                // unread queue.
+                // Escape: clear text if present. Interrupt escalation (soft/hard/kill)
+                // is handled entirely by the native keydown listener above.
                 if (e.key === 'Escape') {
                   e.preventDefault()
                   if (ta.value !== '') {
                     ta.value = ''
-                    ta.style.height = 'auto'
-                    return
-                  }
-                  const thinkingTargets = sendTargets.filter(t => thinkingAgents.has(t))
-                  if (thinkingTargets.length === 0) return
-                  for (const target of thinkingTargets) {
-                    fetch(`${FLEET_API}/api/interrupt`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ agent: target }),
-                    }).catch(() => {})
+                    ta.style.height = ''
                   }
                   return
                 }
@@ -2359,8 +2960,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (nextIdx < history.length) {
                     historyIndexRef.current = nextIdx
                     ta.value = history[history.length - 1 - nextIdx]
-                    ta.style.height = 'auto'
-                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    // field-sizing: content handles auto-resize
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2372,12 +2972,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                   historyIndexRef.current = nextIdx
                   if (nextIdx < 0) {
                     ta.value = ''
-                    ta.style.height = 'auto'
+                    ta.style.height = ''
                   } else {
                     const history = sentHistoryRef.current
                     ta.value = history[history.length - 1 - nextIdx]
-                    ta.style.height = 'auto'
-                    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+                    // field-sizing: content handles auto-resize
                     ta.setSelectionRange(ta.value.length, ta.value.length)
                   }
                   return
@@ -2404,9 +3003,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                       targetId = sendTargets[0]
                     }
                     if (targetId) {
-                      openTerminal(targetId)
+                      setTermCardPinnedId(targetId)
                       ta.value = ''
-                      ta.style.height = 'auto'
+                      ta.style.height = ''
                     }
                     return
                   }
@@ -2493,15 +3092,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                       read: true,
                     })
                     ta.value = ''
-                    ta.style.height = 'auto'
+                    ta.style.height = ''
+                    ta.dispatchEvent(new Event('input', { bubbles: true }))
                     resetTranscript()
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    if (!autoscrollPausedRef.current) {
-                      userScrolledUp.current = false; setShowScrollBtn(false)
-                      if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                    }
+                    isAtBottomRef.current = true
+                    setShowScrollBtn(false)
+                    requestAnimationFrame(() => scrollToBottom())
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2536,11 +3135,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   }
                 }
               }}
-              onInput={(e) => {
-                // Auto-resize
-                const ta = e.currentTarget
-                ta.style.height = 'auto'
-                ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+              onInput={() => {
+                // field-sizing: content handles auto-resize natively.
+                // Chat log ResizeObserver handles scroll-to-bottom.
               }}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
@@ -2559,10 +3156,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  if (!autoscrollPausedRef.current) {
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                  }
+                  isAtBottomRef.current = true
+                  setShowScrollBtn(false)
+                  requestAnimationFrame(() => scrollToBottom())
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2581,7 +3177,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     })
                   }
                   sendWithRetry(1)
-                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
+                })
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
@@ -2598,10 +3194,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: true,
                   })
-                  if (!autoscrollPausedRef.current) {
-                    userScrolledUp.current = false; setShowScrollBtn(false)
-                    if (chatLogRef.current) chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight
-                  }
+                  isAtBottomRef.current = true
+                  setShowScrollBtn(false)
+                  requestAnimationFrame(() => scrollToBottom())
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -2620,14 +3215,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                     })
                   }
                   sendWithRetry(1)
-                }, sendTargets.length > 0 ? ctx.getAgentColor(sendTargets[0]) : undefined)
+                })
               }}
               style={{
                 width: '100%',
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px',
+                padding: '4px 8px 4px 22px',
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
@@ -2636,7 +3231,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 fontFamily: 'inherit',
                 position: 'relative',
                 zIndex: 1,
-              }}
+                fieldSizing: 'content',
+                maxHeight: 200,
+              } as any}
               onDrop={async (e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -2717,6 +3314,43 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
           </div>
         </div>
+
+        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
+        {showScrollBtn && (
+          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
+            <button
+              className="fleet-scroll-bottom-btn"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                scrollToBottom()
+                setShowScrollBtn(false)
+              }}
+              style={{
+                position: 'absolute',
+                right: 8,
+                bottom: 4,
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                border: 'none',
+                background: 'transparent',
+                color: 'rgba(200, 200, 200, 1)',
+                opacity: 0.35,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                fontWeight: 'bold',
+                lineHeight: 1,
+                padding: 0,
+                transition: 'opacity 0.2s',
+              }}
+              title="Scroll to bottom"
+            >↓</button>
+          </div>
+        )}
       </div>
     </HTMLContainer>
   )

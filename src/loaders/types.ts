@@ -24,6 +24,16 @@ export interface SvgPage {
   textData?: PageTextData | null
   tldrawPageId?: string  // TLDraw page ID for multipage HTML docs
   tldrawPageName?: string  // Display name for the TLDraw page
+  targetBasePath?: string  // per-page basePath for multi-target docs
+  pageInTarget?: number    // 1-based page number within the target
+  targetName?: string      // which target this page belongs to
+}
+
+export interface TargetInfo {
+  name: string
+  title: string
+  pages: number
+  basePath: string
 }
 
 export interface SvgDocument {
@@ -33,6 +43,7 @@ export interface SvgDocument {
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   diffLayout?: DiffLayout
+  targets?: TargetInfo[]  // present for multi-target projects
 }
 
 export interface DiffHighlight {

@@ -110,7 +110,11 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const DAEMON_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+const DAEMON_SCRIPT = (() => {
+  const d = dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  return m ? join(m[1], 'bin', 'fleet-daemon.mjs') : join(d, '..', 'bin', 'fleet-daemon.mjs')
+})()
 // Crash-loop guard: if the daemon dies fast >= MAX_RAPID_RESPAWNS times in a
 // row, give up until manual intervention. The supervisor would otherwise
 // hot-loop and burn CPU + log spam if the daemon has a startup crash.
@@ -259,17 +263,33 @@ function broadcastFleet(msg) {
 function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
 }
+// Server-authoritative thinking/compacting state.
+// Populated from agent-thinking / agent-compacting events, included in
+// broadcastState() so state pushes never wipe client indicators.
+const _thinkingState = new Map()   // agentId → timestamp (ms)
+const _compactingState = new Map() // agentId → timestamp (ms)
+
 function broadcastState() {
   if (!fleetStore) return
   broadcastFleet({
     agents: fleetStore.getAllAgents(),
     tasks: fleetStore.getActiveTasks(),
+    thinking: Object.fromEntries(_thinkingState),
+    compacting: Object.fromEntries(_compactingState),
   })
 }
 
 // Wire fleet store events → WS broadcast
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
+}
+
+// Backfill session_entries from JSONL files (async, non-blocking).
+if (fleetStore) {
+  const CLAUDE_PROJECTS = join(os.homedir(), '.claude', 'projects')
+  fleetStore.backfillSessionEntries(CLAUDE_PROJECTS).then(({ indexed, skipped }) => {
+    if (indexed > 0) console.log(`[fleet-store] search backfill: indexed ${indexed} sessions (${skipped} already indexed)`)
+  }).catch(e => console.error('[fleet-store] search backfill failed:', e.message))
 }
 
 // Ensure server owner exists as a human agent in the DB on startup
@@ -409,6 +429,58 @@ app.post('/api/voice/restart-chrome', async (req, res) => {
   }
 })
 
+// Lazy-start the whisper bridge. Browser hits this when voice=whisper is selected.
+// Chrome Web Speech is the default; whisper only spins up when explicitly requested.
+app.post('/api/voice/whisper/start', async (req, res) => {
+  try {
+    const WS = (await import('ws')).default
+    // Already up?
+    const alreadyUp = await new Promise(resolve => {
+      let done = false
+      try {
+        const ws = new WS('ws://127.0.0.1:8179')
+        ws.on('open', () => { done = true; ws.close(); resolve(true) })
+        ws.on('error', () => { if (!done) { done = true; resolve(false) } })
+        setTimeout(() => { if (!done) { done = true; try { ws.close() } catch {}; resolve(false) } }, 800)
+      } catch { resolve(false) }
+    })
+    if (alreadyUp) return res.json({ ok: true, started: false })
+
+    const { spawn } = await import('child_process')
+    const { openSync } = await import('fs')
+    const { dirname, join } = await import('path')
+    const { fileURLToPath } = await import('url')
+    const here = dirname(fileURLToPath(import.meta.url))
+    const tldaRoot = dirname(here)
+    const bridgeScript = join(tldaRoot, 'bin', 'whisper-bridge.mjs')
+    const logPath = join(process.env.HOME || '', '.config', 'tlda', 'whisper-bridge.log')
+    const fd = openSync(logPath, 'a')
+    const child = spawn('node', [bridgeScript], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      cwd: tldaRoot,
+    })
+    child.unref()
+    console.log('[voice] whisper bridge spawned (lazy-start, pid', child.pid, ')')
+    res.json({ ok: true, started: true, pid: child.pid })
+  } catch (err) {
+    console.error('[voice] whisper/start failed:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/voice/whisper/stop', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process')
+    try { execSync('pkill -f "whisper-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
+    try { execSync('pkill -f "whisper-stream " 2>/dev/null', { timeout: 3000 }) } catch {}
+    console.log('[voice] whisper bridge + stream stopped')
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
 // Services health — checks tlda server (self), fleet server, Yjs sync
 app.get('/health/services', async (req, res) => {
   const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
@@ -514,7 +586,7 @@ app.use('/docs', (req, res, next) => {
   const name = parts[0]
   const filePath = parts.slice(1).join('/')
 
-  // Serve history snapshots: /docs/{name}/history/{snapshotId}/page-N.svg
+  // Serve history snapshots: /docs/{name}/history/{snapshotId}/<texBase>-page-N.svg
   if (filePath.startsWith('history/')) {
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
@@ -522,11 +594,12 @@ app.use('/docs', (req, res, next) => {
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
 
-    // On-demand shadow page generation: history/shadow-{hash7}/page-N.svg
-    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/page-(\d+)\.svg$/)
+    // On-demand shadow page generation: history/shadow-{hash7}/<texBase>-page-N.svg.
+    // texBase is required so we know which target's page to render.
+    const shadowPageMatch = filePath.match(/^history\/(shadow-([a-f0-9]{7}))\/(.+)-page-(\d+)\.svg$/)
     if (shadowPageMatch) {
       const hash7 = shadowPageMatch[2]
-      const pageNum = parseInt(shadowPageMatch[3], 10)
+      const pageNum = parseInt(shadowPageMatch[4], 10)
       try {
         const { buildShadowPage } = await import('./lib/shadow-repo.mjs')
         const svgPath = await buildShadowPage(name, hash7, pageNum)
@@ -587,34 +660,62 @@ app.use('/docs', (req, res, next) => {
     return res.status(404).json({ error: 'Not found' })
   }
 
-  // On-demand current-column SVG: page-N.svg built lazily from output/main.dvi.
-  // buildCurrentPage handles DVI staleness (via ensureCurrentDvi) and SVG staleness.
-  // We delegate to it whenever: SVG is missing, DVI is missing/stale, or source.stamp
-  // is newer than the DVI (source changed since last build).
-  const livePageMatch = filePath.match(/^page-(\d+)\.svg$/)
+  // On-demand current-column SVG: <texBase>-page-N.svg.
+  // Outputs are flat under output/, prefixed by target's texBase. The ensure
+  // system (via buildCurrentPage) decides whether to (re)compile the DVI and
+  // (re)render the page; we just check whether the file is on disk.
+  const livePageMatch = filePath.match(/^([^/]+)-page-(\d+)\.svg$/)
   if (livePageMatch) {
-    const pageNum = parseInt(livePageMatch[1], 10)
-    const svgPath = join(PROJECTS_DIR, name, 'output', filePath)
-    const dviPath = join(PROJECTS_DIR, name, 'output', 'main.dvi')
+    const texBase = livePageMatch[1]
+    const pageNum = parseInt(livePageMatch[2], 10)
+    const outputBase = join(PROJECTS_DIR, name, 'output')
+    const svgPath = join(outputBase, `${texBase}-page-${pageNum}.svg`)
+    const dviPath = join(outputBase, `${texBase}.dvi`)
     const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
+    const buildStampPath = join(outputBase, 'build.stamp')
     const svgExists = existsSync(svgPath)
     const dviExists = existsSync(dviPath)
+    const buildMtime = existsSync(buildStampPath) ? statSync(buildStampPath).mtimeMs : 0
+    const sourceNewerThanBuild = existsSync(stampPath) && statSync(stampPath).mtimeMs > buildMtime
     const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
     const needsBuild = !svgExists ||
       !dviExists ||
       statSync(svgPath).mtimeMs < dviMtime ||
-      (existsSync(stampPath) && statSync(stampPath).mtimeMs > dviMtime)
+      sourceNewerThanBuild
     if (needsBuild) {
       try {
         const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-        const built = await buildCurrentPage(name, pageNum)
+        const built = await buildCurrentPage(name, pageNum, texBase)
         res.set('Cache-Control', 'no-cache')
         return res.sendFile(resolve(built), { dotfiles: 'allow' })
       } catch (e) {
-        console.error(`[live] on-demand page failed: ${name} p${pageNum}: ${e.message}`)
+        console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
         return res.status(404).json({ error: 'Page unavailable', detail: e.message })
       }
     }
+  }
+
+  // Project-level metadata aliases — bare names resolve to the primary
+  // target's per-target file. These names predate multi-target; viewer code
+  // fetches them as project-wide artifacts. Aliasing keeps callers simple
+  // and the canonical "doc metadata" is the primary target's.
+  const BARE_METADATA = new Set([
+    'lookup.json', 'macros.json', 'proof-info.json',
+    'source-map.json', 'theorem-map.json',
+  ])
+  if (BARE_METADATA.has(filePath)) {
+    try {
+      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
+      if (existsSync(projectJsonPath)) {
+        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+        const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+        const aliased = join(PROJECTS_DIR, name, 'output', `${primaryTexBase}-${filePath}`)
+        if (existsSync(aliased)) {
+          res.set('Cache-Control', 'no-cache')
+          return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
+        }
+      }
+    } catch { /* fall through */ }
   }
 
   // Try project output first
@@ -733,8 +834,13 @@ import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
 
 // ---------- Fleet API (embedded) ----------
+function clearEphemeralState(agentId) {
+  _thinkingState.delete(agentId)
+  _compactingState.delete(agentId)
+}
 const fleetRouter = createFleetRouter({
-  fleetStore, broadcastEvent, broadcastState, suppressEchoFor: () => {},
+  fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
+  suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections,
 })
 app.use(fleetRouter)
@@ -800,7 +906,7 @@ function fanOutTerminalFrame(agentId, frame) {
   }
 }
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
 
   // Auth check: token from ?token= query param, Authorization header, or cookie
@@ -825,7 +931,7 @@ server.on('upgrade', (req, socket, head) => {
     const docName = url.pathname.slice(6)
     if (!docName) { socket.destroy(); return }
     const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const room = getOrCreateRoom(docName)
+    const room = await getOrCreateRoom(docName)
     syncWss.handleUpgrade(req, socket, head, (ws) => {
       room.handleSocketConnect({ sessionId, socket: ws })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
@@ -950,14 +1056,15 @@ server.on('upgrade', (req, socket, head) => {
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
-      ws._connId = Math.random().toString(36).slice(2)  // unique per-connection ID
       wsFleetClients.add(ws)
 
-      // Send initial state (includes connId so the client can suppress its own echoes)
+      // Send initial state on connect
       if (fleetStore) {
         const initState = {
           agents: fleetStore.getAllAgents(),
           tasks: fleetStore.getActiveTasks(),
+          thinking: Object.fromEntries(_thinkingState),
+          compacting: Object.fromEntries(_compactingState),
           connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
@@ -986,7 +1093,7 @@ server.on('upgrade', (req, socket, head) => {
 // ---------- Fleet WS message handler ----------
 // Handles request/response messages from the fleet MCP (sendWS pattern)
 
-function handleFleetWsMessage(ws, msg) {
+async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const reply = (result) => {
     if (id) ws.send(JSON.stringify({ id, result }))
@@ -1077,10 +1184,46 @@ function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- jsonl-index: daemon pushes JSONL text entries for unified search ----
+  if (type === 'jsonl-index') {
+    try { fleetStore.insertSessionEntries(msg.entries || []) } catch (e) { error(e.message); return }
+    reply({ ok: true })
+    return
+  }
+
+  // ---- fleet-search: unified search across fleet events + session JSONL text ----
+  if (type === 'fleet-search') {
+    try {
+      const results = fleetStore.searchAll(msg.query || '', {
+        limit: msg.limit, agent: msg.agent, role: msg.role, since: msg.since,
+      })
+      const context = {}
+      if (msg.context_timestamps?.length) {
+        for (const ts of msg.context_timestamps) {
+          context[ts] = fleetStore.getChatContext(ts, msg.context_window || 3)
+        }
+      }
+      reply({ results, context })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // Respawn a dead agent when a message is directed at them.
+  // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
+  function autoRespawnIfDead(agentId) {
+    const agent = fleetStore.getAgent?.(agentId)
+    if (!agent?.dead) return
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) return
+    // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
+    sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
+      .catch(e => console.warn(`[auto-respawn] failed for ${agentId}: ${e.message}`))
+    console.log(`[auto-respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
+  }
+
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
-    // Resolve names to IDs (same as HTTP POST handler)
     const resolve = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = fleetStore?.findAgent(id); return a ? a.id : null
@@ -1088,36 +1231,69 @@ function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
     const to = resolve(rawTo)
     if (!to) { error(`Recipient not found: "${rawTo}"`); return }
-    // Fleet MCP sends inline_attachments / attachments / cc / context at the
-    // top level of the msg. Fold them into the metadata JSON so the receiver
-    // pipeline (fleet-data.mjs → chat-render.mjs / my_task) can find them.
+    // Update sender heartbeat
+    if (from) fleetStore.updateHeartbeat?.(from)
+    // Resolve CC
+    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
+    if (ccResolved && ccResolved.length === 0) ccResolved = null
+    // Copy attachments to server-accessible path
+    let processedAttachments = attachments
+    if (attachments && attachments.length) {
+      const UPLOAD_DIR = path.join(import.meta.dirname || '.', 'uploads')
+      processedAttachments = attachments.map(a => {
+        if (a.path && fs.existsSync(a.path)) {
+          try {
+            fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+            const name = `${Date.now()}-${path.basename(a.path)}`
+            const dest = path.join(UPLOAD_DIR, name)
+            fs.copyFileSync(a.path, dest)
+            return { ...a, path: dest, originalPath: a.path }
+          } catch { /* keep original */ }
+        }
+        return a
+      })
+    }
+    // Resolve wiretaps
+    let wiretapRecipients = []
+    const taps = fleetStore.getWiretaps?.() || []
+    for (const tap of taps) {
+      if (!tap.filter) continue
+      let matches = false
+      try {
+        const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
+        const fromMatch = !f.from || f.from.some(grp => grp.every(t => [from, ...(fleetStore.findAgent(from)?.labels || [])].includes(t)))
+        const toMatch = !f.to || f.to.some(grp => grp.every(t => [to, ...(fleetStore.findAgent(to)?.labels || [])].includes(t)))
+        matches = fromMatch && toMatch
+      } catch {}
+      if (matches && tap.agent_id !== from && tap.agent_id !== to) {
+        wiretapRecipients.push(tap.agent_id)
+      }
+    }
+    // Attach sender's chatReminder if set
+    const senderAgent = fleetStore.getAgent?.(from)
+    const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     const combinedMetadata = {
       ...(metadata || {}),
-      ...(cc ? { cc } : {}),
-      ...(attachments ? { attachments } : {}),
+      ...(ccResolved ? { cc: ccResolved } : {}),
+      ...(processedAttachments ? { attachments: processedAttachments } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
+      ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
       ...(context ? { context } : {}),
+      ...(chatReminder ? { chatReminder } : {}),
     }
-    // Write to DB WITHOUT broadcasting (insert + unread only).
-    // Reply with event_id FIRST so the client can reconcile the optimistic
-    // event before the echo arrives on the same socket.
-    const eventData = {
-      type: 'chat', from, to, text,
-      metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-    }
+    // Write to DB, reply with event_id FIRST so the client can reconcile
+    // the optimistic event before the echo arrives on the same socket.
     const ts = new Date().toISOString()
-    const meta = eventData.metadata ? JSON.stringify(eventData.metadata) : null
+    const meta = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
     const result = fleetStore.db.prepare(
       'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
     ).run('chat', ts, from, to, text, meta)
     const eventId = Number(result.lastInsertRowid)
-    // Track unread
     fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
-    // Reply FIRST — client reconciles _tempId → _dbId synchronously
     reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
-    // THEN broadcast to all clients
-    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: eventData.metadata }
+    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
     broadcastEvent('fleet-event', inserted)
+    autoRespawnIfDead(to)
     return
   }
 
@@ -1125,6 +1301,41 @@ function handleFleetWsMessage(ws, msg) {
     const { agent } = msg
     if (agent) fleetStore.updateHeartbeat?.(agent)
     reply({ ok: true })
+    return
+  }
+
+  if (type === 'load-history') {
+    const limit = Math.min(parseInt(msg.limit || '50'), 1000)
+    const before = msg.before || null
+    const agent = msg.agent || null
+    try {
+      let events = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+        .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      const hasMore = events.length > limit
+      if (hasMore) events.shift()
+      events = events.filter(e => {
+        const t = e.text || ''
+        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
+      })
+      const allAgents = fleetStore.getAllAgents()
+      const agentMap = {}
+      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
+      const unreadIds = new Set()
+      try {
+        const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
+        for (const r of rows) unreadIds.add(r.event_id)
+      } catch {}
+      const resolved = events.map(e => ({
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }))
+      reply({ events: resolved, hasMore })
+    } catch (e) {
+      error(e.message)
+    }
     return
   }
 
@@ -1154,6 +1365,7 @@ function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
+    autoRespawnIfDead(resolved.id)
     return
   }
 
@@ -1231,12 +1443,22 @@ function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'agent-thinking') {
+    if (msg.thinking) {
+      _thinkingState.set(msg.agentId, Date.now())
+    } else {
+      _thinkingState.delete(msg.agentId)
+    }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
     return
   }
 
   if (type === 'agent-compacting') {
+    if (msg.compacting) {
+      _compactingState.set(msg.agentId, Date.now())
+    } else {
+      _compactingState.delete(msg.agentId)
+    }
     broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
     reply({ ok: true })
     return
@@ -1277,6 +1499,397 @@ function handleFleetWsMessage(ws, msg) {
     const { agentId } = msg
     if (!agentId) { error('missing agentId'); return }
     reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
+    return
+  }
+
+  // ---- rename ----
+  if (type === 'rename') {
+    const { agent: agentQuery, name: newName } = msg
+    if (!agentQuery || newName == null) { error('agent and name required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (newName) {
+      const conflict = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
+    }
+    fleetStore.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, name: newName || null })
+    return
+  }
+
+  // ---- label ----
+  if (type === 'label') {
+    const { agent: agentQuery, labels } = msg
+    if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    agent.labels = labels
+    fleetStore.upsertAgent(agent)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, labels })
+    return
+  }
+
+  // ---- kick ----
+  if (type === 'kick') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const route = resolveRpc('kick', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'kick', { agent_id: agent.id })
+      broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- kill-session ----
+  if (type === 'kill-session') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('kill-session', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- interrupt ----
+  if (type === 'interrupt') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('interrupt', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- spawn ----
+  if (type === 'spawn') {
+    const { name, model, doc, agent, respawn } = msg
+    let spawnName = name
+    if (respawn && agent) {
+      const a = fleetStore.findAgent(agent)
+      spawnName = a?.friendly_name || agent
+    }
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
+    try {
+      const result = await sendRpc(machineIds[0], 'spawn', {
+        name: spawnName || undefined, model: model || undefined,
+        doc: doc || undefined, respawn: !!respawn,
+      })
+      broadcastState()
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- send-key ----
+  if (type === 'send-key') {
+    const { agent: agentQuery, key } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('send-key', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- send-text ----
+  if (type === 'send-text') {
+    const { agent: agentQuery, text, enter } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('send-text', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text, enter: enter !== false })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- capture-pane ----
+  if (type === 'capture-pane') {
+    const { agent: agentQuery, lines } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: lines || 50 })
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- plan-mode-respond ----
+  if (type === 'plan-mode-respond') {
+    const { agent: agentQuery, response } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    if (response !== 'approve' && response !== 'reject') { error('response must be approve or reject'); return }
+    const op = response === 'approve' ? 'send-text' : 'send-key'
+    const route = resolveRpc(op, agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      let result
+      if (response === 'approve') {
+        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
+      } else {
+        result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+      }
+      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null })
+      broadcastState()
+      reply(result)
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- plan-mode-toggle ----
+  if (type === 'plan-mode-toggle') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const parseCCMode = (pane) => {
+        if (/plan mode on/i.test(pane)) return 'plan'
+        if (/accept edits on/i.test(pane)) return 'acceptEdits'
+        return 'default'
+      }
+      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const currentMode = parseCCMode(cap1?.content || '')
+      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
+      for (let i = 0; i < btabs; i++) {
+        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
+      }
+      if (btabs > 0) await new Promise(r => setTimeout(r, 300))
+      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const finalMode = parseCCMode(cap2?.content || '')
+      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      broadcastState()
+      reply({ ok: true, mode: finalMode, was: currentMode })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- mark-event-read ----
+  if (type === 'mark-event-read') {
+    const { event_id, agent: rawAgent } = msg
+    if (!event_id || !rawAgent) { error('event_id and agent required'); return }
+    const agent = fleetStore.findAgent(rawAgent)
+    const agentId = agent?.id || rawAgent
+    const changed = fleetStore.markEventRead?.(parseInt(event_id, 10), agentId)
+    if (changed) broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
+    reply({ ok: true, changed: !!changed })
+    return
+  }
+
+  // ---- terminal-card ----
+  if (type === 'terminal-card') {
+    const { from: rawFrom, reason } = msg
+    if (!rawFrom) { error('missing from'); return }
+    const agent = fleetStore.findAgent(rawFrom)
+    if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
+    if (!agent.tmux_session) { error('agent has no tmux_session'); return }
+    if (!agent.machine_id) { error('agent has no machine_id'); return }
+    const label = agent.friendly_name || agent.id.slice(0, 12)
+    const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
+    const event = fleetStore.share?.({
+      type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
+      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
+    })
+    broadcastEvent('fleet-event', {
+      type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID,
+      id: event?.id, event_id: event?.id, text,
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+    })
+    reply({ ok: true, event_id: event?.id })
+    return
+  }
+
+  // ---- wiretap-add ----
+  if (type === 'wiretap-add') {
+    const { agent, filter } = msg
+    if (!agent || !filter) { error('missing agent or filter'); return }
+    const tap = fleetStore.addWiretap(agent, filter)
+    reply(tap)
+    return
+  }
+
+  // ---- wiretap-remove ----
+  if (type === 'wiretap-remove') {
+    const { id: tapId } = msg
+    if (!tapId || isNaN(parseInt(tapId))) { error('invalid id'); return }
+    fleetStore.removeWiretap(parseInt(tapId))
+    reply({ ok: true })
+    return
+  }
+
+  // ---- wiretap-list ----
+  if (type === 'wiretap-list') {
+    const { agent } = msg
+    const taps = agent ? fleetStore.getWiretapsByAgent?.(agent) : fleetStore.getWiretaps?.()
+    reply(taps || [])
+    return
+  }
+
+  // ---- retract ----
+  if (type === 'retract') {
+    const { agent: rawAgent, task_id } = msg
+    if (!rawAgent) { error('missing agent'); return }
+    const agentId = fleetStore.findAgent(rawAgent)?.id || rawAgent
+    const task = task_id ? fleetStore.getTask?.(task_id) : fleetStore.getTaskByAgent?.(agentId)
+    if (!task) { error('no active task'); return }
+    fleetStore.removeTask?.(task.id)
+    broadcastState()
+    reply({ ok: true, task_id: task.id })
+    return
+  }
+
+  // ---- shared-docs-set ----
+  if (type === 'shared-docs-set') {
+    const { doc, path: docPath, title, agent, ephemeral } = msg
+    if (!doc) { error('missing doc'); return }
+    const now = new Date().toISOString()
+    fleetStore.db.prepare(`
+      INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
+    `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
+    reply({ ok: true })
+    return
+  }
+
+  // ---- shared-docs-get ----
+  if (type === 'shared-docs-get') {
+    const docs = fleetStore.db.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
+    reply(docs)
+    return
+  }
+
+  // ---- mark-dead ----
+  if (type === 'mark-dead') {
+    const { agent: agentId } = msg
+    if (!agentId) { error('missing agent'); return }
+    fleetStore.markDead(agentId)
+    broadcastState()
+    reply({ ok: true })
+    return
+  }
+
+  // ---- chat-history ----
+  if (type === 'chat-history') {
+    const { limit: rawLimit = 50, before, agent } = msg
+    const limit = Math.min(parseInt(rawLimit) || 50, 1000)
+    try {
+      let events = []
+      const fleetEvents = fleetStore.queryChatHistory?.({ before, agent, limit: limit + 1 }) || []
+      events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      const hasMore = events.length > limit
+      if (hasMore) events.shift()
+      events = events.filter(e => { const t = e.text || ''; return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder') })
+      const allAgents = fleetStore.getAllAgents()
+      const agentMap = {}
+      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const unreadIds = new Set()
+      try { const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all(); for (const r of rows) unreadIds.add(r.event_id) } catch {}
+      const resolved = events.map(e => ({
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }))
+      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
+      reply({ events: resolved, hasMore, nextCursor })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  // ---- store-events ----
+  if (type === 'store-events') {
+    const afterId = parseInt(msg.after || '0')
+    const beforeId = msg.before ? parseInt(msg.before) : null
+    // Timestamp-based pagination (ISO strings). Used by get_thread/MCP.
+    const sinceTs = msg.since || null
+    const untilTs = msg.until || null
+    const limit = Math.min(parseInt(msg.limit || '200'), 5000)
+    const evtAgent = msg.agent || null
+    const evtType = msg.event_type || null
+    try {
+      let events
+      let total = null
+      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
+      if (evtAgent) {
+        const where = '(from_id = ? OR to_id = ?)'
+        const baseParams = [evtAgent, evtAgent]
+        if (sinceTs || untilTs) {
+          // Timestamp pagination: filter by timestamp range, return earliest matches in
+          // chronological order. Also report `total` for the matching range so the
+          // caller can show "showing N of M".
+          const tsClauses = []
+          const tsParams = []
+          if (sinceTs) { tsClauses.push('timestamp > ?'); tsParams.push(sinceTs) }
+          if (untilTs) { tsClauses.push('timestamp <= ?'); tsParams.push(untilTs) }
+          const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
+          const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
+          events = fleetStore.db.prepare(q).all(...baseParams, ...tsParams, limit)
+          const totalRow = fleetStore.db.prepare(
+            `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
+          ).get(...baseParams, ...tsParams)
+          total = totalRow?.c ?? null
+        } else {
+          const q = afterId
+            ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
+            : beforeId
+            ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+            : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
+          events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
+            : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
+            : fleetStore.db.prepare(q).all(...baseParams, limit)
+          if (beforeId) events.reverse()
+          // total of all events for this agent (no time filter) so callers see "X of Y"
+          const totalRow = fleetStore.db.prepare(
+            `SELECT COUNT(*) AS c FROM events WHERE ${where}`
+          ).get(...baseParams)
+          total = totalRow?.c ?? null
+        }
+      } else if (evtType) {
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`).all(evtType, afterId, limit)
+      } else if (beforeId) {
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
+        events.reverse()
+      } else {
+        events = fleetStore.getEventsSince(afterId, limit)
+      }
+      const lastId = fleetStore.getLastEventId()
+      reply({ events, lastId, total })
+    } catch (e) { error(e.message) }
     return
   }
 
@@ -1706,4 +2319,24 @@ server.listen(PORT, HOST, () => {
   console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
+
+  // Idle-hibernation: kill tmux panes for agents that haven't been seen in a while.
+  // The process dies, RAM is freed. Auto-respawn fires when anyone next messages them.
+  const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
+  setInterval(() => {
+    if (!fleetStore) return
+    const cutoff = new Date(Date.now() - IDLE_HIBERNATE_MS).toISOString()
+    const idle = fleetStore.db.prepare(
+      "SELECT * FROM agents WHERE dead = 0 AND human = 0 AND last_seen < ? AND tmux_session IS NOT NULL"
+    ).all(cutoff)
+    for (const agent of idle) {
+      const machineIds = [...daemonConnections.keys()]
+      if (machineIds.length === 0) continue
+      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing`)
+      sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+        .catch(() => {})
+      fleetStore.markDead(agent.id)
+    }
+    if (idle.length > 0) broadcastState()
+  }, 5 * 60 * 1000).unref()  // check every 5 minutes
 })

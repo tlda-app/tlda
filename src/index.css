@@ -122,36 +122,7 @@ html.hires .tlui-layout {
   overflow: visible;
   contain: layout style;
 }
-html.hires .tlui-main-toolbar {
-  zoom: var(--hires-scale);
-}
-html.hires [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
-  zoom: var(--hires-scale);
-}
-html.hires .build-pills-row {
-  zoom: var(--hires-scale);
-}
-html.hires .fleet-pill-container {
-  zoom: var(--hires-scale);
-}
-html.hires .fleet-hud-controls {
-  zoom: var(--hires-scale);
-}
-html.hires .doc-panel {
-  zoom: var(--hires-scale);
-}
-html.hires .phone-hl-btn {
-  zoom: var(--hires-scale);
-}
-html.hires .voice-note-btn {
-  zoom: var(--hires-scale);
-}
-html.hires .phone-hl-slider {
-  zoom: var(--hires-scale);
-}
-html.hires .agent-indicator {
-  zoom: var(--hires-scale);
-}
-html.hires .ping-button-standalone {
-  zoom: var(--hires-scale);
-}
+/* All zoom-based scaling removed — Skip's call. Chrome renders at native CSS
+   size on retina/high-res displays. If specific elements look too small,
+   add per-property bumps under .hires (font-size, width, height, padding)
+   for those elements only — never zoom. */

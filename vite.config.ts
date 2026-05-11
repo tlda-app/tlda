@@ -45,22 +45,22 @@ export default defineConfig({
     proxy: {
       // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
-        target: 'ws://localhost:5176',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5176',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
-      // Yjs sync WebSocket → test server
+      // Yjs sync WebSocket
       '/sync': {
-        target: 'ws://localhost:5176',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
-      // All API routes → test server
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      // All API routes → unified server
+      '/api': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/docs': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/health': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
     },
   },
   preview: {
@@ -69,6 +69,7 @@ export default defineConfig({
     proxy: {
       '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
       '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
+      '/sync': { target: 'ws://localhost:5176', ws: true },
       '/api': 'http://localhost:5176',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',

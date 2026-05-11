@@ -13,24 +13,104 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import { useState, useCallback, useRef } from 'react'
-import { stopEventPropagation } from 'tldraw'
+import React, { useState, useCallback, useRef } from 'react'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import './FleetIconPill.css'
-
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
 const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 40          // px width of each preset tile
 const ITEM_H = 22          // px height
 const ITEM_GAP = 4         // px between tiles
 
-const LAYOUT_PRESETS = [
-  { id: '3col' as const, label: 'Fleet|',  title: 'Three-column: agents + search | chat | chat + docview' },
-  { id: '2col' as const, label: 'Flee|t',  title: 'Two-column: left margin + right margin chat' },
+type LayoutId = '3col' | '2col' | 'wide' | 'grid'
+const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
+  { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
+  { id: '2col', title: 'Two-column: left margin + right margin chat' },
+  { id: 'wide', title: 'Wide: agents + search | one large chat' },
+  { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
 ]
+
+/** Mini SVG diagram showing the layout arrangement */
+function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
+  const s = size
+  const g = 1 // gap
+  const r = 0.5 // corner radius
+  // All shapes use currentColor — opacity on the fan-item container handles visibility.
+  // Differentiate shape types by opacity within the icon.
+  const ap = 'currentColor'  // agents panel (full)
+  const ch = 'currentColor'  // chat (full)
+  const sr = 'currentColor'  // search
+  const dv = 'currentColor'  // docview
+
+  // Document: outlined rectangle with horizontal lines (looks like paper).
+  // SAME size in every preset — fixed at right side.
+  const docW = s * 0.22
+  const docX = s - docW
+  const docY = s * 0.05
+  const docH = s * 0.9
+  const lineGap = docH / 6
+  const docEl = (x: number = docX) => (
+    <g>
+      <rect x={x} y={docY} width={docW} height={docH} stroke="currentColor" strokeWidth={0.5} fill="none" rx={r} />
+      {[1,2,3,4,5].map(i => (
+        <line key={i} x1={x + docW*0.15} y1={docY + lineGap*i} x2={x + docW*0.85} y2={docY + lineGap*i} stroke="currentColor" strokeWidth={0.35} opacity={0.45} />
+      ))}
+    </g>
+  )
+
+  const layouts: Record<LayoutId, React.JSX.Element> = {
+    '3col': (
+      // [agents/search] [chat] [chat+docview] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.7} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={s*0.7+g} width={s*0.22-g} height={s*0.3-g} rx={r} fill={dv} />
+        {docEl()}
+      </>
+    ),
+    '2col': (
+      // [agents/search + chat] | DOC | [chat]
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s} rx={r} fill={ch} />
+        {docEl(s*0.4+g)}
+        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+      </>
+    ),
+    'wide': (
+      // [agents/search] [wide chat] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s} rx={r} fill={ch} />
+        {docEl()}
+      </>
+    ),
+    'grid': (
+      // [agents/search] [2x2 chats] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.38+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        {docEl()}
+      </>
+    ),
+  }
+
+  return (
+    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} style={{ display: 'block' }}>
+      {layouts[id]}
+    </svg>
+  )
+}
 
 function isFleetHidden() {
   return localStorage.getItem('fleet-hud-expanded') !== '1'
@@ -45,7 +125,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const [dragAnchor, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const aliveCount = agents.filter((a: any) => !a.dead && !a.human).length
 
@@ -115,7 +195,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
-          createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id)
+          createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id as any)
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
       }
@@ -143,7 +223,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         style={{ touchAction: 'none' }}
       >
         {/* Basestar SVG with agent count knocked out via mask */}
-        <svg viewBox="0 0 960 960" width={14} height={14} aria-hidden="true"
+        <svg viewBox="0 0 960 960" width={27} height={27} aria-hidden="true"
           style={{ display: 'block', flexShrink: 0 }}>
           <defs>
             <mask id="fleet-count-mask">
@@ -151,7 +231,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
               <rect width="960" height="960" fill="white" />
               {aliveCount > 0 && (
                 <text x="480" y="580" textAnchor="middle" dominantBaseline="central"
-                  fill="black" fontSize={aliveCount >= 10 ? 420 : 480}
+                  fill="black" fontSize={aliveCount >= 10 ? 210 : 240}
                   fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
                   fontWeight="700">{aliveCount}</text>
               )}
@@ -178,10 +258,10 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
             <div
               key={preset.id}
               className={'fleet-icon-pill-fan-item' + (selectedIdx === i ? ' hovered' : '')}
-              style={{ width: ITEM_W, height: ITEM_H }}
+              style={{ width: ITEM_W, height: ITEM_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               title={preset.title}
             >
-              {preset.label}
+              <LayoutIcon id={preset.id} size={ITEM_H - 4} />
             </div>
           ))}
         </div>

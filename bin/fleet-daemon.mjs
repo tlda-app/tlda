@@ -58,6 +58,8 @@ import os from 'os'
 import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
+import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
@@ -239,9 +241,13 @@ function parseSessionLine(jsonStr) {
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
     ev.blocks = content.map(c => {
       if (c.type === 'tool_result') {
-        const text = typeof c.content === 'string' ? c.content :
-          Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content)
-        return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false }
+        const items = typeof c.content === 'string' ? [{ type: 'text', text: c.content }] :
+          Array.isArray(c.content) ? c.content : []
+        const text = items.map(x => x.text || '').join('')
+        const imgItem = items.find(x => x.type === 'image')
+        const imgData = imgItem?.source?.type === 'base64' ? imgItem.source.data : (imgItem?.data || null)
+        const imgMime = imgItem?.source?.media_type || imgItem?.mimeType || 'image/png'
+        return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false, imgData, imgMime }
       }
       if (c.type === 'text') return { type: 'text', text: c.text }
       return { type: c.type }
@@ -271,7 +277,23 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'mcp__tlda__screenshot'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
+
+function truncatePrettyResult(text, toolName) {
+  if (text.length <= 5000) return text
+  const tool = (toolName || '').toLowerCase()
+  if (tool.includes('get_thread') || tool.includes('thread')) {
+    const SEP = '\n\n---\n\n'
+    const msgs = text.split(SEP)
+    if (msgs.length > 8) {
+      const front = msgs.slice(0, 3)
+      const tail = msgs.slice(-5)
+      const hidden = msgs.length - 8
+      return front.join(SEP) + SEP + `… ${hidden} messages …` + SEP + tail.join(SEP)
+    }
+  }
+  return text.slice(0, 5000) + '\n\n… (truncated)'
+}
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
@@ -288,7 +310,15 @@ function extractActivityEvents(events) {
     if (!ev.blocks) continue
     for (const block of ev.blocks) {
       if (block.type === 'tool_result' && block.id) {
-        toolResults.set(block.id, block.text || '')
+        let text = block.text || ''
+        if (block.imgData) {
+          try {
+            const imgPath = `/tmp/tlda-ss-${block.id.replace(/[^a-z0-9]/gi, '_')}.png`
+            fs.writeFileSync(imgPath, Buffer.from(block.imgData, 'base64'))
+            text = text ? text + '\n\nimage:' + imgPath : 'image:' + imgPath
+          } catch { /* disk write failed — fall back to text-only prettyResult */ }
+        }
+        toolResults.set(block.id, text)
       }
     }
   }
@@ -305,14 +335,14 @@ function extractActivityEvents(events) {
         const input = block.input || {}
         const arg = input.file_path || input.path ||
           input.command || input.pattern || input.message ||
-          input.query || input.description || ''
+          input.query || input.description || input.reason || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
         if (Object.keys(input).length > 0) evt.input = input
         // Attach result for pretty-printed tools
         if (PRETTY_PRINT_TOOLS.has(name) && block.id) {
           if (toolResults.has(block.id)) {
             const raw = toolResults.get(block.id)
-            evt.prettyResult = raw.length > 5000 ? raw.slice(0, 5000) + '\n\n… (truncated)' : raw
+            evt.prettyResult = truncatePrettyResult(raw, name)
           } else {
             // Result not in this batch — stash and wait
             pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
@@ -330,7 +360,7 @@ function extractActivityEvents(events) {
     const pending = pendingPrettyPrint.get(id)
     if (pending) {
       pendingPrettyPrint.delete(id)
-      const capped = resultText.length > 5000 ? resultText.slice(0, 5000) + '\n\n… (truncated)' : resultText
+      const capped = truncatePrettyResult(resultText, pending.evt.tool)
       result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
     }
   }
@@ -472,13 +502,16 @@ async function checkForApprovalPrompt(agentId) {
   console.log(`[daemon] terminal_attention sent for ${label}: ${reason}`)
 }
 
-// Disabled until dismiss is reliable
-function scheduleApprovalCheck(agentId) {
-  return
-}
+const pendingApprovalChecks = new Map()  // agentId -> timeoutHandle
 
-// Periodic scan disabled — fires too aggressively, generates unkillable cards.
-// Terminal attention only triggers on tool_use events (scheduleApprovalCheck).
+function scheduleApprovalCheck(agentId) {
+  if (pendingApprovalChecks.has(agentId)) return  // already scheduled
+  const handle = setTimeout(() => {
+    pendingApprovalChecks.delete(agentId)
+    checkForApprovalPrompt(agentId)
+  }, 2000)
+  pendingApprovalChecks.set(agentId, handle)
+}
 
 // ---------- activity event buffer ----------
 
@@ -546,11 +579,25 @@ function syncSessionWatchers(agentList) {
     let bestMtime = 0
     for (const sid of candidateIds) {
       if (otherAgentSessions.has(sid)) continue
-      const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+      let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+      let foundStat = null
       try {
-        const stat = fs.statSync(p)
-        if (stat.mtimeMs > bestMtime) { bestMtime = stat.mtimeMs; jsonlPath = p }
-      } catch {}
+        foundStat = fs.statSync(p)
+      } catch {
+        // Not in cwd-derived dir — global search across all project dirs.
+        // Needed when agent's JSONL is in a worktree-specific project dir
+        // that doesn't match the stripped canonical cwd.
+        try {
+          for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+            const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
+            try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
+          }
+        } catch {}
+      }
+      if (foundStat && foundStat.mtimeMs > bestMtime) {
+        bestMtime = foundStat.mtimeMs
+        jsonlPath = p
+      }
     }
     if (!jsonlPath) continue
 
@@ -575,11 +622,19 @@ function syncSessionWatchers(agentList) {
     let offset
     if (stored && stored.inode === inode) {
       offset = Math.min(stored.offset, stat.size)
+      // Backfill search index if not done yet for this session.
+      if (!stored.searchBackfilled) {
+        stored.searchBackfilled = true
+        scheduleCursorSave()
+        backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      }
     } else {
-      // New file (or rotated): start at EOF, no backfill.
+      // New file (or rotated): start at EOF for activity cards, but backfill
+      // all historical content to the search index.
       offset = stat.size
-      cursors[sessionId] = { inode, offset }
+      cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
+      backfillSearchEntries(agent.id, jsonlPath, sessionId)
     }
 
     try {
@@ -653,6 +708,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     let parsed
     try { parsed = JSON.parse(line) } catch { continue }
     if (parsed.type !== 'user') continue
+    if (parsed.isMeta) continue
     const content = parsed.message?.content
     let text = ''
     if (typeof content === 'string') text = content
@@ -685,6 +741,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         const input = block.input || {}
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+        if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
         if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
           checkQualification(agentId, block.name, filePath)
         }
@@ -704,6 +761,57 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'tool_use')
     )
     if (hasToolUse) scheduleApprovalCheck(agentId)
+  }
+
+  // Extract text content for unified search and send to server.
+  const searchEntries = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let parsed
+    try { parsed = JSON.parse(line) } catch { continue }
+    if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
+    const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+    if (!ts) continue
+    const content = parsed.message?.content
+    let text = ''
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+    if (!text || text.length < 3) continue
+    searchEntries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
+  }
+  if (searchEntries.length > 0) sendMsg({ type: 'jsonl-index', entries: searchEntries })
+}
+
+// One-time backfill of a JSONL's full content to the search index.
+// Called when the daemon first starts watching a new session.
+function backfillSearchEntries(agentId, jsonlPath, sessionId) {
+  try {
+    const content = fs.readFileSync(jsonlPath, 'utf8')
+    const lines = content.split('\n')
+    const entries = []
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let parsed
+      try { parsed = JSON.parse(line) } catch { continue }
+      if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
+      const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+      if (!ts) continue
+      const c = parsed.message?.content
+      let text = ''
+      if (typeof c === 'string') text = c
+      else if (Array.isArray(c)) text = c.filter(x => x?.type === 'text').map(x => x.text).join('\n')
+      if (!text || text.length < 3) continue
+      entries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
+    }
+    if (entries.length > 0) {
+      // Send in batches of 200 to avoid large WS messages
+      for (let i = 0; i < entries.length; i += 200) {
+        sendMsg({ type: 'jsonl-index', entries: entries.slice(i, i + 200) })
+      }
+      console.log(`[daemon] search backfill: ${entries.length} entries for ${path.basename(jsonlPath)}`)
+    }
+  } catch (e) {
+    console.error(`[daemon] search backfill failed for ${sessionId}: ${e.message}`)
   }
 }
 
@@ -730,6 +838,19 @@ function readFileForUpload(fullPath) {
   return { content: data.toString('base64'), encoding: 'base64' }
 }
 
+function startPolling(state, rel) {
+  const full = path.join(state.sourceDir, rel)
+  if (!fs.existsSync(full)) return
+  fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
+    if (curr.mtimeMs === prev.mtimeMs) return
+    state.onFileChange(rel, true)
+  })
+}
+
+function stopPolling(state, rel) {
+  try { fs.unwatchFile(path.join(state.sourceDir, rel)) } catch {}
+}
+
 function syncSourceWatchers(projectList) {
   const activeNames = new Set()
   for (const p of projectList) {
@@ -737,36 +858,34 @@ function syncSourceWatchers(projectList) {
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
 
-    // watchFiles: the set of files the build actually reads (from .fls).
-    // If null (no prior build), fall back to just the main file.
+    // watchSet: relative paths the build reads (from .fls). Falls back to
+    // mainFile before the first build. Absolute paths derived via state.sourceDir.
     const watchSet = new Set(
-      p.watchFiles
-        ? p.watchFiles
-        : p.mainFile ? [p.mainFile] : []
+      p.watchFiles?.length ? p.watchFiles : p.mainFile ? [p.mainFile] : []
     )
 
-    // If watcher already exists, just update its watch set (the .fls
-    // may have changed after a build). Don't recreate the watcher.
     if (sourceWatchers.has(p.name)) {
       const existing = sourceWatchers.get(p.name)
+      // Add pollers for files newly in the set; remove pollers for files leaving.
+      for (const rel of existing.watchSet) if (!watchSet.has(rel)) stopPolling(existing, rel)
+      for (const rel of watchSet) if (!existing.watchSet.has(rel)) startPolling(existing, rel)
       existing.watchSet = watchSet
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, polledFiles: [] }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null }
 
-    // Handler shared by both fs.watch and fs.watchFile
+    // Reads state.watchSet dynamically so filtering stays current after updates.
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
-      if (watchSet.size > 0) {
-        if (!watchSet.has(filename)) return
+      if (state.watchSet.size > 0) {
+        if (!state.watchSet.has(filename)) return
       } else {
         if (!isSourceFile(filename)) return
       }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
       state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
-      // If the polling backup caught this, fs.watch is stale — recreate it
       if (fromPoll) {
         console.warn(`[daemon] fs.watch stale for ${p.name} — recreating`)
         try { state.watcher?.close() } catch {}
@@ -775,37 +894,23 @@ function syncSourceWatchers(projectList) {
         } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
       }
     }
+    state.onFileChange = onFileChange
 
     try {
-      // Primary: fs.watch (instant, kernel events — can go stale on macOS)
       state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => onFileChange(filename, false))
-
-      // Backup: fs.watchFile on each watched file (polling, never goes stale)
-      const filesToPoll = watchSet.size > 0 ? [...watchSet] : (p.mainFile ? [p.mainFile] : [])
-      for (const rel of filesToPoll) {
-        const full = path.join(p.sourceDir, rel)
-        if (!fs.existsSync(full)) continue
-        fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
-          if (curr.mtimeMs === prev.mtimeMs) return
-          onFileChange(rel, true)
-        })
-        state.polledFiles.push(full)
-      }
+      for (const rel of watchSet) startPolling(state, rel)
 
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} watched, ${state.polledFiles.length} polled)`)
-
-      // On connect, push only the watched files (not the whole directory).
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files)`)
       pushWatchedFiles(p.name, p.sourceDir, watchSet)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
     }
   }
-  // Stop watching projects we no longer own.
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
       try { state.watcher?.close() } catch {}
-      for (const f of (state.polledFiles || [])) fs.unwatchFile(f)
+      for (const rel of state.watchSet) stopPolling(state, rel)
       sourceWatchers.delete(name)
     }
   }
@@ -970,6 +1075,16 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
+async function rpcKillSession({ tmux_session, agent_id }) {
+  if (!tmux_session) throw new Error('missing tmux_session')
+  checkSession(tmux_session)
+  await tmux('kill-session', '-t', tmux_session)
+  if (agent_id) {
+    try { await fetch(`${SERVER}/api/agents/${agent_id}/mark-dead`, { method: 'POST' }).catch(() => {}) } catch {}
+  }
+  return { ok: true, tmux_session }
+}
+
 async function rpcRestartMcp({ tmux_session, skipPreflight }) {
   // No-op: the fleet MCP reconnects automatically via WS retry logic.
   // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
@@ -1052,7 +1167,7 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 // Periodically check if agents' claude processes are still running.
 // If not, mark them dead on the server and kill orphan tmux sessions.
 let _deathCheckInterval = null
-const DEATH_CHECK_MS = 30_000  // check every 30s
+const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
 async function checkAgentLiveness() {
   if (!agents.length) return
@@ -1078,12 +1193,12 @@ async function checkAgentLiveness() {
     }
 
     // Tmux exists — check if a claude process is running in it
+    let claudeAlive = false
     try {
       const { stdout } = await execFileP('tmux',
         ['list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
         { timeout: 3000, encoding: 'utf8' })
       const panePids = stdout.trim().split('\n').filter(Boolean)
-      let claudeAlive = false
       for (const pid of panePids) {
         try {
           const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
@@ -1091,17 +1206,31 @@ async function checkAgentLiveness() {
           if (children.trim()) { claudeAlive = true; break }
         } catch {}  // pgrep exits non-zero when no match
       }
-      if (!claudeAlive) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
-        try {
-          await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-        } catch {}
-        // Kill the orphan tmux session
-        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
-        agent.dead = true
-      }
     } catch {}
+
+    if (!claudeAlive) {
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
+      try {
+        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
+      } catch {}
+      try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+      agent.dead = true
+      continue
+    }
+
   }
+}
+
+async function rpcResolveFile({ path: filePath, cwd, server_url }) {
+  const abs = resolveFilePath(filePath, cwd)
+  if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
+  const serverBase = server_url || `http://127.0.0.1:5176`
+  return await uploadFileToServer(abs, serverBase)
+}
+
+async function rpcRechat({ text, cwd, server_url }) {
+  const serverBase = server_url || `http://127.0.0.1:5176`
+  return await processMessageText(text, cwd, serverBase)
 }
 
 const RPC_HANDLERS = {
@@ -1111,10 +1240,13 @@ const RPC_HANDLERS = {
   'interrupt': rpcInterrupt,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
+  'kill-session': rpcKillSession,
   'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
   'spawn': rpcSpawn,
+  'resolve-file': rpcResolveFile,
+  'rechat': rpcRechat,
 }
 
 async function handleRpc(msg) {
@@ -1155,7 +1287,10 @@ function teardownWatchers() {
   for (const [, pw] of pathWatchers) { try { pw.watcher.close() } catch {} }
   pathWatchers.clear()
   agentPaths.clear()
-  for (const [, s] of sourceWatchers) { try { s.watcher.close() } catch {} }
+  for (const [, s] of sourceWatchers) {
+    try { s.watcher?.close() } catch {}
+    for (const rel of (s.watchSet || [])) stopPolling(s, rel)
+  }
   sourceWatchers.clear()
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
@@ -1248,12 +1383,17 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'daemon-evict') {
-    const replacedBy = msg.replaced_by_boot_id ? ` (replaced by boot_id=${msg.replaced_by_boot_id})` : ''
-    console.warn(`[daemon] evicted: ${msg.reason || 'unknown'}${replacedBy} — will reconnect`)
+    if (msg.replaced_by_boot_id) {
+      // Another live daemon took our slot — exit rather than loop-reconnecting.
+      console.warn(`[daemon] evicted by newer daemon (boot_id=${msg.replaced_by_boot_id}) — exiting`)
+      shutdown('evicted-by-newer-daemon')
+      return
+    }
+    // No replacement boot_id = server restarted and lost our connection.
+    // Reconnect — the daemon should survive server restarts.
+    console.warn(`[daemon] evicted (${msg.reason || 'unknown'}) — reconnecting`)
     teardownWatchers()
     try { ws.close() } catch {}
-    // Don't exit — reconnect. Server restarts cause transient evictions;
-    // the daemon should survive and re-register when the server is back.
     scheduleReconnect()
     return
   }
@@ -1325,6 +1465,19 @@ async function handleVersionCommitted(msg) {
 // ---------- lifecycle ----------
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+
+// Singleton check — only one daemon per machine at a time.
+try {
+  const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
+  if (existingPid && existingPid !== process.pid) {
+    try {
+      process.kill(existingPid, 0)  // signal 0 = existence check only
+      console.error(`[daemon] already running (pid=${existingPid}) — exiting`)
+      process.exit(0)
+    } catch { /* stale PID file — previous daemon is gone, continue */ }
+  }
+} catch { /* no PID file — first start, continue */ }
+
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
 function shutdown(signal) {
@@ -1373,33 +1526,10 @@ function startHeartbeat() {
   }, HEARTBEAT_INTERVAL_MS).unref?.() || _heartbeatTimer
 }
 
-// Periodically rebuild the search index so search_logs stays current.
-// Runs every 5 minutes. buildIncremental is idempotent and only indexes new content.
-let _searchRebuildTimer = null
-async function rebuildSearchIndex() {
-  try {
-    const { SearchIndex } = await import('../mcp-server/dashboard/search-index.mjs')
-    const idx = new SearchIndex(path.join(os.homedir(), '.claude', 'search-index.sqlite'))
-    const result = await idx.buildIncremental()
-    if (result.entriesAdded > 0) {
-      console.log(`[daemon] search index: +${result.entriesAdded} entries (${result.elapsed}s)`)
-    }
-  } catch (e) {
-    console.error(`[daemon] search index rebuild failed: ${e.message}`)
-  }
-}
-function startSearchRebuild() {
-  if (_searchRebuildTimer) return
-  // Initial build after 30s (let the daemon finish connecting first)
-  setTimeout(rebuildSearchIndex, 30_000)
-  _searchRebuildTimer = setInterval(rebuildSearchIndex, 5 * 60_000)
-}
-
 console.log(`[daemon] fleet-daemon ${VERSION} starting pid=${process.pid}`)
 console.log(`[daemon]   server      = ${SERVER}`)
 console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-startSearchRebuild()
 connect()

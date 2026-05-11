@@ -550,6 +550,16 @@ async function cmdPush() {
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const _cliDir = dirname(fileURLToPath(import.meta.url))
+const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
+const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
+  : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const ELIZA_LOGFILE = join(homedir(), '.config', 'tlda', 'eliza.log')
+const ELIZA_PIDFILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
+const ELIZA_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'eliza.mjs')
+  : join(_cliDir, '..', 'bin', 'eliza.mjs')
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -560,7 +570,7 @@ async function ensureFleetDaemonRunning() {
     const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
     try { process.kill(pid, 0); return } catch {} // stale pid → fall through
   }
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
   if (!existsSync(daemonScript)) return // not installed; silently skip
   const { spawn: cpSpawn } = await import('child_process')
   const { openSync: fsOpenSync } = await import('fs')
@@ -581,8 +591,33 @@ async function ensureFleetDaemonRunning() {
   }
 }
 
+async function ensureElizaRunning() {
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = parseInt(readFileSync(ELIZA_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
+  }
+  if (!existsSync(ELIZA_SCRIPT)) return // not installed; silently skip
+  const { spawn: cpSpawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+  if (!existsSync(dirname(ELIZA_LOGFILE))) mkdirSync(dirname(ELIZA_LOGFILE), { recursive: true })
+  const logFd = fsOpenSync(ELIZA_LOGFILE, 'a')
+  const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: { ...process.env },
+  })
+  child.unref()
+  await new Promise(r => setTimeout(r, 800))
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = readFileSync(ELIZA_PIDFILE, 'utf8').trim()
+    console.log(green('Eliza started') + dim(` (pid ${pid})`))
+  } else {
+    console.log(dim('Eliza failed to start — see ' + ELIZA_LOGFILE))
+  }
+}
+
 async function cmdFleetWatch(sub) {
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
 
   if (sub === 'stop') {
     if (existsSync(FLEET_DAEMON_PIDFILE)) {
@@ -1422,6 +1457,24 @@ async function cmdSpawn() {
   await new Promise(() => {})
 }
 
+async function cmdInitShadow() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda init-shadow <project>')
+    console.error('  Initialize (or re-initialize) the shadow repo from the project\'s')
+    console.error('  working-copy git history, filtered to paper-scope paths only.')
+    console.error('  Existing shadow is renamed to shadow-repo-dirty-<timestamp>.')
+    process.exit(1)
+  }
+  const { spawn } = await import('child_process')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const script = join(root, 'bin', 'tlda-init-shadow.mjs')
+  const child = spawn('node', [script, name], { stdio: 'inherit' })
+  await new Promise((resolve) => child.on('exit', (code) => {
+    process.exit(code ?? 0)
+  }))
+}
+
 async function cmdDoctor() {
   const { execSync, spawnSync } = await import('child_process')
   const autoFix = process.argv.includes('--fix')
@@ -1701,16 +1754,52 @@ async function cmdDoctor() {
     }
   }
 
-  // 7. Projects with build errors (only if server is running)
+  // 7. Project state — build errors, stuck pipelines, dangling mainFile.
+  // Catches the silent failure modes where a project stops being built but
+  // nothing surfaces it: mainFile pointing to a deleted source file,
+  // buildStatus stuck at "failed" for weeks, lastBuild far behind source mtime.
   if (serverRunning) {
     try {
       const data = await api('GET', '/api/projects', null, { timeoutMs: 5000 })
-      const errored = (data.projects || []).filter(p => p.buildStatus === 'error')
-      if (errored.length === 0) {
-        ok('No projects with build errors')
+      const projects = data.projects || []
+      const projectIssues = []
+      for (const p of projects) {
+        if (p.buildStatus === 'error' || p.buildStatus === 'failed') {
+          projectIssues.push({ p, kind: 'build-broken', detail: p.buildStatus })
+          continue
+        }
+        if (p.sourceDir && p.mainFile) {
+          const mainPath = join(p.sourceDir, p.mainFile)
+          if (!existsSync(mainPath)) {
+            projectIssues.push({ p, kind: 'main-missing', detail: p.mainFile })
+            continue
+          }
+          // Stale: source touched after lastBuild by 7+ days. Cheap heuristic
+          // for "edits aren't being captured."
+          if (p.lastBuild) {
+            try {
+              const lastBuildMs = Date.parse(p.lastBuild)
+              const mainMtime = statSync(mainPath).mtimeMs
+              const stale = mainMtime - lastBuildMs > 7 * 24 * 60 * 60 * 1000
+              if (stale) {
+                const days = Math.round((mainMtime - lastBuildMs) / (24 * 60 * 60 * 1000))
+                projectIssues.push({ p, kind: 'stale', detail: `mainFile edited ${days}d after last build` })
+              }
+            } catch {}
+          }
+        }
+      }
+      if (projectIssues.length === 0) {
+        ok('All projects healthy (builds, mainFile, freshness)')
       } else {
-        for (const p of errored) {
-          fail(`Project "${p.name}" has build errors`, `tlda errors ${p.name}`)
+        for (const { p, kind, detail } of projectIssues) {
+          if (kind === 'build-broken') {
+            fail(`Project "${p.name}" build ${detail}`, `tlda errors ${p.name}`)
+          } else if (kind === 'main-missing') {
+            fail(`Project "${p.name}" mainFile missing: ${detail}`, `edit ${p.sourceDir.replace(homedir(), '~')}/project.json or recreate project`)
+          } else if (kind === 'stale') {
+            fail(`Project "${p.name}" stale: ${detail}`, `tlda push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
+          }
           issues++
         }
       }
@@ -1869,7 +1958,11 @@ ${tokenEnvLines.join('\n')}
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
     }
-    // No fallback — if /health doesn't respond, the server is already dead.
+    // Also kill any zombie server processes that aren't bound to the port
+    // (e.g., old servers from worktrees that failed to bind but are still running
+    // their daemon-supervisor loops). pkill is safe here — unified-server.mjs is unique.
+    try { execSync('pkill -f "server/unified-server.mjs"', { stdio: 'pipe' }) } catch {}
+    // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
     for (let i = 0; i < 20; i++) {
@@ -1878,13 +1971,6 @@ ${tokenEnvLines.join('\n')}
         await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
       } catch { break } // connection refused = stopped
     }
-
-    // Also stop whisper if running
-    try {
-      const wPid = parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim())
-      if (wPid) { try { process.kill(wPid, 'SIGTERM') } catch {} }
-      try { unlinkSync(WHISPER_PID_FILE) } catch {}
-    } catch {}
 
     console.log(green('Server stopped.'))
     return
@@ -1969,41 +2055,9 @@ ${tokenEnvLines.join('\n')}
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon is up. The server depends on it for
-          // activity cards, terminal-chat extraction, and source watching;
-          // a server start with no daemon = silent failure for Skip.
+          // Also ensure the fleet daemon and eliza are up.
           await ensureFleetDaemonRunning()
-          // Start whisper bridge for voice transcription (non-blocking)
-          try {
-            const bridgeScript = join(tldaRoot, 'bin', 'whisper-bridge.mjs')
-            if (existsSync(bridgeScript)) {
-              // Check if bridge is already running
-              let bridgeUp = false
-              try {
-                const ws = new (await import('ws')).default('ws://127.0.0.1:8179')
-                await new Promise((resolve, reject) => {
-                  ws.on('open', () => { bridgeUp = true; ws.close(); resolve() })
-                  ws.on('error', () => { ws.close(); resolve() })
-                  setTimeout(() => { ws.close(); resolve() }, 1000)
-                })
-              } catch {}
-              if (!bridgeUp) {
-                const { spawn: spawnBridge } = await import('child_process')
-                const { openSync: bridgeOpenSync } = await import('fs')
-                const bridgeLog = join(dirname(LOGFILE), 'whisper-bridge.log')
-                const bridgeLogFd = bridgeOpenSync(bridgeLog, 'a')
-                const bridgeChild = spawnBridge('node', [bridgeScript], {
-                  detached: true,
-                  stdio: ['ignore', bridgeLogFd, bridgeLogFd],
-                  cwd: tldaRoot,
-                })
-                bridgeChild.unref()
-                console.log(dim('  Whisper bridge started (voice transcription)'))
-              } else {
-                console.log(dim('  Whisper bridge already running'))
-              }
-            }
-          } catch {}
+          await ensureElizaRunning()
           return
         }
       } catch {}
@@ -2031,100 +2085,6 @@ async function inferProjectName() {
 
   // Fall back to basename
   return basename(dir)
-}
-
-// --- Whisper server management ---
-
-const WHISPER_PID_FILE = join(homedir(), '.config', 'tlda', 'whisper.pid')
-const WHISPER_LOG_FILE = join(homedir(), '.config', 'tlda', 'whisper.log')
-const WHISPER_MODEL = join(homedir(), '.local', 'share', 'whisper-cpp', 'models', 'ggml-small.en.bin')
-const WHISPER_PORT = 8178
-
-async function cmdWhisper() {
-  const sub = getPositional(0) || 'start'
-  const { execSync, spawn } = await import('child_process')
-
-  function readWhisperPid() {
-    try { return parseInt(readFileSync(WHISPER_PID_FILE, 'utf8').trim()) } catch { return null }
-  }
-
-  function isWhisperRunning() {
-    const pid = readWhisperPid()
-    if (!pid) return false
-    try { process.kill(pid, 0); return true } catch { return false }
-  }
-
-  if (sub === 'start') {
-    if (isWhisperRunning()) {
-      console.log(green('Whisper server already running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
-      return
-    }
-
-    // Check binary
-    let whisperBin
-    try { whisperBin = execSync('which whisper-server', { stdio: 'pipe' }).toString().trim() } catch {
-      console.error(red('whisper-server not found. Install with: brew install whisper-cpp'))
-      process.exit(1)
-    }
-
-    // Check model
-    if (!existsSync(WHISPER_MODEL)) {
-      console.error(red(`Model not found: ${WHISPER_MODEL}`))
-      console.error('Download with:')
-      console.error(`  mkdir -p ~/.local/share/whisper-cpp/models`)
-      console.error(`  curl -L "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin" -o "${WHISPER_MODEL}"`)
-      process.exit(1)
-    }
-
-    const logFd = (await import('fs')).openSync(WHISPER_LOG_FILE, 'a')
-    const child = spawn(whisperBin, [
-      '-m', WHISPER_MODEL,
-      '--port', String(WHISPER_PORT),
-      '--convert',
-    ], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-    })
-    child.unref()
-    writeFileSync(WHISPER_PID_FILE, String(child.pid))
-    // Wait for server to be ready
-    for (let i = 0; i < 20; i++) {
-      await new Promise(r => setTimeout(r, 500))
-      try {
-        const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/`, { signal: AbortSignal.timeout(1000) })
-        if (res.ok) {
-          console.log(green('Whisper server started') + ` (pid ${child.pid}, port ${WHISPER_PORT}, model: small.en)`)
-          return
-        }
-      } catch {}
-    }
-    console.log(yellow('Whisper server spawned') + ` (pid ${child.pid}) — model loading may take a moment`)
-  } else if (sub === 'stop') {
-    const pid = readWhisperPid()
-    if (pid && isWhisperRunning()) {
-      process.kill(pid, 'SIGTERM')
-      try { unlinkSync(WHISPER_PID_FILE) } catch {}
-      console.log(green('Whisper server stopped'))
-    } else {
-      console.log('Whisper server not running')
-      try { unlinkSync(WHISPER_PID_FILE) } catch {}
-    }
-  } else if (sub === 'status') {
-    if (isWhisperRunning()) {
-      console.log(green('running') + ` (pid ${readWhisperPid()}, port ${WHISPER_PORT})`)
-    } else {
-      console.log('not running')
-    }
-  } else if (sub === 'log') {
-    if (existsSync(WHISPER_LOG_FILE)) {
-      const { execSync: exec } = await import('child_process')
-      process.stdout.write(exec(`tail -30 "${WHISPER_LOG_FILE}"`, { encoding: 'utf8' }))
-    } else {
-      console.log('No whisper log file')
-    }
-  } else {
-    console.log('Usage: tlda whisper [start|stop|status|log]')
-  }
 }
 
 // --- Ensure server is running ---
@@ -2370,9 +2330,9 @@ async function main() {
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
-      case 'whisper': await cmdWhisper(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
+      case 'init-shadow': await cmdInitShadow(); break
       default:
         console.log(`tlda — tlda CLI
 
@@ -2394,7 +2354,6 @@ Commands:
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
   publish [doc ...]  Publish docs to GitHub Pages + Fly
-  whisper        Manage local whisper speech server [start|stop|status|log]
   setup          One-time setup [editor]
   deploy         Build, restart server, verify SPA renders
   mcp-setup      Write .mcp.json for Claude Code integration (current directory)

@@ -43,7 +43,7 @@ export const CHAT_TOOLS = new Set([
 
 // --- Pretty-print tool results ---
 
-function renderPrettyResult(toolName, text, ctx) {
+function renderPrettyResult(toolName, text, ctx, input) {
   const tool = (toolName || '').toLowerCase()
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
@@ -54,19 +54,49 @@ function renderPrettyResult(toolName, text, ctx) {
   if (tool.includes('screenshot')) {
     return renderScreenshotResult(text)
   }
+  if (tool === 'schedulewakeup') {
+    return renderScheduleResult(text, input)
+  }
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
 }
 
-function renderScreenshotResult(text) {
-  // Render a placeholder that the AnnotationViewer overlay will position over.
-  // Height matches how images display in chat (~200px).
-  const pageMatch = text.match(/page (\d+)/i)
-  const label = pageMatch ? `📷 p.${pageMatch[1]}` : '📷'
-  return `<div class="screenshot-placeholder" data-screenshot="true">
-    <span class="screenshot-placeholder-label">${esc(label)}</span>
+function renderScheduleResult(text, input) {
+  const timeMatch = text.match(/scheduled for ([\d:]+)\s*\(in (\d+)s\)/)
+  const fireTime = timeMatch ? timeMatch[1] : ''
+  const delaySec = timeMatch ? parseInt(timeMatch[2], 10) : 0
+  let relativeStr = ''
+  if (delaySec > 0) {
+    const min = Math.floor(delaySec / 60)
+    const sec = delaySec % 60
+    relativeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+  }
+  const timeLabel = relativeStr ? `in ${relativeStr}` : (fireTime || 'scheduled')
+  const reason = input?.reason || ''
+  return `<div class="tool-pretty-result tool-pretty-schedule">
+    <span class="schedule-icon">⏱</span>
+    <span class="schedule-time">${esc(timeLabel)}</span>
+    ${fireTime ? `<span class="schedule-at">@ ${esc(fireTime)}</span>` : ''}
+    ${reason ? `<span class="schedule-reason">— ${esc(reason)}</span>` : ''}
   </div>`
+}
+
+function renderScreenshotResult(text) {
+  // Extract saved image path (injected by daemon as "image:/tmp/tlda-ss-*.png")
+  const pathMatch = text.match(/image:(\/tmp\/[^\s\n]+\.png)/i)
+  if (pathMatch) {
+    const imgPath = pathMatch[1]
+    const src = `/api/file?path=${encodeURIComponent(imgPath)}`
+    const label = text.split('\n')[0].trim() || 'Screenshot'
+    return `<div class="tool-pretty-result tool-pretty-screenshot">
+      <div class="pretty-result-header">${esc(label)}</div>
+      <img class="chat-image" src="${esc(src)}" alt="${esc(label)}" onerror="this.style.display='none'">
+    </div>`
+  }
+  // Screenshot failed or no image data
+  const label = text.trim() || 'screenshot failed'
+  return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
 }
 
 function renderThreadResult(text, ctx) {
@@ -76,7 +106,9 @@ function renderThreadResult(text, ctx) {
   if (msgs.length <= 1) {
     return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)}</div>`
   }
-  const THREAD_PREVIEW = 8
+  const THREAD_FRONT = 3
+  const THREAD_TAIL = 5
+  const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
   const renderMsg = (msg) => {
     const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
@@ -103,14 +135,21 @@ function renderThreadResult(text, ctx) {
       <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
   }
-  // Show last N messages by default (most recent are most relevant)
-  const visibleMsgs = hasMoreMsgs ? msgs.slice(-THREAD_PREVIEW) : msgs
-  const rows = visibleMsgs.map(renderMsg).join('')
-  let moreHtml = ''
+  // Show first FRONT + gap marker + last TAIL, so both ends are visible.
+  // This lets Skip see the time range of what was actually read.
+  // The gap marker doubles as the expand button — clicking it reveals the hidden middle rows in place.
+  let rows = ''
+  const moreHtml = ''
   if (hasMoreMsgs) {
-    const hiddenRows = msgs.slice(0, msgs.length - THREAD_PREVIEW).map(renderMsg).join('')
-    moreHtml = `<div class="pretty-expand-btn">${msgs.length - THREAD_PREVIEW} earlier — show all</div>`
+    const frontMsgs = msgs.slice(0, THREAD_FRONT)
+    const tailMsgs = msgs.slice(-THREAD_TAIL)
+    const hiddenCount = msgs.length - THREAD_PREVIEW
+    const hiddenRows = msgs.slice(THREAD_FRONT, msgs.length - THREAD_TAIL).map(renderMsg).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = frontMsgs.map(renderMsg).join('') + gapMarker + tailMsgs.map(renderMsg).join('')
+  } else {
+    rows = msgs.map(renderMsg).join('')
   }
   // Parse header (message count + pagination warning)
   const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)
@@ -127,12 +166,11 @@ function renderSearchResult(text, ctx) {
   }
   const header = parts[0]
   const results = parts.slice(1)
-  const PREVIEW_COUNT = 5
-  const hasMore = results.length > PREVIEW_COUNT
-  const rows = results.slice(0, PREVIEW_COUNT).map((r, i) => {
-    // Parse "timestamp | [source] [role] agent | snippet" format
+  const SEARCH_FRONT = 3
+  const SEARCH_TAIL = 3
+  const renderRow = (r, globalIdx) => {
     const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
-    const stripe = i % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
+    const stripe = globalIdx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
     if (pipeMatch) {
       const ts = pipeMatch[1].trim()
       const source = pipeMatch[2].trim()
@@ -145,39 +183,29 @@ function renderSearchResult(text, ctx) {
         <span class="pretty-search-snippet">${highlightedSnippet}</span>
       </div>`
     }
-    // Fallback: unstructured result
     const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
     return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
-  }).join('')
-  // Render remaining rows hidden, with expand button
-  let moreHtml = ''
+  }
+  // Show first FRONT + gap marker + last TAIL so both ends are visible.
+  // Lets Skip see the timestamp the agent ended at — if the agent stopped early,
+  // the tail timestamps reveal the gap vs. the actual latest message.
+  const hasMore = results.length > SEARCH_FRONT + SEARCH_TAIL
+  let rows = ''
   if (hasMore) {
-    const hiddenRows = results.slice(PREVIEW_COUNT).map((r, i) => {
-      const idx = i + PREVIEW_COUNT
-      const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
-      const stripe = idx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
-      if (pipeMatch) {
-        const ts = pipeMatch[1].trim()
-        const source = pipeMatch[2].trim()
-        const snippet = pipeMatch[3].trim()
-        const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-        const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
-        return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
-          <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
-          <span class="pretty-search-source">${esc(source)}</span>
-          <span class="pretty-search-snippet">${highlightedSnippet}</span>
-        </div>`
-      }
-      const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-      return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
-    }).join('')
-    moreHtml = `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-      + `<div class="pretty-expand-btn">${results.length - PREVIEW_COUNT} more — show all</div>`
+    const hiddenCount = results.length - SEARCH_FRONT - SEARCH_TAIL
+    const tailStart = results.length - SEARCH_TAIL
+    const hiddenRows = results.slice(SEARCH_FRONT, tailStart).map((r, i) => renderRow(r, i + SEARCH_FRONT)).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} more …</div>`
+      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = results.slice(0, SEARCH_FRONT).map((r, i) => renderRow(r, i)).join('')
+      + gapMarker
+      + results.slice(-SEARCH_TAIL).map((r, i) => renderRow(r, tailStart + i)).join('')
+  } else {
+    rows = results.map((r, i) => renderRow(r, i)).join('')
   }
   return `<div class="tool-pretty-result tool-pretty-search">
     <div class="pretty-result-header">${esc(header)}</div>
     ${rows}
-    ${moreHtml}
   </div>`
 }
 
@@ -347,12 +375,25 @@ export function renderCodeCard(toolName, input, ctx) {
     const content = input.content
     const lines = content.split('\n')
     if (lines.length < 2) return ''
-    const lang = langFromFilePath(input.file_path)
+    const filePath = input.file_path || ''
+    const isMd = /\.md$/i.test(filePath)
+    const lang = langFromFilePath(filePath)
     const escaped = esc(content)
+    if (isMd) {
+      // Markdown files: never fold (collapse resets on re-render), word-wrap, draggable chip.
+      // The md-file-card chip enables the same drag-to-canvas action as chat-received .md files.
+      const isScratch = /\/scratch\//.test(filePath)
+      const name = filePath.split('/').pop() || 'file.md'
+      const chipClass = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
+      return `<div class="code-block-wrap code-card">
+      <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span><span class="code-block-copy" title="Copy">⎘</span></div>
+      <pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>
+    </div>`
+    }
     const shouldFold = lines.length > 10
     const highlighted = (!shouldFold && lang) ? highlightSyntax(escaped, lang) : escaped
     const foldClass = shouldFold ? ' code-collapsed' : ''
-    const langLabel = lang || input.file_path?.split('.').pop() || ''
+    const langLabel = lang || filePath.split('.').pop() || ''
     const toggleHtml = shouldFold
       ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''
@@ -472,7 +513,7 @@ export function renderActivityGroup(group, ctx) {
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
       const prettyHtml = t._prettyResult
-        ? renderPrettyResult(t._toolName, t._prettyResult, ctx)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`

@@ -29,12 +29,14 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SearchIndex } from './dashboard/search-index.mjs';
+// SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
 // FleetStore import removed — MCP server is a REST client, no direct DB access
 import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { parseTimestamp } from './lib/parse-timestamp.mjs';
+import { processMessageText } from './lib/message-processing.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,16 +104,6 @@ function tldaFetch(apiPath, opts = {}) {
   });
 }
 
-// Lazy search index — opened read-only on first search call
-let _searchIndex = null;
-function getSearchIndex() {
-  if (!_searchIndex) {
-    const dbPath = `${os.homedir()}/.claude/search-index.sqlite`;
-    if (!fs.existsSync(dbPath)) return null;
-    _searchIndex = new SearchIndex(dbPath);
-  }
-  return _searchIndex;
-}
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
 // All server fetches go through fleetFetch — adds a timeout so tool handlers
@@ -603,19 +595,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Task Management ----
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Auto-promotes caller to manager on first use. Agent is notified via fs.watch on state file.',
+      description: 'Assign a task to an agent. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name' },
-          description: { type: 'string', description: 'Short human-readable description (5-10 words)' },
+          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using spawn.' },
+          spawn: {
+            type: 'object',
+            description: 'Spawn a fresh agent and delegate in one call. Mutually exclusive with agent.',
+            properties: {
+              name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
+              cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
+              model: { type: 'string', description: 'Model override (default: sonnet)' },
+              effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
+            },
+          },
+          description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
           friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
         },
-        required: ['agent', 'description', 'message'],
+        required: ['message'],
       },
     },
     // ---- Messaging ----
@@ -740,6 +742,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
           model: { type: 'string', description: 'Model override. Default: sonnet.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
+          effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
         },
       },
     },
@@ -754,9 +757,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
           agent: { type: 'string', description: 'Filter to a specific agent (by UUID, name, or friendly name)' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
-          limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+          limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
           context: { type: 'number', description: 'Number of surrounding messages to include with each chat match (default 0, max 20). Shows N messages before and after each match.' },
-          before: { type: 'string', description: 'ISO timestamp — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only return matches after this time.' },
+          before: { type: 'string', description: 'ISO timestamp, relative shorthand, or "now" — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
         },
         required: ['query'],
       },
@@ -780,10 +784,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Required unless task_id is given.' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
-          since: { type: 'string', description: 'ISO timestamp — only messages after this time.' },
-          until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
+          until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
-          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp.' },
+          page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
@@ -1057,19 +1061,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           theorem_statement: { type: 'string', description: 'Math: what was proved/changed.' },
           proof_sketch: { type: 'string', description: 'Math: brief proof approach.' },
         },
-      },
-    },
-    {
-      name: 'sign_report',
-      description: 'QA-only tool. Sign off on a submitted report. Only callable by configured QA agents (qa-haiku, qa-opus).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'string', description: 'Task ID to sign off on.' },
-          verdict: { type: 'string', enum: ['approved', 'rejected'], description: 'Approve or reject the report.' },
-          notes: { type: 'string', description: 'Required if rejected, optional if approved.' },
-        },
-        required: ['task_id', 'verdict'],
       },
     },
   ],
@@ -1414,8 +1405,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ---- delegate ----
   if (name === 'delegate') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not registered.' }], isError: true };
-    const { agent, description, message } = args;
-    if (!agent || !description) return { content: [{ type: 'text', text: 'Missing agent or description.' }], isError: true };
+
+    if (args.agent && args.spawn) {
+      return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
+    }
+
+    if (!args.agent && !args.spawn) {
+      return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
+    }
+
+    let agent = args.agent;
+    let spawnedInfo = null;
+
+    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
+    if (args.spawn) {
+      const spawnOpts = args.spawn;
+      const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
+      const agentCwd = spawnOpts.cwd || getAgentCwd();
+
+      const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
+      const cmdParts = [fleetSpawnScript, '--fresh'];
+      if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
+      if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
+      if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
+      cmdParts.push('--no-attach', agentName);
+
+      let spawnOutput;
+      try {
+        spawnOutput = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      } catch (e) {
+        const msg = (e.stderr || e.stdout || e.message || '').trim();
+        return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
+      }
+
+      // fleet-spawn prints: "fleet-agentname (fleet:xxxxxxxx) spawned in /path"
+      const fleetIdMatch = spawnOutput.match(/\((fleet:[a-f0-9]+)\)/);
+      if (!fleetIdMatch) {
+        return { content: [{ type: 'text', text: `spawn output not parseable: ${spawnOutput}` }], isError: true };
+      }
+
+      agent = fleetIdMatch[1];
+      spawnedInfo = { agent_id: agent, friendly_name: agentName };
+    }
+
+    const { message } = args;
+    if (!message) return { content: [{ type: 'text', text: 'Missing message.' }], isError: true };
+
+    // Auto-derive description from message if not provided
+    let description = args.description;
+    if (!description) {
+      const firstSentence = message.match(/^[^.!?\n]{5,60}[.!?]/);
+      description = firstSentence ? firstSentence[0] : message.slice(0, 60).trimEnd();
+    }
 
     // Merge template + explicit criteria
     const templateCriteria = args.template ? (TASK_TEMPLATES[args.template] || []) : [];
@@ -1426,9 +1467,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const delegateBody = { from: AGENT_ID, agent, description, message: message || description, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined };
+      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -1436,11 +1476,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       if (!data.ok) return { content: [{ type: 'text', text: `Delegate failed: ${JSON.stringify(data)}` }], isError: true };
 
-      // Set friendly name if provided
+      // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
         await sendWS('rename', { agent, name: args.friendly_name })?.catch(() => {});
       }
 
+      if (spawnedInfo) {
+        return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
+      }
       return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Delegate failed (server unreachable): ${e.message}` }], isError: true };
@@ -1475,77 +1518,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
 
     // Resolve file paths in message text → inline attachments.
-    //
-    // Skip's rule: backtick-quoted text is a "quote" and must NOT be
-    // chipified. That covers single-backtick inline spans and triple-
-    // backtick fenced code blocks. Mask both before running the path
-    // regex, restore after. Fences are masked first so inline spans
-    // inside a fence don't get stripped separately.
     const agentCwd = getAgentCwd();
-    let resolvedMessage = message;
-    const inlineAttachments = [];
-    if (agentCwd) {
-      const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd';
-      const pathRe = new RegExp(
-        `(?<![\\/\\w])(~?\\/[\\w.\\-\\/]+\\.(?:${PATH_EXT})|[\\w][\\w.\\-\\/]*\\.(?:${PATH_EXT}))(?!\\w)`,
-        'g'
-      );
-      // Mask out backtick-quoted regions so the path regex skips over them.
-      // SENTINEL uses \x00 which can't appear in agent-authored text.
-      const masked = [];
-      const maskToken = (kind, raw) => {
-        const i = masked.length;
-        masked.push(raw);
-        return `\x00${kind}${i}\x00`;
-      };
-      // 1. Triple-backtick fenced code blocks (may contain newlines)
-      let working = message.replace(/```[\s\S]*?```/g, (m) => maskToken('F', m));
-      // 2. Single-backtick inline spans (no newlines, non-empty interior)
-      working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m));
-
-      let attIdx = 0;
-      working = working.replace(pathRe, (match, filePath) => {
-        const expanded = filePath.replace(/^~\//, os.homedir() + '/');
-        if (expanded.startsWith('/')) {
-          if (fs.existsSync(expanded)) {
-            const id = attIdx++;
-            inlineAttachments.push({ type: 'file', id, path: expanded, name: path.basename(expanded) });
-            return `{{att:${id}}}`;
-          }
-          return match;
-        }
-        // Relative path — resolve against agent cwd
-        const abs = path.resolve(agentCwd, expanded);
-        if (fs.existsSync(abs)) {
-          const id = attIdx++;
-          inlineAttachments.push({ type: 'file', id, path: abs, name: path.basename(abs) });
-          return `{{att:${id}}}`;
-        }
-        return match;
-      });
-
-      // Restore masked regions (inline spans first, then fences — reverse of masking order)
-      working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i]);
-      working = working.replace(/\x00F(\d+)\x00/g, (_, i) => masked[+i]);
-      resolvedMessage = working;
-    }
-
-    // Upload file attachments to dashboard server so they're accessible via URL
     const dashPortUpload = process.env.FLEET_DASH_PORT || 5176;
-    for (const att of inlineAttachments) {
-      if (att.path && fs.existsSync(att.path)) {
-        try {
-          const buf = fs.readFileSync(att.path);
-          const res = await fleetFetch(`http://127.0.0.1:${dashPortUpload}/api/upload`, {
-            method: 'POST',
-            headers: { 'x-filename': encodeURIComponent(att.name) },
-            body: buf,
-          });
-          const data = await res.json();
-          if (data.url) att.url = data.url;
-        } catch {}
-      }
-    }
+    const { resolvedMessage, inlineAttachments } = await processMessageText(
+      message, agentCwd, `http://127.0.0.1:${dashPortUpload}`
+    );
 
     // Auto-attach ref metadata for «...» tokens in the message
     const refAttachments = [];
@@ -1749,28 +1726,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch {}
     }
 
-    // QA gate (own task only — check for QA signatures)
-    if (agent === AGENT_ID) {
-      try {
-        const qaRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/status?task_id=${encodeURIComponent(task.id)}`);
-        const qaStatus = await qaRes.json();
-        // Only enforce if QA is configured (has agent IDs) and a report exists
-        let qaConfigRes;
-        try { qaConfigRes = await (await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`)).json(); } catch { qaConfigRes = { qa_agent_ids: [] }; }
-        if (qaConfigRes.qa_agent_ids?.length > 0) {
-          if (qaStatus.status === 'no_report') {
-            return { content: [{ type: 'text', text: 'Submit a report() first' }], isError: true };
-          }
-          if (qaStatus.status === 'rejected') {
-            return { content: [{ type: 'text', text: `QA rejected: ${qaStatus.notes || 'no details'}. Fix and re-report.` }], isError: true };
-          }
-          if (qaStatus.status === 'pending') {
-            return { content: [{ type: 'text', text: `Waiting for QA sign-off (${(qaStatus.approved_by || []).length}/${qaConfigRes.qa_agent_ids.length} approved)` }], isError: true };
-          }
-        }
-      } catch {}
-    }
-
     // Lint gate (own task only)
     let _lintOverrides = [];
     if (agent === AGENT_ID) {
@@ -1831,106 +1786,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agent = getAgent(state, AGENT_ID);
     const cwd = agent?.cwd || process.env.PWD || null;
 
-    // Check if QA system is configured
-    let qaConfig;
-    try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/config`);
-      qaConfig = await res.json();
-    } catch { qaConfig = { qa_agent_ids: [] }; }
-    const qaEnabled = qaConfig.qa_agent_ids?.length > 0;
-
-    // ---- QA-enabled path: structured report submission ----
-    if (qaEnabled && args.task_type) {
-      const taskType = args.task_type;
-      const missing = [];
-
-      // Validate required fields by task type
-      if (taskType === 'app') {
-        if (!args.files_changed?.length) missing.push('files_changed');
-        if (!args.screenshot_before) missing.push('screenshot_before');
-        if (!args.screenshot_after) missing.push('screenshot_after');
-        if (!args.test_method) missing.push('test_method');
-        if (args.console_errors === undefined) missing.push('console_errors');
-        if (!args.summary) missing.push('summary');
-      } else if (taskType === 'math') {
-        if (!args.files_changed?.length) missing.push('files_changed');
-        if (args.builds_clean === undefined) missing.push('builds_clean');
-        if (!args.theorem_statement) missing.push('theorem_statement');
-        if (!args.proof_sketch) missing.push('proof_sketch');
-        if (!args.summary) missing.push('summary');
-      } else {
-        return { content: [{ type: 'text', text: `Invalid task_type: "${taskType}". Must be "app" or "math".` }], isError: true };
-      }
-
-      if (missing.length > 0) {
-        return { content: [{ type: 'text', text: `Missing required fields for ${taskType} report: ${missing.join(', ')}` }], isError: true };
-      }
-
-      // Validate file paths exist (screenshots, test evidence)
-      const pathsToCheck = [];
-      if (args.screenshot_before) pathsToCheck.push(args.screenshot_before);
-      if (args.screenshot_after) pathsToCheck.push(args.screenshot_after);
-      if (args.test_evidence) pathsToCheck.push(args.test_evidence);
-      for (const p of pathsToCheck) {
-        try {
-          if (!fs.existsSync(p)) {
-            return { content: [{ type: 'text', text: `File not found: ${p}` }], isError: true };
-          }
-        } catch (e) {
-          return { content: [{ type: 'text', text: `Cannot check file ${p}: ${e.message}` }], isError: true };
-        }
-      }
-
-      // Check QA agents are alive (tmux sessions exist)
-      const qaDown = [];
-      for (const qaId of qaConfig.qa_agent_ids) {
-        const qaAgent = agents.find(a => a.id === qaId);
-        if (!qaAgent?.tmux_session) { qaDown.push(qaId); continue; }
-        try {
-          execSync(`tmux has-session -t ${qaAgent.tmux_session} 2>/dev/null`, { timeout: 3000 });
-        } catch {
-          qaDown.push(qaAgent.friendly_name || qaId);
-        }
-      }
-      if (qaDown.length > 0) {
-        return { content: [{ type: 'text', text: `QA system is down — cannot submit report. Missing QA agents: ${qaDown.join(', ')}. Ask the manager to respawn them.` }], isError: true };
-      }
-
-      // Build fields object
-      const fields = {};
-      const fieldNames = ['worktree_branch', 'dev_port', 'files_changed', 'screenshot_before', 'screenshot_after',
-        'test_method', 'test_evidence', 'console_errors', 'builds_clean', 'theorem_statement', 'proof_sketch', 'summary'];
-      for (const f of fieldNames) {
-        if (args[f] !== undefined) fields[f] = args[f];
-      }
-
-      // Submit report to server
-      try {
-        const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/report`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task_id: task.id, agent_id: AGENT_ID, task_type: taskType, fields }),
-        });
-        const data = await res.json();
-        if (!data.ok) return { content: [{ type: 'text', text: `Report submission failed: ${JSON.stringify(data)}` }], isError: true };
-
-        // Kick qa-haiku (first QA agent in the list)
-        const firstQa = qaConfig.qa_agent_ids[0];
-        if (firstQa) {
-          const qaAgent = agents.find(a => a.id === firstQa);
-          if (qaAgent?.tmux_session) {
-            try { execSync(`tmux send-keys -t ${qaAgent.tmux_session} '📬' Enter`, { timeout: 5000 }); } catch {}
-          }
-        }
-
-        logEvent({ type: 'qa_report', agent: AGENT_ID, task_id: task.id, task_type: taskType, report_id: data.report.id });
-        return { content: [{ type: 'text', text: `Report submitted for QA review (report #${data.report.id}). qa-haiku will review first, then qa-opus. Wait for 📬 — QA will sign off or send feedback.` }] };
-      } catch (e) {
-        return { content: [{ type: 'text', text: `Report submission failed (server unreachable): ${e.message}` }], isError: true };
-      }
-    }
-
-    // ---- Legacy self-review path (no QA configured, or pass+summary mode) ----
+    // ---- Self-review path ----
     if (args.pass && args.summary) {
       const friendlyName = agent?.friendly_name || AGENT_ID.slice(0, 8);
 
@@ -1986,11 +1842,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/tasks/done`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: AGENT_ID, task_id: task.id, skip_qa: true }),
-        });
+        await sendWS('task-done', { agent: AGENT_ID, task_id: task.id, skip_qa: true });
       } catch (e) {
         process.stderr.write(`[fleet] report task_done failed: ${e.message}\n`);
       }
@@ -2032,25 +1884,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const humanMsgBlock = formatHumanMessages(humanMsgs, state);
     const contextSection = [context, humanMsgBlock].filter(Boolean).join('\n\n');
 
-    // If QA is enabled, prompt for structured report instead of pass/summary
-    const qaPrompt = qaEnabled ? `
-
-### QA is enabled. Submit a structured report:
-
-Call \`report(task_type="app"|"math", ...fields)\` with the required fields for your task type.
-
-**App tasks:** worktree_branch, dev_port, files_changed, screenshot_before, screenshot_after, test_method, test_evidence, console_errors, summary
-**Math tasks:** files_changed, builds_clean, theorem_statement, proof_sketch, summary` : `
-
-If you find issues: fix them now, then call \`report()\` again.
-If it's clean: call \`report(pass=true, summary="...")\` with a structured summary including screenshot verification.`;
-
     const reviewPrompt = `## Self-Review Gate
 
 **Task:** ${task.description}
 **Working directory:** ${cwd || 'unknown'}
 **Diff:** ${diffLines} lines
-**QA system:** ${qaEnabled ? 'enabled' : 'disabled (self-review mode)'}
 
 ${contextSection ? contextSection + '\n\n---\n' : ''}
 \`\`\`diff
@@ -2073,42 +1911,12 @@ If your task involves UI changes, you MUST:
 3. For each success criterion, state what you see in the screenshot that proves it's met
 4. If ANYTHING looks wrong or doesn't match criteria, fix it before reporting
 
-Do NOT report "looks good" without reading and describing the screenshots.${qaPrompt}`;
+Do NOT report "looks good" without reading and describing the screenshots.
+
+If you find issues: fix them now, then call \`report()\` again.
+If it's clean: call \`report(pass=true, summary="...")\` with a structured summary including screenshot verification.`;
 
     return { content: [{ type: 'text', text: reviewPrompt }] };
-  }
-
-  // ---- sign_report (QA-only) ----
-  if (name === 'sign_report') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
-
-    const { task_id, verdict, notes } = args;
-    if (!task_id || !verdict) return { content: [{ type: 'text', text: 'Missing required fields: task_id, verdict' }], isError: true };
-    if (verdict === 'rejected' && !notes) return { content: [{ type: 'text', text: 'Notes are required when rejecting a report.' }], isError: true };
-
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
-    try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/qa/sign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id, agent_id: AGENT_ID, verdict, notes }),
-      });
-      const data = await res.json();
-      if (res.status === 403) return { content: [{ type: 'text', text: `Permission denied: ${data}` }], isError: true };
-      if (res.status === 404) return { content: [{ type: 'text', text: `No active report for task ${task_id}` }], isError: true };
-      if (!res.ok) return { content: [{ type: 'text', text: `sign_report failed: ${JSON.stringify(data)}` }], isError: true };
-
-      logEvent({ type: 'qa_sign', agent: AGENT_ID, task_id, verdict, notes });
-      let msg = `Signed report for ${task_id}: ${verdict}.`;
-      if (verdict === 'approved') {
-        msg += ' Next QA reviewer will be notified, or task is ready for completion if all QA agents have signed.';
-      } else {
-        msg += ` Manager notified with rejection notes.`;
-      }
-      return { content: [{ type: 'text', text: msg }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `sign_report failed (server unreachable): ${e.message}` }], isError: true };
-    }
   }
 
   // ---- read_terminal (read agent's tmux pane) ----
@@ -2118,12 +1926,10 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     }
 
     // Look up agent via server API
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     let agents;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`);
-      agents = await res.json();
-      if (agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents.error}` }], isError: true };
+      agents = await sendWS('store-agents');
+      if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
       return { content: [{ type: 'text', text: `task_check failed (server unreachable): ${e.message}` }], isError: true };
     }
@@ -2154,8 +1960,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     // Fetch tasks to find active task for this agent
     let tasks;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/tasks?active=true`);
-      tasks = await res.json();
+      tasks = await sendWS('store-tasks', { active: true });
     } catch {
       tasks = [];
     }
@@ -2277,16 +2082,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           // Event ID path
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
               let agents = []
               try {
-                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-                const stateData = await stateRes.json()
+                const stateData = await sendWS('store-agents')
                 agents = Array.isArray(stateData) ? stateData : []
               } catch {}
               resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
@@ -2308,17 +2110,13 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           // Event ID — look up this event and surrounding activity events (±60s)
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${evIdMatch[1] - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const anchor = (data.events || [])[0]
             if (anchor) {
               const since = new Date(new Date(anchor.timestamp).getTime() - 60000).toISOString()
               const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
               const agentId = anchor.from
-              const url2 = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res2 = await fleetFetch(url2)
-              const data2 = await res2.json()
+              const data2 = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data2.events || []).filter(e => e.type === 'activity')
             }
           } catch {}
@@ -2333,9 +2131,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
             try {
               const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
-              const url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&limit=50`
-              const res = await fleetFetch(url)
-              const data = await res.json()
+              const data = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data.events || []).filter(e => e.type === 'activity')
             } catch {}
           }
@@ -2352,8 +2148,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
           let agents = []
           try {
-            const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-            const stateData = await stateRes.json()
+            const stateData = await sendWS('store-agents')
             agents = Array.isArray(stateData) ? stateData : []
           } catch {}
           resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
@@ -2371,9 +2166,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         if (evIdMatch) {
           const eventId = evIdMatch[1]
           try {
-            const url = `http://127.0.0.1:${dashPort}/api/store/events?after=${eventId - 1}&limit=1`
-            const res = await fleetFetch(url)
-            const data = await res.json()
+            const data = await sendWS('store-events', { after: eventId - 1, limit: 1 })
             const ev = (data.events || [])[0]
             if (ev) {
               let meta = ev.metadata
@@ -2386,8 +2179,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
               try {
-                const stateRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/store/agents`)
-                const agents = await stateRes.json()
+                const agents = await sendWS('store-agents')
                 const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
                 if (a) agentName = a.friendly_name || a.name || agentName
               } catch {}
@@ -2451,7 +2243,8 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
         images.push(...chipImages)
-        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}`, images };
+        const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
+        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
@@ -2549,6 +2342,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
     const cmdParts = [fleetSpawnScript];
     if (isFresh) cmdParts.push('--fresh');
     if (args.model) cmdParts.push('--model', args.model);
+    if (args.effort) cmdParts.push('--effort', args.effort);
     if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
     cmdParts.push('--no-attach');
     cmdParts.push(agentName);
@@ -2735,72 +2529,67 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
-    const idx = getSearchIndex();
-    if (!idx) {
-      return { content: [{ type: 'text', text: 'Search index not available. The dashboard server builds the index — make sure it has run at least once.' }], isError: true };
-    }
-
     const query = args.query;
     if (!query || query.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
     }
 
-    const limit = Math.min(args.limit || 20, 100);
+    const sinceTs = parseTimestamp(args.since) || undefined;
+    const beforeTs = parseTimestamp(args.before) || undefined;
+    const isBoundedSearch = !!(sinceTs && beforeTs);
+    const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
-    const beforeTs = args.before || undefined;
 
-    let agentIds;
+    // Resolve agent filter to fleet ID(s)
+    let agentId;
     if (args.agent) {
-      const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
       let allAgents = [];
-      try {
-        const res = await fleetFetch(`http://127.0.0.1:${dashPort_}/api/store/agents`);
-        if (res.ok) allAgents = await res.json();
-      } catch {}
-      // Collect all matching agent IDs (friendly_name, session_id)
-      // Prefix match is intentional here — search_logs is read-only, broad matching is useful
+      try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch {}
       const matches = allAgents.filter(a =>
-        a.id === args.agent || a.friendly_name === args.agent ||
-        a.id.startsWith(args.agent)
+        a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
       );
-      const ids = new Set();
-      for (const a of matches) {
-        ids.add(a.id);
-        if (a.session_id) ids.add(a.session_id);
-        if (a.session_ids) for (const sid of a.session_ids) ids.add(sid);
-      }
-      if (ids.size === 0) {
-        // Try to resolve as a session ID prefix (8+ hex chars) — the entries table
-        // stores full UUIDs so an exact match on the prefix won't work.
-        if (/^[0-9a-f]{8}/i.test(args.agent)) {
-          try {
-            const rows = idx.db.prepare(
-              'SELECT DISTINCT session_id FROM entries WHERE session_id LIKE ? LIMIT 10'
-            ).all(args.agent.toLowerCase() + '%');
-            for (const r of rows) if (r.session_id) ids.add(r.session_id);
-          } catch {}
-        }
-        if (ids.size === 0) ids.add(args.agent); // last-resort fallback
-      }
-      agentIds = [...ids];
+      agentId = matches[0]?.id || args.agent;
     }
-    // Search session logs (entries_fts)
-    let sessionResults = idx.search(query, { project: args.project || undefined, agent: agentIds, role: args.role || undefined, limit });
 
-    // Search chat events (chat_events_fts)
-    // Pass context: 0 to searchChat — we handle context ourselves via getChatContext
-    let chatResults = [];
+    // Query the server's unified search (fleet events + session JSONL text)
+    let results = [];
+    let contextMap = {};
     try {
-      chatResults = idx.searchChat(query, { agent: agentIds, role: args.role || undefined, limit, context: 0 });
-    } catch { /* chat FTS not yet built — degrade gracefully */ }
+      const contextTimestamps = [];
+      const data = await sendWS('fleet-search', {
+        query,
+        limit,
+        agent: agentId,
+        role: args.role || undefined,
+        since: sinceTs,
+      });
+      results = data?.results || [];
+      // Apply before filter
+      if (beforeTs) results = results.filter(r => !r.timestamp || r.timestamp < beforeTs);
 
-    // Apply `before` timestamp filter for pagination
-    if (beforeTs) {
-      sessionResults = sessionResults.filter(r => !r.timestamp || r.timestamp < beforeTs);
-      chatResults = chatResults.filter(r => !r.timestamp || r.timestamp < beforeTs);
+      // Fetch context for chat results if requested
+      if (contextWindow > 0) {
+        for (const r of results) {
+          if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
+        }
+        if (contextTimestamps.length > 0) {
+          const ctxData = await sendWS('fleet-search', {
+            query,
+            limit,
+            agent: agentId,
+            role: args.role || undefined,
+            since: sinceTs,
+            context_timestamps: contextTimestamps.slice(0, 10),
+            context_window: contextWindow,
+          });
+          contextMap = ctxData?.context || {};
+        }
+      }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
 
-    if (sessionResults.length === 0 && chatResults.length === 0) {
+    if (results.length === 0) {
       return { content: [{ type: 'text', text: `No results for "${query}".` }] };
     }
 
@@ -2818,94 +2607,79 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     };
 
     const fmtCtxMsg = (c) => {
-      const cFrom = resolveName(c.from);
-      const cTo = resolveName(c.to);
+      const cFrom = resolveName(c.from_id || c.from);
+      const cTo = resolveName(c.to_id || c.to);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
-      const text = c.text.length > 300 ? c.text.slice(0, 300) + '...' : c.text;
+      const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
     };
 
-    // Format session results
-    const sessionLines = sessionResults.map(r => {
-      const parts = [];
-      if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
-      if (r.source === 'events') {
+    const formatted = results.map(r => {
+      const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
+
+      if (r.source === 'fleet') {
         const from = resolveName(r.from);
-        parts.push(`[session] [${r.role}] ${from}`);
+        const to = resolveName(r.to);
+        const direction = to ? `${from} → ${to}` : from;
+        let text;
+        if (contextWindow > 0 && r.timestamp && contextMap[r.timestamp]) {
+          const ctx = contextMap[r.timestamp];
+          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
+          text = `=== Match ===\n${ctx.before.map(fmtCtxMsg).join('\n')}`;
+          if (ctx.before.length > 0) text += '\n';
+          text += matchLine;
+          if (ctx.after.length > 0) text += '\n' + ctx.after.map(fmtCtxMsg).join('\n');
+        } else {
+          const parts = [];
+          if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
+          parts.push(`[fleet] [${r.type}] ${direction}`);
+          parts.push(snippet);
+          text = parts.join(' | ');
+        }
+        return { timestamp: r.timestamp, text };
       } else {
-        const proj = r.project?.match(/work-(.+)$/)?.[1]?.replace(/-/g, '/') ?? r.project ?? '';
-        parts.push(`[session] [${r.role}] ${proj}`);
-        if (r.sessionId) parts.push(r.sessionId.slice(0, 8));
-      }
-      const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
-      parts.push(snippet);
-      return { timestamp: r.timestamp, text: parts.join(' | ') };
-    });
-
-    // Format chat results — with context from getChatContext when requested
-    const chatLines = chatResults.map(r => {
-      const from = resolveName(r.from);
-      const to = resolveName(r.to);
-      const direction = to ? `${from} → ${to}` : from;
-      const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
-
-      let text;
-      if (contextWindow > 0 && r.timestamp) {
-        // Rich context format
-        const ctx = idx.getChatContext(r.timestamp, contextWindow);
-        const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
-        const beforeLines = ctx.before.map(fmtCtxMsg);
-        const afterLines = ctx.after.map(fmtCtxMsg);
-
-        text = `=== Match ===\n`;
-        if (beforeLines.length > 0) text += beforeLines.join('\n') + '\n';
-        text += matchLine;
-        if (afterLines.length > 0) text += '\n' + afterLines.join('\n');
-      } else {
-        // Compact format (no context)
+        // session source
+        const agentName = resolveName(r.agentId) || r.agentId || '';
         const parts = [];
         if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
-        const sourceTag = r.source === 'terminal' ? 'terminal' : 'fleet chat';
-        parts.push(`[${sourceTag}] [${r.event_type}] ${direction}`);
+        parts.push(`[session] [${r.role}] ${agentName}`);
         parts.push(snippet);
-        text = parts.join(' | ');
+        return { timestamp: r.timestamp, text: parts.join(' | ') };
       }
-
-      return { timestamp: r.timestamp, text };
     });
 
-    // Merge and sort by timestamp descending
-    const allResults = [...sessionLines, ...chatLines]
-      .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
-      .slice(0, limit);
+    // For bounded calls, error if results hit the limit (would be silently truncated)
+    if (isBoundedSearch && results.length >= limit) {
+      return {
+        content: [{ type: 'text', text: `Bounded query returned ≥${limit} results — too many to return in one call. Narrow your time range.` }],
+        isError: true,
+      };
+    }
 
-    const stats = idx.stats();
-
-    // Log search event so dashboard can show what agents searched for
+    // Log search event
     const filters = [];
     if (args.agent) filters.push(`agent=${args.agent}`);
     if (args.role) filters.push(`role=${args.role}`);
-    if (args.project) filters.push(`project=${args.project}`);
+    if (sinceTs) filters.push(`since=${sinceTs}`);
     if (beforeTs) filters.push(`before=${beforeTs}`);
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
-    const allSnippets = [...sessionResults, ...chatResults].slice(0, 5).map(r => {
-      return r.snippet.replace(/⟨⟨/g, '').replace(/⟩⟩/g, '');
-    });
     logEvent({
       type: 'search',
       from: AGENT_ID || 'unknown',
       query: args.query,
       filters: filters.join(', '),
-      resultCount: allResults.length,
-      snippets: allSnippets,
+      resultCount: results.length,
+      snippets: results.slice(0, 5).map(r => (r.snippet || '').replace(/⟨⟨/g, '').replace(/⟩⟩/g, '')),
     });
 
-    let header = `${allResults.length} results (${sessionResults.length} session, ${chatResults.length} chat) — index: ${stats.totalEntries} entries, ${stats.totalFiles} files`;
-    if (beforeTs) header += ` — filtered before ${beforeTs}`;
+    const fleetCount = results.filter(r => r.source === 'fleet').length;
+    const sessionCount = results.filter(r => r.source === 'session').length;
+    let header = `${results.length} results (${fleetCount} fleet, ${sessionCount} session)`;
+    if (sinceTs) header += ` — since ${sinceTs}`;
+    if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;
 
-    const separator = contextWindow > 0 ? '\n\n' : '\n\n';
-    return { content: [{ type: 'text', text: `${header}\n\n${allResults.map(r => r.text).join(separator)}` }] };
+    return { content: [{ type: 'text', text: `${header}\n\n${formatted.map(r => r.text).join('\n\n')}` }] };
   }
 
   // ---- get_thread ----
@@ -2915,18 +2689,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let filtered = [];
     let serverTotal = null;
 
-    // Server handles time filtering and pagination. page_size caps results per call;
-    // to get the next page, call again with since=<last returned timestamp>.
-    const pageSize = args.page_size || 200;
+    const resolvedSince = parseTimestamp(args.since);
+    const resolvedUntil = parseTimestamp(args.until);
+    // When both bounds are set the caller committed to a finite range — fetch
+    // everything rather than silently paginating. Error if it's too large.
+    const isBounded = !!(resolvedSince && resolvedUntil);
+    const pageSize = isBounded ? 10_000 : (args.page_size || 200);
 
     const fetchEventsForAgent = async (agentId) => {
-      const dashPort = process.env.FLEET_DASH_PORT || 5176;
-      let url = `http://127.0.0.1:${dashPort}/api/store/events?agent=${encodeURIComponent(agentId)}&limit=${pageSize}`;
-      if (args.since) url += `&since=${encodeURIComponent(args.since)}`;
-      if (args.until) url += `&until=${encodeURIComponent(args.until)}`;
-      const res = await fleetFetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
+      const params = { agent: agentId, limit: pageSize };
+      if (resolvedSince) params.since = resolvedSince;
+      if (resolvedUntil) params.until = resolvedUntil;
+      const data = await sendWS('store-events', params);
+      if (!data) return;
       serverTotal = data.total ?? null;
       for (const e of (data.events || [])) {
         const text = e.type === 'delegate'
@@ -2947,6 +2722,22 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
     } else if (args.agent) {
+      // Reject Claude Code session UUIDs (8-4-4-4-12 hex). These are an
+      // internal Claude Code identifier and have no place in fleet — the
+      // primary key for agents is the agent name or fleet:UUID. Catching
+      // them with a specific error stops agents from inventing workarounds
+      // (raw JSONL reads, search_logs misuse) when "Agent not found" looks
+      // ambiguous.
+      const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (SESSION_UUID.test(args.agent)) {
+        return {
+          content: [{
+            type: 'text',
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roll_call.`,
+          }],
+          isError: true,
+        };
+      }
       const agentEntry = getAgent(state, args.agent);
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
@@ -2970,6 +2761,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     if (filtered.length === 0) {
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
+    }
+
+    // For bounded calls, error rather than silently truncate
+    if (isBounded && serverTotal !== null && serverTotal > filtered.length) {
+      return {
+        content: [{ type: 'text', text: `Bounded query returned ${serverTotal} messages — too large to fetch in one call. Narrow your time range (currently ${resolvedSince} → ${resolvedUntil}) and try again.` }],
+        isError: true,
+      };
     }
 
     // Build header with total context and forward-pagination hint
@@ -3030,14 +2829,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- label_agent ----
   if (name === 'label_agent') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/label`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: args.agent, labels: args.labels || [] }),
-      });
-      const data = await res.json();
+      const data = await sendWS('label', { agent: args.agent, labels: args.labels || [] });
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
@@ -3050,14 +2843,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const { agent } = args;
     if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to interrupt.' }], isError: true };
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/interrupt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent }),
-      });
-      const data = await res.json();
+      const data = await sendWS('interrupt', { agent });
       if (data.error) return { content: [{ type: 'text', text: `Interrupt failed: ${data.error}` }], isError: true };
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
@@ -3403,22 +3190,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
         // Remove specific wiretap by ID
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${args.remove}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: args.remove });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const existing = await res.json();
+      const existing = await sendWS('wiretap-list', { agent: myId });
       for (const tap of existing) {
-        await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap/${tap.id}`, { method: 'DELETE' });
+        await sendWS('wiretap-remove', { id: tap.id });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
 
     // List existing wiretaps if no filter specified
     if (!args.filter) {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretaps?agent=${encodeURIComponent(myId)}`);
-      const taps = await res.json();
+      const taps = await sendWS('wiretap-list', { agent: myId });
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
       const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
@@ -3426,12 +3211,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const body = { agent: myId, filter: args.filter }
     if (args.types && args.types.length > 0) body.types = args.types
-    const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/wiretap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const tap = await res.json();
+    const tap = await sendWS('wiretap-add', body);
     const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
     return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
   }
@@ -3852,7 +3632,8 @@ async function handleChannelMessage(msg) {
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.`;
+      const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
+      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
       content = `📬 Task update. Call my_task() to see details.`;
     }

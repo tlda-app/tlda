@@ -1,0 +1,18 @@
+#!/bin/sh
+# tlda pre-commit hook: run the suppression-pattern lint on staged changes.
+# Advisory only — never blocks the commit. Findings print to stderr so the
+# dev sees them in their commit output.
+#
+# Install once with: bin/install-git-hooks.sh
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+  exit 0
+fi
+
+LINT="$REPO_ROOT/bin/tlda-lint-suppress.mjs"
+if [ -x "$LINT" ] || [ -f "$LINT" ]; then
+  node "$LINT" 2>&1 1>/dev/null
+fi
+
+exit 0

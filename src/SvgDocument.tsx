@@ -26,6 +26,7 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
+import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -35,7 +36,7 @@ import { DocVersionShapeUtil } from './shapes/DocVersionShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
-import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
@@ -52,7 +53,7 @@ import { TaskInboxTool } from './tools/TaskInboxTool'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -82,7 +83,7 @@ import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { openInEditor } from './texsync'
-import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
@@ -97,6 +98,7 @@ import { useFleetTheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
+import { usePanMode } from './hooks/usePanMode'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
@@ -492,7 +494,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Shadow history scrubber
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
-    shadowColumnX, shadowYOffset,
+    shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
@@ -525,6 +527,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     whistleEnabled,
     hissEnabled,
   })
+
+  // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
+  usePanMode(editorRef)
 
   useYjsSignals({
     editorRef, document,
@@ -756,6 +761,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
     })),
+    targets: document.targets,
   }), [docKey, document])
 
   // Volatile panel state — toggles, loading flags, history, etc.
@@ -822,7 +828,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -1073,6 +1079,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           onStep={handleShadowStep}
           onClose={hideShadowOverlay}
           onRealign={realignShadow}
+          changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}
       <div className="build-pills-row">
@@ -1144,8 +1151,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
-          // Load source map (labels index) for ref resolution
-          sourceMap.load(document.name)
+          // Load source map (labels index) for ref resolution.
+          // For multi-target docs, pass targets so per-target source-maps are merged
+          // with global page offsets — the bare alias only covers the primary target.
+          sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
 
           setNavigateToAnchor((anchorId: string, title: string) => {
             let page = -1
@@ -1316,14 +1325,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-              // Reset FleetHUD panOffset so it recomputes with the restored camera.
-              // Defer two frames: setCamera needs one frame to propagate through
-              // TLDraw's internal state before pageToScreen gives correct values.
-              requestAnimationFrame(() => {
+              // Recompute HUD panOffset ONLY if no saved position exists.
+              // With a saved panOffset (from a previous session), restoring from
+              // localStorage is correct — don't nuke it. Without one (first visit),
+              // we need to recompute after camera restoration so pageToScreen()
+              // uses the correct camera (commit 4031e60).
+              if (localStorage.getItem('fleet-hud-panOffset') === null) {
                 requestAnimationFrame(() => {
-                  window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  })
                 })
-              })
+              }
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds

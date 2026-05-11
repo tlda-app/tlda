@@ -9,8 +9,8 @@ import { TLSocketRoom, InMemorySyncStorage } from '@tldraw/sync-core'
 import { createTLSchema, defaultShapeSchemas, defaultBindingSchemas, DefaultColorStyle } from '@tldraw/tlschema'
 import { T } from '@tldraw/validate'
 import { createMigrationSequence } from '@tldraw/store'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'node:fs'
-import { readFile, writeFile, rename, mkdir, access } from 'node:fs/promises'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { readFile, writeFile, rename, mkdir, appendFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
 
@@ -214,7 +214,7 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      mode: T.string,
+      mode: T.optional(T.string),
       label: T.string,
       page: T.number,
       yTop: T.number,
@@ -224,6 +224,20 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-docview',
+      sequence: [],
+    }),
+  },
+  'doc-clip': {
+    props: {
+      w: T.number,
+      h: T.number,
+      page: T.number,
+      yTop: T.number,
+      yBottom: T.number,
+      label: T.string,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.doc-clip',
       sequence: [],
     }),
   },
@@ -345,14 +359,15 @@ function snapshotPath(docName) {
 /**
  * Load a room snapshot from disk if it exists.
  */
-function loadSnapshot(docName) {
+async function loadSnapshot(docName) {
   const path = snapshotPath(docName)
-  if (!existsSync(path)) return null
   try {
-    const data = readFileSync(path, 'utf-8')
+    const data = await readFile(path, 'utf-8')
     return JSON.parse(data)
   } catch (e) {
-    console.error(`[sync] Failed to load snapshot for ${docName}:`, e.message)
+    if (e.code !== 'ENOENT') {
+      console.error(`[sync] Failed to load snapshot for ${docName}:`, e.message)
+    }
     return null
   }
 }
@@ -363,7 +378,7 @@ function loadSnapshot(docName) {
 async function saveSnapshot(docName, room) {
   const path = snapshotPath(docName)
   const dir = dirname(path)
-  if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+  await mkdir(dir, { recursive: true })
 
   const snapshot = room.getCurrentSnapshot()
   const tmp = path + '.tmp'
@@ -486,11 +501,7 @@ function recordChanges(docName, room) {
 
   const path = changelogPath(docName)
   const lines = interesting.map(e => JSON.stringify(e)).join('\n') + '\n'
-  try {
-    appendFileSync(path, lines)
-  } catch (e) {
-    console.error(`[changelog] Failed to write ${path}:`, e.message)
-  }
+  appendFile(path, lines).catch(e => console.error(`[changelog] Failed to write ${path}:`, e.message))
 
   return interesting
 }
@@ -517,12 +528,15 @@ function shallowDiff(a, b) {
 /**
  * Get or create a TLSocketRoom for a document.
  * @param {string} docName
- * @returns {TLSocketRoom}
+ * @returns {Promise<TLSocketRoom>}
  */
-export function getOrCreateRoom(docName) {
+export async function getOrCreateRoom(docName) {
   if (rooms.has(docName)) return rooms.get(docName)
 
-  const snapshot = loadSnapshot(docName)
+  const snapshot = await loadSnapshot(docName)
+  // Re-check after await — another concurrent caller may have already created it
+  if (rooms.has(docName)) return rooms.get(docName)
+
   const opts = {
     schema,
     onDataChange: () => {
@@ -580,8 +594,8 @@ export function onShapeChange(docName, callback) {
  * @param {string} [typeFilter] - Optional shape type filter (e.g., 'math-note')
  * @returns {object[]}
  */
-export function getRoomRecords(docName, typeFilter) {
-  const room = getOrCreateRoom(docName)
+export async function getRoomRecords(docName, typeFilter) {
+  const room = await getOrCreateRoom(docName)
 
   const snapshot = room.getCurrentSnapshot()
   let records = snapshot.documents.map(d => d.state)
@@ -600,7 +614,7 @@ export function getRoomRecords(docName, typeFilter) {
  * @param {object} shape - Full shape record to put
  */
 export async function putShape(docName, shape) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   // storage.transaction writes to the Yjs doc but may not immediately
   // broadcast to connected WebSocket clients. Shapes appear after
   // reload or when the client re-syncs. For immediate visibility,
@@ -617,7 +631,7 @@ export async function putShape(docName, shape) {
  * @param {(shape: object) => object} updater - Takes current shape, returns updated shape
  */
 export async function updateShape(docName, shapeId, updater) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   room.storage.transaction((txn) => {
     const current = txn.get(shapeId)
     if (!current) throw new Error(`Shape not found: ${shapeId}`)
@@ -632,8 +646,8 @@ export async function updateShape(docName, shapeId, updater) {
  * @param {string} recordId
  * @returns {object|null}
  */
-export function getRecord(docName, recordId) {
-  const room = getOrCreateRoom(docName)
+export async function getRecord(docName, recordId) {
+  const room = await getOrCreateRoom(docName)
   return room.getRecord(recordId) ?? null
 }
 
@@ -765,7 +779,7 @@ export function onGlobalEvent(callback) {
  * @param {string} shapeId
  */
 export async function deleteShape(docName, shapeId) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   room.storage.transaction((txn) => {
     txn.delete(shapeId)
   })
@@ -818,17 +832,17 @@ const SHAPE_AT_CACHE_MAX = 50
 
 /**
  * Reconstruct the set of shapes that existed at a given timestamp.
- * Reads the shape changelog JSONL, replays create/update/delete ops forward,
- * stops at timestamp T.
+ * Streams the shape changelog JSONL line-by-line to avoid blocking the event
+ * loop on large files (survival-draft's log is 75 MB+).
  *
  * Pre-changelog shapes (in current snapshot but never mentioned in changelog)
  * are included — they existed before the changelog started.
  *
  * @param {string} projectName
  * @param {number} timestamp - Unix ms timestamp
- * @returns {{ shapes: object[], changelogRange: { first: number, last: number } | null }}
+ * @returns {Promise<{ shapes: object[], changelogRange: { first: number, last: number } | null }>}
  */
-export function getShapesAt(projectName, timestamp) {
+export async function getShapesAt(projectName, timestamp) {
   const cacheKey = `${projectName}:${timestamp}`
   if (shapeAtCache.has(cacheKey)) {
     // Move to end (most recently used)
@@ -841,15 +855,30 @@ export function getShapesAt(projectName, timestamp) {
   const docName = `doc-${projectName}`
   const logPath = changelogPath(docName)
 
-  // Read changelog entries (sorted ascending by ts)
+  // Read changelog async (libuv thread pool — event loop stays free during read),
+  // then parse in batches to avoid a 1-2s synchronous parse block.
   let entries = []
-  if (existsSync(logPath)) {
-    const lines = readFileSync(logPath, 'utf-8').trim().split('\n').filter(Boolean)
-    entries = lines
-      .map(line => { try { return JSON.parse(line) } catch { return null } })
-      .filter(Boolean)
-      .sort((a, b) => a.ts - b.ts)
+  try {
+    const content = await readFile(logPath, 'utf-8')
+    const lines = content.split('\n')
+    const BATCH = 500
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (!line) continue
+      try {
+        const entry = JSON.parse(line)
+        if (entry) entries.push(entry)
+      } catch {}
+      // Yield to event loop every BATCH lines; 500 lines ≈ 15ms at typical parse rates
+      if (i > 0 && i % BATCH === 0) await new Promise(r => setImmediate(r))
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.error(`[sync] Failed to read changelog for ${projectName}:`, e.message)
+    }
   }
+
+  entries.sort((a, b) => a.ts - b.ts)
 
   const changelogRange = entries.length > 0
     ? { first: entries[0].ts, last: entries[entries.length - 1].ts }
@@ -886,27 +915,21 @@ export function getShapesAt(projectName, timestamp) {
   // never appeared in the changelog at all (existed before logging started)
   const mentionedIds = new Set(entries.map(e => e.id))
   const snapPath = snapshotPath(docName)
-  if (existsSync(snapPath)) {
-    try {
-      const snapshot = JSON.parse(readFileSync(snapPath, 'utf-8'))
-      for (const doc of (snapshot.documents || [])) {
-        const state = doc.state
-        if (!state?.id) continue
-        // Only include shapes (not camera, page, instance records)
-        if (state.typeName !== 'shape') continue
-        // Skip shapes that appear in the changelog — they're handled by replay
-        if (mentionedIds.has(state.id)) continue
-        // Pre-changelog shape: include it (it existed before logging)
-        shapes.set(state.id, state)
-      }
-    } catch {}
-  }
+  try {
+    const snapData = await readFile(snapPath, 'utf-8')
+    const snapshot = JSON.parse(snapData)
+    for (const doc of (snapshot.documents || [])) {
+      const state = doc.state
+      if (!state?.id) continue
+      if (state.typeName !== 'shape') continue
+      if (mentionedIds.has(state.id)) continue
+      shapes.set(state.id, state)
+    }
+  } catch {}
 
-  // For build entries: include page metadata from the project
   // Filter to shape data only (type, props, meta, position)
   const result = {
     shapes: [...shapes.values()].map(s => {
-      // For svg-page/html-page shapes, return metadata only (no SVG content)
       if (s.type === 'svg-page' || s.type === 'html-page') {
         return { id: s.id, type: s.type, typeName: s.typeName, x: s.x, y: s.y, props: s.props, meta: s.meta }
       }

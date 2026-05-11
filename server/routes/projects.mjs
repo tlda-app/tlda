@@ -60,14 +60,14 @@ router.get('/meta', requireRead, (req, res) => {
 })
 
 // GET /health — check sync health for all docs that have a snapshot
-router.get('/health', requireRead, (req, res) => {
+router.get('/health', requireRead, async (req, res) => {
   const health = {}
   const dir = getProjectsDir()
   for (const project of listProjects()) {
     const snapPath = join(dir, project.name, 'sync-snapshot.json')
     if (!existsSync(snapPath)) continue
     try {
-      const room = getOrCreateRoom(syncRoomName(project.name))
+      const room = await getOrCreateRoom(syncRoomName(project.name))
       const snapshot = room.getCurrentSnapshot()
       const shapes = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
       health[project.name] = { ok: true, shapes }
@@ -204,12 +204,35 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
 // Synctex path-based lookup: trace highlight path through synctex records
 router.post('/:name/synctex-path', requireRead, async (req, res) => {
   const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
-  const { page, points, text, fragments } = req.body
+  const { page, points, text, fragments, target } = req.body
   if (!page || !points?.length) {
     return res.status(400).json({ error: 'Required: page, points[]' })
   }
   try {
-    const result = await getSourceFromPath(req.params.name, page, points, text || '', fragments || [])
+    // For multi-target projects, convert global page to local page within the target
+    let localPage = page
+    let resolvedTarget = target || ''
+    if (!resolvedTarget) {
+      // Client didn't send target — compute from project metadata
+      const project = readProject(req.params.name)
+      if (project?.targets?.length > 1) {
+        let offset = 0
+        for (const t of project.targets) {
+          if (page <= offset + t.pages) { resolvedTarget = t.texBase; break }
+          offset += t.pages
+        }
+      }
+    }
+    if (resolvedTarget) {
+      const project = readProject(req.params.name)
+      let offset = 0
+      for (const t of (project?.targets || [])) {
+        if (t.texBase === resolvedTarget) break
+        offset += t.pages
+      }
+      localPage = page - offset
+    }
+    const result = await getSourceFromPath(req.params.name, localPage, points, text || '', fragments || [], resolvedTarget)
     if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
     res.json(result)
   } catch (e) {
@@ -217,9 +240,13 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
   }
 })
 
-// Preamble macros (KaTeX-compatible, parsed during build from main tex file)
+// Preamble macros (KaTeX-compatible, parsed during build from main tex file).
+// Outputs are now per-target — fetch the primary target's macros.
 router.get('/:name/macros', requireRead, (req, res) => {
-  const outputPath = join(getOutputDir(req.params.name), 'macros.json')
+  const project = readProject(req.params.name)
+  if (!project) return res.json({ macros: {} })
+  const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+  const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
   if (!existsSync(outputPath)) return res.json({ macros: {} })
   try {
     const data = JSON.parse(readFileSync(outputPath, 'utf8'))
@@ -339,17 +366,17 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // SVG/LaTeX format: mark source as stale so ensureCurrentDvi rebuilds on
-  // the next page request. No proactive build — Ensure does everything.
+  // SVG/LaTeX format: mark source as stale so the ensure system rebuilds on
+  // the next page request. No proactive build — ensure does everything.
   markProjectStale(name)
   broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
   return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
 }
 
 /**
- * Mark a project's source as stale. Writes a source.stamp file whose mtime is
- * checked by ensureCurrentDvi — if source.stamp is newer than main.dvi, the
- * next page request triggers a full LaTeX rebuild.
+ * Mark a project's source as stale. Writes a source.stamp file whose mtime
+ * is compared against output/build.stamp by the ensure system — if
+ * source.stamp is newer, the next page request triggers a full LaTeX rebuild.
  */
 function markProjectStale(name) {
   const dir = getProjectDir(name)
@@ -449,20 +476,20 @@ function syncRoomName(projectName) {
 }
 
 // GET /:name/shapes — list shapes, optionally filter by type
-router.get('/:name/shapes', requireRead, (req, res) => {
+router.get('/:name/shapes', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
-  const records = getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
+  const records = await getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
   res.json(records)
 })
 
 // GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
-router.get('/:name/shapes/at/:timestamp', requireRead, (req, res) => {
+router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const ts = parseInt(req.params.timestamp, 10)
   if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
-  const result = getShapesAt(req.params.name, ts)
+  const result = await getShapesAt(req.params.name, ts)
   res.json(result)
 })
 
@@ -557,11 +584,11 @@ router.post('/:name/sync/clear', requireRw, (req, res) => {
 })
 
 // GET /:name/sync/health — check if a doc's sync room can load without errors
-router.get('/:name/sync/health', requireRead, (req, res) => {
+router.get('/:name/sync/health', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
-    const room = getOrCreateRoom(syncRoomName(req.params.name))
+    const room = await getOrCreateRoom(syncRoomName(req.params.name))
     const snapshot = room.getCurrentSnapshot()
     const shapeCount = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
     res.json({ ok: true, shapes: shapeCount })
@@ -627,11 +654,11 @@ const HIGHLIGHT_THEMES = {
   'light-blue':  { type: 'info', label: 'Note / reference' },
   'blue':        { type: 'info', label: 'Note / reference' },
 }
-router.get('/:name/highlight-feedback', requireRead, (req, res) => {
+router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
-  const records = getRoomRecords(syncRoomName(req.params.name), 'highlight')
+  const records = await getRoomRecords(syncRoomName(req.params.name), 'highlight')
   const feedback = records
     .filter(shape => shape.meta?.highlightText)
     .map(shape => {
@@ -670,8 +697,8 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   // SSE keepalive to prevent proxy (Fly) from killing idle connections
   const keepalive = setInterval(() => res.write(':\n\n'), 15000)
 
-  // Ensure room exists so we get change notifications
-  getOrCreateRoom(syncRoomName(req.params.name))
+  // Ensure room exists so we get change notifications (fire-and-forget — SSE doesn't wait)
+  getOrCreateRoom(syncRoomName(req.params.name)).catch(() => {})
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
     // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff
@@ -690,11 +717,11 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
 })
 
 // GET /:name/shapes/:id — get a single shape
-router.get('/:name/shapes/:id', requireRead, (req, res) => {
+router.get('/:name/shapes/:id', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
-  const record = getRecord(syncRoomName(req.params.name), shapeId)
+  const record = await getRecord(syncRoomName(req.params.name), shapeId)
   if (!record) return res.status(404).json({ error: 'Shape not found' })
   res.json(record)
 })
@@ -985,7 +1012,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
     // 6. Create highlight shape via putShape (on top of all existing shapes)
     const shapeId = `shape:hl-${Date.now().toString(36)}`
-    const allRecords = getRoomRecords(syncRoomName(req.params.name), null)
+    const allRecords = await getRoomRecords(syncRoomName(req.params.name), null)
     const maxIndex = allRecords
       .map(r => r.index || 'a0')
       .sort()

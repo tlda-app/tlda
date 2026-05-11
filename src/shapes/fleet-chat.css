@@ -330,6 +330,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-log {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-gutter: stable;
 }
 
 /* --- Draggable elements in chat --- */
@@ -454,6 +455,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-right: 4px;
 }
 
+/* --- Agent nicks are draggable --- */
+.fleet-chat-shape .agent-nick {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
 /* --- Nick colors --- */
 .fleet-chat-shape .nick-human { color: #9370db; }
 .fleet-chat-shape .nick-manager { color: var(--green); }
@@ -518,6 +526,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 12px;
   font-family: 'SF Mono','Menlo',monospace;
 }
+.fleet-chat-shape .chat-line code.code-unquote-pending {
+  background: color-mix(in srgb, var(--blue) 25%, transparent);
+  outline: 1px solid var(--blue);
+  cursor: pointer;
+}
 .fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
 
 /* --- Lists in chat --- */
@@ -546,6 +559,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   letter-spacing: 0.5px;
   vertical-align: middle;
   margin-right: 2px;
+}
+
+/* --- Terminal lifecycle card — hover to peek, click to pin --- */
+.fleet-chat-shape .lc-terminal-card {
+  cursor: pointer;
+}
+.fleet-chat-shape .lc-terminal-card:hover {
+  border-color: rgba(86, 156, 214, 0.4);
 }
 
 /* --- Lifecycle cards --- */
@@ -917,6 +938,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 4px 0;
   font-size: 11px;
   line-height: 1.4;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
 }
 .fleet-chat-shape .pretty-result-header {
   font-size: 10px;
@@ -941,6 +964,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .screenshot-placeholder-label {
   color: rgba(150, 150, 200, 0.4);
   font-size: 12px;
+}
+/* Screenshot tool result with inline image */
+.fleet-chat-shape .tool-pretty-screenshot .chat-image {
+  margin: 4px 0;
+  max-width: 100%;
+  cursor: zoom-in;
 }
 /* Thread messages — rendered like live chat lines inside a subtle frame */
 .fleet-chat-shape .tool-pretty-thread {
@@ -1017,6 +1046,35 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.7;
 }
 .fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+/* Schedule / timer cards */
+.fleet-chat-shape .tool-pretty-schedule {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(120, 180, 120, 0.5);
+  background: rgba(120, 180, 120, 0.04);
+  border-radius: 3px;
+  flex-wrap: wrap;
+}
+.fleet-chat-shape .schedule-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .schedule-time {
+  font-weight: 600;
+  font-size: 11px;
+  color: rgba(140, 200, 140, 0.9);
+}
+.fleet-chat-shape .schedule-at {
+  font-size: 9px;
+  color: var(--text-dim);
+}
+.fleet-chat-shape .schedule-reason {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
 
 /* --- Activity cards --- */
 .fleet-chat-shape .chat-activity-inline-wrap {
@@ -1465,21 +1523,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Respawn button --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  background: none;
-  border: 1px solid rgba(128,128,128,0.2);
-  border-radius: 3px;
-  color: rgba(128,128,128,0.5);
-  font-size: 10px;
-  padding: 0 4px;
-  cursor: pointer;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-.fleet-agents-shape .fleet-agents-respawn-btn:hover {
-  border-color: rgba(128,128,128,0.4);
-  color: rgba(128,128,128,0.7);
-}
 
 /* --- Unread dot --- */
 
@@ -1496,21 +1539,40 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: #7a9ec8;
 }
 
-/* --- Respawn button in row --- */
+/* --- Kill/respawn button (left of agent name, on hover) --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  margin-left: 4px;
+.fleet-agents-shape .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(128, 128, 128, 0.7);
 }
-.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn {
-  opacity: 0.6;
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
+  opacity: 0.5;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-kill-btn:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  opacity: 1 !important;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
   opacity: 0;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn {
-  opacity: 0.5;
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
+  opacity: 0.4;
 }
 
 /* --- Spawn buttons --- */
@@ -2214,6 +2276,201 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
+/* Hard-lock scroll toggle — magnet icon, left of textarea */
+.fleet-chat-shape .fleet-hardlock-toggle {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-hardlock-toggle:hover {
+  opacity: 0.55;
+}
+
+/* Terminal peek icon — same family as magnet, positioned just right of it */
+.fleet-chat-shape .fleet-terminal-icon {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-terminal-icon:hover {
+  opacity: 0.55;
+}
+
+/* Terminal hover pane — read-only terminal peek, floats below input area */
+.fleet-chat-shape .fleet-terminal-hover-pane {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  /* height is set via inline style from React state */
+  background: rgba(13, 13, 20, 0.96);
+  border: 1px solid rgba(80, 80, 110, 0.35);
+  border-radius: 0 0 4px 4px;
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 50;
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  background: rgba(20, 20, 30, 0.8);
+  border-bottom: 1px solid rgba(80, 80, 110, 0.2);
+  flex-shrink: 0;
+  min-height: 18px;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-title {
+  flex: 1;
+  color: rgba(168, 168, 192, 0.6);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status {
+  color: rgba(168, 168, 192, 0.4);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status.error {
+  color: rgba(228, 85, 85, 0.7);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin,
+.fleet-chat-shape .fleet-terminal-hover-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 1px 3px;
+  cursor: pointer;
+  color: rgba(168, 168, 192, 0.4);
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin:hover,
+.fleet-chat-shape .fleet-terminal-hover-close:hover {
+  color: rgba(168, 168, 192, 0.8);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin.active {
+  color: rgba(120, 160, 240, 0.8);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body {
+  flex: 1;
+  min-height: 0;
+  padding: 2px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body .xterm {
+  height: 100%;
+}
+
+/* Peek mode: no scroll. Pinned mode: allow scroll. */
+.fleet-chat-shape .fleet-terminal-hover-pane:not(.fleet-terminal-hover-pane-pinned) .fleet-terminal-hover-body .xterm-viewport {
+  overflow-y: hidden !important;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: rgba(20, 20, 30, 0.9);
+  border-top: 1px solid rgba(80, 80, 110, 0.2);
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-prompt {
+  color: rgba(100, 200, 120, 0.7);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: rgba(200, 200, 220, 0.9);
+  font-family: inherit;
+  font-size: 9px;
+  padding: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input::placeholder {
+  color: rgba(168, 168, 192, 0.25);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  cursor: pointer;
+  color: rgba(168, 168, 192, 0.35);
+  font-family: inherit;
+  font-size: 8px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c:hover {
+  color: rgba(228, 85, 85, 0.7);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-resize-handle {
+  height: 4px;
+  cursor: ns-resize;
+  background: rgba(80, 80, 110, 0.15);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-resize-handle:hover {
+  background: rgba(120, 160, 240, 0.3);
+}
+
 /* --- Fleet DocView shape --- */
 /* Suppress tldraw hover/selection indicators on ALL shapes in the HUD */
 .fleet-hud .clip-panel-canvas .tl-shape-indicator { display: none !important; }
@@ -2482,3 +2739,64 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   vertical-align: middle;
   letter-spacing: 0.02em;
 }
+
+/* --- Doc Clip Shape --- */
+
+.doc-clip-shape {
+  overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 2px;
+}
+
+.doc-clip-bar {
+  height: 8px;
+  background: rgba(128, 128, 128, 0.08);
+  cursor: grab;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.doc-clip-bar:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.doc-clip-close {
+  position: absolute;
+  right: 2px;
+  top: -1px;
+  font-size: 10px;
+  line-height: 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  padding: 0 2px;
+}
+
+.doc-clip-shape:hover .doc-clip-close {
+  opacity: 0.5;
+}
+
+.doc-clip-close:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+
+.doc-clip-shape .clip-panel {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.doc-clip-shape .clip-panel-canvas {
+  height: 100% !important;
+}
+
+.doc-clip-body {
+  overflow: hidden;
+}
+

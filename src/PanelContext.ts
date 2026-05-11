@@ -9,6 +9,7 @@ export interface DocContextValue {
   docName: string
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
+  targets?: Array<{ name: string; title: string; pages: number }>
 }
 
 /** Volatile panel state — toggles, loading flags, history slider, etc. */

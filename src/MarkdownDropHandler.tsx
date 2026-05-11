@@ -7,32 +7,6 @@
 import { useEffect } from 'react'
 import { useEditor } from 'tldraw'
 
-async function createInlineDoc(name: string, title: string, content: string): Promise<string> {
-  // Create project (409 = already exists, that's fine — continue)
-  const createRes = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, title, format: 'markdown', mainFile: 'index.md' }),
-  })
-  if (!createRes.ok && createRes.status !== 409) {
-    const text = await createRes.text().catch(() => '')
-    throw new Error(`Failed to create project: ${createRes.status} ${text}`)
-  }
-
-  // Push file content
-  const pushRes = await fetch(`/api/projects/${name}/push`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: [{ path: 'index.md', content }] }),
-  })
-  if (!pushRes.ok) {
-    const text = await pushRes.text().catch(() => '')
-    throw new Error(`Failed to push file: ${pushRes.status} ${text}`)
-  }
-
-  return name
-}
-
 function isMarkdownFile(file: File): boolean {
   return file.name.endsWith('.md') || file.name.endsWith('.markdown')
 }
@@ -86,10 +60,7 @@ export function MarkdownDropHandler() {
       e.preventDefault()
       e.stopPropagation()
 
-      const dropPoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
-
       for (const file of mdFiles) {
-        const title = file.name.replace(/\.(md|markdown)$/i, '')
         const name = fileNameToProjectName(file.name)
 
         const reader = new FileReader()

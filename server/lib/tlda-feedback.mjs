@@ -92,8 +92,22 @@ function ensureListeners(docName, deliverChat) {
   })
 
   const unsubSignal = onSignal(docName, (signal) => {
-    if (signal.key !== 'signal:ping') return
-    send(`[tlda feedback] Ping on ${displayName}!`, { signal: 'ping' })
+    if (signal.key === 'signal:ping') {
+      send(`[tlda feedback] Ping on ${displayName}!`, { signal: 'ping' })
+    } else if (signal.key === 'signal:build-progress') {
+      const data = signal.value || {}
+      if (data.phase === 'done') {
+        send(
+          `[writing checkpoint] Build complete for ${displayName}. Before moving on, check your recent edits:\n` +
+          `1. WALKING — re-read as a first-time reader. Can you walk through it, or do you stop and climb?\n` +
+          `2. CHUNKS — can you name what each paragraph/block does in one phrase?\n` +
+          `3. LAYOUT — are related equations in the same display? Would a reader scroll back?\n` +
+          `4. PENCIL — would the reader consider reaching for a pencil?\n` +
+          `5. BORING — if Skip corrects this, will it be for an interesting reason or a boring one?`,
+          { signal: 'writing-checkpoint', build_elapsed: data.detail }
+        )
+      }
+    }
   })
 
   activeListeners.set(docName, { unsubShape, unsubSignal })

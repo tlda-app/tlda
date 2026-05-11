@@ -267,10 +267,18 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
+    // Skip camera changes during the first 2s after mount — these are camera
+    // restoration and page-shape-driven adjustments, not user pans. Without
+    // this, the deltas get added to panOffset, corrupting the saved position.
+    // A single skipFirst wasn't enough: there can be multiple camera changes
+    // during load (default → restored → page-shape adjustment).
+    const mountTime = Date.now()
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (cam.z === lastCamZ && panOffsetRef.current !== null) {
+        if (Date.now() - mountTime < 2000) {
+          // Settling period — don't update panOffset
+        } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
           localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
@@ -358,12 +366,18 @@ export function FleetHUD({
     // HACK: Safety valve — if pointer-events:none was restored mid-drag
     // (e.g. class removed by a React re-render), TLDraw never sees pointerup
     // and stays stuck in brushing/pointing_canvas with isPointing=true.
-    // On any window pointerup, if the overlay editor is still "pointing",
-    // force-dispatch pointer_up through TLDraw so it cleans up its state.
+    // On any window pointerup, if the overlay editor is still "pointing" AND
+    // the canvas is blocked (pointer-events:none), force-dispatch pointer_up.
+    // Guard: if the canvas is pointer-events:auto (hud-layout-active), TLDraw
+    // will receive the native pointerup itself — dispatching here causes a
+    // double pointer_up that fires selectOnCanvasPointerUp in idle state,
+    // clearing the brush selection immediately after it completes.
     const onWindowPointerUp = (e: PointerEvent) => {
       const editor = overlayEditorRef.current
       if (!editor) return
       if (!editor.inputs.isPointing) return
+      const canvas = el.querySelector('.tl-canvas')
+      if (canvas && getComputedStyle(canvas).pointerEvents !== 'none') return
       editor.dispatch({
         type: 'pointer',
         name: 'pointer_up',

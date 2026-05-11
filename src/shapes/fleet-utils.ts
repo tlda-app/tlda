@@ -22,7 +22,7 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  *
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' = '3col') {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
   // Preserve existing chat filters before nuking — so Fleet button restores geometry
   // without losing filters the user has set by dragging agents.
   const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
@@ -53,11 +53,17 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
     return tb - ta
   })
-  const [agent1, agent2] = sorted.slice(0, 2)
-  const name1 = agent1?.friendly_name as string | undefined
-  const name2 = agent2?.friendly_name as string | undefined
-  const filter1: [string, string][][] = existingChatFilters[0] ?? (name1 ? [[['from', name1]], [['to', name1]]] : [])
-  const filter2: [string, string][][] = existingChatFilters[1] ?? (name2 ? [[['from', name2]], [['to', name2]]] : [])
+  const panelCount = variant === 'grid' ? 4 : variant === 'wide' ? 1 : 2
+  const topAgents = sorted.slice(0, panelCount)
+  const makeFilter = (i: number): [string, string][][] => {
+    if (existingChatFilters[i]) return existingChatFilters[i]!
+    const name = topAgents[i]?.friendly_name as string | undefined
+    return name ? [[['from', name]], [['to', name]]] : []
+  }
+  const filter1 = makeFilter(0)
+  const filter2 = makeFilter(1)
+  const filter3 = makeFilter(2)
+  const filter4 = makeFilter(3)
 
   const leftW = 340
   const gap = 10
@@ -111,7 +117,51 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       props: { w: leftW, h: searchH },
     },
   ]
-  if (variant === '3col') {
+  if (variant === 'wide') {
+    // Agents+search left, one wide chat right
+    const chatWide = Math.round(chatW3 * 2)
+    shapes.push({
+      id: createShapeId(),
+      type: 'fleet-chat' as any,
+      x: anchorX + leftW + gap, y: anchorY,
+      isLocked: false,
+      props: { w: chatWide, h: totalH, filter: filter1 },
+    })
+  } else if (variant === 'grid') {
+    // Agents+search left, 2x2 chat grid right
+    const gridChatW = chatW3
+    const gridChatH = Math.round((totalH - gap) / 2)
+    shapes.push(
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter1 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + gridChatW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter2 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY + gridChatH + gap,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter3 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
+        isLocked: false,
+        props: { w: gridChatW, h: gridChatH, filter: filter4 },
+      },
+    )
+  } else if (variant === '3col') {
     // Full-height chat (middle) + 75%-height chat (right) + docview (bottom-right)
     shapes.push(
       {

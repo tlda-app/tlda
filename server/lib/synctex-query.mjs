@@ -30,13 +30,27 @@ function makeSynctexRecord(inputId, lineNum, page, x, y, w, h, d) {
  */
 const cache = new Map()
 
-export async function loadSynctex(projectName) {
-  if (cache.has(projectName)) return cache.get(projectName)
+/**
+ * Load synctex for a project's target. texBase identifies which sibling
+ * .tex file to read records for — single-target projects pass the project's
+ * primary texBase. The cache is keyed by (project, texBase) so multiple
+ * targets coexist.
+ */
+export async function loadSynctex(projectName, texBase) {
+  const key = `${projectName}:${texBase || ''}`
+  if (cache.has(key)) return cache.get(key)
 
   const srcDir = sourceDir(projectName)
-  // Find the synctex.gz file
-  const files = existsSync(srcDir) ? readdirSync(srcDir) : []
-  const synctexFile = files.find(f => f.endsWith('.synctex.gz'))
+  // Locate the synctex.gz for this target. The build copies it next to
+  // the .tex file as <texBase>.synctex.gz; if texBase is omitted (e.g.
+  // for legacy callers), pick the first .synctex.gz in srcDir.
+  let synctexFile
+  if (texBase) {
+    synctexFile = `${texBase}.synctex.gz`
+  } else {
+    const files = existsSync(srcDir) ? readdirSync(srcDir) : []
+    synctexFile = files.find(f => f.endsWith('.synctex.gz'))
+  }
   if (!synctexFile) return null
 
   const synctexPath = join(srcDir, synctexFile)
@@ -149,15 +163,18 @@ export async function loadSynctex(projectName) {
   }
 
   const result = { records, inputMap, unit, magnification }
-  cache.set(projectName, result)
+  cache.set(key, result)
   return result
 }
 
 /**
  * Clear cached synctex data for a project (call after rebuild).
+ * Clears every (project, texBase) entry for the given project.
  */
 export function clearSynctexCache(projectName) {
-  cache.delete(projectName)
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(`${projectName}:`)) cache.delete(key)
+  }
 }
 
 /**
@@ -170,8 +187,8 @@ export function clearSynctexCache(projectName) {
  * @param {Array<{x: number, y: number}>} points - PDF coordinates along the path
  * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
  */
-export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = []) {
-  const data = await loadSynctex(projectName)
+export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = [], target = '') {
+  const data = await loadSynctex(projectName, target || undefined)
   if (!data || points.length === 0) return null
 
   // Filter to source .tex files

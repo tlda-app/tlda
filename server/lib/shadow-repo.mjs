@@ -13,6 +13,7 @@ const _execAsyncRaw = promisify(execCb)
 const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
+import { readdir as readdirAsync, rm as rmAsync, cp as cpAsync } from 'fs/promises'
 import { join, relative, basename, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -64,6 +65,60 @@ function shadowRepoDir(name) {
 }
 
 /**
+ * Initialize a shadow repo by filtering an existing project repo down to
+ * paper-scope paths only. The filter operation is the canonical way to bring
+ * an extant project repo into tlda's world: take its full git history,
+ * keep only paths that pdflatex actually opened (plus bibtex + svg
+ * augmentation per writeRelevantFiles), drop everything else.
+ *
+ * Existing dirty shadows are reset by the same operation: caller renames
+ * the dirty shadow out of the way (e.g. shadow-repo-dirty), then calls this
+ * to produce a clean shadow from the project's working-copy git.
+ *
+ * Requires `git-filter-repo` on PATH. paperScope is the list of paths
+ * (relative to the project repo's root) to keep.
+ *
+ * Throws on failure. Returns the path of the new shadow repo.
+ */
+export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {
+  if (!existsSync(join(projectRepoPath, '.git'))) {
+    throw new Error(`Project repo has no .git: ${projectRepoPath}`)
+  }
+  if (!Array.isArray(paperScope) || paperScope.length === 0) {
+    throw new Error('paperScope must be a non-empty list of paths')
+  }
+  const repoDir = shadowRepoDir(name)
+  if (existsSync(repoDir)) {
+    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
+  }
+
+  // Clone the project repo to the shadow location (file:// transport copies
+  // history; --no-local would skip hardlinks but we don't need that).
+  await execAsync(
+    `git clone --no-local "${projectRepoPath}" "${repoDir}"`,
+    { timeout: 120000 }
+  )
+
+  // Filter the clone to keep only paper-scope paths. git-filter-repo refuses
+  // to run on a non-fresh clone by default — pass --force.
+  const pathArgs = paperScope.map(p => `--path "${p.replace(/"/g, '\\"')}"`).join(' ')
+  await execAsync(
+    `git-filter-repo ${pathArgs} --force`,
+    { cwd: repoDir, timeout: 600000 }
+  )
+
+  // Set local identity so subsequent commitSnapshot calls work.
+  await execAsync('git config user.email "tlda@local"', { cwd: repoDir, timeout: 5000 })
+  await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
+
+  // Drop the origin remote that filter-repo leaves behind — the shadow
+  // shouldn't track upstream.
+  try { await execAsync('git remote remove origin', { cwd: repoDir, timeout: 5000 }) } catch {}
+
+  return repoDir
+}
+
+/**
  * Initialize shadow repo for a project (git init if needed).
  */
 export async function initShadowRepo(name) {
@@ -86,9 +141,48 @@ export async function initShadowRepo(name) {
 }
 
 /**
- * Commit current source files to shadow repo. Returns { hash, timestamp }.
- * Copies source files from server/projects/{name}/source/ into the shadow repo,
- * git add -A, git commit. Returns null if nothing changed.
+ * Read the paper-scope set from output/relevant-files.json.
+ * Returns paths relative to srcDir, or null if relevant-files.json doesn't
+ * exist or yields no files inside srcDir (callers should treat as bootstrap).
+ *
+ * The set is whatever pdflatex actually opened during the build (via the
+ * .fls recorder), augmented in writeRelevantFiles() with bibtex inputs
+ * (.bib/.bst) and svg siblings of pdf figures. Build artifacts are
+ * filtered here.
+ */
+const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
+
+function readPaperScope(name) {
+  const relPath = join(outputDir(name), 'relevant-files.json')
+  if (!existsSync(relPath)) return null
+  let parsed
+  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return null }
+  const files = Array.isArray(parsed?.files) ? parsed.files : []
+  const srcDir = sourceDir(name)
+  const out = new Set()
+  for (const p of files) {
+    if (typeof p !== 'string') continue
+    if (!p.startsWith(srcDir + '/')) continue
+    const rel = p.slice(srcDir.length + 1)
+    if (BUILD_ARTIFACT_RE.test(rel)) continue
+    if (existsSync(join(srcDir, rel))) out.add(rel)
+  }
+  return out.size === 0 ? null : [...out].sort()
+}
+
+/**
+ * Commit paper-scope source files to shadow repo. Returns { hash, timestamp }.
+ *
+ * What "paper-scope" means: the files pdflatex actually opened during the
+ * build (from the .fls recorder), augmented with bibtex inputs and svg
+ * figure sources. Build artifacts (.aux/.log/etc.) are filtered out.
+ *
+ * Source of truth: output/relevant-files.json (written by writeRelevantFiles
+ * in build-runner.mjs at the end of every successful build). If that file
+ * is missing — first build hasn't completed, or relevant-files generation
+ * failed — we skip the snapshot rather than fall back to copy-everything.
+ *
+ * Returns null if nothing changed or paper-scope is unavailable.
  */
 export async function commitSnapshot(name) {
   const repoDir = await initShadowRepo(name)
@@ -98,40 +192,49 @@ export async function commitSnapshot(name) {
     throw new Error(`Source directory not found: ${srcDir}`)
   }
 
-  // Clear existing files in shadow repo (except .git and .gitignore)
-  for (const entry of readdirSync(repoDir)) {
-    if (entry === '.git' || entry === '.gitignore') continue
-    const fullPath = join(repoDir, entry)
-    rmSync(fullPath, { recursive: true, force: true })
+  const scope = readPaperScope(name)
+  if (!scope) {
+    // No paper-scope yet — first build hasn't produced relevant-files.json,
+    // or augmentation failed. Skip rather than fall back to copy-everything
+    // (which would re-introduce the bug class this whole change is fixing).
+    return null
   }
 
-  // Copy source files in
-  for (const entry of readdirSync(srcDir)) {
-    cpSync(join(srcDir, entry), join(repoDir, entry), { recursive: true })
-  }
+  // Clear existing non-.git, non-.gitignore content from the shadow repo.
+  // We rebuild from scope to handle removals, renames, etc. uniformly.
+  // Async fs avoids blocking the event loop on large source trees.
+  const repoEntries = await readdirAsync(repoDir)
+  await Promise.all(
+    repoEntries
+      .filter((entry) => entry !== '.git' && entry !== '.gitignore')
+      .map((entry) => rmAsync(join(repoDir, entry), { recursive: true, force: true })),
+  )
 
-  // Stage everything
+  // Copy each paper-scope file from src into the shadow repo, preserving
+  // directory structure. mkdir each dirname first since cp is per-file.
+  await Promise.all(
+    scope.map(async (rel) => {
+      const from = join(srcDir, rel)
+      const to = join(repoDir, rel)
+      mkdirSync(dirname(to), { recursive: true })
+      await cpAsync(from, to)
+    }),
+  )
+
+  // Step 3: stage all changes (additions, modifications, deletions).
   await execAsync('git add -A', { cwd: repoDir, timeout: 10000 })
 
-  // Check if there are changes to commit
+  // Nothing changed? Don't make an empty commit.
   try {
     const { stdout: status } = await execAsync('git status --porcelain', { cwd: repoDir, timeout: 5000 })
-    if (!status.trim()) {
-      // Nothing changed
-      return null
-    }
-  } catch {
-    // If status fails, try to commit anyway
-  }
+    if (!status.trim()) return null
+  } catch {}
 
   const timestamp = new Date().toISOString()
   const message = `Build at ${timestamp}`
-
   await execAsync(`git commit -m "${message}"`, { cwd: repoDir, timeout: 15000 })
 
-  // Get the commit hash
   const { stdout: hash } = await execAsync('git rev-parse HEAD', { cwd: repoDir, timeout: 5000 })
-
   return { hash: hash.trim(), timestamp }
 }
 
@@ -443,32 +546,31 @@ export function getShadowRepoDir(name) {
 // First request for a hash7 starts the compile; all subsequent requests wait on the same promise.
 const _activeDviBuilds = new Map()
 
-const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
 
 /**
- * Compile shadow source at hash7 to a DVI file cached at history/shadow-{hash7}/main.dvi.
- * No-op if DVI already exists. Serializes concurrent callers for the same hash7.
+ * Compile shadow source at hash7 to a DVI file cached at
+ * history/shadow-{hash7}/<texBase>.dvi. No-op if DVI already exists.
+ * Serializes concurrent callers for the same hash7.
  */
 export async function ensureShadowDvi(name, hash7) {
+  const project = readProject(name)
+  const mainFile = project?.mainFile || 'main.tex'
+  const texBase = basename(mainFile, '.tex')
+
   const cacheDir = join(historyDir(name), `shadow-${hash7}`)
-  const dviFile = join(cacheDir, 'main.dvi')
+  const dviFile = join(cacheDir, `${texBase}.dvi`)
   if (existsSync(dviFile)) return
 
   const key = `${name}:${hash7}`
   if (!_activeDviBuilds.has(key)) {
     const promise = (async () => {
-      // Re-check under lock
       if (existsSync(dviFile)) return
-
-      const project = readProject(name)
-      const mainFile = project?.mainFile || 'main.tex'
-      const texBase = basename(mainFile, '.tex')
 
       console.log(`[shadow] Compiling ${name}@${hash7}...`)
       const tmpSrc = await checkoutSource(name, hash7)
       try {
         mkdirSync(cacheDir, { recursive: true })
-        // latexmk -dvi with draft graphicx (no figure loading), synctex for lookup
         try {
           await execAsync(
             `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
@@ -480,7 +582,6 @@ export async function ensureShadowDvi(name, hash7) {
         if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${name}@${hash7}`)
         copyFileSync(srcDvi, dviFile)
 
-        // Extract page count from log and save to meta.json
         let pages = null
         const logPath = join(tmpSrc, `${texBase}.log`)
         if (existsSync(logPath)) {
@@ -490,16 +591,11 @@ export async function ensureShadowDvi(name, hash7) {
         writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
         console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
 
-        // Generate lookup.json from synctex for label-based alignment
-        const project = readProject(name)
-        const mainFile = project?.mainFile || 'main.tex'
         const synctexFile = join(tmpSrc, `${texBase}.synctex.gz`)
-        const lookupPath = join(cacheDir, 'lookup.json')
+        const lookupPath = join(cacheDir, `${texBase}-lookup.json`)
         if (existsSync(synctexFile) && !existsSync(lookupPath)) {
           try {
-            // extract-synctex-lookup.mjs finds synctex.gz next to the tex file
             const texFilePath = join(tmpSrc, mainFile)
-            // If mainFile has a subdir, synctex.gz is in tmpSrc root — copy it alongside the tex
             const synctexDest = join(tmpSrc, dirname(mainFile), `${texBase}.synctex.gz`)
             if (synctexFile !== synctexDest && !existsSync(synctexDest)) {
               copyFileSync(synctexFile, synctexDest)
@@ -508,9 +604,11 @@ export async function ensureShadowDvi(name, hash7) {
               `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texFilePath}" "${lookupPath}"`,
               { timeout: 30000 },
             )
-            console.log(`[shadow] lookup.json ready for ${name}@${hash7}`)
+            // Save synctex.gz alongside lookup so ensure recipes find it.
+            copyFileSync(synctexFile, join(cacheDir, `${texBase}.synctex.gz`))
+            console.log(`[shadow] ${texBase}-lookup.json ready for ${name}@${hash7}`)
           } catch (e) {
-            console.warn(`[shadow] lookup.json generation failed for ${name}@${hash7}:`, e.message)
+            console.warn(`[shadow] lookup generation failed for ${name}@${hash7}:`, e.message)
           }
         }
       } finally {
@@ -533,12 +631,18 @@ export async function ensureShadowDvi(name, hash7) {
  */
 export async function buildShadowPage(name, hash7, pageNum) {
   const { ensure, historicalCtx } = await import('./ensure.mjs')
-  const ctx = historicalCtx(name, hash7)
-  return ensure(ctx, `page-${pageNum}.svg`)
+  const project = readProject(name)
+  const texBase = basename(project?.mainFile || 'main.tex', '.tex')
+  const ctx = historicalCtx(name, hash7, texBase)
+  return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
 
-export async function buildCurrentPage(name, pageNum) {
+export async function buildCurrentPage(name, pageNum, texBase) {
   const { ensure, currentCtx } = await import('./ensure.mjs')
-  const ctx = currentCtx(name)
-  return ensure(ctx, `page-${pageNum}.svg`)
+  if (!texBase) {
+    const project = readProject(name)
+    texBase = basename(project?.mainFile || 'main.tex', '.tex')
+  }
+  const ctx = currentCtx(name, texBase)
+  return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
