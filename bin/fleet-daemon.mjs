@@ -741,6 +741,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         const input = block.input || {}
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+        if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
         if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
           checkQualification(agentId, block.name, filePath)
         }

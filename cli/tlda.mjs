@@ -555,6 +555,11 @@ const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const ELIZA_LOGFILE = join(homedir(), '.config', 'tlda', 'eliza.log')
+const ELIZA_PIDFILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
+const ELIZA_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'eliza.mjs')
+  : join(_cliDir, '..', 'bin', 'eliza.mjs')
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -583,6 +588,31 @@ async function ensureFleetDaemonRunning() {
     console.log(green('Fleet daemon started') + dim(` (pid ${pid})`))
   } else {
     console.log(dim('Fleet daemon failed to start — see ' + FLEET_DAEMON_LOGFILE))
+  }
+}
+
+async function ensureElizaRunning() {
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = parseInt(readFileSync(ELIZA_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
+  }
+  if (!existsSync(ELIZA_SCRIPT)) return // not installed; silently skip
+  const { spawn: cpSpawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+  if (!existsSync(dirname(ELIZA_LOGFILE))) mkdirSync(dirname(ELIZA_LOGFILE), { recursive: true })
+  const logFd = fsOpenSync(ELIZA_LOGFILE, 'a')
+  const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: { ...process.env },
+  })
+  child.unref()
+  await new Promise(r => setTimeout(r, 800))
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = readFileSync(ELIZA_PIDFILE, 'utf8').trim()
+    console.log(green('Eliza started') + dim(` (pid ${pid})`))
+  } else {
+    console.log(dim('Eliza failed to start — see ' + ELIZA_LOGFILE))
   }
 }
 
@@ -2025,10 +2055,9 @@ ${tokenEnvLines.join('\n')}
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon is up. The server depends on it for
-          // activity cards, terminal-chat extraction, and source watching;
-          // a server start with no daemon = silent failure for Skip.
+          // Also ensure the fleet daemon and eliza are up.
           await ensureFleetDaemonRunning()
+          await ensureElizaRunning()
           return
         }
       } catch {}
