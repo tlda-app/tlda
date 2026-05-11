@@ -13,7 +13,7 @@
  * Each step writes output to server/projects/{name}/output/.
  */
 
-import { exec as execCb, execSync } from 'child_process'
+import { exec as execCb, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
@@ -28,7 +28,7 @@ const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
@@ -1722,94 +1722,39 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
                 summary,
                 timestamp: Date.now(),
               })
-              // Lint: agent-parentheticals
+              // BYOL linters: run scripts from ~/.config/tlda/linters/
+              // Each script receives the diff on stdin, TLDA_SRCDIR set to the shadow dir.
+              // Any stdout output is posted to fleet chat as a build finding.
               try {
-                const { lintDiff } = await import('./lint-parens.mjs')
-                const findings = lintDiff(diffOutput, (file) => {
-                  try {
-                    return readFileSync(join(shadowDir, file), 'utf8')
-                  } catch { return null }
-                })
-                if (findings.length > 0) {
-                  const grouped = new Map()
-                  for (const f of findings) {
-                    if (!grouped.has(f.file)) grouped.set(f.file, [])
-                    grouped.get(f.file).push(f)
+                const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
+                if (existsSync(lintersDir)) {
+                  const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
+                  for (const script of scripts) {
+                    const scriptPath = join(lintersDir, script)
+                    try {
+                      const output = await new Promise((resolve, reject) => {
+                        const child = spawn(process.execPath, [scriptPath], {
+                          env: { ...process.env, TLDA_SRCDIR: shadowDir },
+                          stdio: ['pipe', 'pipe', 'inherit'],
+                        })
+                        const chunks = []
+                        child.stdout.on('data', d => chunks.push(d))
+                        child.stdin.write(diffOutput)
+                        child.stdin.end()
+                        child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
+                        child.on('error', reject)
+                      })
+                      if (output) {
+                        emitGlobalEvent('build-chat', { name, hash: result.hash.slice(0, 7), text: output })
+                        console.log(`[build:${name}] Lint (${script}): output posted`)
+                      }
+                    } catch (scriptErr) {
+                      console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
+                    }
                   }
-                  const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
-                  for (const [file, items] of grouped) {
-                    lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
-                  }
-                  lines.push('Agent-written parentheticals are usually fig leaves for weak structure — see `~/work/dot-claude/spellbook/math/writing/SKILL.md`. Skip writes them freely; this only flags ones added in build diffs.')
-                  emitGlobalEvent('build-chat', {
-                    name,
-                    hash: result.hash.slice(0, 7),
-                    text: lines.join('\n'),
-                  })
-                  console.log(`[build:${name}] Parens lint: ${findings.length} findings`)
                 }
               } catch (lintErr) {
-                console.error(`[build:${name}] Parens lint failed:`, lintErr.message)
-              }
-              // Lint: passive voice
-              try {
-                const { lintDiff: lintPassiveDiff } = await import('./lint-passive.mjs')
-                const findings = lintPassiveDiff(diffOutput, (file) => {
-                  try {
-                    return readFileSync(join(shadowDir, file), 'utf8')
-                  } catch { return null }
-                })
-                if (findings.length > 0) {
-                  const grouped = new Map()
-                  for (const f of findings) {
-                    if (!grouped.has(f.file)) grouped.set(f.file, [])
-                    grouped.get(f.file).push(f)
-                  }
-                  const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
-                  for (const [file, items] of grouped) {
-                    const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
-                    lines.push(`- \`${file}\`: ${detail}`)
-                  }
-                  lines.push('Passive voice in math prose makes the reader work harder to identify who is doing what. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" instead of "is bounded by …" / "is given by …".')
-                  emitGlobalEvent('build-chat', {
-                    name,
-                    hash: result.hash.slice(0, 7),
-                    text: lines.join('\n'),
-                  })
-                  console.log(`[build:${name}] Passive lint: ${findings.length} findings`)
-                }
-              } catch (lintErr) {
-                console.error(`[build:${name}] Passive lint failed:`, lintErr.message)
-              }
-              // Lint: typography (grammar errors in display math)
-              try {
-                const { lintDiff: lintTypoDiff } = await import('./lint-typography.mjs')
-                const findings = lintTypoDiff(diffOutput, (file) => {
-                  try {
-                    return readFileSync(join(shadowDir, file), 'utf8')
-                  } catch { return null }
-                })
-                if (findings.length > 0) {
-                  const grouped = new Map()
-                  for (const f of findings) {
-                    if (!grouped.has(f.file)) grouped.set(f.file, [])
-                    grouped.get(f.file).push(f)
-                  }
-                  const lines = [`🔴 **Typography lint** — ${findings.length} grammar error(s) in this build:`]
-                  for (const [file, items] of grouped) {
-                    const detail = items.map((i) => `L${i.line}: \`${i.snippet}\``).join('; ')
-                    lines.push(`- \`${file}\`: ${detail}`)
-                  }
-                  lines.push('Comma before `\\qwhere`, `\\qfor`, or `\\qand` is always a grammar error — these are conjunctions, not list items.')
-                  emitGlobalEvent('build-chat', {
-                    name,
-                    hash: result.hash.slice(0, 7),
-                    text: lines.join('\n'),
-                  })
-                  console.log(`[build:${name}] Typography lint: ${findings.length} findings`)
-                }
-              } catch (lintErr) {
-                console.error(`[build:${name}] Typography lint failed:`, lintErr.message)
+                console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
               }
             }
           } else {

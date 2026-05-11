@@ -102,6 +102,7 @@ function parseDiffAddedLines(diffText) {
 // `diffText` — output of `git diff HEAD~1 HEAD -- "*.tex"` or similar
 // `readFile(path)` — function returning post-state file contents (or null)
 // Returns flat array of lint results with file/line/pattern/snippet.
+// Standalone CLI: pipe diff to stdin, set TLDA_SRCDIR to post-state source dir.
 export function lintDiff(diffText, readFile) {
   const addedByFile = parseDiffAddedLines(diffText)
   const results = []
@@ -116,4 +117,29 @@ export function lintDiff(diffText, readFile) {
     }
   }
   return results
+}
+
+// Standalone CLI — pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+  const { readFileSync } = await import('fs')
+  const { join } = await import('path')
+  const srcDir = process.env.TLDA_SRCDIR || ''
+  const diffText = readFileSync(0, 'utf8')
+  const findings = lintDiff(diffText, (file) => {
+    if (!srcDir) return null
+    try { return readFileSync(join(srcDir, file), 'utf8') } catch { return null }
+  })
+  if (findings.length > 0) {
+    const grouped = new Map()
+    for (const f of findings) {
+      if (!grouped.has(f.file)) grouped.set(f.file, [])
+      grouped.get(f.file).push(f)
+    }
+    const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
+    for (const [file, items] of grouped) {
+      lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
+    }
+    lines.push('Agent-written parentheticals are usually fig leaves for weak structure. Skip writes them freely; this only flags ones added in build diffs.')
+    process.stdout.write(lines.join('\n') + '\n')
+  }
 }

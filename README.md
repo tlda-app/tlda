@@ -188,6 +188,22 @@ The fleet daemon watches every agent's tool calls. When an agent tries to edit a
 
 Skill invocations (via the `Skill` tool) are tracked alongside file reads — you can require `"skill:partner-not-soloist"` as a prerequisite just like a file path.
 
+### Chat controls
+
+**Scroll to bottom:** When you've scrolled up in a chat panel, a ↓ button appears in the bottom-right corner of the log. Click to jump to the latest messages.
+
+**Magnet (hard-lock scroll):** A small magnet icon sits to the left of the chat input. Smart scroll (default) tries to keep the view at the bottom when messages arrive but backs off when you've scrolled up to read — it can fall behind when activity cards expand mid-stream. Hard-lock mode (click the magnet to activate) scrolls to the bottom unconditionally on every update, which means it will yank you away if you're reading up. Use hard-lock when you want guaranteed live tracking; use smart scroll when you want to scroll up without being pulled back down.
+
+**Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
+
+**Interrupting an agent:** With the chat input focused and filtered to an agent (their name chip in the input bar), pressing Escape interrupts the agent. Three escalating tiers:
+
+| Presses | Action |
+|---------|--------|
+| 1×Esc | Soft interrupt — sends Escape to the tmux session |
+| 2×Esc | Hard interrupt — sends a forceful interrupt signal |
+| 3×Esc | Kill session — tmux kill-session; agent dies immediately |
+
 ### Arranging the canvas
 
 Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
@@ -276,13 +292,26 @@ Cross-references between the documents resolve normally. tlda builds the referen
 
 ## Writing linters
 
-On every build, tlda scans the diff (new lines only — not existing text) for three classes of issues and posts findings to fleet chat:
+tlda supports per-user linters that run after every build. Any scripts placed in `~/.config/tlda/linters/` are invoked automatically: the diff (new lines only) is piped to stdin, `TLDA_SRCDIR` is set to the post-state source directory, and any output is posted to fleet chat as a build finding.
 
-- **Typography** (🔴) — punctuation errors like comma before a conjunction in display math, missing space before units, etc. Checked via a grammar model.
-- **Parenthetical overuse** (🟡) — sentences that add a new parenthetical aside. Parentheticals interrupt the reader; use footnotes or restructure instead.
-- **Passive voice** (🟡) — new passive constructions. Sometimes unavoidable, but the lint surfaces them so you can decide.
+Findings are diff-scoped — only new text in this build is checked, so existing prose is never flagged.
 
-Findings are diff-scoped: only new text in this build is checked. Existing text is never flagged, so you won't be flooded on a first build.
+tlda ships three opt-in linters in `server/lib/`:
+
+| Script | What it flags |
+|--------|--------------|
+| `lint-parens.mjs` | New parenthetical asides in prose |
+| `lint-passive.mjs` | New passive-voice constructions |
+| `lint-typography.mjs` | Grammar errors in display math (e.g. comma before conjunction) |
+
+To activate any of them, symlink to your linters directory:
+
+```bash
+mkdir -p ~/.config/tlda/linters
+ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
+```
+
+You can also drop any Node.js script there that reads a unified diff from stdin and prints human-readable findings to stdout.
 
 ## CLI reference
 
