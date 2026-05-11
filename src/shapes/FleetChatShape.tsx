@@ -1977,7 +1977,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!matchesUnquotePattern(text)) { clearPending(); return }
 
       const now = Date.now()
-      if (lastClickEl === codeEl && now - lastClickTime < 500) {
+      if (lastClickEl === codeEl && now - lastClickTime < 1000) {
         // Second click within 500ms on the same element = double-click
         clearPending()
         e.preventDefault()
