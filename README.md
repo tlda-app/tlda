@@ -192,6 +192,8 @@ Skill invocations (via the `Skill` tool) are tracked alongside file reads — yo
 
 **Scroll to bottom:** When you've scrolled up in a chat panel, a ↓ button appears in the bottom-right corner of the log. Click to jump to the latest messages.
 
+**Magnet (hard-lock scroll):** A small magnet icon sits to the left of the chat input. Smart scroll (default) tries to keep the view at the bottom when messages arrive but backs off when you've scrolled up to read — it can fall behind when activity cards expand mid-stream. Hard-lock mode (click the magnet to activate) scrolls to the bottom unconditionally on every update, which means it will yank you away if you're reading up. Use hard-lock when you want guaranteed live tracking; use smart scroll when you want to scroll up without being pulled back down.
+
 **Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
 
 **Interrupting an agent:** With the chat input focused and filtered to an agent (their name chip in the input bar), pressing Escape interrupts the agent. Three escalating tiers:
