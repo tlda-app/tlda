@@ -282,12 +282,6 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
 }
 
 
-function truncate(text: string, max: number): string {
-  if (!text) return ''
-  const plain = text.replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
-  if (plain.length <= max) return plain
-  return plain.slice(0, max) + '…'
-}
 
 function formatSnippet(raw: string, max = 180): string {
   if (!raw) return ''
