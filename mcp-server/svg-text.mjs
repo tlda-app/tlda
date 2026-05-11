@@ -190,14 +190,15 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
   // Read project.json for multi-target info (targets[] with texBase + pages).
   // Single-target or legacy docs won't have targets — fall back to bare naming.
   let targets = null;
-  try {
-    const projPath = path.join(projectRoot, 'server', 'projects', docName, 'project.json');
-    if (fs.existsSync(projPath)) {
+  const projPath = path.join(projectRoot, 'server', 'projects', docName, 'project.json');
+  if (fs.existsSync(projPath)) {
+    try {
       const proj = JSON.parse(fs.readFileSync(projPath, 'utf8'));
       if (proj.targets && proj.targets.length > 1) targets = proj.targets;
+    } catch {
+      targets = null; // malformed project.json — fall back to single-target naming
     }
-  } catch (e) { /* project.json unreadable — fall back to single-target naming */
-    void e }
+  }
 
   // Resolve global 1-indexed page to { svgPath } using target offsets if available.
   function resolvePageSvg(globalPage) {
@@ -224,7 +225,9 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
       const files = fs.readdirSync(docDir);
       const match = files.find(f => new RegExp(`-page-${unpadded}\\.svg$`).test(f));
       if (match) return path.join(docDir, match);
-    } catch (e) { void e /* dir unreadable — no match */ }
+    } catch {
+      return null; // docDir unreadable
+    }
     return null;
   }
 
