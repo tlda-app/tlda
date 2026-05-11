@@ -12,7 +12,7 @@ import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
 import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
-import { getPageUrl } from '../stores/pageUrlStore'
+import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -123,7 +123,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
         const ref = sig?.data?.ref
         if (!ref) return
         const hash7 = ref.slice(0, 7)
-        const url = `/docs/${docName}/history/shadow-${hash7}/page-${pageIdx + 1}.svg`
+        const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
+        const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
         const res = await fetch(url)
         if (!res.ok) return
         const text = await res.text()
@@ -183,7 +184,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const controller = new AbortController()
     abortRef.current = controller
 
-    const url = getPageUrl(shape.props.pageIndex) || `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg`
+    const url = getPageUrl(shape.props.pageIndex)
+    if (!url) return
     fetch(url, { signal: controller.signal }).then(async res => {
       if (!res.ok) return
       const newText = await res.text()

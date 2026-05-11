@@ -39,6 +39,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
+import { getPageFilename } from '../stores/pageUrlStore'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -3402,7 +3403,8 @@ export function DocLinkPreview({
   // SVG URL
   const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
   const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
-  const svgUrl = `${base}docs/${docName}/page-${resolved.page}.svg`
+  const svgFilename = getPageFilename(resolved.page - 1) ?? `page-${resolved.page}.svg`
+  const svgUrl = `${base}docs/${docName}/${svgFilename}`
 
   // Preview dimensions — fit within the shape width
   const PREVIEW_W = Math.min(320, shapeW - 16)
