@@ -60,7 +60,7 @@ export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
       try {
         const { url } = await uploadFileToServer(att.path, serverBaseUrl)
         att.url = url
-      } catch {}
+      } catch (err) { console.error('[message-processing] upload failed:', att.path, err.message) }
     }
   }
 }
