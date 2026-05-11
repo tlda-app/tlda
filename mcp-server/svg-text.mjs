@@ -196,7 +196,8 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
       const proj = JSON.parse(fs.readFileSync(projPath, 'utf8'));
       if (proj.targets && proj.targets.length > 1) targets = proj.targets;
     }
-  } catch { /* non-fatal */ }
+  } catch (e) { /* project.json unreadable — fall back to single-target naming */
+    void e }
 
   // Resolve global 1-indexed page to { svgPath } using target offsets if available.
   function resolvePageSvg(globalPage) {
@@ -223,7 +224,7 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
       const files = fs.readdirSync(docDir);
       const match = files.find(f => new RegExp(`-page-${unpadded}\\.svg$`).test(f));
       if (match) return path.join(docDir, match);
-    } catch { /* ignore */ }
+    } catch (e) { void e /* dir unreadable — no match */ }
     return null;
   }
 
