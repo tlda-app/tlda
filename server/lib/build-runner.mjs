@@ -1776,6 +1776,36 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
               } catch (lintErr) {
                 console.error(`[build:${name}] Passive lint failed:`, lintErr.message)
               }
+              // Lint: typography (grammar errors in display math)
+              try {
+                const { lintDiff: lintTypoDiff } = await import('./lint-typography.mjs')
+                const findings = lintTypoDiff(diffOutput, (file) => {
+                  try {
+                    return readFileSync(join(shadowDir, file), 'utf8')
+                  } catch { return null }
+                })
+                if (findings.length > 0) {
+                  const grouped = new Map()
+                  for (const f of findings) {
+                    if (!grouped.has(f.file)) grouped.set(f.file, [])
+                    grouped.get(f.file).push(f)
+                  }
+                  const lines = [`🔴 **Typography lint** — ${findings.length} grammar error(s) in this build:`]
+                  for (const [file, items] of grouped) {
+                    const detail = items.map((i) => `L${i.line}: \`${i.snippet}\``).join('; ')
+                    lines.push(`- \`${file}\`: ${detail}`)
+                  }
+                  lines.push('Comma before `\\qwhere`, `\\qfor`, or `\\qand` is always a grammar error — these are conjunctions, not list items.')
+                  emitGlobalEvent('build-chat', {
+                    name,
+                    hash: result.hash.slice(0, 7),
+                    text: lines.join('\n'),
+                  })
+                  console.log(`[build:${name}] Typography lint: ${findings.length} findings`)
+                }
+              } catch (lintErr) {
+                console.error(`[build:${name}] Typography lint failed:`, lintErr.message)
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
