@@ -186,8 +186,6 @@ The fleet daemon watches every agent's tool calls. When an agent tries to edit a
 
 Skill invocations (via the `Skill` tool) are tracked alongside file reads — you can require `"skill:partner-not-soloist"` as a prerequisite just like a file path.
 
-**Logs:** `~/.config/tlda/eliza.log` · **PID:** `~/.config/tlda/eliza.pid`
-
 ### Arranging the canvas
 
 Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
