@@ -401,7 +401,11 @@ export function connect() {
         notify('messages', event)
       } else if (eventType === 'event-update') {
         const ev = _events.find(e => e._dbId === data.id)
-        if (ev) { ev.text = data.text; notify('messages', null) }
+        if (ev) {
+          ev.text = data.text
+          if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+          notify('messages', null)
+        }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
         for (const ev of _events) {

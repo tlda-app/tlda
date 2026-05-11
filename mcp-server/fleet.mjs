@@ -36,7 +36,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
-import { uploadFileToServer } from './lib/chat-file-processing.mjs';
+import { processMessageText } from './lib/message-processing.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1518,71 +1518,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
 
     // Resolve file paths in message text → inline attachments.
-    //
-    // Skip's rule: backtick-quoted text is a "quote" and must NOT be
-    // chipified. That covers single-backtick inline spans and triple-
-    // backtick fenced code blocks. Mask both before running the path
-    // regex, restore after. Fences are masked first so inline spans
-    // inside a fence don't get stripped separately.
     const agentCwd = getAgentCwd();
-    let resolvedMessage = message;
-    const inlineAttachments = [];
-    if (agentCwd) {
-      const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd';
-      const pathRe = new RegExp(
-        `(?<![\\/\\w])(~?\\/[\\w.\\-\\/]+\\.(?:${PATH_EXT})|[\\w][\\w.\\-\\/]*\\.(?:${PATH_EXT}))(?!\\w)`,
-        'g'
-      );
-      // Mask out backtick-quoted regions so the path regex skips over them.
-      // SENTINEL uses \x00 which can't appear in agent-authored text.
-      const masked = [];
-      const maskToken = (kind, raw) => {
-        const i = masked.length;
-        masked.push(raw);
-        return `\x00${kind}${i}\x00`;
-      };
-      // 1. Triple-backtick fenced code blocks (may contain newlines)
-      let working = message.replace(/```[\s\S]*?```/g, (m) => maskToken('F', m));
-      // 2. Single-backtick inline spans (no newlines, non-empty interior)
-      working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m));
-
-      let attIdx = 0;
-      working = working.replace(pathRe, (match, filePath) => {
-        const expanded = filePath.replace(/^~\//, os.homedir() + '/');
-        if (expanded.startsWith('/')) {
-          if (fs.existsSync(expanded)) {
-            const id = attIdx++;
-            inlineAttachments.push({ type: 'file', id, path: expanded, name: path.basename(expanded) });
-            return `{{att:${id}}}`;
-          }
-          return match;
-        }
-        // Relative path — resolve against agent cwd
-        const abs = path.resolve(agentCwd, expanded);
-        if (fs.existsSync(abs)) {
-          const id = attIdx++;
-          inlineAttachments.push({ type: 'file', id, path: abs, name: path.basename(abs) });
-          return `{{att:${id}}}`;
-        }
-        return match;
-      });
-
-      // Restore masked regions (inline spans first, then fences — reverse of masking order)
-      working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i]);
-      working = working.replace(/\x00F(\d+)\x00/g, (_, i) => masked[+i]);
-      resolvedMessage = working;
-    }
-
-    // Upload file attachments to dashboard server so they're accessible via URL
     const dashPortUpload = process.env.FLEET_DASH_PORT || 5176;
-    for (const att of inlineAttachments) {
-      if (att.path && fs.existsSync(att.path)) {
-        try {
-          const { url } = await uploadFileToServer(att.path, `http://127.0.0.1:${dashPortUpload}`)
-          att.url = url
-        } catch {}
-      }
-    }
+    const { resolvedMessage, inlineAttachments } = await processMessageText(
+      message, agentCwd, `http://127.0.0.1:${dashPortUpload}`
+    );
 
     // Auto-attach ref metadata for «...» tokens in the message
     const refAttachments = [];

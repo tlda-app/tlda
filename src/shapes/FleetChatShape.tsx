@@ -17,7 +17,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
@@ -1909,24 +1909,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogRef.current
     if (!logEl) return
 
-    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
-
     function matchesUnquotePattern(text: string): boolean {
       if (!text || text.length > 500) return false
       if (/^https?:\/\/\S+/.test(text)) return true
       if (/^\/\S+/.test(text)) return true
       if (/^~\/\S+/.test(text)) return true
-      if (/^[\w.-]+(?:\/[\w.-]+)+\.md$/.test(text)) return true
       return false
     }
 
-    function isImagePath(text: string): boolean {
-      const ext = text.split('.').pop()?.toLowerCase() || ''
-      return IMAGE_EXTS.has(ext)
-    }
-
-    function isMarkdownPath(text: string): boolean {
-      return text.split('.').pop()?.toLowerCase() === 'md'
+    function isFilePath(text: string): boolean {
+      return text.startsWith('/') || text.startsWith('~/')
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {
@@ -1949,10 +1941,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        const { url, content } = await resp.json()
-        const rendered = isMarkdownPath(text) && content
-          ? renderMarkdownUtil(content)
-          : renderMarkdownUtil(esc(url || text))
+        const { resolvedMessage, inlineAttachments } = await resp.json()
+        const rendered = resolveInlineAttachments(resolvedMessage, inlineAttachments || [], renderMarkdownUtil)
         const wrapper = document.createElement('span')
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
@@ -1978,8 +1968,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.preventDefault()
       e.stopPropagation()
 
-      const needsTier2 = isImagePath(text) || isMarkdownPath(text)
-      if (needsTier2) {
+      if (isFilePath(text)) {
         const eventId = chatLine.dataset.msgId || ''
         const agentId = chatLine.dataset.msgFrom || ''
         applyTier2(codeEl, text, eventId, agentId)

@@ -743,23 +743,24 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/unquote-file ---
-  // Tier 2 unquote: daemon reads the file, uploads it, server patches event text and re-broadcasts.
+  // Tier 2 unquote: runs the text through the same path-detection + upload pipeline as chat(),
+  // patches the stored event, and re-broadcasts so all clients update in-place.
   // Body: { eventId, path, agentId }
   router.post('/api/unquote-file', async (req, res) => {
-    const { eventId, path: filePath, agentId } = req.body || {}
-    if (!eventId || !filePath || !agentId) {
+    const { eventId, path: rawText, agentId } = req.body || {}
+    if (!eventId || !rawText || !agentId) {
       return res.status(400).json({ error: 'eventId, path, and agentId required' })
     }
     const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
 
-    const route = resolveRpc('resolve-file', agent)
+    const route = resolveRpc('rechat', agent)
     if (route.via === 'none') return res.status(503).json({ ok: false, error: route.error })
 
     let result
     try {
-      result = await sendRpc(route.machine_id, 'resolve-file', {
-        path: filePath,
+      result = await sendRpc(route.machine_id, 'rechat', {
+        text: rawText,
         cwd: agent.cwd,
         server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
       })
@@ -767,34 +768,34 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return res.status(502).json({ ok: false, error: e.message })
     }
 
-    // Patch the event text: replace `filePath` (with or without backticks) with rendered form
-    const event = fleetStore.getEventById?.(parseInt(eventId, 10))
+    const { resolvedMessage, inlineAttachments } = result
+
+    // Patch the stored event: replace `rawText` (with or without backticks) in the text,
+    // and merge new inline_attachments into the event's metadata.
+    const evId = parseInt(eventId, 10)
+    const event = fleetStore.getEventById?.(evId)
     if (event && event.text) {
-      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(filePath)
-      const isMarkdown = /\.md$/i.test(filePath)
-      const fileName = path.basename(filePath)
-      const url = result.url || ''
-      const backtickForms = [`\`${filePath}\``, filePath]
+      const backtickForms = [`\`${rawText}\``, rawText]
       let newText = event.text
       for (const form of backtickForms) {
         if (newText.includes(form)) {
-          const replacement = isImage && url
-            ? `![${fileName}](${url})`
-            : isMarkdown && result.content
-              ? result.content
-              : url || filePath
-          newText = newText.replace(form, replacement)
+          newText = newText.replace(form, resolvedMessage)
           break
         }
       }
-      if (newText !== event.text) {
-        fleetStore.updateEventText(parseInt(eventId, 10), newText)
-        // Broadcast as event-update so clients patch in-place rather than deduplicating
-        broadcastEvent('event-update', { id: parseInt(eventId, 10), text: newText })
+      if (newText !== event.text || inlineAttachments?.length) {
+        // Merge new attachments into existing metadata
+        const existingMeta = event.metadata || {}
+        const existingAtts = existingMeta.inline_attachments || []
+        const mergedAtts = [...existingAtts, ...(inlineAttachments || [])]
+        const newMeta = { ...existingMeta, inline_attachments: mergedAtts }
+        fleetStore.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
+          .run(newText, JSON.stringify(newMeta), evId)
+        broadcastEvent('event-update', { id: evId, text: newText, inline_attachments: mergedAtts })
       }
     }
 
-    res.json({ ok: true, url: result.url, content: result.content || null })
+    res.json({ ok: true, resolvedMessage, inlineAttachments: inlineAttachments || [] })
   })
 
   // --- POST /api/fleet-event ---

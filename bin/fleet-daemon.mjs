@@ -59,6 +59,7 @@ import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
+import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
@@ -1223,10 +1224,12 @@ async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   const abs = resolveFilePath(filePath, cwd)
   if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
   const serverBase = server_url || `http://127.0.0.1:5176`
-  const result = await uploadFileToServer(abs, serverBase)
-  const ext = path.extname(abs).slice(1).toLowerCase()
-  if (ext === 'md') result.content = fs.readFileSync(abs, 'utf8')
-  return result
+  return await uploadFileToServer(abs, serverBase)
+}
+
+async function rpcRechat({ text, cwd, server_url }) {
+  const serverBase = server_url || `http://127.0.0.1:5176`
+  return await processMessageText(text, cwd, serverBase)
 }
 
 const RPC_HANDLERS = {
@@ -1242,6 +1245,7 @@ const RPC_HANDLERS = {
   'stop-terminal-watch': rpcStopTerminalWatch,
   'spawn': rpcSpawn,
   'resolve-file': rpcResolveFile,
+  'rechat': rpcRechat,
 }
 
 async function handleRpc(msg) {
