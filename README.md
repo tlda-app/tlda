@@ -204,6 +204,24 @@ Skill invocations (via the `Skill` tool) are tracked alongside file reads — yo
 | 2×Esc | Hard interrupt — sends a forceful interrupt signal |
 | 3×Esc | Kill session — tmux kill-session; agent dies immediately |
 
+### Searching chat history
+
+Click the magnifying glass in the toolbar, then click anywhere on the canvas to place a **fleet search shape**. It stays wherever you put it; click × to remove it. Type in the box to search the full fleet chat history — results render as complete chat lines with the same styling as the fleet chat view (colored nick chips, tool cards, rendered math).
+
+**Inline filters** (combine freely with text):
+
+| Filter | Example | What it matches |
+|--------|---------|-----------------|
+| `from:` | `from:skip` | Messages sent by that agent or user |
+| `agent:` | `agent:writer` | Messages involving that agent (sent or received) |
+| `before:` | `before:1d` | Messages older than 1 day (`2h`, `3w`, `today`, `yesterday`) |
+| `after:` | `after:today` | Messages newer than a time |
+| `role:` | `role:user` | Filter by message role |
+
+**↗ Jump to chat:** Each result has a ↗ button in the top corner. Clicking it overlays a live chat panel filtered to that agent — the search results blank out and a ← back button appears at the top. Click back to restore the search results.
+
+The shape also searches shared document titles, showing a "Docs" section above message results when there are matches.
+
 ### Arranging the canvas
 
 Fleet shapes (agent notes, chat panels, highlights) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with two presets: all shapes in the left margin, or shapes spread across both margins.
