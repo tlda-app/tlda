@@ -505,10 +505,7 @@ export function renderMarkdown(html, extraMacros) {
   })
 
   // Linkify bare URLs not already inside <a> tags
-  // Also convert <code>URL</code> into clickable links
-  result = result.replace(/<code>(https?:\/\/[^<]+)<\/code>/g, (_, url) => {
-    return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
-  })
+  // Backtick-quoted URLs (<code>https://...</code>) are intentionally left as code spans.
   // Bare URLs in text (not inside tags, not already linked)
   let _inTag = false
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
