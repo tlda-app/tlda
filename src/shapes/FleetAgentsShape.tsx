@@ -312,8 +312,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [showSpawnPicker, setShowSpawnPicker] = useState(false)
   useEffect(() => {
     if (!showSpawnPicker) return
-    fetch('/api/projects').then(r => r.ok ? r.json() : []).then(projects => {
-      setProjectList((projects as any[]).map((p: any) => p.name).sort())
+    fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
+      const projects = Array.isArray(data) ? data : (data.projects || [])
+      setProjectList(projects.map((p: any) => p.name).sort())
     }).catch(() => {})
   }, [showSpawnPicker])
 
@@ -481,7 +482,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   list="spawn-projects"
                 />
                 <datalist id="spawn-projects">
-                  {projectList.filter(p => !spawnDoc || p.toLowerCase().includes(spawnDoc.toLowerCase())).map(p =>
+                  {projectList.map(p =>
                     <option key={p} value={p} />
                   )}
                 </datalist>
