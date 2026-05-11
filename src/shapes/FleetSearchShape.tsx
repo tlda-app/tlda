@@ -240,7 +240,7 @@ function EmbeddedChatView({ agentFilter, scrollToTs, onBack }: {
   }, [renderedHtml, scrollToTs])
 
   return (
-    <div className="fleet-search-embedded-chat">
+    <div className="fleet-search-embedded-chat fleet-chat-shape">
       <div
         className="fleet-search-chat-back"
         onPointerDown={(e) => e.stopPropagation()}
