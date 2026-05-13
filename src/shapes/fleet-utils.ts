@@ -53,8 +53,18 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
     return tb - ta
   })
+  // Deduplicate by friendly_name — same agent can appear multiple times if they
+  // re-registered (new session = new DB row). First occurrence wins since sorted
+  // descending by last_seen, so we keep the most recently active entry.
+  const seenNames = new Set<string>()
+  const deduped = sorted.filter((a: any) => {
+    const name = a.friendly_name as string | undefined
+    if (!name || seenNames.has(name)) return false
+    seenNames.add(name)
+    return true
+  })
   const panelCount = variant === 'grid' ? 4 : variant === 'wide' ? 1 : 2
-  const topAgents = sorted.slice(0, panelCount)
+  const topAgents = deduped.slice(0, panelCount)
   const makeFilter = (i: number): [string, string][][] => {
     if (existingChatFilters[i]) return existingChatFilters[i]!
     const name = topAgents[i]?.friendly_name as string | undefined
