@@ -1074,7 +1074,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
 // POST /:name/input-scratch — inject a scratch .tex file into the document
 router.post('/:name/input-scratch', requireRw, (req, res) => {
-  const { content, label, after, before, replace } = req.body
+  const { content, label, after, before, replace, agentId, agentName } = req.body
   if (!content) return res.status(400).json({ error: 'content is required' })
   if (!label) return res.status(400).json({ error: 'label is required' })
   if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
@@ -1090,23 +1090,65 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
 
-  // Write (or overwrite) scratch file
-  writeSourceFile(req.params.name, scratchPath, content)
+  // Wrap content in scratch environment, signed with agent + timestamp
+  const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
+  const signer = agentName || agentId || 'agent'
+  const displayHeader = `${label} — ${signer} — ${timestamp}`
+  const wrappedContent = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
 
   if (replace) {
-    // Overwrite existing scratch section — no main.tex edit needed
-    runBuild(req.params.name).catch(() => {})
-    return res.json({ ok: true, file: scratchPath, action: 'replaced' })
+    // Overwrite existing scratch section — no main.tex edit needed; caller writes the file
+    return res.json({ ok: true, scratchPath, wrappedContent, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
   // Resolve location label to a line number in main.tex
   const locationLabel = after || before
   const mainLines = mainContent.split('\n')
 
+  // Environments treated as document-level containers — don't climb out of these
+  const TRANSPARENT_ENVS = new Set(['document', 'appendix'])
+
+  // Given a 0-indexed label line, scan backward to find an enclosing \begin{ENV},
+  // then forward to the matching \end{ENV}, and return the 1-indexed line after it.
+  // Falls back to labelLineIdx+1 (after label line) if no enclosing env is found.
+  function climbToEnvEnd(labelLineIdx) {
+    const openCounts = {}
+    for (let j = labelLineIdx - 1; j >= 0; j--) {
+      // Check for \end{ENV} first (going backward, ends precede their begins)
+      const endM = mainLines[j].match(/\\end\{([^}]+)\}/)
+      if (endM) {
+        const env = endM[1]
+        openCounts[env] = (openCounts[env] || 0) + 1
+        continue
+      }
+      const beginM = mainLines[j].match(/\\begin\{([^}]+)\}/)
+      if (beginM) {
+        const env = beginM[1]
+        if (TRANSPARENT_ENVS.has(env)) continue
+        if ((openCounts[env] || 0) > 0) {
+          openCounts[env]--  // this begin matches an end we already passed
+        } else {
+          // Unclosed \begin{env} at line j — the label is inside it; find the matching \end
+          let depth = 0
+          for (let k = j; k < mainLines.length; k++) {
+            if (mainLines[k].includes(`\\begin{${env}}`)) depth++
+            if (mainLines[k].includes(`\\end{${env}}`)) {
+              depth--
+              if (depth === 0) return k + 1  // 1-indexed: after \end{env}
+            }
+          }
+          break  // couldn't find matching \end — fall back
+        }
+      }
+    }
+    return labelLineIdx + 1  // no enclosing env, or couldn't close it — after label line
+  }
+
   function resolveLocation(locLabel) {
     // 1. Search main file for \label{X}
     for (let i = 0; i < mainLines.length; i++) {
-      if (mainLines[i].includes(`\\label{${locLabel}}`)) return i + 1
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return climbToEnvEnd(i)
     }
 
     // 2. Search included files; map back to the \input{} line in main
@@ -1143,17 +1185,75 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
   }
 
-  // Ensure \providecommand{\inputscratch} is defined in preamble
-  const hasCmd = newLines.some(l => l.includes('\\inputscratch') && (l.includes('\\providecommand') || l.includes('\\newcommand')))
-  if (!hasCmd) {
+  // Ensure scratch infrastructure is in preamble (xcolor + \inputscratch + scratch env)
+  const hasScratchDef = newLines.some(l => l.includes('\\newenvironment{scratch}') || l.includes('\\renewenvironment{scratch}'))
+  if (!hasScratchDef) {
     const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
-    newLines.splice(beginDocIdx >= 0 ? beginDocIdx : 0, 0, '\\providecommand{\\inputscratch}[1]{\\input{#1}}')
+    const insertAt = beginDocIdx >= 0 ? beginDocIdx : 0
+    newLines.splice(insertAt, 0,
+      '\\usepackage{xcolor}',
+      '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
+      '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
+    )
   }
 
-  writeSourceFile(req.params.name, project.mainFile, newLines.join('\n'))
-  runBuild(req.params.name).catch(() => {})
+  // Return content for the caller to write locally — watcher syncs to server and triggers build
+  res.json({
+    ok: true,
+    scratchPath,
+    wrappedContent,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    sourceDir: project.sourceDir || null,
+    insertedAt: resolvedLine,
+    action: after ? 'inserted-after' : 'inserted-before',
+  })
+})
 
-  res.json({ ok: true, file: scratchPath, insertedAt: resolvedLine, action: after ? 'inserted-after' : 'inserted-before' })
+// POST /:name/inline-scratch — promote a polished scratch section into the document
+// Strips the scratch wrapper and replaces \inputscratch{} with the bare content in main.tex.
+router.post('/:name/inline-scratch', requireRw, (req, res) => {
+  const { label } = req.body
+  if (!label) return res.status(400).json({ error: 'label is required' })
+
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile' })
+
+  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+
+  const scratchContent = readSourceFile(req.params.name, scratchPath)
+  if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
+
+  // Strip \begin{scratch}{label}{header} and \end{scratch} wrapper, keep inner content
+  const scratchLines = scratchContent.split('\n')
+  let innerLines = scratchLines
+  if (innerLines[0] && /^\\begin\{scratch\}/.test(innerLines[0])) innerLines = innerLines.slice(1)
+  const endIdx = innerLines.lastIndexOf('\\end{scratch}')
+  if (endIdx >= 0) innerLines = innerLines.slice(0, endIdx)
+  while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
+
+  // Replace \inputscratch{scratchPath} line in main.tex with the bare content
+  const mainLines = mainContent.split('\n')
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch{${scratchPath}}`))
+  if (scratchLineIdx < 0) {
+    return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
+  }
+
+  const newLines = [...mainLines]
+  newLines.splice(scratchLineIdx, 1, ...innerLines)
+
+  res.json({
+    ok: true,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    scratchPath,
+    sourceDir: project.sourceDir || null,
+  })
 })
 
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps
