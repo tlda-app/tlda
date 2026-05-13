@@ -2127,6 +2127,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'inline_scratch',
+      description: 'Promote a polished scratch section into the document proper. Strips the \\begin{scratch}...\\end{scratch} wrapper and replaces the \\inputscratch{} line in main.tex with the bare content. Use this when a scratch section is ready to become real document content.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          label: { type: 'string', description: 'Label of the scratch section to inline (same label used when it was created with input_scratch)' },
+        },
+        required: ['doc', 'label'],
+      },
+    },
+    {
       name: 'set_preamble',
       description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
       inputSchema: {
@@ -3570,6 +3582,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
       return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'inline_scratch') {
+    const { doc, label } = args;
+    if (!doc || !label) {
+      return { content: [{ type: 'text', text: 'doc and label are required.' }], isError: true };
+    }
+    try {
+      const result = await serverFetch(`/api/projects/${doc}/inline-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+      const { mainFile, mainContent, scratchPath, sourceDir } = result;
+      if (!sourceDir) {
+        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first.` }], isError: true };
+      }
+      fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
+      const scratchAbsPath = path.join(sourceDir, scratchPath);
+      try { fs.unlinkSync(scratchAbsPath); } catch {}
+      return { content: [{ type: 'text', text: `Inlined "${label}" into ${path.join(sourceDir, mainFile)} and removed ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

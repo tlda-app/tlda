@@ -1210,6 +1210,52 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   })
 })
 
+// POST /:name/inline-scratch — promote a polished scratch section into the document
+// Strips the scratch wrapper and replaces \inputscratch{} with the bare content in main.tex.
+router.post('/:name/inline-scratch', requireRw, (req, res) => {
+  const { label } = req.body
+  if (!label) return res.status(400).json({ error: 'label is required' })
+
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile' })
+
+  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+
+  const scratchContent = readSourceFile(req.params.name, scratchPath)
+  if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
+
+  // Strip \begin{scratch}{label}{header} and \end{scratch} wrapper, keep inner content
+  const scratchLines = scratchContent.split('\n')
+  let innerLines = scratchLines
+  if (innerLines[0] && /^\\begin\{scratch\}/.test(innerLines[0])) innerLines = innerLines.slice(1)
+  const endIdx = innerLines.lastIndexOf('\\end{scratch}')
+  if (endIdx >= 0) innerLines = innerLines.slice(0, endIdx)
+  while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
+
+  // Replace \inputscratch{scratchPath} line in main.tex with the bare content
+  const mainLines = mainContent.split('\n')
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch{${scratchPath}}`))
+  if (scratchLineIdx < 0) {
+    return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
+  }
+
+  const newLines = [...mainLines]
+  newLines.splice(scratchLineIdx, 1, ...innerLines)
+
+  res.json({
+    ok: true,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    scratchPath,
+    sourceDir: project.sourceDir || null,
+  })
+})
+
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps
 router.get('/:name/shadow/log', requireRead, async (req, res) => {
   const { execSync } = await import('child_process')
