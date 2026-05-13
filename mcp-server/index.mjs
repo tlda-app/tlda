@@ -2111,6 +2111,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'input_scratch',
+      description: 'Inject a scratch LaTeX section into a document without editing the author\'s main file directly. Write your .tex content to a local file first, then call this tool. It stores the content in .scratchinputs/ and inserts an \\inputscratch{} call into main.tex at the specified location, then triggers a rebuild.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content' },
+          label: { type: 'string', description: 'Label for this scratch section (e.g. "scratch:thm-bias"). Derives the stored filename.' },
+          after: { type: 'string', description: 'Insert after this label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
+          before: { type: 'string', description: 'Insert before this label or "line:N". Exclusive with after/replace.' },
+          replace: { type: 'string', description: 'Label of an existing scratch section to overwrite. Replaces content only — no new insertion into main.tex. Exclusive with after/before.' },
+        },
+        required: ['doc', 'content_path', 'label'],
+      },
+    },
+    {
       name: 'set_preamble',
       description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
       inputSchema: {
@@ -3514,6 +3530,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `lookup_theorem error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'input_scratch') {
+    const { doc, content_path, label, after, before, replace } = args;
+    if (!doc || !content_path || !label) {
+      return { content: [{ type: 'text', text: 'doc, content_path, and label are required.' }], isError: true };
+    }
+    if (!after && !before && !replace) {
+      return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
+    }
+    const resolved = path.resolve(content_path);
+    let content;
+    try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
+    }
+    try {
+      const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, label, after, before, replace }),
+      });
+      if (result.action === 'replaced') {
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" → ${result.file}. Build triggered.` }] };
+      }
+      const loc = after ? `after "${after}"` : `before "${before}"`;
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" → ${result.file} (${loc}). Build triggered.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 

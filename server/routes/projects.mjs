@@ -1072,6 +1072,90 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
   }
 })
 
+// POST /:name/input-scratch — inject a scratch .tex file into the document
+router.post('/:name/input-scratch', requireRw, (req, res) => {
+  const { content, label, after, before, replace } = req.body
+  if (!content) return res.status(400).json({ error: 'content is required' })
+  if (!label) return res.status(400).json({ error: 'label is required' })
+  if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
+
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile (book format not supported)' })
+
+  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+
+  // Derive scratch filename from label
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+
+  // Write (or overwrite) scratch file
+  writeSourceFile(req.params.name, scratchPath, content)
+
+  if (replace) {
+    // Overwrite existing scratch section — no main.tex edit needed
+    runBuild(req.params.name).catch(() => {})
+    return res.json({ ok: true, file: scratchPath, action: 'replaced' })
+  }
+
+  // Resolve location label to a line number in main.tex
+  const locationLabel = after || before
+  const mainLines = mainContent.split('\n')
+
+  function resolveLocation(locLabel) {
+    // 1. Search main file for \label{X}
+    for (let i = 0; i < mainLines.length; i++) {
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return i + 1
+    }
+
+    // 2. Search included files; map back to the \input{} line in main
+    for (const file of listSourceFiles(req.params.name)) {
+      if (file === project.mainFile) continue
+      const fc = readSourceFile(req.params.name, file)
+      if (!fc || !fc.includes(`\\label{${locLabel}}`)) continue
+      const baseName = file.replace(/\.tex$/, '')
+      for (let i = 0; i < mainLines.length; i++) {
+        if (new RegExp(`\\\\(?:input|include)\\{${baseName}(?:\\.tex)?\\}`).test(mainLines[i])) return i + 1
+      }
+    }
+
+    // 3. Fall back to line:N magic label
+    const lineMatch = locLabel.match(/^line:(\d+)$/)
+    if (lineMatch) return parseInt(lineMatch[1])
+
+    return null
+  }
+
+  const resolvedLine = resolveLocation(locationLabel)
+  if (resolvedLine === null) {
+    return res.status(400).json({
+      error: `Cannot resolve location "${locationLabel}": not a label in the document, and not in line:N format`,
+    })
+  }
+
+  // Insert \inputscratch{} into main.tex
+  const newLines = [...mainLines]
+  const insertLine = `\\inputscratch{${scratchPath}}`
+  if (after) {
+    newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
+  } else {
+    newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
+  }
+
+  // Ensure \providecommand{\inputscratch} is defined in preamble
+  const hasCmd = newLines.some(l => l.includes('\\inputscratch') && (l.includes('\\providecommand') || l.includes('\\newcommand')))
+  if (!hasCmd) {
+    const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
+    newLines.splice(beginDocIdx >= 0 ? beginDocIdx : 0, 0, '\\providecommand{\\inputscratch}[1]{\\input{#1}}')
+  }
+
+  writeSourceFile(req.params.name, project.mainFile, newLines.join('\n'))
+  runBuild(req.params.name).catch(() => {})
+
+  res.json({ ok: true, file: scratchPath, insertedAt: resolvedLine, action: after ? 'inserted-after' : 'inserted-before' })
+})
+
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps
 router.get('/:name/shadow/log', requireRead, async (req, res) => {
   const { execSync } = await import('child_process')
