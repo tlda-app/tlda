@@ -1185,16 +1185,31 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
   }
 
-  // Ensure scratch infrastructure is in preamble (xcolor + \inputscratch + scratch env)
-  const hasScratchDef = newLines.some(l => l.includes('\\newenvironment{scratch}') || l.includes('\\renewenvironment{scratch}'))
-  if (!hasScratchDef) {
+  // Canonical scratch template — defines the scratch environment and helpers.
+  // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
+  const scratchTemplatePath = '.scratchinputs/scratch-template.tex'
+  const scratchTemplateContent = [
+    '\\usepackage{xcolor}',
+    '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
+    '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
+    '',
+  ].join('\n')
+
+  // Ensure preamble references the scratch template file.
+  // Remove any old inline scratch defs (from before the template-file design) and replace with \input.
+  const templateInputLine = `\\input{${scratchTemplatePath.replace(/\.tex$/, '')}}`
+  const hasTemplateInput = newLines.some(l => l.includes(templateInputLine))
+  if (!hasTemplateInput) {
+    // Remove old inline lines if present
+    const oldScratchLines = ['\\usepackage{xcolor}', '\\providecommand{\\inputscratch}', '\\newenvironment{scratch}', '\\renewenvironment{scratch}']
+    for (let i = newLines.length - 1; i >= 0; i--) {
+      if (oldScratchLines.some(prefix => newLines[i].trimStart().startsWith(prefix))) {
+        newLines.splice(i, 1)
+      }
+    }
     const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
     const insertAt = beginDocIdx >= 0 ? beginDocIdx : 0
-    newLines.splice(insertAt, 0,
-      '\\usepackage{xcolor}',
-      '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
-      '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
-    )
+    newLines.splice(insertAt, 0, templateInputLine)
   }
 
   // Return content for the caller to write locally — watcher syncs to server and triggers build
@@ -1202,6 +1217,8 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     ok: true,
     scratchPath,
     wrappedContent,
+    scratchTemplatePath,
+    scratchTemplateContent,
     mainFile: project.mainFile,
     mainContent: newLines.join('\n'),
     sourceDir: project.sourceDir || null,

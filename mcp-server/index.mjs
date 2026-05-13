@@ -3566,13 +3566,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, label, after, before, replace, agentId, agentName }),
       });
-      const { scratchPath, wrappedContent, mainFile, mainContent, sourceDir } = result;
+      const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, sourceDir } = result;
       if (!sourceDir) {
         return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first so the server knows the local project path.` }], isError: true };
       }
       // Write files to the local source directory; the watcher will push them and trigger the build
+      const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
+      fs.mkdirSync(scratchDir, { recursive: true });
+      // Always write the canonical template (tool-owned; watcher will sync)
+      if (scratchTemplatePath && scratchTemplateContent) {
+        fs.writeFileSync(path.join(sourceDir, scratchTemplatePath), scratchTemplateContent, 'utf8');
+      }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      fs.mkdirSync(path.dirname(scratchAbsPath), { recursive: true });
       fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
