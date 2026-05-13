@@ -3604,7 +3604,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      try { fs.unlinkSync(scratchAbsPath); } catch {}
+      try { fs.unlinkSync(scratchAbsPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
       return { content: [{ type: 'text', text: `Inlined "${label}" into ${path.join(sourceDir, mainFile)} and removed ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
