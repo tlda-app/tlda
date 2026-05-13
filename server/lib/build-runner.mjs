@@ -1719,7 +1719,18 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             // the index but leaves the working tree untouched (preserves any
             // uncommitted edits). Uses result.hash directly (not FETCH_HEAD) so
             // the reset targets the exact commit we just committed.
-            execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+            try {
+              execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+            } catch (fetchErr) {
+              // Stale remote ref lock (concurrent builds or prior failed fetch).
+              // Prune and retry once; if it fails again, rethrow.
+              if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
+                execSync(`git remote prune tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+                execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+              } else {
+                throw fetchErr
+              }
+            }
             execSync(`git reset --mixed ${result.hash}`, { cwd, stdio: 'pipe', timeout: 10000 })
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
