@@ -14,19 +14,22 @@ export function IdentityPicker() {
   const [autoIdentified, setAutoIdentified] = useState(false)
   const [mode, setMode] = useState<'login' | 'register'>('login')
 
-  // Auto-login from ?name= query param (agents opening browsers for testing)
+  // Auto-login from ?name= query param, or in dev mode use a default (no modal in dev)
   if (needsIdentity && !autoIdentified) {
     const urlName = new URLSearchParams(window.location.search).get('name')
-    if (urlName) {
-      const trimmed = urlName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
-      if (trimmed) {
-        setAutoIdentified(true)
-        login(trimmed).catch(() => {
-          // Login failed — agent not registered. Just show nothing, no ghost created.
+    const devFallback = import.meta.env.DEV ? 'dev' : null
+    const targetName = urlName?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || devFallback
+    if (targetName) {
+      setAutoIdentified(true)
+      login(targetName).catch(() => {
+        if (import.meta.env.DEV) {
+          // In dev mode, register if login fails (fresh environment)
+          register(targetName).catch(() => setAutoIdentified(false))
+        } else {
           setAutoIdentified(false)
-        })
-        return null
-      }
+        }
+      })
+      return null
     }
   }
 

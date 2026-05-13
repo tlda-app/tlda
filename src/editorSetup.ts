@@ -13,6 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
+import { processRibbonHighlight, isInRibbonZone } from './ribbonInteraction'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -630,6 +631,11 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           const bounds = editor.getShapePageBounds(shape.id as any)
           if (!bounds || bounds.width < 5) {
             setTimeout(checkSnap, 200)
+            return
+          }
+          // Ribbon zone: highlight drawn in left margin → update understanding lines
+          if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
+            processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
           snapHighlighterToText(editor, shape.id, document.name, document.targets)
