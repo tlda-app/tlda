@@ -1091,7 +1091,8 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const scratchPath = `.scratchinputs/${filename}`
 
   // Wrap content in scratch environment (server-side), signed with agent + timestamp
-  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16) + 'Z'
+  const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
   const signer = agentName || agentId || 'agent'
   const displayHeader = `${label} — ${signer} — ${timestamp}`
   const wrapped = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
