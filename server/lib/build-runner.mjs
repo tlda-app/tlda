@@ -156,6 +156,10 @@ function loadPageHashes(outDir) {
 // Active builds tracked in memory
 const activeBuilds = new Map()
 
+// Monotonic version counter per doc. Incremented when a build starts.
+// The mirror callback captures its version and skips if superseded.
+const buildVersion = new Map()
+
 export function getBuildStatus(name) {
   return activeBuilds.get(name) || null
 }
@@ -1379,6 +1383,19 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
     renameSync(shadowDir, shadowDir + '-pre-init-' + ts)
   }
   await initShadowFromProjectRepo(name, sourceDir, scope)
+  // The re-init created a new git history. Clean up stale shadow/* tags from the
+  // working copy — they pointed at the old history and would cause `git fetch --tags`
+  // to fail on the next build (git refuses to overwrite tags without --force).
+  try {
+    const stale = execSync(`git tag -l "shadow/*"`, { cwd: sourceDir, encoding: 'utf8', timeout: 5000 }).trim()
+    if (stale) {
+      const tagList = stale.split('\n').filter(Boolean)
+      execSync(`git tag -d ${tagList.map(t => `"${t}"`).join(' ')}`, { cwd: sourceDir, stdio: 'pipe', timeout: 5000 })
+      console.log(`[build:${name}] cleared ${tagList.length} stale shadow/* tags from working copy after bootstrap`)
+    }
+  } catch (e) {
+    console.warn(`[build:${name}] failed to clear stale shadow tags: ${e.message}`)
+  }
 }
 
 // ─── Exported helpers ────────────────────────────────────────────────────────
@@ -1422,6 +1439,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     existing.building = false
     existing.phase = 'cancelled'
   }
+
+  // Increment version so any in-flight mirror callbacks from previous builds
+  // can detect they've been superseded and skip.
+  const myVersion = (buildVersion.get(name) || 0) + 1
+  buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
   try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch {}
@@ -1660,6 +1682,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     })
 
     // Commit source snapshot to shadow repo (non-blocking)
+    const snapshotVersion = myVersion
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
@@ -1674,6 +1697,8 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         // that). We update the working copy's master ref + index to match
         // shadow's HEAD without touching the working tree, so any uncommitted
         // edits survive and show as "modified" relative to the new master.
+        // Skip mirror if a newer build has already started — its callback will mirror.
+        if (buildVersion.get(name) !== snapshotVersion) return
         try {
           const project = readProject(name)
           if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
@@ -1691,13 +1716,32 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             // Fetch shadow's history into the working copy, then move the
             // working copy's current branch to shadow's HEAD. --mixed updates
             // the index but leaves the working tree untouched (preserves any
-            // uncommitted edits). FETCH_HEAD is branch-name-agnostic, so this
-            // works whether the shadow's default branch is "main" or "master".
+            // uncommitted edits). Uses result.hash directly (not FETCH_HEAD) so
+            // the reset targets the exact commit we just committed.
             execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
-            execSync(`git reset --mixed FETCH_HEAD`, { cwd, stdio: 'pipe', timeout: 10000 })
+            execSync(`git reset --mixed ${result.hash}`, { cwd, stdio: 'pipe', timeout: 10000 })
+            updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
         } catch (mirrorErr) {
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+          // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
+          // window to edits that happened after the last clean mirror.
+          const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
+          // Include build file list so the handler matches edits to actual build files.
+          let buildFiles = null
+          try {
+            const relPath = join(projDir, 'output', 'relevant-files.json')
+            buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
+          } catch {}
+          emitGlobalEvent('build-card', {
+            name,
+            hash: result.hash.slice(0, 7),
+            summary: null,
+            lintFindings: [],
+            mirrorFailed: mirrorErr.message,
+            lastMirrorSuccess,
+            buildFiles,
+          })
         }
         // Build change summary: diff against previous shadow commit
         try {
