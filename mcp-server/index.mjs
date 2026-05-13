@@ -2112,16 +2112,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch LaTeX section into a document without editing the author\'s main file directly. Write your .tex content to a local file first, then call this tool. It stores the content in .scratchinputs/ and inserts an \\inputscratch{} call into main.tex at the specified location, then triggers a rebuild.',
+      description: 'Inject a scratch LaTeX section into a document at a specific location. Write plain LaTeX to a local file (no wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically). The scratch env renders in dark gray with the label visible at the top, so it is visually distinct from the main document. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content' },
-          label: { type: 'string', description: 'Label for this scratch section (e.g. "scratch:thm-bias"). Derives the stored filename.' },
-          after: { type: 'string', description: 'Insert after this label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
-          before: { type: 'string', description: 'Insert before this label or "line:N". Exclusive with after/replace.' },
-          replace: { type: 'string', description: 'Label of an existing scratch section to overwrite. Replaces content only — no new insertion into main.tex. Exclusive with after/before.' },
+          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper)' },
+          label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
+          after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
+          before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
+          replace: { type: 'string', description: 'Label of an existing scratch section to overwrite in-place. Content is replaced; the \\inputscratch{} in main.tex stays. Exclusive with after/before.' },
         },
         required: ['doc', 'content_path', 'label'],
       },
