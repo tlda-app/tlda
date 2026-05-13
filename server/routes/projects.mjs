@@ -1074,7 +1074,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
 // POST /:name/input-scratch — inject a scratch .tex file into the document
 router.post('/:name/input-scratch', requireRw, (req, res) => {
-  const { content, label, after, before, replace, agentId } = req.body
+  const { content, label, after, before, replace, agentId, agentName } = req.body
   if (!content) return res.status(400).json({ error: 'content is required' })
   if (!label) return res.status(400).json({ error: 'label is required' })
   if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
@@ -1090,8 +1090,11 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
 
-  // Wrap content in scratch environment (server-side)
-  const wrapped = `\\begin{scratch}{${label}}\n${content}\n\\end{scratch}\n`
+  // Wrap content in scratch environment (server-side), signed with agent + timestamp
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16) + 'Z'
+  const signer = agentName || agentId || 'agent'
+  const displayHeader = `${label} — ${signer} — ${timestamp}`
+  const wrapped = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
   writeSourceFile(req.params.name, scratchPath, wrapped)
 
   // Helper: trigger build and notify calling agent on LaTeX errors
@@ -1165,7 +1168,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     newLines.splice(insertAt, 0,
       '\\usepackage{xcolor}',
       '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
-      '\\newenvironment{scratch}[1]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#1]}\\par\\label{#1}}{\\endgroup\\par}',
+      '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
     )
   }
 
