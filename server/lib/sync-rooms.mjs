@@ -259,6 +259,7 @@ const customShapeSchemas = {
       h: T.number,
       commitHash: T.string,
       timestamp: T.number,
+      buildReadyAt: T.number,
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',

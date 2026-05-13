@@ -1967,17 +1967,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     function applyTierLabel(codeEl: HTMLElement, text: string) {
-      const info = labelRegionsRef.current[text]
-      if (!info) { applyTier1(codeEl, text); return }
-      const span = document.createElement('span')
-      span.className = 'doc-link'
-      span.dataset.refType = 'label'
-      span.dataset.refLabel = text
-      span.dataset.refPage = String(info.page)
-      span.dataset.refYTop = String(info.yTop)
-      span.dataset.refYBottom = String(info.yBottom)
-      span.textContent = info.displayLabel || text
-      codeEl.replaceWith(span)
+      const html = linkifyLabelRefs(text, labelRegionsRef.current)
+      const wrapper = document.createElement('span')
+      wrapper.innerHTML = html
+      codeEl.replaceWith(...Array.from(wrapper.childNodes))
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {

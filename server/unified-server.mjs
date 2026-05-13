@@ -328,18 +328,23 @@ onGlobalEvent((event) => {
     broadcastDaemonVersionCommitted(event.name, event.hash)
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    // Send a single compact build card to agents monitoring this doc (via monitor_add)
-    const subs = tldaFeedback.subscribers(event.name)
-    const { name: docName, hash, summary, lintFindings = [] } = event
-    const text = `Build ${hash} — ${docName}`
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, buildFiles } = event
+    const text = mirrorFailed
+      ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
+      : `Build ${hash} — ${docName}`
+    const metadata = { type: 'build_result', name: docName, hash, summary: summary || null, lintFindings, mirrorFailed: mirrorFailed || null }
+
+    // Notify monitoring subscribers
+    const subs = new Set(tldaFeedback.subscribers(docName))
+
+    // For mirror failures, also notify agents who used editor tools on the build files
+    // since the last successful mirror — those are the agents who could be responsible.
+    if (mirrorFailed && buildFiles?.length && lastMirrorSuccess) {
+      for (const id of fleetStore.recentDocAgents(buildFiles, lastMirrorSuccess)) subs.add(id)
+    }
+
     for (const agentId of subs) {
-      fleetStore.chat('fleet:tlda', agentId, text, {
-        type: 'build_result',
-        name: docName,
-        hash,
-        summary: summary || null,
-        lintFindings,
-      })
+      fleetStore.chat('fleet:tlda', agentId, text, metadata)
     }
   }
 })

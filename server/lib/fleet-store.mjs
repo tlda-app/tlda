@@ -862,6 +862,28 @@ export class FleetStore {
     return rows;
   }
 
+  // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in
+  // `buildFiles` (array of absolute paths) since `since` (ISO timestamp).
+  // Used to notify agents who might be responsible for a mirror failure — only agents
+  // whose edits postdate the last successful mirror can be at fault.
+  recentDocAgents(buildFiles, since) {
+    if (!buildFiles?.length || !since) return []
+    try {
+      const placeholders = buildFiles.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT DISTINCT from_id as id FROM events
+        WHERE type = 'activity'
+          AND timestamp > ?
+          AND text IN ('Edit', 'Write', 'NotebookEdit')
+          AND json_extract(metadata, '$.arg') IN (${placeholders})
+          AND from_id IS NOT NULL AND from_id != 'fleet:skip'
+      `).all(since, ...buildFiles)
+      return rows.map(r => r.id)
+    } catch {
+      return []
+    }
+  }
+
   markRead(agentId) {
     // Return event IDs that were marked read (for read-receipt broadcast)
     const ids = this.db.prepare(`SELECT event_id FROM unread WHERE to_id = ? AND read = 0`).all(agentId).map(r => r.event_id);
