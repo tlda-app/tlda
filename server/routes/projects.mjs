@@ -1074,7 +1074,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
 // POST /:name/input-scratch — inject a scratch .tex file into the document
 router.post('/:name/input-scratch', requireRw, (req, res) => {
-  const { content, label, after, before, replace } = req.body
+  const { content, label, after, before, replace, agentId } = req.body
   if (!content) return res.status(400).json({ error: 'content is required' })
   if (!label) return res.status(400).json({ error: 'label is required' })
   if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
@@ -1090,12 +1090,26 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
 
-  // Write (or overwrite) scratch file
-  writeSourceFile(req.params.name, scratchPath, content)
+  // Wrap content in scratch environment (server-side)
+  const wrapped = `\\begin{scratch}{${label}}\n${content}\n\\end{scratch}\n`
+  writeSourceFile(req.params.name, scratchPath, wrapped)
+
+  // Helper: trigger build and notify calling agent on LaTeX errors
+  const triggerBuild = (name) => {
+    runBuild(name).then(() => {
+      if (!agentId) return
+      const { errors } = extractBuildErrors(name)
+      if (errors.length > 0) {
+        emitGlobalEvent('scratch-build-failed', { doc: name, agentId, label, errors: errors.map(e => e.message) })
+      }
+    }).catch(e => {
+      if (agentId) emitGlobalEvent('scratch-build-failed', { doc: name, agentId, label, errors: [e.message] })
+    })
+  }
 
   if (replace) {
     // Overwrite existing scratch section — no main.tex edit needed
-    runBuild(req.params.name).catch(() => {})
+    triggerBuild(req.params.name)
     return res.json({ ok: true, file: scratchPath, action: 'replaced' })
   }
 
@@ -1143,15 +1157,20 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
   }
 
-  // Ensure \providecommand{\inputscratch} is defined in preamble
-  const hasCmd = newLines.some(l => l.includes('\\inputscratch') && (l.includes('\\providecommand') || l.includes('\\newcommand')))
-  if (!hasCmd) {
+  // Ensure scratch infrastructure is in preamble (xcolor + \inputscratch + scratch env)
+  const hasScratchDef = newLines.some(l => l.includes('\\newenvironment{scratch}') || l.includes('\\renewenvironment{scratch}'))
+  if (!hasScratchDef) {
     const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
-    newLines.splice(beginDocIdx >= 0 ? beginDocIdx : 0, 0, '\\providecommand{\\inputscratch}[1]{\\input{#1}}')
+    const insertAt = beginDocIdx >= 0 ? beginDocIdx : 0
+    newLines.splice(insertAt, 0,
+      '\\usepackage{xcolor}',
+      '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
+      '\\newenvironment{scratch}[1]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#1]}\\par\\label{#1}}{\\endgroup\\par}',
+    )
   }
 
   writeSourceFile(req.params.name, project.mainFile, newLines.join('\n'))
-  runBuild(req.params.name).catch(() => {})
+  triggerBuild(req.params.name)
 
   res.json({ ok: true, file: scratchPath, insertedAt: resolvedLine, action: after ? 'inserted-after' : 'inserted-before' })
 })

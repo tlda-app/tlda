@@ -3547,10 +3547,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
     }
     try {
+      const agentId = process.env.FLEET_ID || null;
       const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, label, after, before, replace }),
+        body: JSON.stringify({ content, label, after, before, replace, agentId }),
       });
       if (result.action === 'replaced') {
         return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" → ${result.file}. Build triggered.` }] };

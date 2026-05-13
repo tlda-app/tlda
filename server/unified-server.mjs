@@ -347,6 +347,12 @@ onGlobalEvent((event) => {
       fleetStore.chat('fleet:tlda', agentId, text, metadata)
     }
   }
+  if (event?.type === 'scratch-build-failed' && fleetStore && event.agentId) {
+    const { doc, agentId, label, errors = [] } = event
+    const errorList = errors.map(e => `  • ${e}`).join('\n')
+    const text = `**Scratch build failed** — \`${label}\` in ${doc}\n\n${errorList}`
+    fleetStore.chat('fleet:tlda', agentId, text, { type: 'scratch_build_failed', doc, label })
+  }
 })
 
 // ---------- RPC routing ----------
