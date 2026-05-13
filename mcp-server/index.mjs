@@ -3573,9 +3573,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Write files to the local source directory; the watcher will push them and trigger the build
       const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
       fs.mkdirSync(scratchDir, { recursive: true });
-      // Always write the canonical template (tool-owned; watcher will sync)
+      // Check/write template file. Version-tagged files are tool-managed; untagged files are user-customized.
       if (scratchTemplatePath && scratchTemplateContent) {
-        fs.writeFileSync(path.join(sourceDir, scratchTemplatePath), scratchTemplateContent, 'utf8');
+        const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
+        let writeTemplate = true;
+        if (fs.existsSync(templateAbsPath)) {
+          const existing = fs.readFileSync(templateAbsPath, 'utf8');
+          const versionMatch = existing.match(/% scratch-template-version: (\d+)/);
+          if (!versionMatch) {
+            writeTemplate = false; // user-customized — leave it alone
+          } else {
+            const existingVersion = parseInt(versionMatch[1]);
+            if (existingVersion === result.scratchTemplateVersion) {
+              writeTemplate = false; // already current
+            } else {
+              // Version mismatch — default changed; surface error instead of overwriting
+              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. The default template has changed. Review the new default, reconcile your template, and update the version tag.` }], isError: true };
+            }
+          }
+        }
+        if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
       fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
