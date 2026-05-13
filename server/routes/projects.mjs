@@ -1121,10 +1121,49 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const locationLabel = after || before
   const mainLines = mainContent.split('\n')
 
+  // Environments treated as document-level containers — don't climb out of these
+  const TRANSPARENT_ENVS = new Set(['document', 'appendix'])
+
+  // Given a 0-indexed label line, scan backward to find an enclosing \begin{ENV},
+  // then forward to the matching \end{ENV}, and return the 1-indexed line after it.
+  // Falls back to labelLineIdx+1 (after label line) if no enclosing env is found.
+  function climbToEnvEnd(labelLineIdx) {
+    const openCounts = {}
+    for (let j = labelLineIdx - 1; j >= 0; j--) {
+      // Check for \end{ENV} first (going backward, ends precede their begins)
+      const endM = mainLines[j].match(/\\end\{([^}]+)\}/)
+      if (endM) {
+        const env = endM[1]
+        openCounts[env] = (openCounts[env] || 0) + 1
+        continue
+      }
+      const beginM = mainLines[j].match(/\\begin\{([^}]+)\}/)
+      if (beginM) {
+        const env = beginM[1]
+        if (TRANSPARENT_ENVS.has(env)) continue
+        if ((openCounts[env] || 0) > 0) {
+          openCounts[env]--  // this begin matches an end we already passed
+        } else {
+          // Unclosed \begin{env} at line j — the label is inside it; find the matching \end
+          let depth = 0
+          for (let k = j; k < mainLines.length; k++) {
+            if (mainLines[k].includes(`\\begin{${env}}`)) depth++
+            if (mainLines[k].includes(`\\end{${env}}`)) {
+              depth--
+              if (depth === 0) return k + 1  // 1-indexed: after \end{env}
+            }
+          }
+          break  // couldn't find matching \end — fall back
+        }
+      }
+    }
+    return labelLineIdx + 1  // no enclosing env, or couldn't close it — after label line
+  }
+
   function resolveLocation(locLabel) {
     // 1. Search main file for \label{X}
     for (let i = 0; i < mainLines.length; i++) {
-      if (mainLines[i].includes(`\\label{${locLabel}}`)) return i + 1
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return climbToEnvEnd(i)
     }
 
     // 2. Search included files; map back to the \input{} line in main
