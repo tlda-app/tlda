@@ -788,6 +788,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
@@ -2703,6 +2704,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const params = { agent: agentId, limit: pageSize };
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.until = resolvedUntil;
+      if (args.types?.length) params.event_types = args.types;
       const data = await sendWS('store-events', params);
       if (!data) return;
       serverTotal = data.total ?? null;

@@ -1847,13 +1847,20 @@ async function handleFleetWsMessage(ws, msg) {
     const limit = Math.min(parseInt(msg.limit || '200'), 5000)
     const evtAgent = msg.agent || null
     const evtType = msg.event_type || null
+    // event_types (array) takes precedence over event_type (single)
+    const evtTypes = Array.isArray(msg.event_types) && msg.event_types.length ? msg.event_types : evtType ? [evtType] : null
     try {
       let events
       let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
-        const where = '(from_id = ? OR to_id = ?)'
+        const agentWhere = '(from_id = ? OR to_id = ?)'
         const baseParams = [evtAgent, evtAgent]
+        // Build optional type filter clause
+        const typeClause = evtTypes ? `type IN (${evtTypes.map(() => '?').join(',')})` : null
+        const typeParams = evtTypes || []
+        const where = typeClause ? `${agentWhere} AND ${typeClause}` : agentWhere
+        const allBaseParams = [...baseParams, ...typeParams]
         if (sinceTs || untilTs) {
           // Timestamp pagination: filter by timestamp range, return earliest matches in
           // chronological order. Also report `total` for the matching range so the
@@ -1864,10 +1871,10 @@ async function handleFleetWsMessage(ws, msg) {
           if (untilTs) { tsClauses.push('timestamp <= ?'); tsParams.push(untilTs) }
           const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
           const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
-          events = fleetStore.db.prepare(q).all(...baseParams, ...tsParams, limit)
+          events = fleetStore.db.prepare(q).all(...allBaseParams, ...tsParams, limit)
           const totalRow = fleetStore.db.prepare(
             `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
-          ).get(...baseParams, ...tsParams)
+          ).get(...allBaseParams, ...tsParams)
           total = totalRow?.c ?? null
         } else {
           const q = afterId
@@ -1875,18 +1882,19 @@ async function handleFleetWsMessage(ws, msg) {
             : beforeId
             ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
             : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-          events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
-            : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
-            : fleetStore.db.prepare(q).all(...baseParams, limit)
+          events = afterId ? fleetStore.db.prepare(q).all(...allBaseParams, afterId, limit)
+            : beforeId ? fleetStore.db.prepare(q).all(...allBaseParams, beforeId, limit)
+            : fleetStore.db.prepare(q).all(...allBaseParams, limit)
           if (beforeId) events.reverse()
-          // total of all events for this agent (no time filter) so callers see "X of Y"
+          // total for this agent+type filter so callers see "X of Y"
           const totalRow = fleetStore.db.prepare(
             `SELECT COUNT(*) AS c FROM events WHERE ${where}`
-          ).get(...baseParams)
+          ).get(...allBaseParams)
           total = totalRow?.c ?? null
         }
-      } else if (evtType) {
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`).all(evtType, afterId, limit)
+      } else if (evtTypes) {
+        const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE ${typeClause} AND id > ? ORDER BY id ASC LIMIT ?`).all(...evtTypes, afterId, limit)
       } else if (beforeId) {
         events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
         events.reverse()

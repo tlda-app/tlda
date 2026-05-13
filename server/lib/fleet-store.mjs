@@ -62,6 +62,18 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
       CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id, timestamp DESC);
+      CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+        text,
+        content='events',
+        content_rowid='id',
+        tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+      END;
 
       -- Materialized agent state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS agents (
@@ -203,6 +215,13 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
+
+    // Backfill events_fts for existing events (one-time; trigger handles new inserts).
+    // Use FTS5 rebuild to populate the index from the content table.
+    const ftsCount = this.db.prepare("SELECT COUNT(*) AS c FROM events_fts").get().c;
+    if (ftsCount === 0) {
+      this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+    }
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
