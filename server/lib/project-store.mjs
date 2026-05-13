@@ -9,9 +9,8 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
-import { join, relative, resolve, dirname } from 'path'
+import { join, relative, dirname } from 'path'
 import { createHash } from 'crypto'
-import { fileURLToPath } from 'url'
 
 let projectsDir = null
 
@@ -47,20 +46,11 @@ export function readProject(name) {
 // .git directory. The watcher would fire on every git index update, build
 // artifact, or scratch file edit and rebuild every project pointed at it
 // in a tight loop. (Lost a day to this on 2026-04-10.)
-// Prevent watching the tlda repo itself as a source dir — the watcher would
-// fire on every git index update, build artifact, or scratch file edit and
-// rebuild every project pointed at it in a tight loop.
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const TLDA_ROOT = resolve(__dirname, '..', '..')
-const FORBIDDEN_SOURCE_DIRS = new Set([TLDA_ROOT])
 
 export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir, members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
-  }
-  if (srcDir && FORBIDDEN_SOURCE_DIRS.has(srcDir.replace(/\/$/, ''))) {
-    throw new Error(`sourceDir ${srcDir} is too broad — pick a specific subdirectory, not the whole repo`)
   }
 
   mkdirSync(join(dir, 'source'), { recursive: true })

@@ -448,16 +448,13 @@ async function cmdCreate() {
       }
     }
 
-    // Push .md file (and any images/assets alongside it)
-    const allFiles = []
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile()) continue
-      const content = readFileSync(join(dir, entry.name))
-      allFiles.push({ path: entry.name, content: content.toString('base64'), encoding: 'base64' })
-    }
+    // Push just the main file as a build trigger — the server reads from
+    // sourceDir directly, so we don't need to send the whole directory.
+    const content = readFileSync(join(dir, mainFile))
+    const files = [{ path: mainFile, content: content.toString('base64'), encoding: 'base64' }]
 
-    console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    console.log(`Pushing ${mainFile}...`)
+    await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
     console.log(green('Markdown project processed.'))
 
     const server = getServer()
