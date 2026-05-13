@@ -3554,11 +3554,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, label, after, before, replace, agentId, agentName }),
       });
+      const { scratchPath, wrappedContent, mainFile, mainContent, sourceDir } = result;
+      if (!sourceDir) {
+        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first so the server knows the local project path.` }], isError: true };
+      }
+      // Write files to the local source directory; the watcher will push them and trigger the build
+      const scratchAbsPath = path.join(sourceDir, scratchPath);
+      fs.mkdirSync(path.dirname(scratchAbsPath), { recursive: true });
+      fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
+      if (mainContent) {
+        fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
+      }
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" → ${result.file}. Build triggered.` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" → ${result.file} (${loc}). Build triggered.` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

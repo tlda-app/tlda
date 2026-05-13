@@ -1090,31 +1090,16 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
 
-  // Wrap content in scratch environment (server-side), signed with agent + timestamp
+  // Wrap content in scratch environment, signed with agent + timestamp
   const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
   const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
   const signer = agentName || agentId || 'agent'
   const displayHeader = `${label} — ${signer} — ${timestamp}`
-  const wrapped = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
-  writeSourceFile(req.params.name, scratchPath, wrapped)
-
-  // Helper: trigger build and notify calling agent on LaTeX errors
-  const triggerBuild = (name) => {
-    runBuild(name).then(() => {
-      if (!agentId) return
-      const { errors } = extractBuildErrors(name)
-      if (errors.length > 0) {
-        emitGlobalEvent('scratch-build-failed', { doc: name, agentId, label, errors: errors.map(e => e.message) })
-      }
-    }).catch(e => {
-      if (agentId) emitGlobalEvent('scratch-build-failed', { doc: name, agentId, label, errors: [e.message] })
-    })
-  }
+  const wrappedContent = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
 
   if (replace) {
-    // Overwrite existing scratch section — no main.tex edit needed
-    triggerBuild(req.params.name)
-    return res.json({ ok: true, file: scratchPath, action: 'replaced' })
+    // Overwrite existing scratch section — no main.tex edit needed; caller writes the file
+    return res.json({ ok: true, scratchPath, wrappedContent, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
   // Resolve location label to a line number in main.tex
@@ -1212,10 +1197,17 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     )
   }
 
-  writeSourceFile(req.params.name, project.mainFile, newLines.join('\n'))
-  triggerBuild(req.params.name)
-
-  res.json({ ok: true, file: scratchPath, insertedAt: resolvedLine, action: after ? 'inserted-after' : 'inserted-before' })
+  // Return content for the caller to write locally — watcher syncs to server and triggers build
+  res.json({
+    ok: true,
+    scratchPath,
+    wrappedContent,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    sourceDir: project.sourceDir || null,
+    insertedAt: resolvedLine,
+    action: after ? 'inserted-after' : 'inserted-before',
+  })
 })
 
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps
