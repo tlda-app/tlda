@@ -1610,6 +1610,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     }
 
     // Send the reload signal once, after all targets finish.
+    const svgsReadyAt = Date.now()
     signalReload(name, null)
 
     // Total pages across all targets — what the viewer reports as project.pages.
@@ -1663,7 +1664,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
-        updateDocVersionSentinel(name, result.hash).catch(e => {
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
@@ -1842,7 +1843,7 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
   const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
@@ -1863,6 +1864,7 @@ async function updateDocVersionSentinel(name, shadowHash) {
       h: 1,
       commitHash,
       timestamp: Date.now(),
+      buildReadyAt: buildReadyAt || Date.now(),
     },
   }
 
