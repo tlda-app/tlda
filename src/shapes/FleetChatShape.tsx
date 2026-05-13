@@ -872,6 +872,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
+  const labelRegionsRef = useRef<Record<string, LabelRegionInfo>>({})
+  const docRef = useRef<typeof doc>(doc)
+  useEffect(() => { labelRegionsRef.current = labelRegions }, [labelRegions])
+  useEffect(() => { docRef.current = doc }, [doc])
+
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
   // bump ctxVersion to invalidate stale lines. This turns O(N) re-render on
@@ -1941,6 +1946,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogRef.current
     if (!logEl) return
 
+    function isLatexLabel(text: string): boolean {
+      if (/^https?:/i.test(text)) return false
+      return /^[a-z][a-z0-9]{0,9}:[a-z][a-z0-9_.-]{0,50}$/i.test(text)
+    }
+
     function matchesUnquotePattern(text: string): boolean {
       if (!text || text.length > 500) return false
       if (/^https?:\/\/\S+/.test(text)) return true
@@ -1948,11 +1958,26 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (/^~\/\S+/.test(text)) return true
       // Relative paths: no spaces, contains / or ends with a known file extension
       if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
+      if (isLatexLabel(text)) return true
       return false
     }
 
     function isFilePath(text: string): boolean {
       return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
+    }
+
+    function applyTierLabel(codeEl: HTMLElement, text: string) {
+      const info = labelRegionsRef.current[text]
+      if (!info) { applyTier1(codeEl, text); return }
+      const span = document.createElement('span')
+      span.className = 'doc-link'
+      span.dataset.refType = 'label'
+      span.dataset.refLabel = text
+      span.dataset.refPage = String(info.page)
+      span.dataset.refYTop = String(info.yTop)
+      span.dataset.refYBottom = String(info.yBottom)
+      span.textContent = info.displayLabel || text
+      codeEl.replaceWith(span)
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {
@@ -2017,7 +2042,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         clearPending()
         e.preventDefault()
         e.stopPropagation()
-        if (isFilePath(text)) {
+        if (isLatexLabel(text)) {
+          applyTierLabel(codeEl, text)
+        } else if (isFilePath(text)) {
           const eventId = chatLine.dataset.msgId || ''
           const agentId = chatLine.dataset.msgFrom || ''
           applyTier2(codeEl, text, eventId, agentId)
