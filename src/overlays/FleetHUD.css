@@ -29,11 +29,10 @@
 
 
 /* Expanded HUD — full overlay with fleet shapes, positioned by JS */
-/* z-index 999: must match or exceed tldraw UI chrome since stacking contexts
-   prevent z-index competition across boundaries anyway */
+/* z-index 1100: above doc-panel (1001), bottom-panels (1000), and TLDraw chrome */
 .fleet-hud-wrap {
   position: fixed;
-  z-index: 999;
+  z-index: 1100;
   pointer-events: none;
 }
 

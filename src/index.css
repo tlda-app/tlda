@@ -126,3 +126,13 @@ html.hires .tlui-layout {
    size on retina/high-res displays. If specific elements look too small,
    add per-property bumps under .hires (font-size, width, height, padding)
    for those elements only — never zoom. */
+
+/* Math notes: dimmed by default, full opacity on hover/editing */
+.tl-shape[data-shape-type="math-note"] {
+  opacity: 0.65;
+  transition: opacity 0.2s;
+}
+.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-editing[data-shape-type="math-note"] {
+  opacity: 1;
+}
