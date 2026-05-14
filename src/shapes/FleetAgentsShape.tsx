@@ -426,6 +426,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           onPointerDown={(e) => stopEventPropagation(e)}
         >
           <span className="fleet-agents-unread-dot" />
+          <span style={{ width: 18, flexShrink: 0 }} />
           <span className="fleet-agents-col-name fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'name') setSortAsc(p => !p); else { setSortKey('name'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -434,6 +435,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'active') setSortAsc(p => !p); else { setSortKey('active'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
           >Active {sortKey === 'active' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          <span className="fleet-agents-col-ctx">Ctx</span>
           <span className="fleet-agents-col-task fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'status') setSortAsc(p => !p); else { setSortKey('status'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -596,14 +598,12 @@ function AgentRow({
 
         <span className="fleet-agents-col-seen">{ago}</span>
 
-        {contextPct != null && (
-          <span
-            className="fleet-agents-col-ctx"
-            style={{ color: contextPct <= 15 ? '#e57373' : contextPct <= 30 ? '#ffb74d' : '#81c784' }}
-          >
-            {contextPct}%
-          </span>
-        )}
+        <span
+          className="fleet-agents-col-ctx"
+          style={contextPct != null ? { color: contextPct <= 15 ? '#e57373' : contextPct <= 30 ? '#ffb74d' : '#81c784' } : undefined}
+        >
+          {contextPct != null ? `${contextPct}%` : ''}
+        </span>
 
         <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}

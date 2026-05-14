@@ -1501,12 +1501,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
-  width: 42px;
+  width: 50px;
   flex-shrink: 0;
   text-align: right;
   font-size: 9px;
   opacity: 0.4;
   margin-right: 8px;
+  white-space: nowrap;
 }
 
 .fleet-agents-shape .fleet-agents-col-ctx {
