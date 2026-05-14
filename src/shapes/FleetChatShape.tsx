@@ -2102,8 +2102,18 @@ function FleetChatInner({ shape }: { shape: any }) {
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
       }
     }
+    function onBlur() {
+      // TLDraw steals focus after Esc — reclaim it if we're mid-sequence
+      if (escCountRef.current > 0 && Date.now() - lastEscRef.current < 500) {
+        ta!.focus()
+      }
+    }
     ta.addEventListener('keydown', onEscKey)
-    return () => ta.removeEventListener('keydown', onEscKey)
+    ta.addEventListener('blur', onBlur)
+    return () => {
+      ta.removeEventListener('keydown', onEscKey)
+      ta.removeEventListener('blur', onBlur)
+    }
   }, [])
 
   // Textarea resize is handled by CSS field-sizing: content.
