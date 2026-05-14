@@ -637,6 +637,9 @@ function syncSessionWatchers(agentList) {
       cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
       backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      // Also backfill all prior sessions for this agent (other JSONLs that
+      // contain a registration line for this fleet ID).
+      backfillAllPriorSessions(agent.id, agent.id)
     }
 
     try {
@@ -814,6 +817,41 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
     }
   } catch (e) {
     console.error(`[daemon] search backfill failed for ${sessionId}: ${e.message}`)
+  }
+}
+
+// Scan all JSONLs under PROJECTS_DIR for prior sessions belonging to this agent.
+// Called once when an agent is first seen (no cursor). Skips sessions already
+// marked searchBackfilled in cursors.
+function backfillAllPriorSessions(agentId, fleetId) {
+  // Fleet IDs are like "fleet:f7322ebe" — the registration line contains the suffix.
+  const suffix = fleetId.includes(':') ? fleetId.split(':')[1] : fleetId
+  const marker = `Registered fleet:${suffix}`
+  let found = 0
+  try {
+    for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+      const dirPath = path.join(PROJECTS_DIR, dir)
+      let files
+      try { files = fs.readdirSync(dirPath) } catch { continue }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue
+        const sessionId = file.slice(0, -6)
+        if (cursors[sessionId]?.searchBackfilled) continue
+        const filePath = path.join(dirPath, file)
+        let content
+        try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
+        if (!content.includes(marker)) continue
+        backfillSearchEntries(agentId, filePath, sessionId)
+        cursors[sessionId] = { ...(cursors[sessionId] || {}), searchBackfilled: true }
+        found++
+      }
+    }
+  } catch (e) {
+    console.error(`[daemon] backfillAllPriorSessions failed for ${fleetId}: ${e.message}`)
+  }
+  if (found > 0) {
+    console.log(`[daemon] backfilling ${found} prior session(s) for ${fleetId}`)
+    scheduleCursorSave()
   }
 }
 
