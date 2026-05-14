@@ -99,6 +99,126 @@ function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
 
 if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
 
+// ─── Process reaper — zombie WebSocket detection ────────────────────
+// Agents leave wakes of playwright chromium windows pointed at our
+// /sync/<doc> and /ws/fleet endpoints. A "zombie" is a connection with
+// no client→server message for ZOMBIE_THRESHOLD_MS. Server pushes don't
+// count (we only attach an inbound listener); WebSocket ping/pong frames
+// don't surface as 'message' events. Once detected, we ask the daemon
+// on the chromium's machine to kill the orphan chromium PID (verified
+// by binary path — only the playwright cache, never the user's real
+// Google Chrome).
+const _trackedWs = new Set()
+// Defaults are 10-min idle / 60-s sweep. Override via env for tests (no
+// production behavior change — these are plain timing knobs, not feature
+// gates).
+const ZOMBIE_THRESHOLD_MS = parseInt(process.env.REAPER_ZOMBIE_MS, 10) || 10 * 60 * 1000
+const REAPER_INTERVAL_MS = parseInt(process.env.REAPER_INTERVAL_MS, 10) || 60 * 1000
+
+// The tldraw sync client sends `{"type":"ping"}` every 5s as an
+// application-level keepalive. We must NOT count those as real input or
+// no /sync/ WS would ever look idle.
+function isSyncHeartbeat(raw) {
+  if (typeof raw === 'string') {
+    if (raw.length > 30) return false
+    return raw.includes('"ping"')
+  }
+  if (!raw || raw.length > 30) return false
+  return raw.toString('utf8', 0, Math.min(raw.length, 30)).includes('"ping"')
+}
+
+function trackWs(ws, meta) {
+  ws._wsKind = meta.kind            // 'sync' | 'fleet'
+  ws._wsDocName = meta.docName || null
+  ws._wsSessionId = meta.sessionId
+  ws._wsRemoteAddr = meta.remoteAddr
+  ws._wsRemotePort = meta.remotePort
+  ws._wsConnectedAt = Date.now()
+  ws._wsLastInputAt = Date.now()
+  _trackedWs.add(ws)
+  if (meta.kind === 'sync') {
+    ws.on('message', (raw) => {
+      if (isSyncHeartbeat(raw)) return
+      ws._wsLastInputAt = Date.now()
+    })
+  } else {
+    // /ws/fleet: no client-side periodic traffic from browsers; MCP-sent
+    // `heartbeat` messages come from real agents and (correctly) mark them
+    // active — the binary-path check in the daemon prevents us from
+    // touching anything that isn't a playwright chromium anyway.
+    ws.on('message', () => { ws._wsLastInputAt = Date.now() })
+  }
+  const cleanup = () => { _trackedWs.delete(ws) }
+  ws.on('close', cleanup)
+  ws.on('error', cleanup)
+}
+
+function normalizeAddr(a) {
+  if (!a) return a
+  if (a.startsWith('::ffff:')) return a.slice(7)  // IPv6-mapped IPv4
+  if (a === '::1') return '127.0.0.1'             // IPv6 loopback
+  return a
+}
+
+function findMachineForAddress(addr) {
+  const norm = normalizeAddr(addr)
+  for (const [machineId, dws] of daemonConnections) {
+    if (normalizeAddr(dws._remoteAddr) === norm) return machineId
+  }
+  return null
+}
+
+async function reapZombies() {
+  const now = Date.now()
+  const zombies = []
+  let activeCount = 0
+  for (const ws of _trackedWs) {
+    if (ws.readyState !== 1) continue
+    const idleMs = now - ws._wsLastInputAt
+    if (idleMs > ZOMBIE_THRESHOLD_MS) {
+      zombies.push({
+        kind: ws._wsKind,
+        doc: ws._wsDocName,
+        sessionId: ws._wsSessionId,
+        addr: ws._wsRemoteAddr,
+        port: ws._wsRemotePort,
+        idleMs,
+      })
+    } else {
+      activeCount++
+    }
+  }
+  if (zombies.length === 0) {
+    console.log(`[reaper] sweep: ${activeCount} active WS, 0 zombies`)
+    return
+  }
+  console.log(`[reaper] sweep: ${activeCount} active WS, ${zombies.length} zombie WS`)
+  for (const z of zombies) {
+    const idleMin = Math.round(z.idleMs / 60000)
+    console.log(`[reaper]   zombie ${z.kind} doc=${z.doc || '-'} session=${z.sessionId} addr=${z.addr}:${z.port} idle=${idleMin}m`)
+    const machineId = findMachineForAddress(z.addr)
+    if (!machineId) {
+      console.log(`[reaper]   no daemon for ${z.addr}; skipping kill`)
+      continue
+    }
+    try {
+      const r = await sendRpc(machineId, 'kill-orphan-chromium', {
+        port: z.port,
+        addr: normalizeAddr(z.addr),
+      })
+      if (r?.killed) {
+        console.log(`[reaper]   killed pid=${r.pid} binary=${r.binary || '(playwright)'} for session=${z.sessionId}`)
+      } else {
+        console.log(`[reaper]   no kill: ${r?.reason || 'unknown'}`)
+      }
+    } catch (e) {
+      console.log(`[reaper]   kill RPC failed: ${e.message}`)
+    }
+  }
+}
+
+setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
+
 // Local-machine daemon supervisor.
 //
 // The fleet daemon is a per-machine subprocess that watches Claude Code
@@ -991,7 +1111,10 @@ server.on('upgrade', async (req, socket, head) => {
     if (!docName) { socket.destroy(); return }
     const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const room = await getOrCreateRoom(docName)
+    const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
     syncWss.handleUpgrade(req, socket, head, (ws) => {
+      trackWs(ws, { kind: 'sync', docName, sessionId, remoteAddr, remotePort })
       room.handleSocketConnect({ sessionId, socket: ws })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
@@ -1085,9 +1208,11 @@ server.on('upgrade', async (req, socket, head) => {
   // The daemon pushes activity-event / terminal-chat / source-change
   // messages and (Phase 2) handles RPC requests routed by machine_id.
   if (url.pathname === '/ws/fleet-daemon') {
+    const remoteAddr = req.socket.remoteAddress
     daemonWss.handleUpgrade(req, socket, head, (ws) => {
       ws._bootId = null
       ws._machineId = null
+      ws._remoteAddr = remoteAddr  // captured so reaper can route kill RPC by chromium's source IP
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -1121,10 +1246,18 @@ server.on('upgrade', async (req, socket, head) => {
 
   // /ws/fleet — direct fleet WebSocket (no proxy)
   if (url.pathname === '/ws/fleet') {
+    const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
       wsFleetClients.add(ws)
+      trackWs(ws, {
+        kind: 'fleet',
+        sessionId: `fleet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        remoteAddr,
+        remotePort,
+      })
 
       // Send initial state on connect
       if (fleetStore) {
