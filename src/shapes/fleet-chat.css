@@ -31,9 +31,17 @@
 .fleet-agents-shape,
 .fleet-search-shape,
 .cluster-shape {
-  background-color: transparent;
+  background-color: rgba(15, 15, 26, 0.85);
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
+  transition: background-color 0.2s;
+}
+
+.fleet-chat-shape:hover,
+.fleet-agents-shape:hover,
+.fleet-search-shape:hover,
+.cluster-shape:hover {
+  background-color: rgba(15, 15, 26, 1);
 }
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
