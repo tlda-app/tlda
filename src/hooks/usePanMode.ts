@@ -32,21 +32,28 @@ const EDGE_ZONE_PX = 40
 const CHAT_MAX_SPEED = 2000    // chat scroll px/s at the very edge
 const CANVAS_MAX_SPEED = 2500  // canvas pan screen-px/s at the very edge
 
-const AXIS_LOCK_THRESHOLD = 15 // px of total displacement before locking
+const AXIS_LOCK_INITIAL = 5    // px before first lock engages
 const AXIS_LOCK_PAUSE_MS = 250 // ms of no movement before lock resets
 
 // Module-level so event handlers always see current value without closure staleness
 let panModeActive = false
 let axisLock: 'x' | 'y' | null = null
-let axisAccumX = 0
-let axisAccumY = 0
 let axisPauseTimer: ReturnType<typeof setTimeout> | null = null
+let accumX = 0
+let accumY = 0
 
 function resetAxisLock() {
   axisLock = null
-  axisAccumX = 0
-  axisAccumY = 0
+  accumX = 0
+  accumY = 0
   if (axisPauseTimer != null) { clearTimeout(axisPauseTimer); axisPauseTimer = null }
+}
+
+function addMovement(adx: number, ady: number) {
+  accumX += adx
+  accumY += ady
+  if (accumX + accumY < AXIS_LOCK_INITIAL) return
+  axisLock = accumY >= accumX ? 'y' : 'x'
 }
 
 function setPanMode(active: boolean) {
@@ -194,17 +201,9 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
         return
       }
 
-      // Axis locking for canvas panning
+      addMovement(Math.abs(dx), Math.abs(dy))
       let panDx = dx
       let panDy = dy
-      if (axisLock == null) {
-        axisAccumX += Math.abs(dx)
-        axisAccumY += Math.abs(dy)
-        const total = axisAccumX + axisAccumY
-        if (total >= AXIS_LOCK_THRESHOLD) {
-          axisLock = axisAccumY >= axisAccumX ? 'y' : 'x'
-        }
-      }
       if (axisLock === 'x') panDy = 0
       else if (axisLock === 'y') panDx = 0
 
