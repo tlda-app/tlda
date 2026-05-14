@@ -330,22 +330,16 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
-  // Flat sorted agent list — all non-human agents; recently-dead agents at the bottom
+  // Flat sorted agent list — all non-human, non-dead agents
   const sortedAgents = useMemo(() => {
-    const alive: any[] = []
-    const dead: any[] = []
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const list: any[] = []
     for (const a of agents) {
-      if (a.human) continue
+      if (a.human || a.dead) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
-      if (a.dead) {
-        if (ts > thirtyDaysAgo) dead.push({ ...a, _ts: ts })
-      } else {
-        alive.push({ ...a, _ts: ts })
-      }
+      list.push({ ...a, _ts: ts })
     }
     const dir = sortAsc ? 1 : -1
-    const sortFn = (a: any, b: any) => {
+    list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
         const order = { awake: 0, hibernating: 1 }
@@ -354,15 +348,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         return dir * (ca - cb) || b._ts - a._ts
       }
       return dir * (a._ts - b._ts)
-    }
-    alive.sort(sortFn)
-    dead.sort(sortFn)
-    return [...alive, ...dead]
+    })
+    return list
   }, [agents, sortKey, sortAsc])
 
-  const aliveAgents = useMemo(() => sortedAgents.filter(a => !a.dead), [sortedAgents])
-  const hibernatingCount = useMemo(() => aliveAgents.filter(a => agentCategory(a) === 'hibernating').length, [aliveAgents])
-  const awakeCount = aliveAgents.length - hibernatingCount
+  const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
+  const awakeCount = sortedAgents.length - hibernatingCount
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
@@ -459,8 +450,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               agent={agent}
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
-              dimmed={agent.dead || agentCategory(agent) === 'hibernating'}
-              dead={!!agent.dead}
+              dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
               lastMessage={lastMessages[agentDisplayName(agent)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
@@ -540,7 +530,6 @@ function AgentRow({
   agent,
   tasks,
   dimmed,
-  dead,
   unreadCount,
   expanded,
   lastMessage,
@@ -550,7 +539,6 @@ function AgentRow({
   agent: any
   tasks: any[]
   dimmed?: boolean
-  dead?: boolean
   unreadCount: number
   expanded: boolean
   lastMessage: string
@@ -571,7 +559,7 @@ function AgentRow({
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
 
   return (
-    <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${dead ? ' dead' : ''}${expanded ? ' expanded' : ''}`}>
+    <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
       {/* Line 1: compact row */}
       <div
         className="fleet-agents-row-main"

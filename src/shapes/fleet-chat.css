@@ -1422,14 +1422,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-row.dimmed:hover {
   opacity: 0.7;
 }
-.fleet-agents-shape .fleet-agents-row.dead {
-  opacity: 0.3;
-  text-decoration: line-through;
-  text-decoration-color: rgba(229, 85, 85, 0.4);
-}
-.fleet-agents-shape .fleet-agents-row.dead:hover {
-  opacity: 0.45;
-}
 .fleet-agents-shape .fleet-agents-row-main {
   display: flex;
   align-items: center;
