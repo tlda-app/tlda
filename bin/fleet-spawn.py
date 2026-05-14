@@ -484,9 +484,10 @@ def refresh_spawn(name, model_override, cwd_override, effort=None, mode=None):
     return sess
 
 
-def respawn_from_session(session_uuid, model_override, cwd_override, effort=None, mode=None, dry_run=False):
+def respawn_from_session(session_uuid, model_override, cwd_override, effort=None, mode=None, dry_run=False, enroll=False, enroll_name=None):
     """Respawn an agent given only a session UUID.
-    Scans the JSONL to extract fleet ID and friendly name, then respawns."""
+    Scans the JSONL to extract fleet ID and friendly name, then respawns.
+    With enroll=True: if no registration exists, mints a new fleet ID for the session."""
     import glob as globmod, re
 
     projects_base = os.path.expanduser("~/.claude/projects")
@@ -532,12 +533,14 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
         print(f"Error: Could not read JSONL: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if not fleet_id:
-        print(f"Error: No fleet registration found in session {session_uuid}", file=sys.stderr)
+    # --enroll guard: fail if JSONL already has a registration
+    if enroll and fleet_id:
+        print(f"Error: Session already has fleet ID {fleet_id} — use fleet-spawn --session {session_uuid} without --enroll.", file=sys.stderr)
         sys.exit(1)
 
-    if not name:
-        name = fleet_id.replace("fleet:", "agent-")
+    if not fleet_id and not enroll:
+        print(f"Error: No fleet registration found in session {session_uuid}", file=sys.stderr)
+        sys.exit(1)
 
     # Derive cwd from project dir name: "-Users-skip-work-tlda" → "/Users/skip/work/tlda"
     if cwd_override:
@@ -547,15 +550,43 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
     else:
         cwd = os.getcwd()
 
+    # --enroll: mint a new fleet ID and derive a name from the cwd basename (or explicit override)
+    if enroll and not fleet_id:
+        server_up = ensure_server()
+        fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
+
+        if enroll_name:
+            name = enroll_name
+        else:
+            # Auto-derive from cwd basename; add suffix if already taken
+            base_name = os.path.basename(cwd.rstrip("/")) or "agent"
+            name = base_name
+            if server_up:
+                existing_agents = api_get("/api/store/agents")
+                existing_names = {a.get("friendly_name") for a in existing_agents}
+                suffix = 2
+                while name in existing_names:
+                    name = f"{base_name}-{suffix}"
+                    suffix += 1
+        print(f"Enrolling new agent: {fleet_id} ({name}) — session {session_uuid}")
+    else:
+        if not name:
+            name = fleet_id.replace("fleet:", "agent-")
+        print(f"Found: {fleet_id} ({name}) — session {session_uuid}")
+
     model = resolve_model(model_override or DEFAULT_MODEL)
     sess = f"fleet-{name}"
 
-    print(f"Found: {fleet_id} ({name}) — session {session_uuid}")
     print(f"  cwd: {cwd}, model: {model}, tmux: {sess}")
 
     if dry_run:
         print("[dry-run] would spawn — exiting without spawning")
         return sess
+
+    if enroll:
+        server_up = ensure_server()
+        if server_up:
+            ws_register(fleet_id, name, sess, cwd, model, effort)
 
     tmux_kill(sess)
 
@@ -573,7 +604,8 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
         print(f"Error: Claude could not resume session {session_uuid}.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"{sess} ({fleet_id}) resumed session {session_uuid} in {cwd}")
+    action = "enrolled and started" if enroll else "resumed"
+    print(f"{sess} ({fleet_id}) {action} session {session_uuid} in {cwd}")
     return sess
 
 
@@ -594,6 +626,7 @@ def main():
     parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
     parser.add_argument("--mode", default=None, help="Permission mode passed to claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json")
     parser.add_argument("--session", default=None, help="Resume a specific session ID; if no name given, scans JSONL to find fleet ID and name")
+    parser.add_argument("--enroll", action="store_true", help="With --session: mint a new fleet ID if none exists. Errors if session already has a fleet ID.")
     parser.add_argument("--no-attach", action="store_true", help="Don't attach to tmux session after spawning")
     parser.add_argument("--dry-run", action="store_true", help="Print what would happen without actually spawning")
     args = parser.parse_args()
@@ -603,12 +636,17 @@ def main():
         print("Error: provide a name or --session <uuid>", file=sys.stderr)
         sys.exit(2)
 
+    if args.enroll and not args.session:
+        print("Error: --enroll requires --session <uuid>", file=sys.stderr)
+        sys.exit(2)
+
     # Resolve mode: explicit flag > config file default
     mode = args.mode or read_tlda_config().get("spawnMode") or None
 
     try:
-        if args.name is None and args.session:
-            sess = respawn_from_session(args.session, args.model, args.cwd, args.effort, mode, dry_run=args.dry_run)
+        if args.session and (args.name is None or args.enroll):
+            # Nameless respawn, or enroll (name may be provided as override)
+            sess = respawn_from_session(args.session, args.model, args.cwd, args.effort, mode, dry_run=args.dry_run, enroll=args.enroll, enroll_name=args.name)
         elif args.fresh:
             sess = fresh_spawn(args.name, args.model, args.cwd, args.effort, mode)
         elif args.refresh:
