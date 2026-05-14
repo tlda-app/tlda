@@ -1077,6 +1077,13 @@ async function rpcCheckAlive({ tmux_session }) {
     { timeout: 3000, encoding: 'utf8' })
   const panePids = stdout.trim().split('\n').filter(Boolean)
   for (const pid of panePids) {
+    // The pane PID may itself be the claude process (no shell wrapper).
+    try {
+      const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
+        { timeout: 2000, encoding: 'utf8' })
+      if (self.includes('claude')) return { alive: true }
+    } catch {}
+    // Or claude may be a direct child of the pane's shell process.
     try {
       const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
         { timeout: 2000, encoding: 'utf8' })
