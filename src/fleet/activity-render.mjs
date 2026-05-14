@@ -318,6 +318,39 @@ export function toolContentDetail(name, input) {
 
 // --- Rendering helpers (need ctx for highlightSyntax, langFromFilePath, preambleMacros) ---
 
+// Render a block of .tex content with inline KaTeX. Handles:
+//   - Blank lines → <br>
+//   - Comment lines → shown as-is (dimmed)
+//   - Structural commands (\begin, \end, \section, etc.) → <code>
+//   - Display math $$...$$ or \[...\] → KaTeX display mode
+//   - Other lines → inline $...$ segments rendered, rest as escaped text
+function renderTexLines(content, macros) {
+  return content.split('\n').map(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return '<br>'
+    if (trimmed.startsWith('%')) return `<span class="tex-comment">${esc(line)}</span>`
+    if (/^\\(begin|end|documentclass|usepackage|chapter|section|subsection|paragraph|label|item|caption)\b/.test(trimmed)) {
+      return `<code class="tex-struct">${esc(line)}</code>`
+    }
+    // Display math: $$...$$ or \[...\]
+    const dispMatch = trimmed.match(/^\$\$([\s\S]*)\$\$$/) || trimmed.match(/^\\\[([\s\S]*)\\\]$/)
+    if (dispMatch) {
+      try { return katex.renderToString(dispMatch[1], { displayMode: true, throwOnError: false, macros }) }
+      catch { return `<code>${esc(line)}</code>` }
+    }
+    // Inline math: split on $...$ segments, render each
+    const parts = line.split(/(\$[^$\n]+\$)/)
+    if (parts.length === 1) return esc(line) // no math
+    return parts.map(p => {
+      if (p.length > 2 && p.startsWith('$') && p.endsWith('$')) {
+        try { return katex.renderToString(p.slice(1, -1), { displayMode: false, throwOnError: false, macros }) }
+        catch { return esc(p) }
+      }
+      return esc(p)
+    }).join('')
+  }).join('<br>')
+}
+
 export function renderEditDiff(input, ctx) {
   if (!input?.old_string || !input?.new_string) return ''
   const { langFromFilePath, highlightSyntax } = ctx
@@ -329,19 +362,7 @@ export function renderEditDiff(input, ctx) {
       const escaped = esc(str)
       return `<pre><code>${lang ? highlightSyntax(escaped, lang) : escaped}</code></pre>`
     }
-    const rendered = str.split('\n').map(line => {
-      const trimmed = line.trim()
-      if (/^\\(begin|end|label|item|section|subsection|usepackage|documentclass)\b/.test(trimmed)) return `<code>${esc(line)}</code>`
-      if (/\\[a-zA-Z]/.test(trimmed) && !/^%/.test(trimmed)) {
-        try {
-          return katex.renderToString(trimmed, { displayMode: true, throwOnError: true, macros: ctx.preambleMacros || {} })
-        } catch {
-          return `<span class="diff-tex-raw">${esc(line)}</span>`
-        }
-      }
-      return esc(line) || '&nbsp;'
-    }).join('<br>')
-    return `<div class="diff-tex">${rendered}</div>`
+    return `<div class="diff-tex">${renderTexLines(str, ctx.preambleMacros || {})}</div>`
   }
   return `<div class="edit-diff${isTeX ? ' tex-diff' : ''}" id="${uid}">
     <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
@@ -377,8 +398,22 @@ export function renderCodeCard(toolName, input, ctx) {
     if (lines.length < 2) return ''
     const filePath = input.file_path || ''
     const isMd = /\.md$/i.test(filePath)
+    const isTex = /\.tex$/i.test(filePath)
     const lang = langFromFilePath(filePath)
     const escaped = esc(content)
+    if (isTex) {
+      const shouldFold = lines.length > 15
+      const name = filePath.split('/').pop() || 'file.tex'
+      const uid = 'tex-write-' + Math.random().toString(36).slice(2, 8)
+      const toggleHtml = shouldFold
+        ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.diff-tex');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse'}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+        : ''
+      const rendered = renderTexLines(content, ctx.preambleMacros || {})
+      return `<div class="code-block-wrap code-card" id="${uid}">
+        <div class="code-block-header"><span class="code-block-lang">tex</span><span class="tex-filename">${esc(name)}</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
+        <div class="diff-tex${shouldFold ? ' code-collapsed' : ''}">${rendered}</div>
+      </div>`
+    }
     if (isMd) {
       // Markdown files: never fold (collapse resets on re-render), word-wrap, draggable chip.
       // The md-file-card chip enables the same drag-to-canvas action as chat-received .md files.
