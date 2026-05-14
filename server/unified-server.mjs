@@ -1258,7 +1258,7 @@ async function handleFleetWsMessage(ws, msg) {
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
   async function respawnIfNotDead(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
-    if (!agent || agent.dead) return
+    if (!agent || agent.dead || agent.human) return
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) return
     // Ask the daemon — on the agent's machine — whether the Claude process is running.
