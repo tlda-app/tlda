@@ -2780,6 +2780,32 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-bottom-color: rgba(229, 85, 85, 0.2);
 }
 
+/* --- Kill-session card --- */
+.fleet-chat-shape .kill-session-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(229, 85, 85, 0.25);
+  border-radius: 4px;
+  background: rgba(229, 85, 85, 0.05);
+  margin: 3px 0;
+  max-width: 95%;
+  font-size: 11px;
+  color: rgba(229, 85, 85, 0.85);
+}
+.fleet-chat-shape .kill-session-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .kill-session-text {
+  color: rgba(200, 200, 200, 0.7);
+}
+.fleet-chat-shape .kill-session-text strong {
+  color: rgba(229, 85, 85, 0.85);
+  font-weight: 500;
+}
+
 /* --- Build result card (compact, collapsible) --- */
 .fleet-chat-shape .build-result-card {
   border: 1px solid rgba(100, 160, 220, 0.25);

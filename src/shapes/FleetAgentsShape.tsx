@@ -330,7 +330,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
-  // Flat sorted agent list — all non-human agents, no dead/alive split
+  // Flat sorted agent list — all non-human, non-dead agents
   const sortedAgents = useMemo(() => {
     const list: any[] = []
     for (const a of agents) {
