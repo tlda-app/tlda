@@ -895,7 +895,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -970,6 +970,14 @@ function FleetChatInner({ shape }: { shape: any }) {
           `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗ Stop</button>` +
           `</div></div>`
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
+      } else if (m.type === 'kill-session') {
+        flushActivity()
+        const agentObjs: any[] = renderCtx.getAgents()
+        const targetId = m.to || ''
+        const targetAgent = agentObjs.find((a: any) => a.id === targetId)
+        const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
+        const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:kill`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
