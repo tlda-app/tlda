@@ -128,13 +128,12 @@ html.hires .tlui-layout {
    for those elements only — never zoom. */
 
 /* Math notes: dimmed by default, full opacity on hover/editing.
-   Must target .tl-html-container (not .tl-shape) because TLDraw sets
-   inline style="opacity:X" on .tl-shape, which overrides class-based rules. */
-.tl-shape[data-shape-type="math-note"] .tl-html-container {
-  opacity: 0.65;
+   !important needed to override TLDraw's inline style="opacity:X" on .tl-shape. */
+.tl-shape[data-shape-type="math-note"] {
+  opacity: 0.65 !important;
   transition: opacity 0.2s;
 }
-.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"] .tl-html-container,
-.tl-shape.tl-shape__is-editing[data-shape-type="math-note"] .tl-html-container {
-  opacity: 1;
+.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-editing[data-shape-type="math-note"] {
+  opacity: 1 !important;
 }
