@@ -619,14 +619,15 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
       if (shape.type === 'highlight') {
-        // Process after pointer_up — the actual "pen lifted" signal, reliable on iPad/Pencil.
-        // Small 50ms delay after pointer_up to let TLDraw commit the final shape geometry.
+        // Wait for pen lift by polling editor.inputs.isPointing.
+        // editor.on('event', pointer_up) doesn't fire during highlight.drawing state
+        // because TLDraw's state machine consumes the event first.
+        // isPointing is TLDraw's own reactive state — no event interception needed.
         let done = false
 
         const processShape = () => {
           if (done) return
           done = true
-          editor.off('event', onPointerUp)
           const s = editor.getShape(shape.id as any)
           if (!s) return
           const bounds = editor.getShapePageBounds(shape.id as any)
@@ -640,14 +641,19 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           processHighlightFeedback(editor, shape.id, document.name)
         }
 
-        const onPointerUp = (event: any) => {
-          if (event.name !== 'pointer_up' || event.type !== 'pointer') return
-          setTimeout(processShape, 50)
+        const tryProcess = () => {
+          if (done) return
+          if (editor.inputs.isPointing) {
+            setTimeout(tryProcess, 100)
+            return
+          }
+          processShape()
         }
 
-        editor.on('event', onPointerUp)
-        // Safety fallback: process after 5s if pointer_up never fires
-        setTimeout(processShape, 5000)
+        // Wait 200ms (shape geometry settles), then poll until pen is lifted
+        setTimeout(tryProcess, 200)
+        // Safety fallback: process after 5s regardless
+        setTimeout(() => { if (!done) processShape() }, 5000)
       }
     }
   })
