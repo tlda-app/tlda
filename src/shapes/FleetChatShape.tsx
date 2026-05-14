@@ -31,6 +31,7 @@ import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } 
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
+import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
@@ -2067,29 +2068,37 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!ta) return
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
+      log.debug('esc', 'keydown', { value: ta!.value, targets: sendTargetsRef.current })
       if (ta!.value !== '') return
       const targets = sendTargetsRef.current
       if (targets.length === 0) return
       e.preventDefault()
       const now = Date.now()
       const agent = targets[0]
-      if (now - lastEscRef.current < 500) {
+      const gap = now - lastEscRef.current
+      if (gap < 500) {
         escCountRef.current++
       } else {
         escCountRef.current = 1
       }
       lastEscRef.current = now
       const count = escCountRef.current
+      log.debug('esc', 'count', { count, gap, agent })
       if (count >= 3) {
         // Kill session: 3×Esc — tmux kill-session, agent dies immediately
         escCountRef.current = 0
         lastEscRef.current = 0
+        log.info('esc', 'kill-session', { agent })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+          .then(r => r.json()).then(d => log.debug('esc', 'kill-session response', d))
+          .catch(err => log.warn('esc', 'kill-session failed', { err }))
       } else if (count === 2) {
         // Hard interrupt: 2×Esc — Escape+poll loop
+        log.info('esc', 'hard-interrupt', { agent })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
       } else {
         // Soft interrupt: 1×Esc — single Escape to tmux
+        log.info('esc', 'soft-interrupt', { agent })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
       }
     }
