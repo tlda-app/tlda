@@ -192,10 +192,19 @@ export function updateOptimisticEvent(tempId, updates) {
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
-export function reconcileOptimistic(tempId, serverEventId) {
+export function reconcileOptimistic(tempId, serverEventId, newTo) {
   const ev = _events.find(e => e._tempId === tempId)
   // SSE handler may have already reconciled — only act if _tempId still present
-  if (ev) { ev._dbId = serverEventId; delete ev._tempId; notify('messages', null) }
+  if (ev) {
+    ev._dbId = serverEventId
+    // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
+    // On reconcile we rewrite it to the first concrete recipient so the line transitions
+    // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
+    // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
+    if (newTo) ev.to = newTo
+    delete ev._tempId
+    notify('messages', null)
+  }
 }
 
 export function respawnAgent(id) {
@@ -341,8 +350,13 @@ export function connect() {
           // Reconcile optimistic events SYNCHRONOUSLY before resolving —
           // the next WS message may be the echo, and _dbId must be set
           // before the echo's dedup check runs.
-          if (msg.result && msg.result._tempId && msg.result.event_id) {
-            reconcileOptimistic(msg.result._tempId, msg.result.event_id)
+          if (msg.result && msg.result._tempId && Array.isArray(msg.result.event_ids) && msg.result.event_ids.length > 0) {
+            // Server fans out chats over recipients (DNF resolution). Reconcile the optimistic event
+            // with the first event_id; broadcasts for the other event_ids arrive as new events
+            // (dedup is keyed on _dbId, so the first echo is silently absorbed).
+            const firstRecipient = Array.isArray(msg.result.recipients) && msg.result.recipients.length > 0
+              ? msg.result.recipients[0] : null
+            reconcileOptimistic(msg.result._tempId, msg.result.event_ids[0], firstRecipient)
           }
           if (msg.error) cb.reject(new Error(msg.error))
           else cb.resolve(msg.result)

@@ -1275,19 +1275,36 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
-    const resolve = (id) => {
+    const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
-    const to = resolve(rawTo)
-    if (!to) { error(`Recipient not found: "${rawTo}"`); return }
+    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
+    const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
+    // Resolve DNF over all agents using the same label set the MCP `chat()` uses:
+    // agent.labels + virtual (awake/hibernating) + friendly_name + id.
+    const allAgents = fleetStore.getAllAgents?.() || []
+    const recipients = []
+    for (const a of allAgents) {
+      if (a.id === from) continue
+      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+      const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
+      if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+        recipients.push(a.id)
+      }
+    }
+    // Server-owner pseudo-recipient: matched by literal id/name only, no label index.
+    if (dnf.some(andGroup => andGroup.length === 1 && (andGroup[0] === SERVER_OWNER_ID || andGroup[0] === SERVER_OWNER_NAME))) {
+      if (!recipients.includes(SERVER_OWNER_ID)) recipients.push(SERVER_OWNER_ID)
+    }
+    if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
     // Update sender heartbeat
     if (from) fleetStore.updateHeartbeat?.(from)
-    // Resolve CC
-    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
+    // Resolve CC (still single-string list)
+    let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
     if (ccResolved && ccResolved.length === 0) ccResolved = null
-    // Copy attachments to server-accessible path
+    // Copy attachments to server-accessible path (once for all recipients)
     let processedAttachments = attachments
     if (attachments && attachments.length) {
       const UPLOAD_DIR = path.join(import.meta.dirname || '.', 'uploads')
@@ -1304,47 +1321,52 @@ async function handleFleetWsMessage(ws, msg) {
         return a
       })
     }
-    // Resolve wiretaps
-    let wiretapRecipients = []
-    const taps = fleetStore.getWiretaps?.() || []
-    for (const tap of taps) {
-      if (!tap.filter) continue
-      let matches = false
-      try {
-        const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-        const fromMatch = !f.from || f.from.some(grp => grp.every(t => [from, ...(fleetStore.findAgent(from)?.labels || [])].includes(t)))
-        const toMatch = !f.to || f.to.some(grp => grp.every(t => [to, ...(fleetStore.findAgent(to)?.labels || [])].includes(t)))
-        matches = fromMatch && toMatch
-      } catch {}
-      if (matches && tap.agent_id !== from && tap.agent_id !== to) {
-        wiretapRecipients.push(tap.agent_id)
-      }
-    }
-    // Attach sender's chatReminder if set
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
-    const combinedMetadata = {
-      ...(metadata || {}),
-      ...(ccResolved ? { cc: ccResolved } : {}),
-      ...(processedAttachments ? { attachments: processedAttachments } : {}),
-      ...(inline_attachments ? { inline_attachments } : {}),
-      ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
-      ...(context ? { context } : {}),
-      ...(chatReminder ? { chatReminder } : {}),
-    }
-    // Write to DB, reply with event_id FIRST so the client can reconcile
-    // the optimistic event before the echo arrives on the same socket.
+    const taps = fleetStore.getWiretaps?.() || []
+    const fromLabels = [from, ...(fleetStore.findAgent(from)?.labels || [])].filter(Boolean)
     const ts = new Date().toISOString()
-    const meta = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
-    const result = fleetStore.db.prepare(
-      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run('chat', ts, from, to, text, meta)
-    const eventId = Number(result.lastInsertRowid)
-    fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
-    reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
-    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
-    broadcastEvent('fleet-event', inserted)
-    respawnIfNotDead(to)
+    const eventIds = []
+    const insertedEvents = []
+    for (const to of recipients) {
+      // Resolve wiretaps per recipient — tap labels are matched against this `to`.
+      const toLabels = [to, ...(fleetStore.findAgent(to)?.labels || [])].filter(Boolean)
+      const wiretapRecipients = []
+      for (const tap of taps) {
+        if (!tap.filter) continue
+        let matches = false
+        try {
+          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
+          const fromMatch = !f.from || f.from.some(grp => grp.every(t => fromLabels.includes(t)))
+          const toMatch = !f.to || f.to.some(grp => grp.every(t => toLabels.includes(t)))
+          matches = fromMatch && toMatch
+        } catch {}
+        if (matches && tap.agent_id !== from && tap.agent_id !== to) {
+          wiretapRecipients.push(tap.agent_id)
+        }
+      }
+      const combinedMetadata = {
+        ...(metadata || {}),
+        ...(ccResolved ? { cc: ccResolved } : {}),
+        ...(processedAttachments ? { attachments: processedAttachments } : {}),
+        ...(inline_attachments ? { inline_attachments } : {}),
+        ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
+        ...(context ? { context } : {}),
+        ...(chatReminder ? { chatReminder } : {}),
+      }
+      const metaStr = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
+      const result = fleetStore.db.prepare(
+        'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run('chat', ts, from, to, text, metaStr)
+      const eventId = Number(result.lastInsertRowid)
+      fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+      eventIds.push(eventId)
+      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null })
+    }
+    // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
+    reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
+    for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
+    for (const to of recipients) respawnIfNotDead(to)
     return
   }
 
