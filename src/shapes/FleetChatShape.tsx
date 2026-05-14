@@ -800,8 +800,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel) return
     const fleetId = resolveToFleetId(firstLabel)
-    // Include the resolved fleet ID in the guard key so we re-fetch
-    // when the agents list populates and resolution changes
+    // Agents start as [] (async init). If the label didn't resolve to a
+    // fleet ID yet, bail out — the effect re-runs when agents populate.
+    if (fleetId === firstLabel && !firstLabel.startsWith('fleet:')) return
     const loadKey = `${filterKey}:${fleetId}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
