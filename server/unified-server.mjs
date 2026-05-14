@@ -539,6 +539,33 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ level, presenter: level === 'rw' })
 })
 
+// ---------- Fleet user prefs ----------
+// Per-user key-value store backed by fleet_prefs table. User is identified by fleet ID.
+
+app.get('/api/fleet/prefs', requireRead, (req, res) => {
+  const userId = req.query.user
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  res.json(fleetStore.getAllFleetPrefs(userId))
+})
+
+app.get('/api/fleet/prefs/:key', requireRead, (req, res) => {
+  const userId = req.query.user
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  const value = fleetStore.getFleetPref(userId, req.params.key)
+  res.json({ key: req.params.key, value: value ?? null })
+})
+
+app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
+  const { user: userId, value } = req.body
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing user in body' })
+  if (value === undefined) return res.status(400).json({ error: 'Missing value in body' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  fleetStore.setFleetPref(userId, req.params.key, value)
+  res.json({ ok: true })
+})
+
 // ---------- Local image serving ----------
 // Serves local filesystem images for math notes (paths starting with / or ~)
 app.get('/api/local-image', requireRead, (req, res) => {

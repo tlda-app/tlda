@@ -3,6 +3,9 @@
  *
  * NOT for settings that already have direct-manipulation controls
  * (zone width slider, warm mode button, layout toggles, etc.)
+ *
+ * Backed by server-side fleet_prefs table (per fleet user ID).
+ * Local cache makes getPref() synchronous; loadPrefs() populates it async.
  */
 
 import type { CurveHandles } from './curveEditor'
@@ -13,13 +16,16 @@ const DEFAULTS = {
   'voice-note-color': 'yellow' as string,
   'math-note-color': 'light-blue' as string,
   'response-curve': DEFAULT_CURVE as CurveHandles,
+  'spawn-mode': '' as string,
 }
 
 export type PrefKey = keyof typeof DEFAULTS
 
-const STORAGE_KEY = 'tlda-preferences'
-
+const _cache: Partial<typeof DEFAULTS> = {}
 const _listeners = new Set<() => void>()
+let _userId: string | null = null
+
+function _notify() { _listeners.forEach(cb => cb()) }
 
 export function subscribePref(cb: () => void): () => void {
   _listeners.add(cb)
@@ -27,28 +33,35 @@ export function subscribePref(cb: () => void): () => void {
 }
 
 export function getPref<K extends PrefKey>(key: K): (typeof DEFAULTS)[K] {
-  try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-    return stored[key] ?? DEFAULTS[key]
-  } catch {
-    return DEFAULTS[key]
-  }
+  return (key in _cache ? _cache[key] : DEFAULTS[key]) as (typeof DEFAULTS)[K]
 }
 
 export function setPref<K extends PrefKey>(key: K, value: (typeof DEFAULTS)[K]) {
-  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-  stored[key] = value
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
-  _listeners.forEach(cb => cb())
+  _cache[key] = value
+  _notify()
+  if (_userId) {
+    fetch(`/api/fleet/prefs/${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: _userId, value }),
+    }).catch(() => {})
+  }
 }
 
 export function getAllPrefs(): typeof DEFAULTS {
+  return { ...DEFAULTS, ..._cache }
+}
+
+/** Fetch all prefs for a user and populate the local cache. Call after login. */
+export async function loadPrefs(userId: string): Promise<void> {
+  _userId = userId
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-    return { ...DEFAULTS, ...stored }
-  } catch {
-    return { ...DEFAULTS }
-  }
+    const res = await fetch(`/api/fleet/prefs?user=${encodeURIComponent(userId)}`)
+    if (!res.ok) return
+    const data = await res.json()
+    Object.assign(_cache, data)
+    _notify()
+  } catch {}
 }
 
 export { DEFAULTS }

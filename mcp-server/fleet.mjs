@@ -744,6 +744,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           model: { type: 'string', description: 'Model override. Default: sonnet.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
+          mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
         },
       },
     },
@@ -1425,11 +1426,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
 
+      // Resolve mode for inline spawn: explicit > config file default
+      let delegateSpawnMode = spawnOpts.mode || null;
+      if (!delegateSpawnMode) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
+          delegateSpawnMode = cfg.spawnMode || null;
+        } catch {}
+      }
+
       const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
       const cmdParts = [fleetSpawnScript, '--fresh'];
       if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
       if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
       if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
+      if (delegateSpawnMode) cmdParts.push('--mode', delegateSpawnMode);
       cmdParts.push('--no-attach', agentName);
 
       let spawnOutput;
@@ -2341,6 +2352,15 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
     }
 
+    // Resolve mode: explicit arg > config file default
+    let spawnMode = args.mode || null;
+    if (!spawnMode) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
+        spawnMode = cfg.spawnMode || null;
+      } catch {}
+    }
+
     const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
     const cmdParts = [fleetSpawnScript];
     if (isFresh) cmdParts.push('--fresh');
@@ -2348,6 +2368,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (args.model) cmdParts.push('--model', args.model);
     if (args.effort) cmdParts.push('--effort', args.effort);
     if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
+    if (spawnMode) cmdParts.push('--mode', spawnMode);
     cmdParts.push('--no-attach');
     cmdParts.push(agentName);
 

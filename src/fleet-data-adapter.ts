@@ -38,6 +38,13 @@ import {
   getPlaybackChatEvents,
   getPlaybackAgents,
 } from './playback-context'
+import { loadPrefs } from './preferences'
+
+// Load prefs whenever the user's fleet identity is established
+subscribe('identity', null, (ev: any) => {
+  const userId = ev.id || getHumanId()
+  if (userId) loadPrefs(userId)
+})
 
 // --- Lazy initialization ---
 

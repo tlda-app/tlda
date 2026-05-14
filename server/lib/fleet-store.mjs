@@ -181,6 +181,16 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_qa_signatures_report ON qa_signatures(report_id);
     `);
 
+    // ---- User preferences (per fleet ID) ----
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS fleet_prefs (
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+      );
+    `);
+
     // ---- Session JSONL text entries (for unified search) ----
     // Populated by the fleet-daemon as it watches active session JSONLs.
     this.db.exec(`
@@ -786,6 +796,24 @@ export class FleetStore {
   }
 
   // ---- QA system ----
+
+  // ---- Fleet prefs (per user/fleet ID) ----
+
+  setFleetPref(userId, key, value) {
+    this.db.prepare('INSERT OR REPLACE INTO fleet_prefs (user_id, key, value) VALUES (?, ?, ?)').run(userId, key, JSON.stringify(value));
+  }
+
+  getFleetPref(userId, key) {
+    const row = this.db.prepare('SELECT value FROM fleet_prefs WHERE user_id = ? AND key = ?').get(userId, key);
+    return row ? JSON.parse(row.value) : undefined;
+  }
+
+  getAllFleetPrefs(userId) {
+    const rows = this.db.prepare('SELECT key, value FROM fleet_prefs WHERE user_id = ?').all(userId);
+    const out = {};
+    for (const r of rows) out[r.key] = JSON.parse(r.value);
+    return out;
+  }
 
   setQaConfig(key, value) {
     this._setQaConfig.run(key, value);

@@ -29,6 +29,15 @@ DASH_HOST = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
 API = f"http://{DASH_HOST}:{DASH_PORT}"
 DEFAULT_MODEL = 'claude-sonnet-4-6'
 
+TLDA_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
+
+def read_tlda_config():
+    try:
+        with open(TLDA_CONFIG_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
 # Model aliases — agents pass these short names; we resolve to Claude Code model IDs.
 MODEL_ALIASES = {
     "opus": "claude-opus-4-6[1m]",      # default opus — 4.6 burns less context than 4.7
@@ -237,7 +246,7 @@ def tmux_start(session, cwd, cmd):
     )
 
 
-def fresh_spawn(name, model, cwd, effort=None):
+def fresh_spawn(name, model, cwd, effort=None, mode=None):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = f"fleet-{name}"
@@ -258,6 +267,8 @@ def fresh_spawn(name, model, cwd, effort=None):
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
     if effort:
         cmd += f" --effort '{effort}'"
+    if mode:
+        cmd += f" --permission-mode '{mode}'"
     tmux_start(sess, cwd, cmd)
 
     if server_up:
@@ -336,7 +347,7 @@ def find_sessions_for_agent(fleet_id, session_id_hint=None):
     return results
 
 
-def respawn(name, model_override, cwd_override, session_override=None, effort=None):
+def respawn(name, model_override, cwd_override, session_override=None, effort=None, mode=None):
     server_up = ensure_server()
 
     if not server_up:
@@ -383,6 +394,8 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
         cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
         if effort:
             cmd += f" --effort '{effort}'"
+        if mode:
+            cmd += f" --permission-mode '{mode}'"
         tmux_start(sess, cwd, cmd)
         print(f"{sess} ({fleet_id}) spawned fresh in {cwd}")
         return sess
@@ -393,6 +406,8 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     cmd += f" --model '{model}'"
     if effort:
         cmd += f" --effort '{effort}'"
+    if mode:
+        cmd += f" --permission-mode '{mode}'"
     tmux_start(sess, cwd, cmd)
 
     # Verify Claude actually started (didn't exit with "no conversation found")
@@ -414,7 +429,7 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     return sess
 
 
-def refresh_spawn(name, model_override, cwd_override, effort=None):
+def refresh_spawn(name, model_override, cwd_override, effort=None, mode=None):
     """Spawn a fresh session for an existing agent — same fleet ID, no --resume.
     Breaks the compaction loop: agent re-registers with a clean JSONL."""
     server_up = ensure_server()
@@ -451,6 +466,8 @@ def refresh_spawn(name, model_override, cwd_override, effort=None):
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
     if effort:
         cmd += f" --effort '{effort}'"
+    if mode:
+        cmd += f" --permission-mode '{mode}'"
     tmux_start(sess, cwd, cmd)
 
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
@@ -472,17 +489,21 @@ def main():
     parser.add_argument("--model", default=None, help="Override model (default: sonnet)")
     parser.add_argument("--cwd", default=None, help="Override working directory")
     parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
+    parser.add_argument("--mode", default=None, help="Permission mode passed to claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json")
     parser.add_argument("--session", default=None, help="Resume a specific session ID (skip auto-detection)")
     parser.add_argument("--no-attach", action="store_true", help="Don't attach to tmux session after spawning")
     args = parser.parse_args()
 
+    # Resolve mode: explicit flag > config file default
+    mode = args.mode or read_tlda_config().get("spawnMode") or None
+
     try:
         if args.fresh:
-            sess = fresh_spawn(args.name, args.model, args.cwd, args.effort)
+            sess = fresh_spawn(args.name, args.model, args.cwd, args.effort, mode)
         elif args.refresh:
-            sess = refresh_spawn(args.name, args.model, args.cwd, args.effort)
+            sess = refresh_spawn(args.name, args.model, args.cwd, args.effort, mode)
         else:
-            sess = respawn(args.name, args.model, args.cwd, args.session, args.effort)
+            sess = respawn(args.name, args.model, args.cwd, args.session, args.effort, mode)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
