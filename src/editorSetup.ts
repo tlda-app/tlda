@@ -619,33 +619,39 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
       if (shape.type === 'highlight') {
-        let attempts = 0
-        const checkSnap = () => {
-          attempts++
-          if (attempts > 30) return // give up after 6s
+        // Wait for the stroke to quiesce (no shape updates for 200ms) before processing.
+        // isPointing polling was unreliable on iPad/Pencil — brief pauses mid-stroke
+        // would trigger processing while the user was still drawing.
+        let quiesceTimer: ReturnType<typeof setTimeout> | null = null
+        let done = false
+        let unsub: (() => void) | undefined
+
+        const processShape = () => {
+          if (done) return
+          done = true
+          unsub?.()
+          if (quiesceTimer) clearTimeout(quiesceTimer)
           const s = editor.getShape(shape.id as any)
           if (!s) return
-          // Check if user is still drawing (highlight tool is active and pointing)
-          const currentTool = editor.getCurrentToolId()
-          if (currentTool === 'highlight' && editor.inputs.isPointing) {
-            setTimeout(checkSnap, 200)
-            return
-          }
           const bounds = editor.getShapePageBounds(shape.id as any)
-          if (!bounds || bounds.width < 5) {
-            setTimeout(checkSnap, 200)
-            return
-          }
+          if (!bounds || bounds.width < 5) return
           // Ribbon zone: highlight drawn in left margin → update understanding lines
           if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
           snapHighlighterToText(editor, shape.id, document.name, document.targets)
-          // Process highlight for feedback integration (understanding-line updates + signal)
           processHighlightFeedback(editor, shape.id, document.name)
         }
-        setTimeout(checkSnap, 300)
+
+        unsub = editor.store.listen(({ changes }) => {
+          if (!changes.updated[shape.id as any]) return
+          if (quiesceTimer) clearTimeout(quiesceTimer)
+          quiesceTimer = setTimeout(processShape, 200)
+        }, { scope: 'document' })
+
+        // Safety fallback: process after 3s regardless
+        setTimeout(processShape, 3000)
       }
     }
   })
