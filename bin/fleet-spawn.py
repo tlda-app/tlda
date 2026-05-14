@@ -583,10 +583,9 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
         print("[dry-run] would spawn — exiting without spawning")
         return sess
 
-    if enroll:
-        server_up = ensure_server()
-        if server_up:
-            ws_register(fleet_id, name, sess, cwd, model, effort)
+    server_up = ensure_server()
+    if server_up:
+        ws_register(fleet_id, name, sess, cwd, model, effort)
 
     tmux_kill(sess)
 
