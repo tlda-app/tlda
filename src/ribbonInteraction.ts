@@ -16,7 +16,7 @@ import { getHumanId, getHumanName } from './fleet/fleet-data.mjs'
 import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
 
-const MARGIN_X = -12
+const MARGIN_X = 0
 const BAR_WIDTH = 3
 
 // Cache: docName → sorted [{line, canvasY}] for reverse lookup
