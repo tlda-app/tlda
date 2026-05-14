@@ -1066,6 +1066,24 @@ async function rpcListSessions() {
   }
 }
 
+async function rpcCheckAlive({ tmux_session }) {
+  if (!tmux_session) return { alive: false }
+  const { sessions } = await rpcListSessions()
+  if (!new Set(sessions).has(tmux_session)) return { alive: false }
+  const { stdout } = await execFileP('tmux',
+    ['list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
+    { timeout: 3000, encoding: 'utf8' })
+  const panePids = stdout.trim().split('\n').filter(Boolean)
+  for (const pid of panePids) {
+    try {
+      const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
+        { timeout: 2000, encoding: 'utf8' })
+      if (children.trim()) return { alive: true }
+    } catch {}
+  }
+  return { alive: false }
+}
+
 async function rpcKick({ agent_id }) {
   if (!agent_id) throw new Error('missing agent_id')
   const dir = path.join(os.homedir(), '.fleet', 'signals')
@@ -1233,6 +1251,7 @@ const RPC_HANDLERS = {
   'send-text': rpcSendText,
   'capture-pane': rpcCapturePane,
   'interrupt': rpcInterrupt,
+  'check-alive': rpcCheckAlive,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
   'kill-session': rpcKillSession,

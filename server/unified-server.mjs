@@ -1256,11 +1256,16 @@ async function handleFleetWsMessage(ws, msg) {
   // it. `dead` means explicitly killed — never auto-respawns. Hibernation
   // is behavioral, not stored: it's "no process + you tried to interact."
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
-  function respawnIfNotDead(agentId) {
+  async function respawnIfNotDead(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead) return
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) return
+    // Ask the daemon — on the agent's machine — whether the Claude process is running.
+    // The daemon checks tmux session existence + pgrep for a claude process inside it.
+    const { alive } = await sendRpc(machineIds[0], 'check-alive', { tmux_session: agent.tmux_session })
+      .catch(() => ({ alive: false }))
+    if (alive) return
     // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
     sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
       .catch(e => console.warn(`[respawn] failed for ${agentId}: ${e.message}`))
