@@ -87,6 +87,21 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 // agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
 
+// Per-machine "agent is alive right now" set, populated by `agent-liveness`
+// messages from each daemon (sent on every `checkAgentLiveness` pass). The
+// fleet store consults this via an installed oracle when computing the
+// `awake` / `hibernating` status on each agent. Cleared on daemon disconnect.
+const _daemonLiveness = new Map()           // machine_id -> Set<agent_id>
+
+function isAgentAlive(agentId) {
+  for (const set of _daemonLiveness.values()) {
+    if (set.has(agentId)) return true
+  }
+  return false
+}
+
+if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
+
 // Local-machine daemon supervisor.
 //
 // The fleet daemon is a per-machine subprocess that watches Claude Code
@@ -1081,14 +1096,18 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          _daemonLiveness.delete(ws._machineId)
           failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
+          broadcastState()
           console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
         }
       })
       ws.on('error', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          _daemonLiveness.delete(ws._machineId)
           failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
+          broadcastState()
         }
       })
     })
@@ -1188,6 +1207,14 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertAgent(agent)
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    // Registration implies a live claude process — mark alive immediately so
+    // the agent shows "awake" right away. The daemon's next sweep confirms
+    // or evicts within 30s.
+    if (agent.machine_id && !agent.human) {
+      const set = _daemonLiveness.get(agent.machine_id) || new Set()
+      set.add(agentId)
+      _daemonLiveness.set(agent.machine_id, set)
+    }
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
@@ -2155,6 +2182,18 @@ function handleDaemonWsMessage(ws, msg) {
 
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
+
+  if (type === 'agent-liveness') {
+    // Daemon's per-machine list of agents whose claude processes are
+    // currently running. This is the single source of truth for the
+    // awake/hibernating status; see fleetStore.setLivenessOracle.
+    if (Array.isArray(msg.agent_ids)) {
+      _daemonLiveness.set(ws._machineId, new Set(msg.agent_ids))
+      // Notify connected clients so they see the updated status.
+      broadcastState()
+    }
+    return
+  }
 
   if (type === 'activity-event') {
     if (!fleetStore) return

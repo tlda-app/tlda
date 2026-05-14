@@ -630,11 +630,18 @@ export class FleetStore {
       .run(JSON.stringify(metadata), id);
   }
 
+  // Liveness oracle: optional function (agentId) => boolean.
+  // Installed by the server. Returns true if the agent's claude process is
+  // running on its machine right now (as reported by that machine's daemon).
+  // No oracle installed → no agent reports awake (all hibernating). The
+  // daemon's first liveness sweep populates the oracle within seconds of
+  // connect, so this is only the cold-start transient.
+  setLivenessOracle(fn) { this._isLiveOracle = fn }
+
   _hydrateAgent(row) {
-    const AWAKE_MS = 20 * 60 * 1000
     const lastActive = row.last_active || null
-    const isAwake = !row.dead && !row.human && lastActive
-      ? (Date.now() - new Date(lastActive).getTime()) < AWAKE_MS
+    const isAwake = !row.dead && !row.human && this._isLiveOracle
+      ? !!this._isLiveOracle(row.id)
       : false
     return {
       ...row,

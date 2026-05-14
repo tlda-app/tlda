@@ -1206,13 +1206,16 @@ async function checkAgentLiveness() {
     sessions = new Set(r.sessions || [])
   } catch { return }  // tmux not available
 
+  const aliveAgentIds = []
   for (const agent of agents) {
-    if (agent.hibernating || agent.dead || agent.human) continue
+    if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
 
     const tmuxExists = sessions.has(agent.tmux_session)
     if (!tmuxExists) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+      if (!agent.hibernating) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+      }
       agent.hibernating = true
       continue
     }
@@ -1234,13 +1237,26 @@ async function checkAgentLiveness() {
     } catch {}
 
     if (!claudeAlive) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
-      try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+      if (!agent.hibernating) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
+        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+      }
       agent.hibernating = true
       continue
     }
 
+    // Process is live — clear hibernation if it was set (agent came back).
+    if (agent.hibernating) {
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (claude process found in ${agent.tmux_session})`)
+      agent.hibernating = false
+    }
+    aliveAgentIds.push(agent.id)
   }
+
+  // Report current alive set to the server. Server uses this (per machine_id)
+  // as ground truth for awake/hibernating status. Hibernating = registered
+  // and not dead, but no claude process — the agent went to sleep.
+  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
 }
 
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {

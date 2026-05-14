@@ -334,7 +334,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const sortedAgents = useMemo(() => {
     const list: any[] = []
     for (const a of agents) {
-      if (a.human) continue
+      if (a.human || a.dead) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       list.push({ ...a, _ts: ts })
     }
