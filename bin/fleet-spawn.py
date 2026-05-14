@@ -2,14 +2,16 @@
 """fleet-spawn — spawn or respawn fleet agents.
 
 Usage:
-  fleet-spawn <friendlyname>            Respawn existing agent (resume most recent session)
-  fleet-spawn --fresh <friendlyname>    Spawn a brand new agent
+  fleet-spawn <friendlyname>                   Respawn existing agent (resume most recent session)
+  fleet-spawn --fresh <friendlyname>           Spawn a brand new agent
+  fleet-spawn --session <uuid>                 Respawn by session UUID (no name needed)
 
 Options:
   --model <model>    Override model (default: sonnet, or agent's stored model)
   --cwd <path>       Override working directory (fresh mode only)
   --effort <level>   Effort level: low|medium|high|xhigh|max (default: inherit global config)
   --no-attach        Don't attach to the tmux session after spawning
+  --dry-run          Print what would happen without spawning
   --help             Show this help
 """
 
@@ -482,6 +484,99 @@ def refresh_spawn(name, model_override, cwd_override, effort=None, mode=None):
     return sess
 
 
+def respawn_from_session(session_uuid, model_override, cwd_override, effort=None, mode=None, dry_run=False):
+    """Respawn an agent given only a session UUID.
+    Scans the JSONL to extract fleet ID and friendly name, then respawns."""
+    import glob as globmod, re
+
+    projects_base = os.path.expanduser("~/.claude/projects")
+    matches = globmod.glob(os.path.join(projects_base, "*", f"{session_uuid}.jsonl"))
+
+    if not matches:
+        print(f"Error: No JSONL found for session {session_uuid}", file=sys.stderr)
+        sys.exit(1)
+
+    fpath = matches[0]
+    project_dir = os.path.basename(os.path.dirname(fpath))
+
+    fleet_id = None
+    name = None
+    register_pattern = re.compile(r'Registered (fleet:\w+)')
+    name_pattern = re.compile(r'Your name: "([^"]+)"')
+
+    try:
+        with open(fpath, "r", errors="replace") as f:
+            for line in f:
+                if "Registered fleet:" not in line:
+                    continue
+                try:
+                    d = json.loads(line.strip())
+                    tur = d.get("toolUseResult")
+                    if not tur:
+                        continue
+                    items = tur if isinstance(tur, list) else [tur]
+                    for item in items:
+                        text = item.get("text", "") if isinstance(item, dict) else str(item)
+                        m = register_pattern.search(text)
+                        if m:
+                            fleet_id = m.group(1)
+                            nm = name_pattern.search(text)
+                            if nm:
+                                name = nm.group(1)
+                            break
+                    if fleet_id:
+                        break
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+    except OSError as e:
+        print(f"Error: Could not read JSONL: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not fleet_id:
+        print(f"Error: No fleet registration found in session {session_uuid}", file=sys.stderr)
+        sys.exit(1)
+
+    if not name:
+        name = fleet_id.replace("fleet:", "agent-")
+
+    # Derive cwd from project dir name: "-Users-skip-work-tlda" → "/Users/skip/work/tlda"
+    if cwd_override:
+        cwd = cwd_override
+    elif project_dir.startswith("-"):
+        cwd = "/" + project_dir[1:].replace("-", "/")
+    else:
+        cwd = os.getcwd()
+
+    model = resolve_model(model_override or DEFAULT_MODEL)
+    sess = f"fleet-{name}"
+
+    print(f"Found: {fleet_id} ({name}) — session {session_uuid}")
+    print(f"  cwd: {cwd}, model: {model}, tmux: {sess}")
+
+    if dry_run:
+        print("[dry-run] would spawn — exiting without spawning")
+        return sess
+
+    tmux_kill(sess)
+
+    cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --resume {session_uuid}"
+    cmd += f" --model '{model}'"
+    if effort:
+        cmd += f" --effort '{effort}'"
+    if mode:
+        cmd += f" --permission-mode '{mode}'"
+    tmux_start(sess, cwd, cmd)
+
+    time.sleep(2)
+    result = subprocess.run(tmux_cmd("has-session", "-t", sess), capture_output=True)
+    if result.returncode != 0:
+        print(f"Error: Claude could not resume session {session_uuid}.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"{sess} ({fleet_id}) resumed session {session_uuid} in {cwd}")
+    return sess
+
+
 def main():
     # The keystroke-injection child is invoked as a sub-process by
     # tmux_start; handle it before argparse so it doesn't conflict with
@@ -491,22 +586,30 @@ def main():
         return
 
     parser = argparse.ArgumentParser(description="Spawn or respawn fleet agents")
-    parser.add_argument("name", help="Agent friendly name")
+    parser.add_argument("name", nargs="?", default=None, help="Agent friendly name (optional if --session is given)")
     parser.add_argument("--fresh", action="store_true", help="Spawn a new agent instead of respawning")
     parser.add_argument("--refresh", action="store_true", help="Fresh session for existing agent (same fleet ID, breaks compaction loops)")
     parser.add_argument("--model", default=None, help="Override model (default: sonnet)")
     parser.add_argument("--cwd", default=None, help="Override working directory")
     parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
     parser.add_argument("--mode", default=None, help="Permission mode passed to claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json")
-    parser.add_argument("--session", default=None, help="Resume a specific session ID (skip auto-detection)")
+    parser.add_argument("--session", default=None, help="Resume a specific session ID; if no name given, scans JSONL to find fleet ID and name")
     parser.add_argument("--no-attach", action="store_true", help="Don't attach to tmux session after spawning")
+    parser.add_argument("--dry-run", action="store_true", help="Print what would happen without actually spawning")
     args = parser.parse_args()
+
+    if args.name is None and not args.session:
+        parser.print_usage(sys.stderr)
+        print("Error: provide a name or --session <uuid>", file=sys.stderr)
+        sys.exit(2)
 
     # Resolve mode: explicit flag > config file default
     mode = args.mode or read_tlda_config().get("spawnMode") or None
 
     try:
-        if args.fresh:
+        if args.name is None and args.session:
+            sess = respawn_from_session(args.session, args.model, args.cwd, args.effort, mode, dry_run=args.dry_run)
+        elif args.fresh:
             sess = fresh_spawn(args.name, args.model, args.cwd, args.effort, mode)
         elif args.refresh:
             sess = refresh_spawn(args.name, args.model, args.cwd, args.effort, mode)
@@ -516,7 +619,7 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
 
-    if not args.no_attach:
+    if not args.no_attach and not getattr(args, 'dry_run', False):
         cmd = tmux_cmd("attach-session", "-t", sess)
         os.execvp(cmd[0], cmd)
 
