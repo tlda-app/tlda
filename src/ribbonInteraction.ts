@@ -4,25 +4,17 @@
  *
  * The ribbon zone is x < 0 in canvas/page space (left of the document pages).
  * When the user highlights in this zone, the highlight is consumed and a
- * corresponding understanding-line shape is created/updated/deleted.
+ * corresponding understanding-line shape is created/updated.
+ *
+ * Eraser in the ribbon zone resets segments to 'unchecked' instead of deleting.
  */
 
 import type { Editor, TLShapeId } from 'tldraw'
 import { loadLookup } from './synctexLookup'
 import { pdfToCanvas } from './synctexAnchor'
 import { getHumanId, getHumanName } from './fleet/fleet-data.mjs'
+import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
-
-// Colors that map to understanding-line statuses (null = delete)
-const COLOR_TO_STATUS: Record<string, string | null | undefined> = {
-  'light-green': 'approved',
-  'green': 'approved',
-  'yellow': 'understood',
-  'orange': 'understood',
-  'light-red': null,
-  'red': null,
-  // undefined for anything else = no action
-}
 
 const MARGIN_X = -12
 const BAR_WIDTH = 3
@@ -67,7 +59,7 @@ function findClosestLine(index: Array<{ line: number; canvasY: number }>, target
 
 /**
  * Process a highlight drawn in the ribbon zone (bounds.maxX < 5 canvas units).
- * Creates/updates/deletes understanding-line shapes and removes the highlight.
+ * Creates/updates understanding-line shapes and removes the highlight.
  */
 export async function processRibbonHighlight(
   editor: Editor,
@@ -82,34 +74,22 @@ export async function processRibbonHighlight(
   if (!bounds) return
 
   const hlColor = (shape.props as any).color || 'green'
-  const status = COLOR_TO_STATUS[hlColor]
+  const status = HIGHLIGHT_TO_STATUS[hlColor]
 
-  // Consume the highlight shape
   editor.deleteShape(shapeId)
 
-  if (status === undefined) return  // unmapped color, no action
+  if (!status) return
 
   const userId = getHumanId() || 'unknown'
   const displayName = getHumanName() || userId
 
   const allUL = editor.getCurrentPageShapes().filter((s: any) => s.type === 'understanding-line')
 
-  if (status === null) {
-    // Delete all understanding lines for this user overlapping this Y range
-    const toDelete = allUL
-      .filter((s: any) => s.props?.userId === userId && s.y < bounds.maxY && s.y + (s.props.h ?? 0) > bounds.minY)
-      .map((s: any) => s.id as TLShapeId)
-    if (toDelete.length > 0) editor.deleteShapes(toDelete)
-    return
-  }
-
-  // Determine stacking index for this user
   const otherUsers = new Set(allUL.filter((s: any) => s.props?.userId !== userId).map((s: any) => s.props?.userId))
   const userIndex = otherUsers.size
   const x = MARGIN_X - (userIndex * USER_GAP)
   const h = Math.max(20, bounds.maxY - bounds.minY)
 
-  // Best-effort line number lookup (async, used for metadata only)
   const index = await getLineYIndex(docName, pages)
   const startLine = findClosestLine(index, bounds.minY) ?? 0
   const endLine = findClosestLine(index, bounds.maxY) ?? 0
@@ -127,7 +107,7 @@ export async function processRibbonHighlight(
       x,
       y: bounds.minY,
       rotation: 0,
-      isLocked: true,
+      isLocked: false,
       opacity: 1,
       props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex },
     })
@@ -138,6 +118,31 @@ export async function processRibbonHighlight(
 export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   const bounds = editor.getShapePageBounds(shapeId)
   if (!bounds) return false
-  // Ribbon zone: entirely in the left margin (x < 0)
   return bounds.maxX < 5
+}
+
+/**
+ * Register an after-delete handler that re-creates understanding-line shapes
+ * as 'unchecked' when the eraser tool deletes them.
+ * Call once from editorSetup.
+ */
+export function registerEraserInterceptor(editor: Editor): void {
+  editor.sideEffects.registerAfterDeleteHandler('shape', (shape) => {
+    if (shape.type !== 'understanding-line') return
+    if (editor.getCurrentToolId() !== 'eraser') return
+
+    // Re-create as unchecked after the deletion transaction completes
+    setTimeout(() => {
+      editor.createShape({
+        id: shape.id as TLShapeId,
+        type: 'understanding-line' as any,
+        x: shape.x,
+        y: shape.y,
+        rotation: shape.rotation ?? 0,
+        isLocked: false,
+        opacity: 1,
+        props: { ...(shape.props as any), status: 'unchecked' },
+      })
+    }, 0)
+  })
 }

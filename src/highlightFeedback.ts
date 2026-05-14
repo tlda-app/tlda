@@ -16,6 +16,7 @@
  */
 
 import type { Editor } from 'tldraw'
+import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 
 export interface HighlightFeedback {
   type: 'approve' | 'reject' | 'question' | 'expand' | 'comment' | 'info'
@@ -48,20 +49,6 @@ export function colorToFeedback(color: string): { type: HighlightFeedback['type'
 }
 
 /**
- * Color → understanding-line status mapping.
- * Only some highlight types map to understanding-line status changes.
- * null means "delete the understanding line" (reject = mark as wrong).
- */
-const COLOR_TO_UL_STATUS: Record<string, string | null> = {
-  'light-green': 'approved',
-  'green': 'approved',
-  'yellow': 'understood',  // uncertain — understood but flagged
-  'orange': 'understood',
-  'light-red': null,        // reject → delete the understanding line
-  'red': null,
-}
-
-/**
  * After a highlight is completed, check for overlapping understanding-line shapes
  * and update their status based on the highlight color.
  */
@@ -70,10 +57,10 @@ export function updateOverlappingUnderstandingLines(editor: Editor, shapeId: str
   if (!shape) return
 
   const hlColor = (shape.props as any).color || 'yellow'
-  const targetStatus = COLOR_TO_UL_STATUS[hlColor]
+  const targetStatus = HIGHLIGHT_TO_STATUS[hlColor]
 
   // If this color doesn't map to any understanding-line action, skip
-  if (targetStatus === undefined) return
+  if (!targetStatus) return
 
   const hlBounds = editor.getShapePageBounds(shapeId as any)
   if (!hlBounds) return
@@ -92,19 +79,13 @@ export function updateOverlappingUnderstandingLines(editor: Editor, shapeId: str
   if (overlapping.length === 0) return
 
   for (const ul of overlapping) {
-    if (targetStatus === null) {
-      // Delete the understanding line (reject = mark as wrong)
-      editor.deleteShape(ul.id)
-    } else {
-      // Update the status
-      editor.store.update(ul.id, (s: any) => ({
-        ...s,
-        props: { ...s.props, status: targetStatus },
-      }))
-    }
+    editor.store.update(ul.id, (s: any) => ({
+      ...s,
+      props: { ...s.props, status: targetStatus },
+    }))
   }
 
-  console.log(`[highlight-feedback] Updated ${overlapping.length} understanding-line(s) → ${targetStatus ?? 'deleted'}`)
+  console.log(`[highlight-feedback] Updated ${overlapping.length} understanding-line(s) → ${targetStatus}`)
 }
 
 /**

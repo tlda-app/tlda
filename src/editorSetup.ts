@@ -13,7 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
-import { processRibbonHighlight, isInRibbonZone } from './ribbonInteraction'
+import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor } from './ribbonInteraction'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -548,6 +548,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       }
     }
   }, { scope: 'document' })
+
+  // Eraser resets understanding-line shapes to 'unchecked' instead of deleting them
+  registerEraserInterceptor(editor)
 
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
