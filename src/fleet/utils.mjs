@@ -126,6 +126,8 @@ export function renderAgentPill(agentId, opts = {}) {
 export function agentMatchesDnf(dnf, agent) {
   if (!dnf || dnf.length === 0) return true
   const labels = [...(agent.labels || [])]
+  if (agent.status === 'awake') labels.push('awake')
+  else if (agent.status === 'hibernating') labels.push('hibernating')
   if (agent.friendly_name) labels.push(agent.friendly_name)
   if (agent.id) labels.push(agent.id)
   // Terms are [role, label] tuples or plain strings

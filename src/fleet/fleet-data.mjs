@@ -83,7 +83,9 @@ function agentMatchesLabel(agentId, label) {
     if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
     return false
   }
-  const labels = [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean)
+  // Virtual labels derived from agent.status (mirrors server-side resolution).
+  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : []
+  const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
   return labels.includes(label)
 }
 
@@ -95,7 +97,8 @@ function resolveFilter(filter) {
   const allAgents = [..._agents]
   if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
   for (const a of allAgents) {
-    const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+    const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+    const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
     const matches = filter.some(clause =>
       clause.every(term => {
         const label = Array.isArray(term) ? term[1] : term
