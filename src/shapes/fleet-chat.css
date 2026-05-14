@@ -1509,6 +1509,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-right: 8px;
 }
 
+.fleet-agents-shape .fleet-agents-col-ctx {
+  width: 30px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  opacity: 0.7;
+  margin-right: 6px;
+}
+
 /* --- Draggable pills in table --- */
 
 .fleet-agents-shape .fleet-agents-pill {

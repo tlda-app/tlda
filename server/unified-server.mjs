@@ -268,6 +268,7 @@ function broadcastEvent(type, data) {
 // broadcastState() so state pushes never wipe client indicators.
 const _thinkingState = new Map()   // agentId → timestamp (ms)
 const _compactingState = new Map() // agentId → timestamp (ms)
+const _contextState = new Map()    // agentId → { percent, inputTokens }
 
 function broadcastState() {
   if (!fleetStore) return
@@ -276,6 +277,7 @@ function broadcastState() {
     tasks: fleetStore.getActiveTasks(),
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
+    context: Object.fromEntries(_contextState),
   })
 }
 
@@ -881,6 +883,7 @@ app.use('/api/recognize', recognizeRoutes)
 function clearEphemeralState(agentId) {
   _thinkingState.delete(agentId)
   _compactingState.delete(agentId)
+  _contextState.delete(agentId)
 }
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
@@ -1109,6 +1112,7 @@ server.on('upgrade', async (req, socket, head) => {
           tasks: fleetStore.getActiveTasks(),
           thinking: Object.fromEntries(_thinkingState),
           compacting: Object.fromEntries(_compactingState),
+          context: Object.fromEntries(_contextState),
           connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
@@ -1504,6 +1508,15 @@ async function handleFleetWsMessage(ws, msg) {
       _compactingState.delete(msg.agentId)
     }
     broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'agent-context') {
+    if (msg.agentId != null && msg.contextPercent != null) {
+      _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+      broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+    }
     reply({ ok: true })
     return
   }

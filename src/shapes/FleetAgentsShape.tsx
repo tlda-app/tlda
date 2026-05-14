@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, killSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, killSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
@@ -363,6 +363,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const lastMessages = useLastMessages(sortedAgents)
 
   const unreadCounts = useFleetUnreadCounts()
+  const contextPercent = useFleetContext(null, frameId)
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -454,6 +455,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               agent={agent}
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
+              contextPct={contextPercent.get(agent.id)}
               dimmed={agentCategory(agent) === 'stale'}
               expanded={expandedId === agent.id}
               lastMessage={lastMessages[agentDisplayName(agent)] || ''}
@@ -525,6 +527,7 @@ function AgentRow({
   tasks,
   dimmed,
   unreadCount,
+  contextPct,
   expanded,
   lastMessage,
   onToggleExpand,
@@ -534,6 +537,7 @@ function AgentRow({
   tasks: any[]
   dimmed?: boolean
   unreadCount: number
+  contextPct?: number
   expanded: boolean
   lastMessage: string
   onToggleExpand: () => void
@@ -585,6 +589,15 @@ function AgentRow({
         </span>
 
         <span className="fleet-agents-col-seen">{ago}</span>
+
+        {contextPct != null && (
+          <span
+            className="fleet-agents-col-ctx"
+            style={{ color: contextPct <= 15 ? '#e57373' : contextPct <= 30 ? '#ffb74d' : '#81c784' }}
+          >
+            {contextPct}%
+          </span>
+        )}
 
         <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}

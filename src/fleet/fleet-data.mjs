@@ -365,6 +365,10 @@ export function connect() {
         for (const [agent, ts] of Object.entries(msg.compacting || {})) {
           notify('compacting', { agent, compacting: true, ts })
         }
+        // Context percent state
+        for (const [agent, ctx] of Object.entries(msg.context || {})) {
+          notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
+        }
         // Clear any agent NOT in the server's set
         notify('thinking-sync', serverThinking)
         notify('compacting-sync', serverCompacting)
@@ -416,6 +420,8 @@ export function connect() {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {
         if (data.agent) notify('compacting', data)
+      } else if (eventType === 'agent-context') {
+        if (data.agent) notify('context', data)
       } else if (eventType === 'agent-status') {
         if (data.agent) notify('status', data)
       } else if (eventType === 'reload') {

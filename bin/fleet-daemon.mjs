@@ -733,6 +733,15 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     const activity = extractActivityEvents(parsedEvents)
     if (activity.length > 0) bufferActivity(agentId, activity)
 
+    // Context-percent: find the latest usage data and compute remaining %
+    const lastUsage = [...parsedEvents].reverse().find(ev => ev.usage)
+    if (lastUsage) {
+      const MAX_CONTEXT = 200_000
+      const used = lastUsage.usage.input
+      const pct = Math.max(0, Math.round((1 - used / MAX_CONTEXT) * 100))
+      sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })
+    }
+
     // Qualification checking: track reads, check edits/writes
     for (const ev of parsedEvents) {
       if (!ev.blocks) continue
