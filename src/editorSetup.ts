@@ -13,7 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
-import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor } from './ribbonInteraction'
+import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor, clearLineYIndexCache, remapUnderstandingLines, initRibbonBackground } from './ribbonInteraction'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -445,12 +445,17 @@ export async function reloadPages(
     console.log(`[Reload] Updated svg-page for page ${index + 1}`)
   }
 
-  // After a full reload, remap annotations
+  // After a full reload, remap annotations and ribbon shapes
   let remapResult: { failed: number; total: number } | undefined
   if (!pageNumbers) {
     if (currentDocumentInfo) {
       remapResult = await remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
     }
+    // Phase 2: clear stale synctex cache and reposition understanding-line shapes.
+    // (diff/png formats already returned early above, so no format check needed)
+    clearLineYIndexCache(document.name)
+    await remapUnderstandingLines(editor, document.name, document.pages)
+    await initRibbonBackground(editor, document.name, document.pages)
   }
 
   console.log(`[Reload] Done — ${indices.length} page(s) updated`)
@@ -551,6 +556,12 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
 
   // Eraser resets understanding-line shapes to 'unchecked' instead of deleting them
   registerEraserInterceptor(editor)
+
+  // Phase 2: initialize the full-document unchecked background ribbon shape
+  if (document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
+      document.format !== 'slides' && document.format !== 'markdown') {
+    void initRibbonBackground(editor, document.name, document.pages)
+  }
 
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
