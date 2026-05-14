@@ -619,22 +619,18 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
       if (shape.type === 'highlight') {
-        // Wait for the stroke to quiesce (no shape updates for 200ms) before processing.
-        // isPointing polling was unreliable on iPad/Pencil — brief pauses mid-stroke
-        // would trigger processing while the user was still drawing.
-        let quiesceTimer: ReturnType<typeof setTimeout> | null = null
+        // Process after pointer_up — the actual "pen lifted" signal, reliable on iPad/Pencil.
+        // Small 50ms delay after pointer_up to let TLDraw commit the final shape geometry.
         let done = false
-        let unsub: (() => void) | undefined
 
         const processShape = () => {
           if (done) return
           done = true
-          unsub?.()
-          if (quiesceTimer) clearTimeout(quiesceTimer)
+          editor.off('event', onPointerUp)
           const s = editor.getShape(shape.id as any)
           if (!s) return
           const bounds = editor.getShapePageBounds(shape.id as any)
-          if (!bounds || bounds.width < 5) return
+          if (!bounds || (bounds.width < 5 && bounds.height < 10)) return
           // Ribbon zone: highlight drawn in left margin → update understanding lines
           if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
@@ -644,14 +640,14 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           processHighlightFeedback(editor, shape.id, document.name)
         }
 
-        unsub = editor.store.listen(({ changes }) => {
-          if (!changes.updated[shape.id as any]) return
-          if (quiesceTimer) clearTimeout(quiesceTimer)
-          quiesceTimer = setTimeout(processShape, 200)
-        }, { scope: 'document' })
+        const onPointerUp = (event: any) => {
+          if (event.name !== 'pointer_up' || event.type !== 'pointer') return
+          setTimeout(processShape, 50)
+        }
 
-        // Safety fallback: process after 3s regardless
-        setTimeout(processShape, 3000)
+        editor.on('event', onPointerUp)
+        // Safety fallback: process after 5s if pointer_up never fires
+        setTimeout(processShape, 5000)
       }
     }
   })

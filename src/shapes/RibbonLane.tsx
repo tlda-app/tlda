@@ -8,7 +8,7 @@
 
 import { useEditor, useValue } from 'tldraw'
 
-const LANE_X = -12
+const LANE_X = 0
 const LANE_WIDTH = 3
 
 export function RibbonLane() {
