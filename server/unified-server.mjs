@@ -1252,17 +1252,19 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Respawn a dead agent when a message is directed at them.
+  // Interacting with a hibernating (non-dead, no live process) agent wakes
+  // it. `dead` means explicitly killed — never auto-respawns. Hibernation
+  // is behavioral, not stored: it's "no process + you tried to interact."
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
-  function autoRespawnIfDead(agentId) {
+  function respawnIfNotDead(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
-    if (!agent?.dead) return
+    if (!agent || agent.dead) return
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) return
     // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
     sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
-      .catch(e => console.warn(`[auto-respawn] failed for ${agentId}: ${e.message}`))
-    console.log(`[auto-respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
+      .catch(e => console.warn(`[respawn] failed for ${agentId}: ${e.message}`))
+    console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
   }
 
   if (type === 'chat') {
@@ -1337,7 +1339,7 @@ async function handleFleetWsMessage(ws, msg) {
     reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
     const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
     broadcastEvent('fleet-event', inserted)
-    autoRespawnIfDead(to)
+    respawnIfNotDead(to)
     return
   }
 
@@ -1409,7 +1411,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    autoRespawnIfDead(resolved.id)
+    respawnIfNotDead(resolved.id)
     return
   }
 
