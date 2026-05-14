@@ -31,17 +31,9 @@
 .fleet-agents-shape,
 .fleet-search-shape,
 .cluster-shape {
-  background-color: rgba(15, 15, 26, 0.85);
+  background-color: transparent;
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
-  transition: background-color 0.2s;
-}
-
-.fleet-chat-shape:hover,
-.fleet-agents-shape:hover,
-.fleet-search-shape:hover,
-.cluster-shape:hover {
-  background-color: rgba(15, 15, 26, 1);
 }
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
@@ -2369,7 +2361,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   left: 0;
   right: 0;
   /* height is set via inline style from React state */
-  background: rgba(13, 13, 20, 0.96);
+  background: rgb(13, 13, 20);
   border: 1px solid rgba(80, 80, 110, 0.35);
   border-radius: 0 0 4px 4px;
   border-top: none;
@@ -2378,8 +2370,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: hidden;
   z-index: 50;
   font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 
 .fleet-chat-shape .fleet-terminal-hover-header {
@@ -2387,7 +2377,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   align-items: center;
   gap: 5px;
   padding: 3px 6px;
-  background: rgba(20, 20, 30, 0.8);
+  background: rgb(20, 20, 30);
   border-bottom: 1px solid rgba(80, 80, 110, 0.2);
   flex-shrink: 0;
   min-height: 18px;
