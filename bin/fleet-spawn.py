@@ -38,6 +38,14 @@ def read_tlda_config():
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
+def _tmux_socket():
+    return read_tlda_config().get("tmuxSocket") or None
+
+def tmux_cmd(*args):
+    """Build a tmux command list with the configured socket (-L <socket>) if set."""
+    sock = _tmux_socket()
+    return ["tmux", "-L", sock, *args] if sock else ["tmux", *args]
+
 # Model aliases — agents pass these short names; we resolve to Claude Code model IDs.
 MODEL_ALIASES = {
     "opus": "claude-opus-4-6[1m]",      # default opus — 4.6 burns less context than 4.7
@@ -132,7 +140,7 @@ def api_post(path, data):
 
 
 def tmux_kill(session):
-    subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+    subprocess.run(tmux_cmd("kill-session", "-t", session), capture_output=True)
 
 
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
@@ -162,7 +170,7 @@ def pane_idle(session):
     *inside* the box, or "esc to interrupt" in the status row, count.
     """
     out = subprocess.run(
-        ["tmux", "capture-pane", "-t", session, "-p", "-S", "-30"],
+        tmux_cmd("capture-pane", "-t", session, "-p", "-S", "-30"),
         capture_output=True, text=True, check=False,
     ).stdout or ""
     lines = out.splitlines()
@@ -186,7 +194,7 @@ def pane_has_channels_dialog(session):
     """True if the agent's tmux pane is currently showing the
     `--dangerously-load-development-channels` confirmation dialog."""
     out = subprocess.run(
-        ["tmux", "capture-pane", "-t", session, "-p", "-S", "-50"],
+        tmux_cmd("capture-pane", "-t", session, "-p", "-S", "-50"),
         capture_output=True, text=True, check=False,
     ).stdout or ""
     return CHANNELS_DIALOG_MARKER in out and "I am using this for local development" in out
@@ -196,8 +204,8 @@ def dismiss_channels_dialog(session):
     """Send '1\\n' to select 'I am using this for local development' and
     confirm. Idempotent if the dialog isn't there (a stray '1' lands in
     the input area but Enter clears it on a non-prompt screen)."""
-    subprocess.run(["tmux", "send-keys", "-t", session, "1"], check=False)
-    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=False)
+    subprocess.run(tmux_cmd("send-keys", "-t", session, "1"), check=False)
+    subprocess.run(tmux_cmd("send-keys", "-t", session, "Enter"), check=False)
 
 
 def inject_register_prompt(session, deadline_seconds=120):
@@ -227,8 +235,8 @@ def inject_register_prompt(session, deadline_seconds=120):
         return
 
     # send-keys -l treats the arg as literal so quotes/backticks don't expand.
-    subprocess.run(["tmux", "send-keys", "-t", session, "-l", REGISTER_PROMPT], check=False)
-    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=False)
+    subprocess.run(tmux_cmd("send-keys", "-t", session, "-l", REGISTER_PROMPT), check=False)
+    subprocess.run(tmux_cmd("send-keys", "-t", session, "Enter"), check=False)
 
 
 def tmux_start(session, cwd, cmd):
@@ -236,7 +244,7 @@ def tmux_start(session, cwd, cmd):
     register prompt once the agent reaches its prompt. Pane-state-aware so
     the keystrokes don't get swallowed by an in-progress /compact or
     thinking spinner on resume."""
-    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", cwd, cmd], check=True)
+    subprocess.run(tmux_cmd("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
     # Re-invoke this script with --inject-keystrokes <session>; the child
     # runs inject_register_prompt() and exits. Using sys.executable + the
     # script path keeps the helper readable and testable in isolation.
@@ -412,7 +420,7 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
 
     # Verify Claude actually started (didn't exit with "no conversation found")
     time.sleep(2)
-    result = subprocess.run(["tmux", "has-session", "-t", sess], capture_output=True)
+    result = subprocess.run(tmux_cmd("has-session", "-t", sess), capture_output=True)
     if result.returncode != 0:
         # Session died — Claude couldn't resume. Show alternatives.
         print(f"Error: Claude could not resume session {resume_id}.", file=sys.stderr)
@@ -509,7 +517,8 @@ def main():
         sys.exit(2)
 
     if not args.no_attach:
-        os.execvp("tmux", ["tmux", "attach-session", "-t", sess])
+        cmd = tmux_cmd("attach-session", "-t", sess)
+        os.execvp(cmd[0], cmd)
 
 
 if __name__ == "__main__":
