@@ -26,7 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -518,14 +518,25 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
+function ContextBadge({ percent }: { percent?: number }) {
+  if (percent == null) return null
+  const color = percent <= 15 ? '#e57373' : percent <= 30 ? '#ffb74d' : '#81c784'
+  return (
+    <span style={{ fontSize: 10, color, opacity: 0.8, flexShrink: 0, marginLeft: 8 }}>
+      {percent}%
+    </span>
+  )
+}
+
 /**
  * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
  * When thinking stops, the text fades out but the space remains.
  * When the next message arrives (rawItemsLength changes), the space collapses.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
+  contextPercent: Map<string, number>
   ctx: any
   rawItemsLength: number
 }) {
@@ -567,17 +578,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
       transition: 'opacity 0.2s',
     }}>
       {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">thinking…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">thinking…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">compacting…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">compacting…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
@@ -731,6 +748,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
+  const contextPercent = useFleetContext(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
@@ -2922,6 +2940,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           <ThinkingStatus
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}
+            contextPercent={contextPercent}
             ctx={ctx}
             rawItemsLength={rawItems.length}
           />
