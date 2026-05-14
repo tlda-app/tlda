@@ -109,8 +109,11 @@ if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
 // by binary path — only the playwright cache, never the user's real
 // Google Chrome).
 const _trackedWs = new Set()
-const ZOMBIE_THRESHOLD_MS = 10 * 60 * 1000  // 10 min idle = zombie
-const REAPER_INTERVAL_MS = 60 * 1000        // sweep every 1 min
+// Defaults are 10-min idle / 60-s sweep. Override via env for tests (no
+// production behavior change — these are plain timing knobs, not feature
+// gates).
+const ZOMBIE_THRESHOLD_MS = parseInt(process.env.REAPER_ZOMBIE_MS, 10) || 10 * 60 * 1000
+const REAPER_INTERVAL_MS = parseInt(process.env.REAPER_INTERVAL_MS, 10) || 60 * 1000
 
 // The tldraw sync client sends `{"type":"ping"}` every 5s as an
 // application-level keepalive. We must NOT count those as real input or

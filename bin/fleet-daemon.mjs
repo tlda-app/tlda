@@ -63,7 +63,10 @@ import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
+// CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
+// ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
+// daemon in parallel without clobbering the live daemon's PID file.
+const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
@@ -1414,6 +1417,145 @@ async function rpcKillOrphanChromium({ port }) {
   return { killed: false, reason: 'no playwright owner among port holders' }
 }
 
+// ─── Vite reaper — kill dev servers nobody's using ──────────────────
+//
+// Agents start `npx vite` for HMR-based UI testing and leave the process
+// running after their browser is closed/killed. This is a pure-daemon
+// concern: vites listen on local ports the server never sees. We watch
+// for `node .../vite ...` processes, find their listening port, and check
+// (via lsof) whether any browser-like process has an established TCP
+// connection. If no browser client appears for VITE_IDLE_THRESHOLD_MS,
+// the vite is killed.
+//
+// Skip's own vite stays alive as long as Chrome is attached (HMR WS keeps
+// the TCP connection open even when the tab is minimized). It only dies
+// after Skip closes the tab entirely AND doesn't reopen for 10 min.
+const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
+const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
+const _viteLastClient = new Map()  // vite_pid -> ms timestamp last seen with a browser client
+const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
+
+function isViteArgs(args) {
+  // Matches `node .../vite ...` or `node .../vite.js ...`. Avoids matching
+  // random scripts that happen to mention "vite" elsewhere on the command
+  // line by requiring it to be the script path right after `node`.
+  if (!args.startsWith('node ')) return false
+  return /[\/\\]vite(\.js)?(\s|$)/.test(args)
+}
+
+async function findListeningPorts(pid) {
+  // CRITICAL: `-a` ANDs the selectors. Without it lsof OR-combines `-p` and
+  // `-iTCP` and returns every LISTEN port on the machine, which would make
+  // viteHasBrowserClient check the wrong port.
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-a', '-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-F', 'n'],
+      { timeout: 3000, encoding: 'utf8' })
+    const ports = []
+    for (const line of stdout.split('\n')) {
+      if (!line.startsWith('n')) continue
+      const m = line.slice(1).match(/:(\d+)$/)
+      if (m) ports.push(parseInt(m[1], 10))
+    }
+    return [...new Set(ports)]
+  } catch { return [] }
+}
+
+async function listVites() {
+  let psOut = ''
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,args='], { timeout: 5000, encoding: 'utf8' })
+    psOut = stdout
+  } catch { return [] }
+  const vites = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(.+)$/)
+    if (!m) continue
+    const pid = parseInt(m[1], 10)
+    const args = m[2]
+    if (!isViteArgs(args)) continue
+    const ports = await findListeningPorts(pid)
+    if (ports.length > 0) vites.push({ pid, ports, args })
+  }
+  return vites
+}
+
+async function viteHasBrowserClient(port) {
+  let lsofOut = ''
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-nP', '-iTCP:' + port, '-sTCP:ESTABLISHED', '-F', 'pcn'],
+      { timeout: 3000, encoding: 'utf8' })
+    lsofOut = stdout
+  } catch { return false }
+  const records = []
+  let cur = null
+  for (const line of lsofOut.split('\n')) {
+    if (!line) continue
+    const k = line[0], v = line.slice(1)
+    if (k === 'p') { if (cur) records.push(cur); cur = { pid: v, names: [] } }
+    else if (k === 'c' && cur) cur.command = v
+    else if (k === 'n' && cur) cur.names.push(v)
+  }
+  if (cur) records.push(cur)
+  // Client rows have `<client_addr>:<client_port>-><vite_addr>:<vite_port>`
+  // — i.e. the connection name ends with the vite's port.
+  const remoteTag = ':' + port
+  for (const r of records) {
+    if (!r.names.some(n => n.endsWith(remoteTag))) continue  // not a client of this vite
+    if (BROWSER_NAME_RE.test(r.command || '')) return true
+  }
+  return false
+}
+
+async function reapVites() {
+  const vites = await listVites()
+  const now = Date.now()
+  for (const v of vites) {
+    // Browser is "connected" if it has a client on ANY of the vite's
+    // listening ports (vite typically binds an HTTP port and a separate
+    // HMR WebSocket port; either alive = vite in use).
+    let hasClient = false
+    for (const port of v.ports) {
+      if (await viteHasBrowserClient(port)) { hasClient = true; break }
+    }
+    if (hasClient) {
+      _viteLastClient.set(v.pid, now)
+      continue
+    }
+    if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
+    const idleMs = now - _viteLastClient.get(v.pid)
+    if (idleMs > VITE_IDLE_THRESHOLD_MS) {
+      try {
+        process.kill(v.pid, 'SIGKILL')
+        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m`)
+      } catch (e) {
+        console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
+      }
+      _viteLastClient.delete(v.pid)
+    }
+  }
+  const liveVites = new Set(vites.map(v => v.pid))
+  for (const pid of [..._viteLastClient.keys()]) {
+    if (!liveVites.has(pid)) _viteLastClient.delete(pid)
+  }
+}
+
+let _viteReaperTimer = null
+function startViteReaper() {
+  if (_viteReaperTimer) return
+  // First sweep after a short delay so the daemon doesn't compete with
+  // its own startup work. Subsequent sweeps every VITE_SWEEP_INTERVAL_MS.
+  setTimeout(() => {
+    reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message))
+    _viteReaperTimer = setInterval(
+      () => reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message)),
+      VITE_SWEEP_INTERVAL_MS,
+    )
+    _viteReaperTimer.unref?.()
+  }, 10_000)
+}
+
 const RPC_HANDLERS = {
   'send-key': rpcSendKey,
   'send-text': rpcSendText,
@@ -1715,4 +1857,5 @@ console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
+startViteReaper()
 connect()
