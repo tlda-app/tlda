@@ -669,13 +669,25 @@ const ChatMessageRow = memo(function ChatMessageRow({
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
     const el = divRef.current
-    if (!el || !expandedRowsRef.current.has(itemKey)) return
-    const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
-    if (moreRows) {
-      moreRows.style.display = ''
-      const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
-      if (btn) btn.textContent = 'collapse'
+    if (!el) return
+    const expanded = expandedRowsRef.current
+    if (expanded.has(itemKey)) {
+      const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
+      if (moreRows) {
+        moreRows.style.display = ''
+        const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+        if (btn) btn.textContent = 'collapse'
+      }
     }
+    // Restore code-block expand state (each block keyed by index within the row)
+    el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
+      if (expanded.has(`${itemKey}:code:${i}`)) {
+        const pre = wrap.querySelector('pre')
+        if (pre) pre.classList.remove('code-collapsed')
+        const toggle = wrap.querySelector('.code-block-toggle') as HTMLElement | null
+        if (toggle) toggle.textContent = 'collapse'
+      }
+    })
   }, [processed, itemKey, expandedRowsRef])
 
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
@@ -1908,6 +1920,25 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (card) {
           card.classList.toggle('build-result-expanded')
           return
+        }
+      }
+      // Code block fold/unfold — track in expandedRowsRef so state survives re-renders
+      const codeToggle = (e.target as HTMLElement).closest('.code-block-toggle') as HTMLElement
+      if (codeToggle) {
+        const wrap = codeToggle.closest('.code-block-wrap') as HTMLElement
+        const itemRow = codeToggle.closest('[data-item-key]') as HTMLElement
+        if (wrap && itemRow) {
+          const itemKey = itemRow.getAttribute('data-item-key')
+          const allWraps = Array.from(itemRow.querySelectorAll('.code-block-wrap'))
+          const idx = allWraps.indexOf(wrap)
+          const key = `${itemKey}:code:${idx}`
+          const pre = wrap.querySelector('pre')
+          if (pre) {
+            // Inline onclick already toggled the class, so check current state
+            const isNowExpanded = !pre.classList.contains('code-collapsed')
+            if (isNowExpanded) expandedRowsRef.current.add(key)
+            else expandedRowsRef.current.delete(key)
+          }
         }
       }
       // Expand tool result (show more search results / earlier thread messages)
@@ -3163,7 +3194,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       to: sendTargets[0],
                       text,
                       timestamp: new Date().toISOString(),
-                      read: true,
+                      read: false,
                     })
                     ta.value = ''
                     ta.style.height = ''
@@ -3228,7 +3259,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)
@@ -3266,7 +3297,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)
