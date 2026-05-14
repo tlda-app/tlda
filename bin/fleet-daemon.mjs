@@ -97,6 +97,8 @@ function deriveMachineId() {
 const config = loadConfig()
 const SERVER = process.env.TLDA_SERVER || config.server || 'http://localhost:5176'
 const TOKEN = process.env.TLDA_TOKEN || config.tokenRw || config.token || null
+const TMUX_SOCKET = config.tmuxSocket || null
+const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 
 let MACHINE_ID = config.machineId || null
 if (!MACHINE_ID) {
@@ -403,7 +405,7 @@ async function checkForPlanModePrompt(agentId) {
   let pane
   try {
     const { stdout } = await execFileP('tmux',
-      ['capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
+      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
       { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
     pane = stripAnsi(stdout)
   } catch (e) {
@@ -464,7 +466,7 @@ async function checkForApprovalPrompt(agentId) {
   let pane
   try {
     const { stdout } = await execFileP('tmux',
-      ['capture-pane', '-t', agent.tmux_session, '-p', '-S', '-30'],
+      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-30'],
       { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
     pane = stripAnsi(stdout)
   } catch {
@@ -1000,7 +1002,7 @@ function checkSession(session) {
 }
 
 async function tmux(...args) {
-  return execFileP('tmux', args, { timeout: 5000, encoding: 'utf8' })
+  return execFileP('tmux', [...TMUX_ARGS, ...args], { timeout: 5000, encoding: 'utf8' })
 }
 
 async function rpcSendKey({ tmux_session, key }) {
@@ -1024,7 +1026,7 @@ async function rpcCapturePane({ tmux_session, lines }) {
   checkSession(tmux_session)
   const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
   const { stdout } = await execFileP('tmux',
-    ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
+    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
     { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
   return { ok: true, pane: stdout }
 }
@@ -1039,7 +1041,7 @@ async function rpcInterrupt({ tmux_session, agent_id }) {
       await new Promise(r => setTimeout(r, 2500))
       try {
         const cap = await execFileP('tmux',
-          ['capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
+          [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
           { timeout: 3000, encoding: 'utf8' })
         const pane = cap.stdout
         const linesArr = pane.split('\n').filter(l => l.trim())
@@ -1056,7 +1058,7 @@ async function rpcInterrupt({ tmux_session, agent_id }) {
 async function rpcListSessions() {
   try {
     const { stdout } = await execFileP('tmux',
-      ['list-sessions', '-F', '#{session_name}'],
+      [...TMUX_ARGS, 'list-sessions', '-F', '#{session_name}'],
       { timeout: 3000, encoding: 'utf8' })
     return { ok: true, sessions: stdout.trim().split('\n').filter(Boolean) }
   } catch (e) {
@@ -1071,10 +1073,17 @@ async function rpcCheckAlive({ tmux_session }) {
   const { sessions } = await rpcListSessions()
   if (!new Set(sessions).has(tmux_session)) return { alive: false }
   const { stdout } = await execFileP('tmux',
-    ['list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
+    [...TMUX_ARGS, 'list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
     { timeout: 3000, encoding: 'utf8' })
   const panePids = stdout.trim().split('\n').filter(Boolean)
   for (const pid of panePids) {
+    // The pane PID may itself be the claude process (no shell wrapper).
+    try {
+      const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
+        { timeout: 2000, encoding: 'utf8' })
+      if (self.includes('claude')) return { alive: true }
+    } catch {}
+    // Or claude may be a direct child of the pane's shell process.
     try {
       const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
         { timeout: 2000, encoding: 'utf8' })
@@ -1124,7 +1133,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   const tick = async () => {
     try {
       const { stdout } = await execFileP('tmux',
-        ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
+        [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
         { timeout: 2000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
       // Strip ANSI for hashing so cursor-position deltas don't churn.
       const stripped = stdout.replace(ANSI_RE, '')
@@ -1212,7 +1221,7 @@ async function checkAgentLiveness() {
     let claudeAlive = false
     try {
       const { stdout } = await execFileP('tmux',
-        ['list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
         { timeout: 3000, encoding: 'utf8' })
       const panePids = stdout.trim().split('\n').filter(Boolean)
       for (const pid of panePids) {

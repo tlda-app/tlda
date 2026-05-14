@@ -1440,6 +1440,22 @@ Example:
 }
 
 // ---- spawn: forward to bin/fleet-spawn.py ----
+async function cmdAttach() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda attach <agent-name>')
+    process.exit(1)
+  }
+  const { spawnSync } = await import('child_process')
+  const cfg = loadConfig()
+  const socket = cfg.tmuxSocket || null
+  const sess = name.startsWith('fleet-') ? name : `fleet-${name}`
+  const tmuxArgs = socket ? ['-L', socket, 'attach-session', '-t', sess]
+                          : ['attach-session', '-t', sess]
+  const result = spawnSync('tmux', tmuxArgs, { stdio: 'inherit' })
+  process.exit(result.status ?? 0)
+}
+
 async function cmdSpawn() {
   const { spawn: cpSpawn } = await import('child_process')
   const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
@@ -1549,7 +1565,7 @@ async function cmdDoctor() {
         const logFd = fsOpenSync(LOGFILE, 'a')
         const child = cpSpawn(process.execPath, [serverScript], {
           detached: true, stdio: ['ignore', logFd, logFd],
-          env: { ...process.env, PORT: getPort() }
+          env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
         child.unref()
       }
@@ -2037,7 +2053,7 @@ ${tokenEnvLines.join('\n')}
       const child = spawn('node', serverArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PORT: port },
+        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined },
       })
       child.unref()
     }
@@ -2323,6 +2339,7 @@ async function main() {
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
+      case 'attach': await cmdAttach(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break

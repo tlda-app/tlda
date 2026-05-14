@@ -180,7 +180,7 @@ function ensureLocalDaemon() {
     const child = cpSpawn(process.execPath, [DAEMON_SCRIPT], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
     })
     child.unref()
     _daemonRespawnCount++
@@ -2401,7 +2401,9 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Idle-hibernation: kill tmux panes for agents that haven't been seen in a while.
+  // Idle-hibernation: kill tmux sessions for agents that have had no activity for a while.
+  // "Activity" = any event from or to the agent in the events table (chat, activity card,
+  // delegate, etc.). Heartbeats and last_seen are network signals — not used here.
   // The process dies, RAM is freed. The agent enters hibernation (no process, but
   // `dead=0`). Auto-respawn fires when anyone next messages them.
   const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
@@ -2409,12 +2411,17 @@ server.listen(PORT, HOST, () => {
     if (!fleetStore) return
     const cutoff = new Date(Date.now() - IDLE_HIBERNATE_MS).toISOString()
     const idle = fleetStore.db.prepare(
-      "SELECT * FROM agents WHERE dead = 0 AND human = 0 AND last_seen < ? AND tmux_session IS NOT NULL"
+      `SELECT a.* FROM agents a
+       WHERE a.dead = 0 AND a.human = 0 AND a.tmux_session IS NOT NULL
+       AND COALESCE(
+         (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id),
+         a.registered_at
+       ) < ?`
     ).all(cutoff)
     for (const agent of idle) {
       const machineIds = [...daemonConnections.keys()]
       if (machineIds.length === 0) continue
-      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing tmux`)
+      console.log(`[hibernate] ${agent.friendly_name || agent.id} — no activity since before ${cutoff}`)
       sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
         .catch(() => {})
       // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent
