@@ -18,7 +18,6 @@ import type { SvgPage } from './loaders/types'
 
 const MARGIN_X = -12
 const BAR_WIDTH = 3
-const USER_GAP = 4
 
 // Cache: docName → sorted [{line, canvasY}] for reverse lookup
 const lineYIndexCache = new Map<string, Array<{ line: number; canvasY: number }>>()
@@ -83,11 +82,7 @@ export async function processRibbonHighlight(
   const userId = getHumanId() || 'unknown'
   const displayName = getHumanName() || userId
 
-  const allUL = editor.getCurrentPageShapes().filter((s: any) => s.type === 'understanding-line')
-
-  const otherUsers = new Set(allUL.filter((s: any) => s.props?.userId !== userId).map((s: any) => s.props?.userId))
-  const userIndex = otherUsers.size
-  const x = MARGIN_X - (userIndex * USER_GAP)
+  const x = MARGIN_X
   const h = Math.max(20, bounds.maxY - bounds.minY)
 
   const index = await getLineYIndex(docName, pages)
@@ -109,7 +104,7 @@ export async function processRibbonHighlight(
       rotation: 0,
       isLocked: false,
       opacity: 1,
-      props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex },
+      props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex: 0 },
     })
   }
 }
