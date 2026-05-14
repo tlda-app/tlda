@@ -26,7 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -518,14 +518,25 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
+function ContextBadge({ percent }: { percent?: number }) {
+  if (percent == null) return null
+  const color = percent <= 15 ? '#e57373' : percent <= 30 ? '#ffb74d' : '#81c784'
+  return (
+    <span style={{ fontSize: 10, color, opacity: 0.8, flexShrink: 0, marginLeft: 8 }}>
+      {percent}%
+    </span>
+  )
+}
+
 /**
  * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
  * When thinking stops, the text fades out but the space remains.
  * When the next message arrives (rawItemsLength changes), the space collapses.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
+  contextPercent: Map<string, number>
   ctx: any
   rawItemsLength: number
 }) {
@@ -567,17 +578,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
       transition: 'opacity 0.2s',
     }}>
       {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">thinking…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">thinking…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">compacting…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">compacting…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
@@ -669,13 +686,25 @@ const ChatMessageRow = memo(function ChatMessageRow({
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
     const el = divRef.current
-    if (!el || !expandedRowsRef.current.has(itemKey)) return
-    const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
-    if (moreRows) {
-      moreRows.style.display = ''
-      const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
-      if (btn) btn.textContent = 'collapse'
+    if (!el) return
+    const expanded = expandedRowsRef.current
+    if (expanded.has(itemKey)) {
+      const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
+      if (moreRows) {
+        moreRows.style.display = ''
+        const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+        if (btn) btn.textContent = 'collapse'
+      }
     }
+    // Restore code-block expand state (each block keyed by index within the row)
+    el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
+      if (expanded.has(`${itemKey}:code:${i}`)) {
+        const pre = wrap.querySelector('pre')
+        if (pre) pre.classList.remove('code-collapsed')
+        const toggle = wrap.querySelector('.code-block-toggle') as HTMLElement | null
+        if (toggle) toggle.textContent = 'collapse'
+      }
+    })
   }, [processed, itemKey, expandedRowsRef])
 
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
@@ -719,6 +748,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
+  const contextPercent = useFleetContext(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
@@ -1919,6 +1949,25 @@ function FleetChatInner({ shape }: { shape: any }) {
           return
         }
       }
+      // Code block fold/unfold — track in expandedRowsRef so state survives re-renders
+      const codeToggle = (e.target as HTMLElement).closest('.code-block-toggle') as HTMLElement
+      if (codeToggle) {
+        const wrap = codeToggle.closest('.code-block-wrap') as HTMLElement
+        const itemRow = codeToggle.closest('[data-item-key]') as HTMLElement
+        if (wrap && itemRow) {
+          const itemKey = itemRow.getAttribute('data-item-key')
+          const allWraps = Array.from(itemRow.querySelectorAll('.code-block-wrap'))
+          const idx = allWraps.indexOf(wrap)
+          const key = `${itemKey}:code:${idx}`
+          const pre = wrap.querySelector('pre')
+          if (pre) {
+            // Inline onclick already toggled the class, so check current state
+            const isNowExpanded = !pre.classList.contains('code-collapsed')
+            if (isNowExpanded) expandedRowsRef.current.add(key)
+            else expandedRowsRef.current.delete(key)
+          }
+        }
+      }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
@@ -2900,6 +2949,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           <ThinkingStatus
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}
+            contextPercent={contextPercent}
             ctx={ctx}
             rawItemsLength={rawItems.length}
           />
@@ -3172,7 +3222,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       to: sendTargets[0],
                       text,
                       timestamp: new Date().toISOString(),
-                      read: true,
+                      read: false,
                     })
                     ta.value = ''
                     ta.style.height = ''
@@ -3237,7 +3287,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)
@@ -3275,7 +3325,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)

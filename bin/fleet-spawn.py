@@ -542,13 +542,30 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
         print(f"Error: No fleet registration found in session {session_uuid}", file=sys.stderr)
         sys.exit(1)
 
-    # Derive cwd from project dir name: "-Users-skip-work-tlda" → "/Users/skip/work/tlda"
+    # Derive cwd: prefer identity ledger (exact path), fall back to hash decoding
     if cwd_override:
         cwd = cwd_override
-    elif project_dir.startswith("-"):
-        cwd = "/" + project_dir[1:].replace("-", "/")
     else:
-        cwd = os.getcwd()
+        cwd = None
+        # Try ledger first — it stores the exact cwd, avoiding hash ambiguity
+        ledger_path = os.path.expanduser("~/.claude/fleet-identity.sqlite")
+        if os.path.exists(ledger_path):
+            try:
+                import sqlite3 as _sqlite3
+                with _sqlite3.connect(ledger_path) as _ldb:
+                    row = _ldb.execute(
+                        "SELECT cwd FROM sessions WHERE session=? UNION SELECT cwd FROM agents WHERE fleet_id=? LIMIT 1",
+                        (session_uuid, fleet_id or "")
+                    ).fetchone()
+                    if row and row[0]:
+                        cwd = row[0]
+            except Exception:
+                pass
+        if not cwd:
+            if project_dir.startswith("-"):
+                cwd = "/" + project_dir[1:].replace("-", "/")
+            else:
+                cwd = os.getcwd()
 
     # --enroll: mint a new fleet ID and derive a name from the cwd basename (or explicit override)
     if enroll and not fleet_id:
