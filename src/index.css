@@ -138,12 +138,14 @@ html.hires .tlui-layout {
 }
 .tl-shape[data-shape-type="math-note"]:hover,
 .tl-shape[data-shape-type="terminal"]:hover,
-.tl-shape[data-shape-type="fleet-chat"]:hover,
 .tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
 .tl-shape.tl-shape__is-hovered[data-shape-type="terminal"],
-.tl-shape.tl-shape__is-hovered[data-shape-type="fleet-chat"],
 .tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
 .tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
 .tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
+  opacity: 1 !important;
+}
+/* Terminal popover only — go opaque when hovering the popover, not the whole chat shape */
+.tl-shape[data-shape-type="fleet-chat"]:has(.fleet-terminal-hover-pane:hover) {
   opacity: 1 !important;
 }
