@@ -1309,6 +1309,111 @@ async function rpcRechat({ text, cwd, server_url }) {
   return await processMessageText(text, cwd, serverBase)
 }
 
+// Kill the local playwright chromium process that owns a given TCP source
+// port. Called by the server's zombie reaper when a /sync/ or /ws/fleet
+// connection has been idle for too long.
+//
+// Discriminator: playwright launches the system Google Chrome binary with
+// a temp profile path that always contains "playwright_chromiumdev_profile".
+// The user's real Chrome uses their normal ~/Library profile dir. Anything
+// that doesn't match the playwright signature in its `ps args=` output is
+// refused — the user's real browser must be safe.
+async function rpcKillOrphanChromium({ port }) {
+  if (!port) return { killed: false, reason: 'no port' }
+  let lsofOut = ''
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-nP', '-iTCP:' + port, '-sTCP:ESTABLISHED', '-F', 'pcn'],
+      { timeout: 5000, encoding: 'utf8' })
+    lsofOut = stdout
+  } catch (e) {
+    // lsof exits non-zero when no rows match; nothing to kill.
+    return { killed: false, reason: 'no process holds port ' + port }
+  }
+  // Parse -F pcn output. Each record starts with p<pid>, followed by
+  // c<command> and one or more n<conn> lines.
+  const records = []
+  let cur = null
+  for (const line of lsofOut.split('\n')) {
+    if (!line) continue
+    const k = line[0], v = line.slice(1)
+    if (k === 'p') { if (cur) records.push(cur); cur = { pid: v, names: [] } }
+    else if (k === 'c' && cur) cur.command = v
+    else if (k === 'n' && cur) cur.names.push(v)
+  }
+  if (cur) records.push(cur)
+
+  // Match rows where the LOCAL endpoint is :<port> (i.e. that PID owns the
+  // outgoing connection from this port). Format: "addr:localPort->addr:remotePort"
+  const localTag = ':' + port + '->'
+  const owners = []
+  for (const r of records) {
+    if (r.names.some(n => n.includes(localTag))) owners.push(r)
+  }
+  if (owners.length === 0) {
+    return { killed: false, reason: `no local owner of port ${port}` }
+  }
+
+  // Walk up to the top of any chromium process tree (the playwright main
+  // browser process), so killing it cleans up all the renderer children.
+  // Verify the binary path includes "ms-playwright" — anything else is a
+  // process the user started and we must not touch it.
+  const psArgs = async (pid) => {
+    try {
+      const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'args='],
+        { timeout: 2000, encoding: 'utf8' })
+      return stdout.trim()
+    } catch { return '' }
+  }
+  const psPpid = async (pid) => {
+    try {
+      const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'ppid='],
+        { timeout: 2000, encoding: 'utf8' })
+      const v = parseInt(stdout.trim(), 10)
+      return Number.isFinite(v) ? v : null
+    } catch { return null }
+  }
+  const isPlaywright = (args) => {
+    // Either the playwright-bundled chromium cache, or the system Chrome
+    // launched with a playwright-style temp profile path (playwright-mcp's
+    // pattern). Skip's regular Chrome would not match either.
+    return args.includes('playwright_chromiumdev_profile') ||
+           args.includes('ms-playwright')
+  }
+
+  for (const owner of owners) {
+    let pid = parseInt(owner.pid, 10)
+    let args = await psArgs(pid)
+    if (!isPlaywright(args)) {
+      // Not a playwright chromium — skip. (Could be node, ssh tunnel,
+      // user's real browser, etc.) Defense in depth against killing the
+      // wrong thing.
+      continue
+    }
+    // Walk up while the parent is also playwright chromium.
+    while (true) {
+      const ppid = await psPpid(pid)
+      if (!ppid || ppid <= 1) break
+      const pargs = await psArgs(ppid)
+      if (!isPlaywright(pargs)) break
+      pid = ppid
+      args = pargs
+    }
+    try {
+      process.kill(pid, 'SIGKILL')
+      // Best-effort: also nuke any orphaned children that didn't go down
+      // with the parent. pkill returns non-zero when no match; ignore.
+      try {
+        await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 })
+      } catch {}
+      return { killed: true, pid, binary: args.slice(0, 200) }
+    } catch (e) {
+      return { killed: false, reason: `kill ${pid}: ${e.message}` }
+    }
+  }
+  return { killed: false, reason: 'no playwright owner among port holders' }
+}
+
 const RPC_HANDLERS = {
   'send-key': rpcSendKey,
   'send-text': rpcSendText,
@@ -1324,6 +1429,7 @@ const RPC_HANDLERS = {
   'spawn': rpcSpawn,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
+  'kill-orphan-chromium': rpcKillOrphanChromium,
 }
 
 async function handleRpc(msg) {
