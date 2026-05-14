@@ -127,15 +127,23 @@ html.hires .tlui-layout {
    add per-property bumps under .hires (font-size, width, height, padding)
    for those elements only — never zoom. */
 
-/* Math notes: go fully opaque on hover/editing so text is readable over the document.
+/* Shape hover opacity: go fully opaque on hover/editing so content is readable over the document.
    Default opacity is whatever TLDraw's shape prop sets (leave it alone).
    !important needed to override TLDraw's inline style="opacity:X" on .tl-shape.
    :hover covers real browser; tl-shape__is-hovered is TLDraw's class-based fallback. */
-.tl-shape[data-shape-type="math-note"] {
+.tl-shape[data-shape-type="math-note"],
+.tl-shape[data-shape-type="terminal"],
+.tl-shape[data-shape-type="fleet-chat"] {
   transition: opacity 0.2s;
 }
 .tl-shape[data-shape-type="math-note"]:hover,
+.tl-shape[data-shape-type="terminal"]:hover,
+.tl-shape[data-shape-type="fleet-chat"]:hover,
 .tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
-.tl-shape.tl-shape__is-editing[data-shape-type="math-note"] {
+.tl-shape.tl-shape__is-hovered[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-hovered[data-shape-type="fleet-chat"],
+.tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
   opacity: 1 !important;
 }
