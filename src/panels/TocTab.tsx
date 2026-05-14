@@ -430,8 +430,6 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
         {/* HideDefsToggle removed */}
       </div>
@@ -458,8 +456,6 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
         {/* HideDefsToggle removed */}
       </div>
@@ -628,8 +624,6 @@ export function TocTab() {
       <div className="toc-diff-hint" onClick={handleCenterHorizontally}>
         <span className="toc-toggle-icon">{'\u2299'}</span> Center
       </div>
-      <DarkModeToggle />
-      <VimModeToggle />
       <CameraLinkToggle />
       {/* HideDefsToggle removed */}
     </div>

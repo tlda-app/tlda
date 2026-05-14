@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { getPref, setPref, subscribePref } from '../preferences'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
+import { DarkModeToggle, VimModeToggle } from './TocTab'
 
 const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 
@@ -91,6 +92,16 @@ export function PrefsTab() {
           />
           <span>Spawn in plan mode</span>
         </label>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Theme</div>
+        <DarkModeToggle />
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Editor</div>
+        <VimModeToggle />
       </div>
 
       <div className="prefs-section">
