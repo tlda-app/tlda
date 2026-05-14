@@ -302,7 +302,11 @@ export class FleetStore {
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
     this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
-    this._getAllAgents = this.db.prepare('SELECT * FROM agents ORDER BY last_seen DESC');
+    this._getAllAgents = this.db.prepare(`
+      SELECT a.*,
+        (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id) AS last_active
+      FROM agents a ORDER BY a.last_seen DESC
+    `);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -627,6 +631,11 @@ export class FleetStore {
   }
 
   _hydrateAgent(row) {
+    const AWAKE_MS = 20 * 60 * 1000
+    const lastActive = row.last_active || null
+    const isAwake = !row.dead && !row.human && lastActive
+      ? (Date.now() - new Date(lastActive).getTime()) < AWAKE_MS
+      : false
     return {
       ...row,
       session_ids: row.session_ids ? JSON.parse(row.session_ids) : [],
@@ -635,6 +644,8 @@ export class FleetStore {
       human: !!row.human,
       is_manager: !!row.is_manager,
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      last_active: lastActive,
+      status: row.dead ? 'dead' : row.human ? 'human' : isAwake ? 'awake' : 'hibernating',
     };
   }
 

@@ -629,6 +629,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents, sends to all of them.' },
           message: { type: 'string', description: 'Message to send' },
+          max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
         },
         required: ['message'],
       },
@@ -1515,11 +1516,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
     let recipients = [];
     let serverDown = false;
+    let agents = [];
     try {
-      const agents = await sendWS('store-agents');
+      agents = await sendWS('store-agents');
       for (const a of agents) {
         if (a.id === AGENT_ID) continue;
-        const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean);
+        const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
+        const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
         if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -1529,6 +1532,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (serverDown) return { content: [{ type: 'text', text: '⚠ Fleet server is unreachable — message NOT sent. Check if the server is running (fleet-spawn auto-starts it, or: cd ~/work/fleet && node dashboard/server.mjs).' }], isError: true };
     if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
+    const maxRecipients = args.max_recipients ?? 5;
+    if (recipients.length > maxRecipients) {
+      const names = recipients.map(id => { const a = agents?.find(x => x.id === id); return a?.friendly_name || id; });
+      return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
+    }
 
     // Resolve file paths in message text → inline attachments.
     const agentCwd = getAgentCwd();

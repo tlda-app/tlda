@@ -48,14 +48,10 @@ function labelColor(name: string): string {
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
 }
 
-type SortKey = 'seen' | 'name' | 'status'
+type SortKey = 'active' | 'name' | 'status'
 
-const STALE_THRESHOLD = 600_000  // 10 minutes
-
-function agentCategory(agent: any): 'alive' | 'stale' {
-  const ts = agent.last_seen ? new Date(agent.last_seen).getTime() : 0
-  if (Date.now() - ts > STALE_THRESHOLD) return 'stale'
-  return 'alive'
+function agentCategory(agent: any): 'awake' | 'hibernating' {
+  return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
 function formatModel(model: string | null | undefined): string {
@@ -302,7 +298,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('seen')
+  const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
   // Spawn: project selector. Default to current doc, dropdown shows all projects.
@@ -339,14 +335,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     const list: any[] = []
     for (const a of agents) {
       if (a.human) continue
-      const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
+      const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       list.push({ ...a, _ts: ts })
     }
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
-        const order = { alive: 0, stale: 1 }
+        const order = { awake: 0, hibernating: 1 }
         const ca = order[agentCategory(a)] ?? 1
         const cb = order[agentCategory(b)] ?? 1
         return dir * (ca - cb) || b._ts - a._ts
@@ -356,8 +352,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return list
   }, [agents, sortKey, sortAsc])
 
-  const staleCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'stale').length, [sortedAgents])
-  const aliveCount = sortedAgents.length - staleCount
+  const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
+  const awakeCount = sortedAgents.length - hibernatingCount
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
@@ -434,9 +430,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             style={{ cursor: 'pointer' }}
           >Agent {sortKey === 'name' ? (sortAsc ? '▴' : '▾') : ''}</span>
           <span className="fleet-agents-col-seen fleet-agents-sort-header"
-            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'seen') setSortAsc(p => !p); else { setSortKey('seen'); setSortAsc(false) } }}
+            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'active') setSortAsc(p => !p); else { setSortKey('active'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
-          >Seen {sortKey === 'seen' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          >Active {sortKey === 'active' ? (sortAsc ? '▴' : '▾') : ''}</span>
           <span className="fleet-agents-col-task fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'status') setSortAsc(p => !p); else { setSortKey('status'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -454,7 +450,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               agent={agent}
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
-              dimmed={agentCategory(agent) === 'stale'}
+              dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
               lastMessage={lastMessages[agentDisplayName(agent)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
@@ -466,8 +462,18 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         {/* Footer */}
         <div className="fleet-agents-footer">
           <span>
-            {aliveCount} online
-            {staleCount > 0 && <span style={{ marginLeft: 6 }}>· {staleCount} stale</span>}
+            <span
+              style={{ cursor: 'grab' }}
+              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', labelColor('awake')) }}
+            >{awakeCount} awake</span>
+            {hibernatingCount > 0 && (
+              <span style={{ marginLeft: 6 }}>·{' '}
+                <span
+                  style={{ cursor: 'grab' }}
+                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'hibernating', 'hibernating', labelColor('hibernating')) }}
+                >{hibernatingCount} hibernating</span>
+              </span>
+            )}
           </span>
           <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
             {showSpawnPicker && (
