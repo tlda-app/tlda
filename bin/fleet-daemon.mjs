@@ -1075,13 +1075,12 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
-async function rpcKillSession({ tmux_session, agent_id }) {
+async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   if (!tmux_session) throw new Error('missing tmux_session')
   checkSession(tmux_session)
   await tmux('kill-session', '-t', tmux_session)
-  if (agent_id) {
-    try { await fetch(`${SERVER}/api/agents/${agent_id}/mark-dead`, { method: 'POST' }).catch(() => {}) } catch {}
-  }
+  // NOTE: killing a tmux session is hibernation, not death. Don't mark dead.
+  // Explicit kills go through a separate path that hits /mark-dead directly.
   return { ok: true, tmux_session }
 }
 
@@ -1165,7 +1164,10 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 
 // --- Agent death detection ---
 // Periodically check if agents' claude processes are still running.
-// If not, mark them dead on the server and kill orphan tmux sessions.
+// When a process is gone, the agent is hibernating — NOT dead. We log it
+// and stop tracking liveness locally (so we don't log every 30s), but
+// crucially we do NOT mark them dead on the server. `dead` means an
+// explicit kill; absent processes are just sleeping.
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
@@ -1178,17 +1180,13 @@ async function checkAgentLiveness() {
   } catch { return }  // tmux not available
 
   for (const agent of agents) {
-    if (agent.dead || agent.human) continue
+    if (agent.hibernating || agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
 
     const tmuxExists = sessions.has(agent.tmux_session)
     if (!tmuxExists) {
-      // Tmux session gone → agent is dead
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (tmux session ${agent.tmux_session} gone)`)
-      try {
-        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-      } catch {}
-      agent.dead = true
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+      agent.hibernating = true
       continue
     }
 
@@ -1209,12 +1207,9 @@ async function checkAgentLiveness() {
     } catch {}
 
     if (!claudeAlive) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
-      try {
-        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-      } catch {}
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
       try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
-      agent.dead = true
+      agent.hibernating = true
       continue
     }
 

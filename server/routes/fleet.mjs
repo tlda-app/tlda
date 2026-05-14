@@ -304,14 +304,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           const set = tmuxByMachine.get(a.machine_id)
           tmuxUp = set ? set.has(a.tmux_session) : null
         }
-        let status = 'dead'
-        if (heartbeat && tmuxUp !== false) status = 'alive'
+        // `dead` is a deliberate terminal state, only set by explicit kills.
+        // A non-running, non-dead agent is hibernating — computed, not stored.
+        let status
+        if (a.dead) status = 'dead'
+        else if (heartbeat && tmuxUp !== false) status = 'alive'
         else if (heartbeat || tmuxUp) status = 'stale'
-        // Auto-mark dead: no heartbeat for >1h, tmux not alive, not human
-        if (status === 'dead' && !a.dead && !a.human && lastSeenMs > 60 * 60 * 1000) {
-          a.dead = true
-          try { fleetStore?.markDead(a.id); clearEphemeralState?.(a.id) } catch {}
-        }
+        else status = 'hibernating'
         return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
       const missing = roster.filter(r => !registryIds.has(r.fleet_id))

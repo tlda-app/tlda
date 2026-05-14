@@ -2375,7 +2375,8 @@ server.listen(PORT, HOST, () => {
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
   // Idle-hibernation: kill tmux panes for agents that haven't been seen in a while.
-  // The process dies, RAM is freed. Auto-respawn fires when anyone next messages them.
+  // The process dies, RAM is freed. The agent enters hibernation (no process, but
+  // `dead=0`). Auto-respawn fires when anyone next messages them.
   const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
   setInterval(() => {
     if (!fleetStore) return
@@ -2386,10 +2387,11 @@ server.listen(PORT, HOST, () => {
     for (const agent of idle) {
       const machineIds = [...daemonConnections.keys()]
       if (machineIds.length === 0) continue
-      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing`)
+      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing tmux`)
       sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
         .catch(() => {})
-      fleetStore.markDead(agent.id)
+      // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent
+      // identity. dead=1 is reserved for explicit kills.
     }
     if (idle.length > 0) broadcastState()
   }, 5 * 60 * 1000).unref()  // check every 5 minutes
