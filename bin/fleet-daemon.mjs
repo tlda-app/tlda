@@ -1079,7 +1079,7 @@ async function rpcCheckAlive({ tmux_session }) {
       const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
         { timeout: 2000, encoding: 'utf8' })
       if (children.trim()) return { alive: true }
-    } catch {}
+    } catch {} // pgrep exits non-zero when no match — not an error
   }
   return { alive: false }
 }
