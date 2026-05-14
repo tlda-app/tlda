@@ -75,9 +75,10 @@ export async function processRibbonHighlight(
   const hlColor = (shape.props as any).color || 'green'
   const status = HIGHLIGHT_TO_STATUS[hlColor]
 
-  editor.deleteShape(shapeId)
-
+  // Check status before deleting — unknown color keeps the highlight as-is
   if (!status) return
+
+  editor.deleteShape(shapeId)
 
   const userId = getHumanId() || 'unknown'
   const displayName = getHumanName() || userId
@@ -109,11 +110,13 @@ export async function processRibbonHighlight(
   }
 }
 
-/** Returns true if a highlight shape is in the ribbon zone (left margin) */
+/** Returns true if a highlight shape is in the ribbon zone (left margin).
+ * Uses minX rather than maxX: highlights have ~20-unit width from stroke thickness,
+ * so a stroke drawn at x=0 has maxX≈12 but minX≈-8. */
 export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   const bounds = editor.getShapePageBounds(shapeId)
   if (!bounds) return false
-  return bounds.maxX < 5
+  return bounds.minX < 5
 }
 
 /**
