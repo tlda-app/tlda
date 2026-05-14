@@ -87,18 +87,15 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 // agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
 
-// Per-machine "agent is alive right now" set, populated by `agent-liveness`
-// messages from each daemon (sent on every `checkAgentLiveness` pass). The
-// fleet store consults this via an installed oracle when computing the
-// `awake` / `hibernating` status on each agent. Cleared on daemon disconnect.
-const _daemonLiveness = new Map()           // machine_id -> Set<agent_id>
+// "Agent has a running claude process right now" — flat set keyed by agent_id.
+// Populated by `agent-liveness` messages from each machine's daemon (every
+// ~30s checkAgentLiveness pass) and seeded on register. The fleet store reads
+// this via an installed oracle when computing each agent's awake/hibernating
+// status. An agent leaves the set when (a) the daemon's next sweep reports
+// it gone, (b) that machine's daemon disconnects, or (c) the agent is killed.
+const _aliveAgents = new Set()              // Set<agent_id>
 
-function isAgentAlive(agentId) {
-  for (const set of _daemonLiveness.values()) {
-    if (set.has(agentId)) return true
-  }
-  return false
-}
+function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
 
 if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
 
@@ -1096,7 +1093,11 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
-          _daemonLiveness.delete(ws._machineId)
+          // The daemon is gone; we no longer have process-level visibility
+          // on its machine's agents. Drop them from the alive set; they'll
+          // appear hibernating until a daemon reconnects.
+          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+          for (const a of onMachine) _aliveAgents.delete(a.id)
           failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
           broadcastState()
           console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
@@ -1105,7 +1106,8 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('error', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
-          _daemonLiveness.delete(ws._machineId)
+          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+          for (const a of onMachine) _aliveAgents.delete(a.id)
           failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
           broadcastState()
         }
@@ -1210,11 +1212,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
-    if (agent.machine_id && !agent.human) {
-      const set = _daemonLiveness.get(agent.machine_id) || new Set()
-      set.add(agentId)
-      _daemonLiveness.set(agent.machine_id, set)
-    }
+    if (!agent.human) _aliveAgents.add(agentId)
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
@@ -2184,12 +2182,17 @@ function handleDaemonWsMessage(ws, msg) {
   if (!ws._machineId) return
 
   if (type === 'agent-liveness') {
-    // Daemon's per-machine list of agents whose claude processes are
-    // currently running. This is the single source of truth for the
-    // awake/hibernating status; see fleetStore.setLivenessOracle.
+    // Daemon's list of its machine's agents whose claude processes are
+    // currently running. Treated as a full replacement for that machine:
+    // any agent on this machine that the daemon didn't mention is dropped
+    // from the alive set (it's hibernating now).
     if (Array.isArray(msg.agent_ids)) {
-      _daemonLiveness.set(ws._machineId, new Set(msg.agent_ids))
-      // Notify connected clients so they see the updated status.
+      const incoming = new Set(msg.agent_ids)
+      const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+      for (const a of agentsOnThisMachine) {
+        if (incoming.has(a.id)) _aliveAgents.add(a.id)
+        else _aliveAgents.delete(a.id)
+      }
       broadcastState()
     }
     return
