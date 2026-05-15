@@ -62,6 +62,25 @@ body.fog-dark-mode .search-input-wrap {
   opacity: 0.04;
 }
 
+/* Bottom-row buttons: canvas is dark so buttons need light colors.
+   These elements use html[data-theme="dark"] in their CSS, but that
+   attribute may not be set if TLDraw hasn't initialized yet. */
+body.fog-dark-mode .build-warning-badge {
+  color: rgba(255, 255, 255, 0.1);
+}
+body.fog-dark-mode .build-warning-badge:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+body.fog-dark-mode .fleet-icon-pill-badge {
+  color: white;
+}
+body.fog-dark-mode .phone-hl-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+body.fog-dark-mode .voice-note-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
 /* ------------------------------------------------------------------ */
 /* Fog Light — overcast gray, cool undertone                          */
 /* ------------------------------------------------------------------ */
@@ -127,5 +146,34 @@ body.fog-light-mode .doc-panel-tabs,
 body.fog-light-mode .doc-panel-content,
 body.fog-light-mode .search-input-wrap {
   opacity: 0.04;
+}
+
+/* Bottom-row buttons: canvas is gray so dark icons need stronger color to stay visible.
+   Opacity stays at the intentional 0.15 — only the icon color gets deeper. */
+body.fog-light-mode .build-warning-badge {
+  color: rgba(0, 40, 55, 0.18);
+}
+body.fog-light-mode .build-warning-badge:hover {
+  color: rgba(0, 40, 55, 0.7);
+}
+body.fog-light-mode .fleet-icon-pill-badge {
+  color: rgba(0, 40, 55, 0.9);
+}
+body.fog-light-mode .voice-note-btn {
+  color: rgba(0, 40, 55, 0.8);
+}
+
+/* Warm mode: off-white canvas, buttons need same treatment */
+body.warm-mode .build-warning-badge {
+  color: rgba(0, 0, 0, 0.13);
+}
+body.warm-mode .build-warning-badge:hover {
+  color: rgba(0, 0, 0, 0.65);
+}
+body.warm-mode .fleet-icon-pill-badge {
+  color: rgba(0, 0, 0, 0.85);
+}
+body.warm-mode .voice-note-btn {
+  color: rgba(0, 0, 0, 0.75);
 }
 
