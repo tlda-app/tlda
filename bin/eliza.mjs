@@ -27,6 +27,102 @@ const OWNER_ID = 'fleet:skip'
 const AGENT_ID = 'fleet:eliza'
 const AGENT_NAME = 'eliza'
 
+// ---- Decision log ----
+// JSONL file recording every Eliza action + state snapshot for later HMM training.
+// Each line: { ts, agent, action, trigger, state, text_snippet, reward? }
+const DECISIONS_LOG = path.join(CONFIG_DIR, 'eliza-decisions.jsonl')
+
+// Positive/negative reward signal patterns in Skip's messages (post-nudge)
+const POSITIVE_REWARD_PATTERNS = [
+  /\b(that was great|perfect|exactly|much better|now we'?re (getting|talking)|thank you|okay good|that'?s (right|it|better|great))\b/i,
+  /^(yes|yeah|yep|great|good|perfect|nice|exactly)\b/i,
+]
+const NEGATIVE_REWARD_PATTERNS = [
+  /\b(that sucked|still not|ugh|this is exhausting|not (right|what I wanted|correct))\b/i,
+  /\bfuck you\b/i,
+  /^(bro|wtf)\s*$/i,
+]
+
+// Track pending reward observations: agentId → { nudgeTs, nudgeAction, positiveCount, negativeCount, windowDone }
+const pendingRewards = new Map()
+const REWARD_WINDOW_MS = 10 * 60_000 // watch 10 min after nudge
+
+function logDecision(agentId, action, trigger, stateSnapshot, textSnippet) {
+  const record = {
+    ts: new Date().toISOString(),
+    agent: agentId,
+    action,   // 'performing-understanding' | 'fuck-you-in-context' | 'punt' | 'running-away' | 'single-trigger:<pattern>'
+    trigger,  // what caused this
+    state: stateSnapshot,
+    text: textSnippet?.slice(0, 120) || '',
+  }
+  try {
+    fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n')
+  } catch (e) {
+    console.error(`[eliza] log write failed: ${e.message}`)
+  }
+}
+
+function logReward(agentId, nudgeTs, nudgeAction, reward, rewardText) {
+  const record = {
+    ts: new Date().toISOString(),
+    agent: agentId,
+    type: 'reward',
+    nudge_ts: nudgeTs,
+    nudge_action: nudgeAction,
+    reward,  // +1 | -1 | 0
+    text: rewardText?.slice(0, 120) || '',
+  }
+  try {
+    fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n')
+  } catch (e) {
+    console.error(`[eliza] log write failed: ${e.message}`)
+  }
+}
+
+function startRewardWindow(agentId, action) {
+  pendingRewards.set(agentId, {
+    nudgeTs: new Date().toISOString(),
+    nudgeAction: action,
+    positiveCount: 0,
+    negativeCount: 0,
+    windowStart: Date.now(),
+  })
+}
+
+function observeRewardSignal(agentId, text) {
+  const pending = pendingRewards.get(agentId)
+  if (!pending) return
+  if (Date.now() - pending.windowStart > REWARD_WINDOW_MS) {
+    // Window expired — log neutral and close
+    if (pending.positiveCount === 0 && pending.negativeCount === 0) {
+      logReward(agentId, pending.nudgeTs, pending.nudgeAction, 0, null)
+    }
+    pendingRewards.delete(agentId)
+    return
+  }
+  if (POSITIVE_REWARD_PATTERNS.some(p => p.test(text))) {
+    pending.positiveCount++
+    logReward(agentId, pending.nudgeTs, pending.nudgeAction, 1, text)
+    pendingRewards.delete(agentId) // close window on first clear signal
+  } else if (NEGATIVE_REWARD_PATTERNS.some(p => p.test(text))) {
+    pending.negativeCount++
+    logReward(agentId, pending.nudgeTs, pending.nudgeAction, -1, text)
+    pendingRewards.delete(agentId)
+  }
+}
+
+// Expire reward windows that are past their window
+setInterval(() => {
+  const now = Date.now()
+  for (const [agentId, pending] of pendingRewards) {
+    if (now - pending.windowStart > REWARD_WINDOW_MS) {
+      logReward(agentId, pending.nudgeTs, pending.nudgeAction, 0, null)
+      pendingRewards.delete(agentId)
+    }
+  }
+}, 60_000)
+
 // ---- Trigger table ----
 // Each entry: { pattern: RegExp, message: string, cooldown?: number }
 // `cooldown` is per-target in ms (default 60s) — won't re-fire for the
@@ -251,9 +347,10 @@ function handleSequence(fromId, toId, text) {
       if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
         console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
         sendChat(toId, FUCK_YOU_IN_CONTEXT_MSG)
+        logDecision(toId, 'fuck-you-in-context', 'fuck-you-while-corrected', { phase: state.phase }, text)
+        startRewardWindow(toId, 'fuck-you-in-context')
         state.phase = 'idle'
         state.windowStart = 0
-        // Also clear pending — escalation supersedes running-away
         pendingSkipMessages.delete(toId)
         return 'handled'
       }
@@ -261,6 +358,8 @@ function handleSequence(fromId, toId, text) {
       if (state.phase === 'acked') {
         console.log(`[eliza] performing-understanding → ${toId}`)
         sendChat(toId, PERFORMING_UNDERSTANDING_MSG)
+        logDecision(toId, 'performing-understanding', 'correction-after-ack', { phase: state.phase }, text)
+        startRewardWindow(toId, 'performing-understanding')
         state.phase = 'corrected'
         return 'handled'
       }
@@ -295,10 +394,22 @@ function handleSequence(fromId, toId, text) {
       if (now - lastPunt > PUNT_COOLDOWN_MS) {
         console.log(`[eliza] punt detected from ${fromId}`)
         sendChat(fromId, PUNT_MSG)
+        logDecision(fromId, 'punt', 'punt-phrase-detected', {}, text)
+        startRewardWindow(fromId, 'punt')
         puntCooldowns.set(fromId, now)
         return 'handled'
       }
     }
+
+    // Reward signal observation — watch Skip's messages after a nudge for outcome
+    if (fromId === OWNER_ID) {
+      // This branch handles Agent→Skip, but owner can also be observed indirectly
+    }
+  }
+
+  // Observe reward signals in Skip→Agent messages
+  if (fromId === OWNER_ID && toId && toId !== AGENT_ID) {
+    observeRewardSignal(toId, text)
   }
 
   return null // not handled by sequence detection
@@ -316,6 +427,8 @@ function handleActivity(agentId, tool) {
 
   console.log(`[eliza] running-away → ${agentId} (${tool} after ${Math.round(elapsed/1000)}s, no reply to Skip)`)
   sendChat(agentId, RUNNING_AWAY_MSG)
+  logDecision(agentId, 'running-away', `write-tool-while-unacknowledged:${tool}`, { elapsedSec: Math.round(elapsed/1000) }, null)
+  startRewardWindow(agentId, 'running-away')
   pending.nudgeSent = true
 }
 
@@ -470,6 +583,8 @@ async function checkTriggers(targetId, text) {
       }
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       sendChat(targetId, message)
+      logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
+      startRewardWindow(targetId, `single-trigger:${i}`)
       setCooldown(targetId, i)
       return // only fire one trigger per message
     }
