@@ -65,13 +65,15 @@ body.fog-dark-mode .tl-theme__dark .tlui-toolbar {
   background: rgba(26, 32, 36, 0.75) !important;
 }
 
-/* Teal dark — doc panel */
+/* Fog dark — doc panel */
 body.fog-dark-mode .doc-panel {
-  background: rgba(26, 32, 36, 0.5);
+  background: transparent;
 }
 body.fog-dark-mode .doc-panel:hover,
 body.fog-dark-mode .doc-panel-open {
-  background: rgba(34, 42, 46, 0.92);
+  background: rgba(34, 42, 46, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 body.fog-dark-mode .doc-panel-tabs {
   border-bottom-color: rgba(46, 58, 62, 0.4);
@@ -182,13 +184,15 @@ body.fog-light-mode .tlui-toolbar {
   background: rgba(232, 238, 240, 0.6) !important;
 }
 
-/* Teal light — doc panel (override white backgrounds) */
+/* Fog light — doc panel */
 body.fog-light-mode .doc-panel {
-  background: rgba(232, 238, 240, 0.5);
+  background: transparent;
 }
 body.fog-light-mode .doc-panel:hover,
 body.fog-light-mode .doc-panel-open {
-  background: rgba(235, 240, 242, 0.92);
+  background: rgba(235, 240, 242, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 body.fog-light-mode .doc-panel-tabs {
   border-bottom-color: rgba(180, 200, 210, 0.4);
