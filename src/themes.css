@@ -71,20 +71,14 @@ body.fog-dark-mode .build-warning-badge {
 body.fog-dark-mode .build-warning-badge:hover {
   color: rgba(255, 255, 255, 0.6);
 }
+body.fog-dark-mode .fleet-icon-pill-badge {
+  color: white;
+}
 body.fog-dark-mode .phone-hl-btn {
   color: rgba(255, 255, 255, 0.5);
-  opacity: 0.5;
 }
 body.fog-dark-mode .voice-note-btn {
   color: rgba(255, 255, 255, 0.5);
-  opacity: 0.5;
-}
-body.fog-dark-mode .fleet-icon-pill-badge {
-  color: white;
-  opacity: 0.4;
-}
-body.fog-dark-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.15;
 }
 
 /* ------------------------------------------------------------------ */
@@ -172,11 +166,9 @@ body.fog-light-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
 }
 body.fog-light-mode .phone-hl-btn {
   color: rgba(0, 40, 55, 0.8);
-  opacity: 0.5;
 }
 body.fog-light-mode .voice-note-btn {
   color: rgba(0, 40, 55, 0.8);
-  opacity: 0.5;
 }
 
 /* Warm mode: off-white canvas, same treatment */
@@ -195,10 +187,8 @@ body.warm-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
 }
 body.warm-mode .phone-hl-btn {
   color: rgba(0, 0, 0, 0.6);
-  opacity: 0.5;
 }
 body.warm-mode .voice-note-btn {
   color: rgba(0, 0, 0, 0.75);
-  opacity: 0.5;
 }
 
