@@ -366,6 +366,29 @@ ${content}
   } catch {}
 
 
+  // Write relevant-files.json — the markdown analog of .fls.
+  // Daemon uses this to watch only the files this build actually reads.
+  // Paths must be under the authoring sourceDir (not the server mirror)
+  // so they match what the daemon pushes from.
+  const authorDir = project.sourceDir || srcDir
+  const referencedFiles = [join(authorDir, mainFile)]
+  const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g
+  let imgMatch
+  while ((imgMatch = imgRe.exec(source)) !== null) {
+    const ref = imgMatch[1].split(/[#?]/)[0].trim()
+    if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
+      referencedFiles.push(join(authorDir, ref))
+    }
+  }
+  const htmlImgRe = /<img\s[^>]*src=["']([^"']+)["']/g
+  while ((imgMatch = htmlImgRe.exec(source)) !== null) {
+    const ref = imgMatch[1].split(/[#?]/)[0].trim()
+    if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
+      referencedFiles.push(join(authorDir, ref))
+    }
+  }
+  writeFileSync(join(outDir, 'relevant-files.json'), JSON.stringify({ files: referencedFiles }, null, 2))
+
   const pageInfo = [{ file: 'index.html', width: 800, height: 1200, title }]
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))

@@ -35,6 +35,42 @@ export function timeShort(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
+// --- Standalone att-token resolver ---
+// Used by unquote Tier 2 to render a rechat result (resolvedMessage + inlineAttachments)
+// into HTML without the full chat-line wrapper. renderMarkdown is the same function
+// passed via ctx to renderChatLine.
+export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown) {
+  // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
+  let processed = text
+  if (inlineAttachments?.length) {
+    processed = processed.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
+      const att = inlineAttachments[+idx]
+      if (att?.url && /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')) {
+        return `![${alt}](${att.url})`
+      }
+      return match
+    })
+  }
+  let html = renderMarkdown(esc(processed))
+  // Replace remaining {{att:N}} markers
+  html = html.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
+    const att = inlineAttachments?.[+idx]
+    if (att?.type === 'file') {
+      const name = esc(att.name || att.path?.split('/').pop() || 'file')
+      const filePath = esc(att.path || '')
+      const fileUrl = att.url ? esc(att.url) : ''
+      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
+      if (isImage && fileUrl) return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
+      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
+      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
+    }
+    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
+  })
+  return html
+}
+
 // --- Main renderer ---
 
 export function renderChatLine(m, ctx) {

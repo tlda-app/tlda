@@ -5,6 +5,8 @@
  * that includes both in-session build snapshots and git commits.
  */
 
+import { getPageFilename } from './stores/pageUrlStore'
+
 export interface HistoryEntry {
   id: string
   type: 'build' | 'git'
@@ -132,10 +134,11 @@ export async function waitForGitBuild(
 }
 
 /**
- * Get the URL for a snapshot's SVG page.
+ * Get the URL for a snapshot's SVG page (page is 1-based).
  */
 export function snapshotPageUrl(docName: string, snapshotId: string, page: number): string {
-  return `${serverBase}/docs/${docName}/history/${snapshotId}/page-${page}.svg`
+  const filename = getPageFilename(page - 1) ?? `page-${page}.svg`
+  return `${serverBase}/docs/${docName}/history/${snapshotId}/${filename}`
 }
 
 /**
@@ -221,11 +224,11 @@ export async function fetchShadowVersions(docName: string, limit = 9999): Promis
 }
 
 /**
- * Get the URL for a shadow snapshot's SVG page.
- * Shadow snapshots are cached as shadow-{hash7} in the history dir.
+ * Get the URL for a shadow snapshot's SVG page (page is 1-based).
  */
 export function shadowSnapshotPageUrl(docName: string, hash: string, page: number): string {
-  return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/page-${page}.svg`
+  const filename = getPageFilename(page - 1) ?? `page-${page}.svg`
+  return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/${filename}`
 }
 
 /**

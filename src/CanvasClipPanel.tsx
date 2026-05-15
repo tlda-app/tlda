@@ -708,7 +708,8 @@ export function CanvasClipPanel({
           const target = document.elementFromPoint(e.clientX, e.clientY)
           const shapeEl = target?.closest('[data-shape-id]')
           const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
-            shapeEl?.querySelector('.fleet-agents-body') ?? null) as HTMLElement | null
+            shapeEl?.querySelector('.fleet-agents-body') ??
+            shapeEl?.querySelector('.fleet-search-results') ?? null) as HTMLElement | null
           if (scrollable) scrollable.scrollTop += e.deltaY
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
@@ -740,8 +741,6 @@ export function CanvasClipPanel({
   // Uses capture-phase listeners so they fire before TLDraw's own handlers on inner elements.
   // stopPropagation on contextmenu prevents main canvas from seeing it; no preventDefault
   // so the browser still shows the native menu.
-  // Exception: let contextmenu pass through on <code> elements inside .chat-line so the
-  // FleetChatShape unquote handler (bubble phase) can intercept it.
   useEffect(() => {
     const el = canvasRef.current
     if (!el) return
@@ -749,8 +748,6 @@ export function CanvasClipPanel({
       if (e.button === 2) e.stopPropagation()
     }
     const onContextMenu = (e: Event) => {
-      const t = e.target as HTMLElement | null
-      if (t?.closest('code')?.closest('.chat-line')) return  // let unquote handler take it
       e.stopPropagation()
     }
     el.addEventListener('pointerdown', onPointerDown, { capture: true })

@@ -36,7 +36,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
-import { uploadFileToServer } from './lib/chat-file-processing.mjs';
+import { processMessageText } from './lib/message-processing.mjs';
 import WebSocket from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -629,6 +629,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents, sends to all of them.' },
           message: { type: 'string', description: 'Message to send' },
+          max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
         },
         required: ['message'],
       },
@@ -733,16 +734,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent.',
+      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops).',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent name to respawn (default behavior).' },
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
+          refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
           model: { type: 'string', description: 'Model override. Default: sonnet.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
+          mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
         },
       },
     },
@@ -787,6 +790,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
@@ -1423,11 +1427,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
 
+      // Resolve mode for inline spawn: explicit > config file default
+      let delegateSpawnMode = spawnOpts.mode || null;
+      if (!delegateSpawnMode) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
+          delegateSpawnMode = cfg.spawnMode || null;
+        } catch {}
+      }
+
       const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
       const cmdParts = [fleetSpawnScript, '--fresh'];
       if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
       if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
       if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
+      if (delegateSpawnMode) cmdParts.push('--mode', delegateSpawnMode);
       cmdParts.push('--no-attach', agentName);
 
       let spawnOutput;
@@ -1502,11 +1516,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
     let recipients = [];
     let serverDown = false;
+    let agents = [];
     try {
-      const agents = await sendWS('store-agents');
+      agents = await sendWS('store-agents');
       for (const a of agents) {
         if (a.id === AGENT_ID) continue;
-        const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean);
+        const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
+        const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
         if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -1516,73 +1532,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (serverDown) return { content: [{ type: 'text', text: '⚠ Fleet server is unreachable — message NOT sent. Check if the server is running (fleet-spawn auto-starts it, or: cd ~/work/fleet && node dashboard/server.mjs).' }], isError: true };
     if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
+    const maxRecipients = args.max_recipients ?? 5;
+    if (recipients.length > maxRecipients) {
+      const names = recipients.map(id => { const a = agents?.find(x => x.id === id); return a?.friendly_name || id; });
+      return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
+    }
 
     // Resolve file paths in message text → inline attachments.
-    //
-    // Skip's rule: backtick-quoted text is a "quote" and must NOT be
-    // chipified. That covers single-backtick inline spans and triple-
-    // backtick fenced code blocks. Mask both before running the path
-    // regex, restore after. Fences are masked first so inline spans
-    // inside a fence don't get stripped separately.
     const agentCwd = getAgentCwd();
-    let resolvedMessage = message;
-    const inlineAttachments = [];
-    if (agentCwd) {
-      const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd';
-      const pathRe = new RegExp(
-        `(?<![\\/\\w])(~?\\/[\\w.\\-\\/]+\\.(?:${PATH_EXT})|[\\w][\\w.\\-\\/]*\\.(?:${PATH_EXT}))(?!\\w)`,
-        'g'
-      );
-      // Mask out backtick-quoted regions so the path regex skips over them.
-      // SENTINEL uses \x00 which can't appear in agent-authored text.
-      const masked = [];
-      const maskToken = (kind, raw) => {
-        const i = masked.length;
-        masked.push(raw);
-        return `\x00${kind}${i}\x00`;
-      };
-      // 1. Triple-backtick fenced code blocks (may contain newlines)
-      let working = message.replace(/```[\s\S]*?```/g, (m) => maskToken('F', m));
-      // 2. Single-backtick inline spans (no newlines, non-empty interior)
-      working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m));
-
-      let attIdx = 0;
-      working = working.replace(pathRe, (match, filePath) => {
-        const expanded = filePath.replace(/^~\//, os.homedir() + '/');
-        if (expanded.startsWith('/')) {
-          if (fs.existsSync(expanded)) {
-            const id = attIdx++;
-            inlineAttachments.push({ type: 'file', id, path: expanded, name: path.basename(expanded) });
-            return `{{att:${id}}}`;
-          }
-          return match;
-        }
-        // Relative path — resolve against agent cwd
-        const abs = path.resolve(agentCwd, expanded);
-        if (fs.existsSync(abs)) {
-          const id = attIdx++;
-          inlineAttachments.push({ type: 'file', id, path: abs, name: path.basename(abs) });
-          return `{{att:${id}}}`;
-        }
-        return match;
-      });
-
-      // Restore masked regions (inline spans first, then fences — reverse of masking order)
-      working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i]);
-      working = working.replace(/\x00F(\d+)\x00/g, (_, i) => masked[+i]);
-      resolvedMessage = working;
-    }
-
-    // Upload file attachments to dashboard server so they're accessible via URL
     const dashPortUpload = process.env.FLEET_DASH_PORT || 5176;
-    for (const att of inlineAttachments) {
-      if (att.path && fs.existsSync(att.path)) {
-        try {
-          const { url } = await uploadFileToServer(att.path, `http://127.0.0.1:${dashPortUpload}`)
-          att.url = url
-        } catch {}
-      }
-    }
+    const { resolvedMessage, inlineAttachments } = await processMessageText(
+      message, agentCwd, `http://127.0.0.1:${dashPortUpload}`
+    );
 
     // Auto-attach ref metadata for «...» tokens in the message
     const refAttachments = [];
@@ -2393,17 +2354,29 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
 
     const isFresh = !!args.fresh;
+    const isRefresh = !!args.refresh;
     const agentName = isFresh ? args.name : args.agent;
     if (!agentName) {
       return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
     }
 
+    // Resolve mode: explicit arg > config file default
+    let spawnMode = args.mode || null;
+    if (!spawnMode) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
+        spawnMode = cfg.spawnMode || null;
+      } catch {}
+    }
+
     const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
     const cmdParts = [fleetSpawnScript];
     if (isFresh) cmdParts.push('--fresh');
+    if (isRefresh) cmdParts.push('--refresh');
     if (args.model) cmdParts.push('--model', args.model);
     if (args.effort) cmdParts.push('--effort', args.effort);
     if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
+    if (spawnMode) cmdParts.push('--mode', spawnMode);
     cmdParts.push('--no-attach');
     cmdParts.push(agentName);
 
@@ -2760,6 +2733,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const params = { agent: agentId, limit: pageSize };
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.until = resolvedUntil;
+      if (args.types?.length) params.event_types = args.types;
       const data = await sendWS('store-events', params);
       if (!data) return;
       serverTotal = data.total ?? null;

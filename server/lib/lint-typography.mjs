@@ -1,9 +1,8 @@
-// Passive-voice lint for agent-written prose in .tex files.
+// Grammar lint for .tex files — non-grammatical commas and colons.
 //
-// Wraps a Python helper (lint-passive.py) that uses spaCy dependency
-// parsing — auxpass/nsubjpass relations — to detect passive constructions
-// with high accuracy. Math environments and inline math are stripped before
-// parsing so equations don't trip the parser.
+// Wraps lint-typography.py, which substitutes math with grammatical
+// placeholders (so spaCy can parse prose containing math as normal English),
+// then uses spaCy's dependency tree to flag violations.
 
 import { spawnSync } from 'node:child_process'
 import { writeFileSync, mkdtempSync } from 'node:fs'
@@ -12,37 +11,32 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const HELPER = join(__dirname, 'lint-passive.py')
+const HELPER = join(__dirname, 'lint-typography.py')
 
-// Run the Python helper on a single file's contents. Returns the parsed
-// findings array, or [] on any error (logged).
 function runHelper(filePath) {
   const result = spawnSync('python3', [HELPER, filePath], { encoding: 'utf8' })
   if (result.status !== 0) {
-    console.error('[lint-passive] helper failed:', result.stderr || `exit ${result.status}`)
+    console.error('[lint-typography] helper failed:', result.stderr || `exit ${result.status}`)
     return []
   }
   try {
     return JSON.parse(result.stdout || '[]')
   } catch (e) {
-    console.error('[lint-passive] failed to parse helper output:', e.message)
+    console.error('[lint-typography] failed to parse helper output:', e.message)
     return []
   }
 }
 
-// Lint a full text. Writes to a temp file (the helper takes a path so it
-// can preserve line numbers cleanly) and runs the Python helper.
+// Lint a full text. Returns [{file, line, pattern, snippet}].
 export function lintText(text, file = '<text>') {
-  const dir = mkdtempSync(join(tmpdir(), 'lint-passive-'))
+  const dir = mkdtempSync(join(tmpdir(), 'lint-typography-'))
   const tmpFile = join(dir, 'input.tex')
   writeFileSync(tmpFile, text)
   const raw = runHelper(tmpFile)
-  // Re-label findings with the caller-provided file label, since the helper
-  // gets the temp path.
-  return raw.map((f) => ({ ...f, file, pattern: f.kind || 'passive' }))
+  return raw.map((f) => ({ ...f, file, pattern: f.kind || 'typography' }))
 }
 
-// Parse a unified diff and return only added lines per file with their
+// Parse a unified diff and return only the added lines per file with their
 // new-file line numbers. Returns Map<file, Set<lineNumber>>.
 function parseDiffAddedLines(diffText) {
   const out = new Map()
@@ -59,26 +53,16 @@ function parseDiffAddedLines(diffText) {
     }
     if (!added) continue
     const hunk = l.match(/^@@ [^+]*\+(\d+)(?:,\d+)? @@/)
-    if (hunk) {
-      curLine = parseInt(hunk[1], 10)
-      continue
-    }
-    if (l.startsWith('+') && !l.startsWith('+++')) {
-      added.add(curLine)
-      curLine++
-    } else if (l.startsWith('-') && !l.startsWith('---')) {
-      // doesn't advance new-file line
-    } else if (!l.startsWith('\\')) {
-      curLine++
-    }
+    if (hunk) { curLine = parseInt(hunk[1], 10); continue }
+    if (l.startsWith('+') && !l.startsWith('+++')) { added.add(curLine); curLine++ }
+    else if (l.startsWith('-') && !l.startsWith('---')) { /* no advance */ }
+    else if (!l.startsWith('\\')) { curLine++ }
   }
   return out
 }
 
-// Lint a unified diff against the post-state file contents.
-// `diffText` — output of `git diff` or similar
-// `readFile(path)` — function returning post-state file contents (or null)
-// Returns flat array of lint results with file/line/pattern/snippet.
+// Lint a unified diff against post-state file contents.
+// `readFile(path)` — returns post-state file contents (or null)
 export function lintDiff(diffText, readFile) {
   const addedByFile = parseDiffAddedLines(diffText)
   const results = []
@@ -111,12 +95,12 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
       if (!grouped.has(f.file)) grouped.set(f.file, [])
       grouped.get(f.file).push(f)
     }
-    const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
+    const lines = [`🔴 **Typography lint** — ${findings.length} grammar error(s) in this build:`]
     for (const [file, items] of grouped) {
-      const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
+      const detail = items.map((i) => `L${i.line}: \`${i.snippet}\``).join('; ')
       lines.push(`- \`${file}\`: ${detail}`)
     }
-    lines.push('Passive voice in math prose makes the reader work harder. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" over "is bounded by …" / "is given by …".')
+    lines.push('Comma before `\\qwhere`, `\\qfor`, or `\\qand` is always a grammar error — these are conjunctions, not list items.')
     process.stdout.write(lines.join('\n') + '\n')
   }
 }

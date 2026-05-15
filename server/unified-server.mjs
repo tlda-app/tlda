@@ -87,6 +87,138 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 // agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
 
+// "Agent has a running claude process right now" — flat set keyed by agent_id.
+// Populated by `agent-liveness` messages from each machine's daemon (every
+// ~30s checkAgentLiveness pass) and seeded on register. The fleet store reads
+// this via an installed oracle when computing each agent's awake/hibernating
+// status. An agent leaves the set when (a) the daemon's next sweep reports
+// it gone, (b) that machine's daemon disconnects, or (c) the agent is killed.
+const _aliveAgents = new Set()              // Set<agent_id>
+
+function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
+
+if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
+
+// ─── Process reaper — zombie WebSocket detection ────────────────────
+// Agents leave wakes of playwright chromium windows pointed at our
+// /sync/<doc> and /ws/fleet endpoints. A "zombie" is a connection with
+// no client→server message for ZOMBIE_THRESHOLD_MS. Server pushes don't
+// count (we only attach an inbound listener); WebSocket ping/pong frames
+// don't surface as 'message' events. Once detected, we ask the daemon
+// on the chromium's machine to kill the orphan chromium PID (verified
+// by binary path — only the playwright cache, never the user's real
+// Google Chrome).
+const _trackedWs = new Set()
+// Defaults are 10-min idle / 60-s sweep. Override via env for tests (no
+// production behavior change — these are plain timing knobs, not feature
+// gates).
+const ZOMBIE_THRESHOLD_MS = parseInt(process.env.REAPER_ZOMBIE_MS, 10) || 10 * 60 * 1000
+const REAPER_INTERVAL_MS = parseInt(process.env.REAPER_INTERVAL_MS, 10) || 60 * 1000
+
+// The tldraw sync client sends `{"type":"ping"}` every 5s as an
+// application-level keepalive. We must NOT count those as real input or
+// no /sync/ WS would ever look idle.
+function isSyncHeartbeat(raw) {
+  if (typeof raw === 'string') {
+    if (raw.length > 30) return false
+    return raw.includes('"ping"')
+  }
+  if (!raw || raw.length > 30) return false
+  return raw.toString('utf8', 0, Math.min(raw.length, 30)).includes('"ping"')
+}
+
+function trackWs(ws, meta) {
+  ws._wsKind = meta.kind            // 'sync' | 'fleet'
+  ws._wsDocName = meta.docName || null
+  ws._wsSessionId = meta.sessionId
+  ws._wsRemoteAddr = meta.remoteAddr
+  ws._wsRemotePort = meta.remotePort
+  ws._wsConnectedAt = Date.now()
+  ws._wsLastInputAt = Date.now()
+  _trackedWs.add(ws)
+  if (meta.kind === 'sync') {
+    ws.on('message', (raw) => {
+      if (isSyncHeartbeat(raw)) return
+      ws._wsLastInputAt = Date.now()
+    })
+  } else {
+    // /ws/fleet: no client-side periodic traffic from browsers; MCP-sent
+    // `heartbeat` messages come from real agents and (correctly) mark them
+    // active — the binary-path check in the daemon prevents us from
+    // touching anything that isn't a playwright chromium anyway.
+    ws.on('message', () => { ws._wsLastInputAt = Date.now() })
+  }
+  const cleanup = () => { _trackedWs.delete(ws) }
+  ws.on('close', cleanup)
+  ws.on('error', cleanup)
+}
+
+function normalizeAddr(a) {
+  if (!a) return a
+  if (a.startsWith('::ffff:')) return a.slice(7)  // IPv6-mapped IPv4
+  if (a === '::1') return '127.0.0.1'             // IPv6 loopback
+  return a
+}
+
+function findMachineForAddress(addr) {
+  const norm = normalizeAddr(addr)
+  for (const [machineId, dws] of daemonConnections) {
+    if (normalizeAddr(dws._remoteAddr) === norm) return machineId
+  }
+  return null
+}
+
+async function reapZombies() {
+  const now = Date.now()
+  const zombies = []
+  let activeCount = 0
+  for (const ws of _trackedWs) {
+    if (ws.readyState !== 1) continue
+    const idleMs = now - ws._wsLastInputAt
+    if (idleMs > ZOMBIE_THRESHOLD_MS) {
+      zombies.push({
+        kind: ws._wsKind,
+        doc: ws._wsDocName,
+        sessionId: ws._wsSessionId,
+        addr: ws._wsRemoteAddr,
+        port: ws._wsRemotePort,
+        idleMs,
+      })
+    } else {
+      activeCount++
+    }
+  }
+  if (zombies.length === 0) {
+    console.log(`[reaper] sweep: ${activeCount} active WS, 0 zombies`)
+    return
+  }
+  console.log(`[reaper] sweep: ${activeCount} active WS, ${zombies.length} zombie WS`)
+  for (const z of zombies) {
+    const idleMin = Math.round(z.idleMs / 60000)
+    console.log(`[reaper]   zombie ${z.kind} doc=${z.doc || '-'} session=${z.sessionId} addr=${z.addr}:${z.port} idle=${idleMin}m`)
+    const machineId = findMachineForAddress(z.addr)
+    if (!machineId) {
+      console.log(`[reaper]   no daemon for ${z.addr}; skipping kill`)
+      continue
+    }
+    try {
+      const r = await sendRpc(machineId, 'kill-orphan-chromium', {
+        port: z.port,
+        addr: normalizeAddr(z.addr),
+      })
+      if (r?.killed) {
+        console.log(`[reaper]   killed pid=${r.pid} binary=${r.binary || '(playwright)'} for session=${z.sessionId}`)
+      } else {
+        console.log(`[reaper]   no kill: ${r?.reason || 'unknown'}`)
+      }
+    } catch (e) {
+      console.log(`[reaper]   kill RPC failed: ${e.message}`)
+    }
+  }
+}
+
+setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
+
 // Local-machine daemon supervisor.
 //
 // The fleet daemon is a per-machine subprocess that watches Claude Code
@@ -180,7 +312,7 @@ function ensureLocalDaemon() {
     const child = cpSpawn(process.execPath, [DAEMON_SCRIPT], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
     })
     child.unref()
     _daemonRespawnCount++
@@ -268,6 +400,7 @@ function broadcastEvent(type, data) {
 // broadcastState() so state pushes never wipe client indicators.
 const _thinkingState = new Map()   // agentId → timestamp (ms)
 const _compactingState = new Map() // agentId → timestamp (ms)
+const _contextState = new Map()    // agentId → { percent, inputTokens }
 
 function broadcastState() {
   if (!fleetStore) return
@@ -276,6 +409,7 @@ function broadcastState() {
     tasks: fleetStore.getActiveTasks(),
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
+    context: Object.fromEntries(_contextState),
   })
 }
 
@@ -327,14 +461,31 @@ onGlobalEvent((event) => {
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
   }
-  if (event?.type === 'build-chat' && fleetStore && event.text) {
-    // Send build notifications only to agents monitoring this doc (via monitor_add)
-    if (event.name) {
-      const subs = tldaFeedback.subscribers(event.name)
-      for (const agentId of subs) {
-        fleetStore.chat('fleet:tlda', agentId, event.text)
-      }
+  if (event?.type === 'build-card' && fleetStore && event.name) {
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, buildFiles } = event
+    const text = mirrorFailed
+      ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
+      : `Build ${hash} — ${docName}`
+    const metadata = { type: 'build_result', name: docName, hash, summary: summary || null, lintFindings, mirrorFailed: mirrorFailed || null }
+
+    // Notify monitoring subscribers
+    const subs = new Set(tldaFeedback.subscribers(docName))
+
+    // For mirror failures, also notify agents who used editor tools on the build files
+    // since the last successful mirror — those are the agents who could be responsible.
+    if (mirrorFailed && buildFiles?.length && lastMirrorSuccess) {
+      for (const id of fleetStore.recentDocAgents(buildFiles, lastMirrorSuccess)) subs.add(id)
     }
+
+    for (const agentId of subs) {
+      fleetStore.chat('fleet:tlda', agentId, text, metadata)
+    }
+  }
+  if (event?.type === 'scratch-build-failed' && fleetStore && event.agentId) {
+    const { doc, agentId, label, errors = [] } = event
+    const errorList = errors.map(e => `  • ${e}`).join('\n')
+    const text = `**Scratch build failed** — \`${label}\` in ${doc}\n\n${errorList}`
+    fleetStore.chat('fleet:tlda', agentId, text, { type: 'scratch_build_failed', doc, label })
   }
 })
 
@@ -520,6 +671,33 @@ app.get('/api/auth/me', (req, res) => {
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
   res.json({ level, presenter: level === 'rw' })
+})
+
+// ---------- Fleet user prefs ----------
+// Per-user key-value store backed by fleet_prefs table. User is identified by fleet ID.
+
+app.get('/api/fleet/prefs', requireRead, (req, res) => {
+  const userId = req.query.user
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  res.json(fleetStore.getAllFleetPrefs(userId))
+})
+
+app.get('/api/fleet/prefs/:key', requireRead, (req, res) => {
+  const userId = req.query.user
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  const value = fleetStore.getFleetPref(userId, req.params.key)
+  res.json({ key: req.params.key, value: value ?? null })
+})
+
+app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
+  const { user: userId, value } = req.body
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing user in body' })
+  if (value === undefined) return res.status(400).json({ error: 'Missing value in body' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  fleetStore.setFleetPref(userId, req.params.key, value)
+  res.json({ ok: true })
 })
 
 // ---------- Local image serving ----------
@@ -837,6 +1015,7 @@ app.use('/api/recognize', recognizeRoutes)
 function clearEphemeralState(agentId) {
   _thinkingState.delete(agentId)
   _compactingState.delete(agentId)
+  _contextState.delete(agentId)
 }
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
@@ -932,7 +1111,10 @@ server.on('upgrade', async (req, socket, head) => {
     if (!docName) { socket.destroy(); return }
     const sessionId = url.searchParams.get('sessionId') || `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const room = await getOrCreateRoom(docName)
+    const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
     syncWss.handleUpgrade(req, socket, head, (ws) => {
+      trackWs(ws, { kind: 'sync', docName, sessionId, remoteAddr, remotePort })
       room.handleSocketConnect({ sessionId, socket: ws })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
@@ -1026,9 +1208,11 @@ server.on('upgrade', async (req, socket, head) => {
   // The daemon pushes activity-event / terminal-chat / source-change
   // messages and (Phase 2) handles RPC requests routed by machine_id.
   if (url.pathname === '/ws/fleet-daemon') {
+    const remoteAddr = req.socket.remoteAddress
     daemonWss.handleUpgrade(req, socket, head, (ws) => {
       ws._bootId = null
       ws._machineId = null
+      ws._remoteAddr = remoteAddr  // captured so reaper can route kill RPC by chromium's source IP
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -1037,14 +1221,23 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          // The daemon is gone; we no longer have process-level visibility
+          // on its machine's agents. Drop them from the alive set; they'll
+          // appear hibernating until a daemon reconnects.
+          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+          for (const a of onMachine) _aliveAgents.delete(a.id)
           failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
+          broadcastState()
           console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
         }
       })
       ws.on('error', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
+          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+          for (const a of onMachine) _aliveAgents.delete(a.id)
           failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
+          broadcastState()
         }
       })
     })
@@ -1053,10 +1246,18 @@ server.on('upgrade', async (req, socket, head) => {
 
   // /ws/fleet — direct fleet WebSocket (no proxy)
   if (url.pathname === '/ws/fleet') {
+    const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
       wsFleetClients.add(ws)
+      trackWs(ws, {
+        kind: 'fleet',
+        sessionId: `fleet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        remoteAddr,
+        remotePort,
+      })
 
       // Send initial state on connect
       if (fleetStore) {
@@ -1065,6 +1266,7 @@ server.on('upgrade', async (req, socket, head) => {
           tasks: fleetStore.getActiveTasks(),
           thinking: Object.fromEntries(_thinkingState),
           compacting: Object.fromEntries(_compactingState),
+          context: Object.fromEntries(_contextState),
           connId: ws._connId,
         }
         ws.send(JSON.stringify(initState))
@@ -1144,6 +1346,10 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertAgent(agent)
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    // Registration implies a live claude process — mark alive immediately so
+    // the agent shows "awake" right away. The daemon's next sweep confirms
+    // or evicts within 30s.
+    if (!agent.human) _aliveAgents.add(agentId)
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
@@ -1208,35 +1414,59 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Respawn a dead agent when a message is directed at them.
+  // Interacting with a hibernating (non-dead, no live process) agent wakes
+  // it. `dead` means explicitly killed — never auto-respawns. Hibernation
+  // is behavioral, not stored: it's "no process + you tried to interact."
   // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
-  function autoRespawnIfDead(agentId) {
+  async function respawnIfNotDead(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
-    if (!agent?.dead) return
+    if (!agent || agent.dead || agent.human) return
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) return
+    // Ask the daemon — on the agent's machine — whether the Claude process is running.
+    // The daemon checks tmux session existence + pgrep for a claude process inside it.
+    const { alive } = await sendRpc(machineIds[0], 'check-alive', { tmux_session: agent.tmux_session })
+      .catch(() => ({ alive: false }))
+    if (alive) return
     // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
     sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
-      .catch(e => console.warn(`[auto-respawn] failed for ${agentId}: ${e.message}`))
-    console.log(`[auto-respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
+      .catch(e => console.warn(`[respawn] failed for ${agentId}: ${e.message}`))
+    console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
   }
 
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
-    const resolve = (id) => {
+    const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolve(rawFrom) || rawFrom) : null
-    const to = resolve(rawTo)
-    if (!to) { error(`Recipient not found: "${rawTo}"`); return }
+    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
+    const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
+    // Resolve DNF over all agents using the same label set the MCP `chat()` uses:
+    // agent.labels + virtual (awake/hibernating) + friendly_name + id.
+    const allAgents = fleetStore.getAllAgents?.() || []
+    const recipients = []
+    for (const a of allAgents) {
+      if (a.id === from) continue
+      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+      const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
+      if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+        recipients.push(a.id)
+      }
+    }
+    // Server-owner pseudo-recipient: matched by literal id/name only, no label index.
+    if (dnf.some(andGroup => andGroup.length === 1 && (andGroup[0] === SERVER_OWNER_ID || andGroup[0] === SERVER_OWNER_NAME))) {
+      if (!recipients.includes(SERVER_OWNER_ID)) recipients.push(SERVER_OWNER_ID)
+    }
+    if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
     // Update sender heartbeat
     if (from) fleetStore.updateHeartbeat?.(from)
-    // Resolve CC
-    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
+    // Resolve CC (still single-string list)
+    let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
     if (ccResolved && ccResolved.length === 0) ccResolved = null
-    // Copy attachments to server-accessible path
+    // Copy attachments to server-accessible path (once for all recipients)
     let processedAttachments = attachments
     if (attachments && attachments.length) {
       const UPLOAD_DIR = path.join(import.meta.dirname || '.', 'uploads')
@@ -1253,47 +1483,52 @@ async function handleFleetWsMessage(ws, msg) {
         return a
       })
     }
-    // Resolve wiretaps
-    let wiretapRecipients = []
-    const taps = fleetStore.getWiretaps?.() || []
-    for (const tap of taps) {
-      if (!tap.filter) continue
-      let matches = false
-      try {
-        const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-        const fromMatch = !f.from || f.from.some(grp => grp.every(t => [from, ...(fleetStore.findAgent(from)?.labels || [])].includes(t)))
-        const toMatch = !f.to || f.to.some(grp => grp.every(t => [to, ...(fleetStore.findAgent(to)?.labels || [])].includes(t)))
-        matches = fromMatch && toMatch
-      } catch {}
-      if (matches && tap.agent_id !== from && tap.agent_id !== to) {
-        wiretapRecipients.push(tap.agent_id)
-      }
-    }
-    // Attach sender's chatReminder if set
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
-    const combinedMetadata = {
-      ...(metadata || {}),
-      ...(ccResolved ? { cc: ccResolved } : {}),
-      ...(processedAttachments ? { attachments: processedAttachments } : {}),
-      ...(inline_attachments ? { inline_attachments } : {}),
-      ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
-      ...(context ? { context } : {}),
-      ...(chatReminder ? { chatReminder } : {}),
-    }
-    // Write to DB, reply with event_id FIRST so the client can reconcile
-    // the optimistic event before the echo arrives on the same socket.
+    const taps = fleetStore.getWiretaps?.() || []
+    const fromLabels = [from, ...(fleetStore.findAgent(from)?.labels || [])].filter(Boolean)
     const ts = new Date().toISOString()
-    const meta = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
-    const result = fleetStore.db.prepare(
-      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run('chat', ts, from, to, text, meta)
-    const eventId = Number(result.lastInsertRowid)
-    fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
-    reply({ ok: true, event_id: eventId, _tempId: msg._tempId || null })
-    const inserted = { id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null }
-    broadcastEvent('fleet-event', inserted)
-    autoRespawnIfDead(to)
+    const eventIds = []
+    const insertedEvents = []
+    for (const to of recipients) {
+      // Resolve wiretaps per recipient — tap labels are matched against this `to`.
+      const toLabels = [to, ...(fleetStore.findAgent(to)?.labels || [])].filter(Boolean)
+      const wiretapRecipients = []
+      for (const tap of taps) {
+        if (!tap.filter) continue
+        let matches = false
+        try {
+          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
+          const fromMatch = !f.from || f.from.some(grp => grp.every(t => fromLabels.includes(t)))
+          const toMatch = !f.to || f.to.some(grp => grp.every(t => toLabels.includes(t)))
+          matches = fromMatch && toMatch
+        } catch {}
+        if (matches && tap.agent_id !== from && tap.agent_id !== to) {
+          wiretapRecipients.push(tap.agent_id)
+        }
+      }
+      const combinedMetadata = {
+        ...(metadata || {}),
+        ...(ccResolved ? { cc: ccResolved } : {}),
+        ...(processedAttachments ? { attachments: processedAttachments } : {}),
+        ...(inline_attachments ? { inline_attachments } : {}),
+        ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
+        ...(context ? { context } : {}),
+        ...(chatReminder ? { chatReminder } : {}),
+      }
+      const metaStr = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
+      const result = fleetStore.db.prepare(
+        'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run('chat', ts, from, to, text, metaStr)
+      const eventId = Number(result.lastInsertRowid)
+      fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+      eventIds.push(eventId)
+      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null })
+    }
+    // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
+    reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
+    for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
+    for (const to of recipients) respawnIfNotDead(to)
     return
   }
 
@@ -1365,7 +1600,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    autoRespawnIfDead(resolved.id)
+    respawnIfNotDead(resolved.id)
     return
   }
 
@@ -1464,6 +1699,15 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'agent-context') {
+    if (msg.agentId != null && msg.contextPercent != null) {
+      _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+      broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+    }
+    reply({ ok: true })
+    return
+  }
+
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (agentId && state && fleetStore) {
@@ -1556,7 +1800,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-      broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+      fleetStore.markDead(agent.id)
+      const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+      fleetStore.share(killEvent)
+      broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -1841,13 +2088,20 @@ async function handleFleetWsMessage(ws, msg) {
     const limit = Math.min(parseInt(msg.limit || '200'), 5000)
     const evtAgent = msg.agent || null
     const evtType = msg.event_type || null
+    // event_types (array) takes precedence over event_type (single)
+    const evtTypes = Array.isArray(msg.event_types) && msg.event_types.length ? msg.event_types : evtType ? [evtType] : null
     try {
       let events
       let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
-        const where = '(from_id = ? OR to_id = ?)'
+        const agentWhere = '(from_id = ? OR to_id = ?)'
         const baseParams = [evtAgent, evtAgent]
+        // Build optional type filter clause
+        const typeClause = evtTypes ? `type IN (${evtTypes.map(() => '?').join(',')})` : null
+        const typeParams = evtTypes || []
+        const where = typeClause ? `${agentWhere} AND ${typeClause}` : agentWhere
+        const allBaseParams = [...baseParams, ...typeParams]
         if (sinceTs || untilTs) {
           // Timestamp pagination: filter by timestamp range, return earliest matches in
           // chronological order. Also report `total` for the matching range so the
@@ -1858,10 +2112,10 @@ async function handleFleetWsMessage(ws, msg) {
           if (untilTs) { tsClauses.push('timestamp <= ?'); tsParams.push(untilTs) }
           const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
           const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
-          events = fleetStore.db.prepare(q).all(...baseParams, ...tsParams, limit)
+          events = fleetStore.db.prepare(q).all(...allBaseParams, ...tsParams, limit)
           const totalRow = fleetStore.db.prepare(
             `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
-          ).get(...baseParams, ...tsParams)
+          ).get(...allBaseParams, ...tsParams)
           total = totalRow?.c ?? null
         } else {
           const q = afterId
@@ -1869,18 +2123,19 @@ async function handleFleetWsMessage(ws, msg) {
             : beforeId
             ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
             : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-          events = afterId ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
-            : beforeId ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
-            : fleetStore.db.prepare(q).all(...baseParams, limit)
+          events = afterId ? fleetStore.db.prepare(q).all(...allBaseParams, afterId, limit)
+            : beforeId ? fleetStore.db.prepare(q).all(...allBaseParams, beforeId, limit)
+            : fleetStore.db.prepare(q).all(...allBaseParams, limit)
           if (beforeId) events.reverse()
-          // total of all events for this agent (no time filter) so callers see "X of Y"
+          // total for this agent+type filter so callers see "X of Y"
           const totalRow = fleetStore.db.prepare(
             `SELECT COUNT(*) AS c FROM events WHERE ${where}`
-          ).get(...baseParams)
+          ).get(...allBaseParams)
           total = totalRow?.c ?? null
         }
-      } else if (evtType) {
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`).all(evtType, afterId, limit)
+      } else if (evtTypes) {
+        const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
+        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE ${typeClause} AND id > ? ORDER BY id ASC LIMIT ?`).all(...evtTypes, afterId, limit)
       } else if (beforeId) {
         events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
         events.reverse()
@@ -2075,6 +2330,23 @@ function handleDaemonWsMessage(ws, msg) {
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
 
+  if (type === 'agent-liveness') {
+    // Daemon's list of its machine's agents whose claude processes are
+    // currently running. Treated as a full replacement for that machine:
+    // any agent on this machine that the daemon didn't mention is dropped
+    // from the alive set (it's hibernating now).
+    if (Array.isArray(msg.agent_ids)) {
+      const incoming = new Set(msg.agent_ids)
+      const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+      for (const a of agentsOnThisMachine) {
+        if (incoming.has(a.id)) _aliveAgents.add(a.id)
+        else _aliveAgents.delete(a.id)
+      }
+      broadcastState()
+    }
+    return
+  }
+
   if (type === 'activity-event') {
     if (!fleetStore) return
     const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
@@ -2143,6 +2415,14 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal-frame') {
     if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
+    return
+  }
+
+  if (type === 'agent-context') {
+    if (msg.agentId != null && msg.contextPercent != null) {
+      _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+      broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+    }
     return
   }
 
@@ -2320,22 +2600,31 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Idle-hibernation: kill tmux panes for agents that haven't been seen in a while.
-  // The process dies, RAM is freed. Auto-respawn fires when anyone next messages them.
+  // Idle-hibernation: kill tmux sessions for agents that have had no activity for a while.
+  // "Activity" = any event from or to the agent in the events table (chat, activity card,
+  // delegate, etc.). Heartbeats and last_seen are network signals — not used here.
+  // The process dies, RAM is freed. The agent enters hibernation (no process, but
+  // `dead=0`). Auto-respawn fires when anyone next messages them.
   const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
   setInterval(() => {
     if (!fleetStore) return
     const cutoff = new Date(Date.now() - IDLE_HIBERNATE_MS).toISOString()
     const idle = fleetStore.db.prepare(
-      "SELECT * FROM agents WHERE dead = 0 AND human = 0 AND last_seen < ? AND tmux_session IS NOT NULL"
+      `SELECT a.* FROM agents a
+       WHERE a.dead = 0 AND a.human = 0 AND a.tmux_session IS NOT NULL
+       AND COALESCE(
+         (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id),
+         a.registered_at
+       ) < ?`
     ).all(cutoff)
     for (const agent of idle) {
       const machineIds = [...daemonConnections.keys()]
       if (machineIds.length === 0) continue
-      console.log(`[hibernate] ${agent.friendly_name || agent.id} idle since ${agent.last_seen} — killing`)
+      console.log(`[hibernate] ${agent.friendly_name || agent.id} — no activity since before ${cutoff}`)
       sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
         .catch(() => {})
-      fleetStore.markDead(agent.id)
+      // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent
+      // identity. dead=1 is reserved for explicit kills.
     }
     if (idle.length > 0) broadcastState()
   }, 5 * 60 * 1000).unref()  // check every 5 minutes

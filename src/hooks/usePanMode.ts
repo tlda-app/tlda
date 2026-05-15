@@ -32,11 +32,33 @@ const EDGE_ZONE_PX = 40
 const CHAT_MAX_SPEED = 2000    // chat scroll px/s at the very edge
 const CANVAS_MAX_SPEED = 2500  // canvas pan screen-px/s at the very edge
 
+const AXIS_LOCK_INITIAL = 5    // px before first lock engages
+const AXIS_LOCK_PAUSE_MS = 250 // ms of no movement before lock resets
+
 // Module-level so event handlers always see current value without closure staleness
 let panModeActive = false
+let axisLock: 'x' | 'y' | null = null
+let axisPauseTimer: ReturnType<typeof setTimeout> | null = null
+let accumX = 0
+let accumY = 0
+
+function resetAxisLock() {
+  axisLock = null
+  accumX = 0
+  accumY = 0
+  if (axisPauseTimer != null) { clearTimeout(axisPauseTimer); axisPauseTimer = null }
+}
+
+function addMovement(adx: number, ady: number) {
+  accumX += adx
+  accumY += ady
+  if (accumX + accumY < AXIS_LOCK_INITIAL) return
+  axisLock = accumY >= accumX ? 'y' : 'x'
+}
 
 function setPanMode(active: boolean) {
   panModeActive = active
+  resetAxisLock()
   document.body.classList.toggle('tlda-pan-mode', active)
 }
 
@@ -167,22 +189,30 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       const dy = e.clientY - last.y
       if (dx === 0 && dy === 0) return
 
+      // Reset axis lock after a pause
+      if (axisPauseTimer != null) clearTimeout(axisPauseTimer)
+      axisPauseTimer = setTimeout(resetAxisLock, AXIS_LOCK_PAUSE_MS)
+
       // Check if cursor is over a chat scroll container
       const el = document.elementFromPoint(e.clientX, e.clientY)
       const chatLog = el?.closest('.fleet-chat-log') as HTMLElement | null
       if (chatLog) {
-        // Mouse down (dy > 0) = scroll down (see newer), mouse up = scroll up (see older)
         chatLog.scrollTop += dy * CHAT_SCROLL_SENSITIVITY
         return
       }
 
-      // Pan the canvas: moving mouse right/down pans the canvas in that direction
+      addMovement(Math.abs(dx), Math.abs(dy))
+      let panDx = dx
+      let panDy = dy
+      if (axisLock === 'x') panDy = 0
+      else if (axisLock === 'y') panDx = 0
+
       const editor = editorRef.current
       if (!editor) return
       const cam = editor.getCamera()
       editor.setCamera({
-        x: cam.x + dx / cam.z,
-        y: cam.y + dy / cam.z,
+        x: cam.x + panDx / cam.z,
+        y: cam.y + panDy / cam.z,
         z: cam.z,
       })
     }
@@ -197,6 +227,7 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       window.removeEventListener('mousemove', handleMouseMove)
       stopEdgeRaf()
       setPanMode(false)
+      resetAxisLock()
       lastPosRef.current = null
     }
   }, [editorRef])

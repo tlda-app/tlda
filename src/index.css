@@ -126,3 +126,39 @@ html.hires .tlui-layout {
    size on retina/high-res displays. If specific elements look too small,
    add per-property bumps under .hires (font-size, width, height, padding)
    for those elements only — never zoom. */
+
+/* Shape hover opacity: go fully opaque on hover/editing so content is readable over the document.
+   Default opacity is whatever TLDraw's shape prop sets (leave it alone).
+   !important needed to override TLDraw's inline style="opacity:X" on .tl-shape.
+   :hover covers real browser; tl-shape__is-hovered is TLDraw's class-based fallback.
+   html.is-scrolling is set by SvgDocument while wheel events are active (all input types:
+   mouse wheel, Magic Mouse, trackpad). During scroll the fade-out is frozen with a huge delay
+   so a shape that was opaque stays opaque for the duration of the scroll gesture. */
+.tl-shape[data-shape-type="math-note"],
+.tl-shape[data-shape-type="terminal"],
+.tl-shape[data-shape-type="fleet-chat"] {
+  transition: opacity 0.3s 0.4s;
+}
+html.is-scrolling .tl-shape[data-shape-type="math-note"],
+html.is-scrolling .tl-shape[data-shape-type="terminal"],
+html.is-scrolling .tl-shape[data-shape-type="fleet-chat"],
+body.tlda-pan-mode .tl-shape[data-shape-type="math-note"],
+body.tlda-pan-mode .tl-shape[data-shape-type="terminal"],
+body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
+  transition: opacity 0.3s 9999s;
+}
+.tl-shape[data-shape-type="math-note"]:hover,
+.tl-shape[data-shape-type="terminal"]:hover,
+.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-hovered[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
+  transition: opacity 0.15s;
+  opacity: 1 !important;
+}
+/* Terminal popover only — go opaque when hovering the popover, not the whole chat shape */
+.tl-shape[data-shape-type="fleet-chat"]:has(.fleet-terminal-hover-pane:hover) {
+  transition: opacity 0.15s;
+  opacity: 1 !important;
+}

@@ -17,7 +17,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
@@ -26,11 +26,12 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
+import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
@@ -39,6 +40,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
+import { getPageFilename } from '../stores/pageUrlStore'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -516,14 +518,25 @@ function ElapsedTime({ startMs }: { startMs: number }) {
   return <span className="thinking-elapsed">({str})</span>
 }
 
+function ContextBadge({ percent }: { percent?: number }) {
+  if (percent == null) return null
+  const color = percent <= 15 ? '#e57373' : percent <= 30 ? '#ffb74d' : '#81c784'
+  return (
+    <span style={{ fontSize: 10, color, opacity: 0.8, flexShrink: 0, marginLeft: 8 }}>
+      {percent}%
+    </span>
+  )
+}
+
 /**
  * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
  * When thinking stops, the text fades out but the space remains.
  * When the next message arrives (rawItemsLength changes), the space collapses.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
+  contextPercent: Map<string, number>
   ctx: any
   rawItemsLength: number
 }) {
@@ -565,17 +578,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, ctx, rawItemsLength 
       transition: 'opacity 0.2s',
     }}>
       {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">thinking…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">thinking…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0' }}>
-          <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-          {' '}<span className="thinking-text">compacting…</span>
-          {' '}<ElapsedTime startMs={startTs} />
+        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span>
+            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+            {' '}<span className="thinking-text">compacting…</span>
+            {' '}<ElapsedTime startMs={startTs} />
+          </span>
+          <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
       ))}
       {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
@@ -667,13 +686,25 @@ const ChatMessageRow = memo(function ChatMessageRow({
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
     const el = divRef.current
-    if (!el || !expandedRowsRef.current.has(itemKey)) return
-    const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
-    if (moreRows) {
-      moreRows.style.display = ''
-      const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
-      if (btn) btn.textContent = 'collapse'
+    if (!el) return
+    const expanded = expandedRowsRef.current
+    if (expanded.has(itemKey)) {
+      const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
+      if (moreRows) {
+        moreRows.style.display = ''
+        const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+        if (btn) btn.textContent = 'collapse'
+      }
     }
+    // Restore code-block expand state (each block keyed by index within the row)
+    el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
+      if (expanded.has(`${itemKey}:code:${i}`)) {
+        const pre = wrap.querySelector('pre')
+        if (pre) pre.classList.remove('code-collapsed')
+        const toggle = wrap.querySelector('.code-block-toggle') as HTMLElement | null
+        if (toggle) toggle.textContent = 'collapse'
+      }
+    })
   }, [processed, itemKey, expandedRowsRef])
 
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
@@ -717,6 +748,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
+  const contextPercent = useFleetContext(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
@@ -798,8 +830,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const firstLabel = dnfFilter[0]?.[0]?.[1]
     if (!firstLabel) return
     const fleetId = resolveToFleetId(firstLabel)
-    // Include the resolved fleet ID in the guard key so we re-fetch
-    // when the agents list populates and resolution changes
+    // Agents start as [] (async init). If the label didn't resolve to a
+    // fleet ID yet, bail out — the effect re-runs when agents populate.
+    if (fleetId === firstLabel && !firstLabel.startsWith('fleet:')) return
     const loadKey = `${filterKey}:${fleetId}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
@@ -871,6 +904,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
+  const labelRegionsRef = useRef<Record<string, LabelRegionInfo>>({})
+  const docRef = useRef<typeof doc>(doc)
+  useEffect(() => { labelRegionsRef.current = labelRegions }, [labelRegions])
+  useEffect(() => { docRef.current = doc }, [doc])
+
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
   // bump ctxVersion to invalidate stale lines. This turns O(N) re-render on
@@ -888,7 +926,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -924,6 +962,29 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
+      } else if (m.metadata?.type === 'build_result') {
+        flushActivity()
+        const { name: docName, hash, summary, lintFindings = [] } = m.metadata
+        const hasDetails = !!(summary || lintFindings.length > 0)
+        const lintCount = lintFindings.length
+        const lintBadge = lintCount > 0
+          ? `<span class="build-result-lint-badge">${lintCount} finding${lintCount !== 1 ? 's' : ''}</span>`
+          : ''
+        const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
+        const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
+        const toggle = hasDetails ? `<span class="build-result-toggle">▾</span>` : ''
+        const html = `<div class="build-result-card">` +
+          `<div class="build-result-header">` +
+          `<span class="build-result-icon">🔨</span>` +
+          `<span class="build-result-title">Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong></span>` +
+          lintBadge +
+          toggle +
+          `</div>` +
+          (hasDetails
+            ? `<div class="build-result-body">${summaryHtml}${lintHtml}</div>`
+            : '') +
+          `</div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m.metadata?.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
@@ -940,6 +1001,14 @@ function FleetChatInner({ shape }: { shape: any }) {
           `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗ Stop</button>` +
           `</div></div>`
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
+      } else if (m.type === 'kill-session') {
+        flushActivity()
+        const agentObjs: any[] = renderCtx.getAgents()
+        const targetId = m.to || ''
+        const targetAgent = agentObjs.find((a: any) => a.id === targetId)
+        const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
+        const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:kill`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
@@ -1888,6 +1957,34 @@ function FleetChatInner({ shape }: { shape: any }) {
           return
         }
       }
+      // Build result card — toggle expand/collapse
+      const buildHeader = (e.target as HTMLElement).closest('.build-result-header') as HTMLElement
+      if (buildHeader) {
+        const card = buildHeader.closest('.build-result-card') as HTMLElement
+        if (card) {
+          card.classList.toggle('build-result-expanded')
+          return
+        }
+      }
+      // Code block fold/unfold — track in expandedRowsRef so state survives re-renders
+      const codeToggle = (e.target as HTMLElement).closest('.code-block-toggle') as HTMLElement
+      if (codeToggle) {
+        const wrap = codeToggle.closest('.code-block-wrap') as HTMLElement
+        const itemRow = codeToggle.closest('[data-item-key]') as HTMLElement
+        if (wrap && itemRow) {
+          const itemKey = itemRow.getAttribute('data-item-key')
+          const allWraps = Array.from(itemRow.querySelectorAll('.code-block-wrap'))
+          const idx = allWraps.indexOf(wrap)
+          const key = `${itemKey}:code:${idx}`
+          const pre = wrap.querySelector('pre')
+          if (pre) {
+            // Inline onclick already toggled the class, so check current state
+            const isNowExpanded = !pre.classList.contains('code-collapsed')
+            if (isNowExpanded) expandedRowsRef.current.add(key)
+            else expandedRowsRef.current.delete(key)
+          }
+        }
+      }
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
@@ -1917,42 +2014,39 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
-  // Unquote context menu: right-click on <code> spans inside chat messages
+  // Unquote: double-click on <code> spans inside chat messages.
+  // TLDraw intercepts the native dblclick event in its capture-phase handler on .tl-canvas,
+  // so we detect double-click via two consecutive click events on the same <code> element.
+  // click events reach bubble phase normally (markEventAsHandled on pointerdown handles TLDraw).
   useEffect(() => {
     const logEl = chatLogRef.current
     if (!logEl) return
 
-    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
+    function isLatexLabel(text: string): boolean {
+      if (/^https?:/i.test(text)) return false
+      return /^[a-z][a-z0-9]{0,9}:[a-z][a-z0-9_.-]{0,50}$/i.test(text)
+    }
 
     function matchesUnquotePattern(text: string): boolean {
       if (!text || text.length > 500) return false
-      // URLs (http/https)
       if (/^https?:\/\/\S+/.test(text)) return true
-      // Absolute paths starting with /
       if (/^\/\S+/.test(text)) return true
-      // Home-dir paths
       if (/^~\/\S+/.test(text)) return true
-      // Relative .md paths (word/path.md)
-      if (/^[\w.-]+(?:\/[\w.-]+)+\.md$/.test(text)) return true
+      // Relative paths: no spaces, contains / or ends with a known file extension
+      if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
+      if (isLatexLabel(text)) return true
       return false
     }
 
-    function isImagePath(text: string): boolean {
-      const ext = text.split('.').pop()?.toLowerCase() || ''
-      return IMAGE_EXTS.has(ext)
+    function isFilePath(text: string): boolean {
+      return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
     }
 
-    function isRemote(): boolean {
-      const h = window.location.hostname
-      return h !== 'localhost' && h !== '127.0.0.1'
-        && !h.startsWith('192.168.') && !h.startsWith('10.') && !h.startsWith('100.')
-    }
-
-    let menu: HTMLElement | null = null
-
-    function dismissMenu() {
-      menu?.remove()
-      menu = null
+    function applyTierLabel(codeEl: HTMLElement, text: string) {
+      const html = linkifyLabelRefs(text, labelRegionsRef.current)
+      const wrapper = document.createElement('span')
+      wrapper.innerHTML = html
+      codeEl.replaceWith(...Array.from(wrapper.childNodes))
     }
 
     function applyTier1(codeEl: HTMLElement, text: string) {
@@ -1963,7 +2057,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
-      // Show spinner in place while the daemon round-trip happens
       const spinner = document.createElement('span')
       spinner.textContent = '⏳'
       spinner.style.opacity = '0.6'
@@ -1976,15 +2069,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        // Server patches DB + broadcasts event-update; fleet-data.mjs will
-        // trigger a re-render. Replace spinner with interim rendering using the URL.
-        const { url } = await resp.json()
-        const rendered = renderMarkdownUtil(esc(url || text))
+        const { resolvedMessage, inlineAttachments } = await resp.json()
+        const rendered = resolveInlineAttachments(resolvedMessage, inlineAttachments || [], renderMarkdownUtil)
         const wrapper = document.createElement('span')
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
       } catch {
-        // Graceful fallback: restore as plain text
         const fallback = document.createElement('span')
         fallback.textContent = text
         fallback.title = 'Unquote failed — file not found or daemon unreachable'
@@ -1993,57 +2083,54 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
-    function onContextMenu(e: MouseEvent) {
+    let lastClickEl: HTMLElement | null = null
+    let lastClickTime = 0
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+    function clearPending() {
+      if (lastClickEl) lastClickEl.classList.remove('code-unquote-pending')
+      lastClickEl = null
+      lastClickTime = 0
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+    }
+
+    function onClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const codeEl = target.closest('code') as HTMLElement | null
-      if (!codeEl) { dismissMenu(); return }
+      if (!codeEl) { clearPending(); return }
+
       const chatLine = codeEl.closest('.chat-line') as HTMLElement | null
-      if (!chatLine) { dismissMenu(); return }
+      if (!chatLine) { clearPending(); return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { dismissMenu(); return }
+      if (!matchesUnquotePattern(text)) { clearPending(); return }
 
-      e.preventDefault()
-      e.stopPropagation()
-      dismissMenu()
-
-      const m = document.createElement('div')
-      m.className = 'unquote-context-menu'
-      m.style.left = `${e.clientX}px`
-      m.style.top = `${e.clientY}px`
-      const item = document.createElement('div')
-      item.className = 'unquote-menu-item'
-      item.textContent = 'Unquote'
-      item.addEventListener('click', (ev) => {
-        ev.stopPropagation()
-        dismissMenu()
-
-        const needsTier2 = isImagePath(text) && isRemote()
-        if (needsTier2) {
+      const now = Date.now()
+      if (lastClickEl === codeEl && now - lastClickTime < 1000) {
+        // Second click within 500ms on the same element = double-click
+        clearPending()
+        e.preventDefault()
+        e.stopPropagation()
+        if (isLatexLabel(text)) {
+          applyTierLabel(codeEl, text)
+        } else if (isFilePath(text)) {
           const eventId = chatLine.dataset.msgId || ''
           const agentId = chatLine.dataset.msgFrom || ''
           applyTier2(codeEl, text, eventId, agentId)
         } else {
           applyTier1(codeEl, text)
         }
-      })
-      m.appendChild(item)
-      document.body.appendChild(m)
-      menu = m
-
-      // Dismiss on outside click or escape
-      const onOutside = (ev: MouseEvent) => {
-        if (!m.contains(ev.target as Node)) { dismissMenu(); document.removeEventListener('click', onOutside, true) }
+      } else {
+        clearPending()
+        lastClickEl = codeEl
+        lastClickTime = now
+        codeEl.classList.add('code-unquote-pending')
+        pendingTimer = setTimeout(clearPending, 1000)
       }
-      const onKey = (ev: KeyboardEvent) => {
-        if (ev.key === 'Escape') { dismissMenu(); document.removeEventListener('keydown', onKey) }
-      }
-      setTimeout(() => document.addEventListener('click', onOutside, true), 0)
-      document.addEventListener('keydown', onKey)
     }
 
-    logEl.addEventListener('contextmenu', onContextMenu)
-    return () => { logEl.removeEventListener('contextmenu', onContextMenu); dismissMenu() }
+    logEl.addEventListener('click', onClick)
+    return () => logEl.removeEventListener('click', onClick)
   }, [])
 
   // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
@@ -2056,34 +2143,52 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!ta) return
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
+      log.debug('esc', 'keydown', { value: ta!.value, targets: sendTargetsRef.current })
       if (ta!.value !== '') return
       const targets = sendTargetsRef.current
       if (targets.length === 0) return
       e.preventDefault()
       const now = Date.now()
       const agent = targets[0]
-      if (now - lastEscRef.current < 500) {
+      const gap = now - lastEscRef.current
+      if (gap < 500) {
         escCountRef.current++
       } else {
         escCountRef.current = 1
       }
       lastEscRef.current = now
       const count = escCountRef.current
+      log.debug('esc', 'count', { count, gap, agent })
       if (count >= 3) {
         // Kill session: 3×Esc — tmux kill-session, agent dies immediately
         escCountRef.current = 0
         lastEscRef.current = 0
+        log.info('esc', 'kill-session', { agent })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+          .then(r => r.json()).then(d => log.debug('esc', 'kill-session response', d))
+          .catch(err => log.warn('esc', 'kill-session failed', { err }))
       } else if (count === 2) {
         // Hard interrupt: 2×Esc — Escape+poll loop
+        log.info('esc', 'hard-interrupt', { agent })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
       } else {
         // Soft interrupt: 1×Esc — single Escape to tmux
+        log.info('esc', 'soft-interrupt', { agent })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
       }
     }
+    function onBlur() {
+      // TLDraw steals focus after Esc — reclaim it if we're mid-sequence
+      if (escCountRef.current > 0 && Date.now() - lastEscRef.current < 500) {
+        ta!.focus()
+      }
+    }
     ta.addEventListener('keydown', onEscKey)
-    return () => ta.removeEventListener('keydown', onEscKey)
+    ta.addEventListener('blur', onBlur)
+    return () => {
+      ta.removeEventListener('keydown', onEscKey)
+      ta.removeEventListener('blur', onBlur)
+    }
   }, [])
 
   // Textarea resize is handled by CSS field-sizing: content.
@@ -2187,7 +2292,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const attn = lastAttentionTsRef.current
     const hasResumed = liveEvents.some((e: any) =>
       e.from === hoverTargetAgentId &&
-      (e._activity === true || (e._evType === 'chat' && e.from === hoverTargetAgentId)) &&
+      (e._activity === true || ((e._evType === 'chat' || e.type === 'chat') && e.from === hoverTargetAgentId)) &&
       e.timestamp > attn
     )
     if (hasResumed) {
@@ -2291,7 +2396,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -2861,6 +2966,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           <ThinkingStatus
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}
+            contextPercent={contextPercent}
             ctx={ctx}
             rawItemsLength={rawItems.length}
           />
@@ -3133,7 +3239,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       to: sendTargets[0],
                       text,
                       timestamp: new Date().toISOString(),
-                      read: true,
+                      read: false,
                     })
                     ta.value = ''
                     ta.style.height = ''
@@ -3198,7 +3304,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)
@@ -3236,7 +3342,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     to: targets[0],
                     text,
                     timestamp: new Date().toISOString(),
-                    read: true,
+                    read: false,
                   })
                   isAtBottomRef.current = true
                   setShowScrollBtn(false)
@@ -3266,7 +3372,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px 4px 22px',
+                padding: '4px 8px',
                 fontSize: 11,
                 color: 'inherit',
                 outline: 'none',
@@ -3446,7 +3552,8 @@ export function DocLinkPreview({
   // SVG URL
   const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
   const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
-  const svgUrl = `${base}docs/${docName}/page-${resolved.page}.svg`
+  const svgFilename = getPageFilename(resolved.page - 1) ?? `page-${resolved.page}.svg`
+  const svgUrl = `${base}docs/${docName}/${svgFilename}`
 
   // Preview dimensions — fit within the shape width
   const PREVIEW_W = Math.min(320, shapeW - 16)

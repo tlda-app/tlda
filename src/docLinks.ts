@@ -50,8 +50,9 @@ const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string }
   // Page references
   { re: /\b(?:page|p\.)\s*(\d+)/gi, type: 'page' },
 
-  // Line references
+  // Line references — "line 45", "lines 45-78", or shorthand "L45"
   { re: /\blines?\s+(\d+)(?:\s*[-–]\s*(\d+))?/gi, type: 'line' },
+  { re: /\bL(\d+)/g, type: 'line' },
 
 ]
 

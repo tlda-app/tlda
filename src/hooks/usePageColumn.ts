@@ -10,6 +10,7 @@ import { useRef, useCallback } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
 import { setSvgText, deleteSvgText, svgViewBoxStore } from '../stores'
+import { getPageFilename } from '../stores/pageUrlStore'
 import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from '../layoutConstants'
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -44,15 +45,16 @@ const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function pageUrl(source: PageSource, docName: string, pageNum: number): string {
+  const filename = getPageFilename(pageNum - 1) ?? `page-${pageNum}.svg`
   switch (source.type) {
     case 'live':
-      return `/docs/${docName}/page-${pageNum}.svg`
+      return `/docs/${docName}/${filename}`
     case 'shadow': {
       const hash7 = (source.ref || '').slice(0, 7)
-      return `/docs/${docName}/history/shadow-${hash7}/page-${pageNum}.svg`
+      return `/docs/${docName}/history/shadow-${hash7}/${filename}`
     }
     case 'snapshot':
-      return `/docs/${docName}/history/${source.ref}/page-${pageNum}.svg`
+      return `/docs/${docName}/history/${source.ref}/${filename}`
   }
 }
 

@@ -62,6 +62,18 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
       CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id, timestamp DESC);
+      CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+        text,
+        content='events',
+        content_rowid='id',
+        tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+      END;
 
       -- Materialized agent state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS agents (
@@ -169,6 +181,16 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_qa_signatures_report ON qa_signatures(report_id);
     `);
 
+    // ---- User preferences (per fleet ID) ----
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS fleet_prefs (
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+      );
+    `);
+
     // ---- Session JSONL text entries (for unified search) ----
     // Populated by the fleet-daemon as it watches active session JSONLs.
     this.db.exec(`
@@ -203,6 +225,13 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
+
+    // Backfill events_fts for existing events (one-time; trigger handles new inserts).
+    // Use FTS5 rebuild to populate the index from the content table.
+    const ftsCount = this.db.prepare("SELECT COUNT(*) AS c FROM events_fts").get().c;
+    if (ftsCount === 0) {
+      this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+    }
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -273,7 +302,11 @@ export class FleetStore {
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
     this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
-    this._getAllAgents = this.db.prepare('SELECT * FROM agents ORDER BY last_seen DESC');
+    this._getAllAgents = this.db.prepare(`
+      SELECT a.*,
+        (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id) AS last_active
+      FROM agents a ORDER BY a.last_seen DESC
+    `);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -597,7 +630,19 @@ export class FleetStore {
       .run(JSON.stringify(metadata), id);
   }
 
+  // Liveness oracle: optional function (agentId) => boolean.
+  // Installed by the server. Returns true if the agent's claude process is
+  // running on its machine right now (as reported by that machine's daemon).
+  // No oracle installed → no agent reports awake (all hibernating). The
+  // daemon's first liveness sweep populates the oracle within seconds of
+  // connect, so this is only the cold-start transient.
+  setLivenessOracle(fn) { this._isLiveOracle = fn }
+
   _hydrateAgent(row) {
+    const lastActive = row.last_active || null
+    const isAwake = !row.dead && !row.human && this._isLiveOracle
+      ? !!this._isLiveOracle(row.id)
+      : false
     return {
       ...row,
       session_ids: row.session_ids ? JSON.parse(row.session_ids) : [],
@@ -606,6 +651,8 @@ export class FleetStore {
       human: !!row.human,
       is_manager: !!row.is_manager,
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      last_active: lastActive,
+      status: row.dead ? 'dead' : row.human ? 'human' : isAwake ? 'awake' : 'hibernating',
     };
   }
 
@@ -768,6 +815,24 @@ export class FleetStore {
 
   // ---- QA system ----
 
+  // ---- Fleet prefs (per user/fleet ID) ----
+
+  setFleetPref(userId, key, value) {
+    this.db.prepare('INSERT OR REPLACE INTO fleet_prefs (user_id, key, value) VALUES (?, ?, ?)').run(userId, key, JSON.stringify(value));
+  }
+
+  getFleetPref(userId, key) {
+    const row = this.db.prepare('SELECT value FROM fleet_prefs WHERE user_id = ? AND key = ?').get(userId, key);
+    return row ? JSON.parse(row.value) : undefined;
+  }
+
+  getAllFleetPrefs(userId) {
+    const rows = this.db.prepare('SELECT key, value FROM fleet_prefs WHERE user_id = ?').all(userId);
+    const out = {};
+    for (const r of rows) out[r.key] = JSON.parse(r.value);
+    return out;
+  }
+
   setQaConfig(key, value) {
     this._setQaConfig.run(key, value);
   }
@@ -841,6 +906,28 @@ export class FleetStore {
     const rows = this._query(this._getRecentMessagesTo, agentId, limit);
     rows.reverse(); // chronological
     return rows;
+  }
+
+  // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in
+  // `buildFiles` (array of absolute paths) since `since` (ISO timestamp).
+  // Used to notify agents who might be responsible for a mirror failure — only agents
+  // whose edits postdate the last successful mirror can be at fault.
+  recentDocAgents(buildFiles, since) {
+    if (!buildFiles?.length || !since) return []
+    try {
+      const placeholders = buildFiles.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT DISTINCT from_id as id FROM events
+        WHERE type = 'activity'
+          AND timestamp > ?
+          AND text IN ('Edit', 'Write', 'NotebookEdit')
+          AND json_extract(metadata, '$.arg') IN (${placeholders})
+          AND from_id IS NOT NULL AND from_id != 'fleet:skip'
+      `).all(since, ...buildFiles)
+      return rows.map(r => r.id)
+    } catch {
+      return []
+    }
   }
 
   markRead(agentId) {
@@ -1025,17 +1112,20 @@ export class FleetStore {
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     eParams.push(limit);
     const eventRows = runQuery(`
-      SELECT e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
+      SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
              snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet
       FROM events_fts f JOIN events e ON e.id = f.rowid
       WHERE ${eClauses.join(' AND ')}
       ORDER BY e.timestamp DESC LIMIT ?
     `, eParams).map(r => ({
       source: 'fleet',
+      id: r.id,
       type: r.type,
       timestamp: r.timestamp,
       from: r.from,
       to: r.to,
+      text: r.text,
+      metadata: r.metadata ? JSON.parse(r.metadata) : null,
       snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
     }));
 
@@ -1047,17 +1137,19 @@ export class FleetStore {
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
     sParams.push(limit);
     const sessionRows = runQuery(`
-      SELECT s.agent_id, s.session_id, s.role, s.timestamp,
+      SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
              snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet
       FROM session_entries_fts f JOIN session_entries s ON s.id = f.rowid
       WHERE ${sClauses.join(' AND ')}
       ORDER BY s.timestamp DESC LIMIT ?
     `, sParams).map(r => ({
       source: 'session',
+      id: r.id,
       agentId: r.agent_id,
       sessionId: r.session_id,
       role: r.role,
       timestamp: r.timestamp,
+      text: r.text,
       snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
     }));
 

@@ -65,6 +65,9 @@ const reloadHandle = bus.register<ReloadSignal>({
 })
 export const onReloadSignal = reloadHandle.on
 
+const sourceChangedHandle = bus.register<{ timestamp: number }>({ key: 'signal:source-changed' })
+export const onSourceChangedSignal = sourceChangedHandle.on
+
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
   | { type: 'highlight', x: number, y: number, page: number, timestamp: number }

@@ -259,6 +259,7 @@ const customShapeSchemas = {
       h: T.number,
       commitHash: T.string,
       timestamp: T.number,
+      buildReadyAt: T.number,
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',
@@ -594,8 +595,8 @@ export function onShapeChange(docName, callback) {
  * @param {string} [typeFilter] - Optional shape type filter (e.g., 'math-note')
  * @returns {object[]}
  */
-export function getRoomRecords(docName, typeFilter) {
-  const room = getOrCreateRoom(docName)
+export async function getRoomRecords(docName, typeFilter) {
+  const room = await getOrCreateRoom(docName)
 
   const snapshot = room.getCurrentSnapshot()
   let records = snapshot.documents.map(d => d.state)
@@ -614,7 +615,7 @@ export function getRoomRecords(docName, typeFilter) {
  * @param {object} shape - Full shape record to put
  */
 export async function putShape(docName, shape) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   // storage.transaction writes to the Yjs doc but may not immediately
   // broadcast to connected WebSocket clients. Shapes appear after
   // reload or when the client re-syncs. For immediate visibility,
@@ -631,7 +632,7 @@ export async function putShape(docName, shape) {
  * @param {(shape: object) => object} updater - Takes current shape, returns updated shape
  */
 export async function updateShape(docName, shapeId, updater) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   room.storage.transaction((txn) => {
     const current = txn.get(shapeId)
     if (!current) throw new Error(`Shape not found: ${shapeId}`)
@@ -646,8 +647,8 @@ export async function updateShape(docName, shapeId, updater) {
  * @param {string} recordId
  * @returns {object|null}
  */
-export function getRecord(docName, recordId) {
-  const room = getOrCreateRoom(docName)
+export async function getRecord(docName, recordId) {
+  const room = await getOrCreateRoom(docName)
   return room.getRecord(recordId) ?? null
 }
 
@@ -779,7 +780,7 @@ export function onGlobalEvent(callback) {
  * @param {string} shapeId
  */
 export async function deleteShape(docName, shapeId) {
-  const room = getOrCreateRoom(docName)
+  const room = await getOrCreateRoom(docName)
   room.storage.transaction((txn) => {
     txn.delete(shapeId)
   })

@@ -59,10 +59,14 @@ import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
+import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
+// CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
+// ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
+// daemon in parallel without clobbering the live daemon's PID file.
+const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
@@ -96,6 +100,8 @@ function deriveMachineId() {
 const config = loadConfig()
 const SERVER = process.env.TLDA_SERVER || config.server || 'http://localhost:5176'
 const TOKEN = process.env.TLDA_TOKEN || config.tokenRw || config.token || null
+const TMUX_SOCKET = config.tmuxSocket || null
+const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 
 let MACHINE_ID = config.machineId || null
 if (!MACHINE_ID) {
@@ -402,7 +408,7 @@ async function checkForPlanModePrompt(agentId) {
   let pane
   try {
     const { stdout } = await execFileP('tmux',
-      ['capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
+      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
       { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
     pane = stripAnsi(stdout)
   } catch (e) {
@@ -573,6 +579,9 @@ function syncSessionWatchers(agentList) {
       cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
       backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      // Also backfill all prior sessions for this agent (other JSONLs that
+      // contain a registration line for this fleet ID).
+      backfillAllPriorSessions(agent.id, agent.id)
     }
 
     try {
@@ -671,6 +680,15 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     const activity = extractActivityEvents(parsedEvents)
     if (activity.length > 0) bufferActivity(agentId, activity)
 
+    // Context-percent: find the latest usage data and compute remaining %
+    const lastUsage = [...parsedEvents].reverse().find(ev => ev.usage)
+    if (lastUsage) {
+      const MAX_CONTEXT = 200_000
+      const used = lastUsage.usage.input
+      const pct = Math.max(0, Math.round((1 - used / MAX_CONTEXT) * 100))
+      sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })
+    }
+
     // Qualification checking: track reads, check edits/writes
     for (const ev of parsedEvents) {
       if (!ev.blocks) continue
@@ -679,6 +697,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         const input = block.input || {}
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+        if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
         if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
           checkQualification(agentId, block.name, filePath)
         }
@@ -745,6 +764,41 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
     }
   } catch (e) {
     console.error(`[daemon] search backfill failed for ${sessionId}: ${e.message}`)
+  }
+}
+
+// Scan all JSONLs under PROJECTS_DIR for prior sessions belonging to this agent.
+// Called once when an agent is first seen (no cursor). Skips sessions already
+// marked searchBackfilled in cursors.
+function backfillAllPriorSessions(agentId, fleetId) {
+  // Fleet IDs are like "fleet:f7322ebe" — the registration line contains the suffix.
+  const suffix = fleetId.includes(':') ? fleetId.split(':')[1] : fleetId
+  const marker = `Registered fleet:${suffix}`
+  let found = 0
+  try {
+    for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+      const dirPath = path.join(PROJECTS_DIR, dir)
+      let files
+      try { files = fs.readdirSync(dirPath) } catch { continue }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue
+        const sessionId = file.slice(0, -6)
+        if (cursors[sessionId]?.searchBackfilled) continue
+        const filePath = path.join(dirPath, file)
+        let content
+        try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
+        if (!content.includes(marker)) continue
+        backfillSearchEntries(agentId, filePath, sessionId)
+        cursors[sessionId] = { ...(cursors[sessionId] || {}), searchBackfilled: true }
+        found++
+      }
+    }
+  } catch (e) {
+    console.error(`[daemon] backfillAllPriorSessions failed for ${fleetId}: ${e.message}`)
+  }
+  if (found > 0) {
+    console.log(`[daemon] backfilling ${found} prior session(s) for ${fleetId}`)
+    scheduleCursorSave()
   }
 }
 
@@ -933,7 +987,7 @@ function checkSession(session) {
 }
 
 async function tmux(...args) {
-  return execFileP('tmux', args, { timeout: 5000, encoding: 'utf8' })
+  return execFileP('tmux', [...TMUX_ARGS, ...args], { timeout: 5000, encoding: 'utf8' })
 }
 
 async function rpcSendKey({ tmux_session, key }) {
@@ -957,7 +1011,7 @@ async function rpcCapturePane({ tmux_session, lines }) {
   checkSession(tmux_session)
   const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
   const { stdout } = await execFileP('tmux',
-    ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
+    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
     { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
   return { ok: true, pane: stdout }
 }
@@ -972,7 +1026,7 @@ async function rpcInterrupt({ tmux_session, agent_id }) {
       await new Promise(r => setTimeout(r, 2500))
       try {
         const cap = await execFileP('tmux',
-          ['capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
+          [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
           { timeout: 3000, encoding: 'utf8' })
         const pane = cap.stdout
         const linesArr = pane.split('\n').filter(l => l.trim())
@@ -989,7 +1043,7 @@ async function rpcInterrupt({ tmux_session, agent_id }) {
 async function rpcListSessions() {
   try {
     const { stdout } = await execFileP('tmux',
-      ['list-sessions', '-F', '#{session_name}'],
+      [...TMUX_ARGS, 'list-sessions', '-F', '#{session_name}'],
       { timeout: 3000, encoding: 'utf8' })
     return { ok: true, sessions: stdout.trim().split('\n').filter(Boolean) }
   } catch (e) {
@@ -997,6 +1051,31 @@ async function rpcListSessions() {
     if (/no server running|no sessions/i.test(e.stderr || '')) return { ok: true, sessions: [] }
     throw e
   }
+}
+
+async function rpcCheckAlive({ tmux_session }) {
+  if (!tmux_session) return { alive: false }
+  const { sessions } = await rpcListSessions()
+  if (!new Set(sessions).has(tmux_session)) return { alive: false }
+  const { stdout } = await execFileP('tmux',
+    [...TMUX_ARGS, 'list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
+    { timeout: 3000, encoding: 'utf8' })
+  const panePids = stdout.trim().split('\n').filter(Boolean)
+  for (const pid of panePids) {
+    // The pane PID may itself be the claude process (no shell wrapper).
+    try {
+      const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
+        { timeout: 2000, encoding: 'utf8' })
+      if (self.includes('claude')) return { alive: true }
+    } catch {}
+    // Or claude may be a direct child of the pane's shell process.
+    try {
+      const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
+        { timeout: 2000, encoding: 'utf8' })
+      if (children.trim()) return { alive: true }
+    } catch {} // pgrep exits non-zero when no match — not an error
+  }
+  return { alive: false }
 }
 
 async function rpcKick({ agent_id }) {
@@ -1008,13 +1087,12 @@ async function rpcKick({ agent_id }) {
   return { ok: true, signal: file }
 }
 
-async function rpcKillSession({ tmux_session, agent_id }) {
+async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   if (!tmux_session) throw new Error('missing tmux_session')
   checkSession(tmux_session)
   await tmux('kill-session', '-t', tmux_session)
-  if (agent_id) {
-    try { await fetch(`${SERVER}/api/agents/${agent_id}/mark-dead`, { method: 'POST' }).catch(() => {}) } catch {}
-  }
+  // NOTE: killing a tmux session is hibernation, not death. Don't mark dead.
+  // Explicit kills go through a separate path that hits /mark-dead directly.
   return { ok: true, tmux_session }
 }
 
@@ -1040,7 +1118,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   const tick = async () => {
     try {
       const { stdout } = await execFileP('tmux',
-        ['capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
+        [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
         { timeout: 2000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
       // Strip ANSI for hashing so cursor-position deltas don't churn.
       const stripped = stdout.replace(ANSI_RE, '')
@@ -1098,7 +1176,10 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 
 // --- Agent death detection ---
 // Periodically check if agents' claude processes are still running.
-// If not, mark them dead on the server and kill orphan tmux sessions.
+// When a process is gone, the agent is hibernating — NOT dead. We log it
+// and stop tracking liveness locally (so we don't log every 30s), but
+// crucially we do NOT mark them dead on the server. `dead` means an
+// explicit kill; absent processes are just sleeping.
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
@@ -1110,18 +1191,17 @@ async function checkAgentLiveness() {
     sessions = new Set(r.sessions || [])
   } catch { return }  // tmux not available
 
+  const aliveAgentIds = []
   for (const agent of agents) {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
 
     const tmuxExists = sessions.has(agent.tmux_session)
     if (!tmuxExists) {
-      // Tmux session gone → agent is dead
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (tmux session ${agent.tmux_session} gone)`)
-      try {
-        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-      } catch {}
-      agent.dead = true
+      if (!agent.hibernating) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+      }
+      agent.hibernating = true
       continue
     }
 
@@ -1129,7 +1209,7 @@ async function checkAgentLiveness() {
     let claudeAlive = false
     try {
       const { stdout } = await execFileP('tmux',
-        ['list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
         { timeout: 3000, encoding: 'utf8' })
       const panePids = stdout.trim().split('\n').filter(Boolean)
       for (const pid of panePids) {
@@ -1142,16 +1222,26 @@ async function checkAgentLiveness() {
     } catch {}
 
     if (!claudeAlive) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is dead (no claude process in ${agent.tmux_session})`)
-      try {
-        await fetch(`${SERVER}/api/agents/${agent.id}/mark-dead`, { method: 'POST' }).catch(() => {})
-      } catch {}
-      try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
-      agent.dead = true
+      if (!agent.hibernating) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
+        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+      }
+      agent.hibernating = true
       continue
     }
 
+    // Process is live — clear hibernation if it was set (agent came back).
+    if (agent.hibernating) {
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (claude process found in ${agent.tmux_session})`)
+      agent.hibernating = false
+    }
+    aliveAgentIds.push(agent.id)
   }
+
+  // Report current alive set to the server. Server uses this (per machine_id)
+  // as ground truth for awake/hibernating status. Hibernating = registered
+  // and not dead, but no claude process — the agent went to sleep.
+  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
 }
 
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
@@ -1161,11 +1251,261 @@ async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   return await uploadFileToServer(abs, serverBase)
 }
 
+async function rpcRechat({ text, cwd, server_url }) {
+  const serverBase = server_url || `http://127.0.0.1:5176`
+  return await processMessageText(text, cwd, serverBase)
+}
+
+// Kill the local playwright chromium process that owns a given TCP source
+// port. Called by the server's zombie reaper when a /sync/ or /ws/fleet
+// connection has been idle for too long.
+//
+// Discriminator: playwright launches the system Google Chrome binary with
+// a temp profile path that always contains "playwright_chromiumdev_profile".
+// The user's real Chrome uses their normal ~/Library profile dir. Anything
+// that doesn't match the playwright signature in its `ps args=` output is
+// refused — the user's real browser must be safe.
+async function rpcKillOrphanChromium({ port }) {
+  if (!port) return { killed: false, reason: 'no port' }
+  let lsofOut = ''
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-nP', '-iTCP:' + port, '-sTCP:ESTABLISHED', '-F', 'pcn'],
+      { timeout: 5000, encoding: 'utf8' })
+    lsofOut = stdout
+  } catch (e) {
+    // lsof exits non-zero when no rows match; nothing to kill.
+    return { killed: false, reason: 'no process holds port ' + port }
+  }
+  // Parse -F pcn output. Each record starts with p<pid>, followed by
+  // c<command> and one or more n<conn> lines.
+  const records = []
+  let cur = null
+  for (const line of lsofOut.split('\n')) {
+    if (!line) continue
+    const k = line[0], v = line.slice(1)
+    if (k === 'p') { if (cur) records.push(cur); cur = { pid: v, names: [] } }
+    else if (k === 'c' && cur) cur.command = v
+    else if (k === 'n' && cur) cur.names.push(v)
+  }
+  if (cur) records.push(cur)
+
+  // Match rows where the LOCAL endpoint is :<port> (i.e. that PID owns the
+  // outgoing connection from this port). Format: "addr:localPort->addr:remotePort"
+  const localTag = ':' + port + '->'
+  const owners = []
+  for (const r of records) {
+    if (r.names.some(n => n.includes(localTag))) owners.push(r)
+  }
+  if (owners.length === 0) {
+    return { killed: false, reason: `no local owner of port ${port}` }
+  }
+
+  // Walk up to the top of any chromium process tree (the playwright main
+  // browser process), so killing it cleans up all the renderer children.
+  // Verify the binary path includes "ms-playwright" — anything else is a
+  // process the user started and we must not touch it.
+  const psArgs = async (pid) => {
+    try {
+      const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'args='],
+        { timeout: 2000, encoding: 'utf8' })
+      return stdout.trim()
+    } catch { return '' }
+  }
+  const psPpid = async (pid) => {
+    try {
+      const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'ppid='],
+        { timeout: 2000, encoding: 'utf8' })
+      const v = parseInt(stdout.trim(), 10)
+      return Number.isFinite(v) ? v : null
+    } catch { return null }
+  }
+  const isPlaywright = (args) => {
+    // Either the playwright-bundled chromium cache, or the system Chrome
+    // launched with a playwright-style temp profile path (playwright-mcp's
+    // pattern). Skip's regular Chrome would not match either.
+    return args.includes('playwright_chromiumdev_profile') ||
+           args.includes('ms-playwright')
+  }
+
+  for (const owner of owners) {
+    let pid = parseInt(owner.pid, 10)
+    let args = await psArgs(pid)
+    if (!isPlaywright(args)) {
+      // Not a playwright chromium — skip. (Could be node, ssh tunnel,
+      // user's real browser, etc.) Defense in depth against killing the
+      // wrong thing.
+      continue
+    }
+    // Walk up while the parent is also playwright chromium.
+    while (true) {
+      const ppid = await psPpid(pid)
+      if (!ppid || ppid <= 1) break
+      const pargs = await psArgs(ppid)
+      if (!isPlaywright(pargs)) break
+      pid = ppid
+      args = pargs
+    }
+    try {
+      process.kill(pid, 'SIGKILL')
+      // Best-effort: also nuke any orphaned children that didn't go down
+      // with the parent. pkill returns non-zero when no match; ignore.
+      try {
+        await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 })
+      } catch {}
+      return { killed: true, pid, binary: args.slice(0, 200) }
+    } catch (e) {
+      return { killed: false, reason: `kill ${pid}: ${e.message}` }
+    }
+  }
+  return { killed: false, reason: 'no playwright owner among port holders' }
+}
+
+// ─── Vite reaper — kill dev servers nobody's using ──────────────────
+//
+// Agents start `npx vite` for HMR-based UI testing and leave the process
+// running after their browser is closed/killed. This is a pure-daemon
+// concern: vites listen on local ports the server never sees. We watch
+// for `node .../vite ...` processes, find their listening port, and check
+// (via lsof) whether any browser-like process has an established TCP
+// connection. If no browser client appears for VITE_IDLE_THRESHOLD_MS,
+// the vite is killed.
+//
+// Skip's own vite stays alive as long as Chrome is attached (HMR WS keeps
+// the TCP connection open even when the tab is minimized). It only dies
+// after Skip closes the tab entirely AND doesn't reopen for 10 min.
+const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
+const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
+const _viteLastClient = new Map()  // vite_pid -> ms timestamp last seen with a browser client
+const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
+
+function isViteArgs(args) {
+  // Matches `node .../vite ...` or `node .../vite.js ...`. Avoids matching
+  // random scripts that happen to mention "vite" elsewhere on the command
+  // line by requiring it to be the script path right after `node`.
+  if (!args.startsWith('node ')) return false
+  return /[\/\\]vite(\.js)?(\s|$)/.test(args)
+}
+
+async function findListeningPorts(pid) {
+  // CRITICAL: `-a` ANDs the selectors. Without it lsof OR-combines `-p` and
+  // `-iTCP` and returns every LISTEN port on the machine, which would make
+  // viteHasBrowserClient check the wrong port.
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-a', '-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-F', 'n'],
+      { timeout: 3000, encoding: 'utf8' })
+    const ports = []
+    for (const line of stdout.split('\n')) {
+      if (!line.startsWith('n')) continue
+      const m = line.slice(1).match(/:(\d+)$/)
+      if (m) ports.push(parseInt(m[1], 10))
+    }
+    return [...new Set(ports)]
+  } catch { return [] }
+}
+
+async function listVites() {
+  let psOut = ''
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,args='], { timeout: 5000, encoding: 'utf8' })
+    psOut = stdout
+  } catch { return [] }
+  const vites = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(.+)$/)
+    if (!m) continue
+    const pid = parseInt(m[1], 10)
+    const args = m[2]
+    if (!isViteArgs(args)) continue
+    const ports = await findListeningPorts(pid)
+    if (ports.length > 0) vites.push({ pid, ports, args })
+  }
+  return vites
+}
+
+async function viteHasBrowserClient(port) {
+  let lsofOut = ''
+  try {
+    const { stdout } = await execFileP('lsof',
+      ['-nP', '-iTCP:' + port, '-sTCP:ESTABLISHED', '-F', 'pcn'],
+      { timeout: 3000, encoding: 'utf8' })
+    lsofOut = stdout
+  } catch { return false }
+  const records = []
+  let cur = null
+  for (const line of lsofOut.split('\n')) {
+    if (!line) continue
+    const k = line[0], v = line.slice(1)
+    if (k === 'p') { if (cur) records.push(cur); cur = { pid: v, names: [] } }
+    else if (k === 'c' && cur) cur.command = v
+    else if (k === 'n' && cur) cur.names.push(v)
+  }
+  if (cur) records.push(cur)
+  // Client rows have `<client_addr>:<client_port>-><vite_addr>:<vite_port>`
+  // — i.e. the connection name ends with the vite's port.
+  const remoteTag = ':' + port
+  for (const r of records) {
+    if (!r.names.some(n => n.endsWith(remoteTag))) continue  // not a client of this vite
+    if (BROWSER_NAME_RE.test(r.command || '')) return true
+  }
+  return false
+}
+
+async function reapVites() {
+  const vites = await listVites()
+  const now = Date.now()
+  for (const v of vites) {
+    // Browser is "connected" if it has a client on ANY of the vite's
+    // listening ports (vite typically binds an HTTP port and a separate
+    // HMR WebSocket port; either alive = vite in use).
+    let hasClient = false
+    for (const port of v.ports) {
+      if (await viteHasBrowserClient(port)) { hasClient = true; break }
+    }
+    if (hasClient) {
+      _viteLastClient.set(v.pid, now)
+      continue
+    }
+    if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
+    const idleMs = now - _viteLastClient.get(v.pid)
+    if (idleMs > VITE_IDLE_THRESHOLD_MS) {
+      try {
+        process.kill(v.pid, 'SIGKILL')
+        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m`)
+      } catch (e) {
+        console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
+      }
+      _viteLastClient.delete(v.pid)
+    }
+  }
+  const liveVites = new Set(vites.map(v => v.pid))
+  for (const pid of [..._viteLastClient.keys()]) {
+    if (!liveVites.has(pid)) _viteLastClient.delete(pid)
+  }
+}
+
+let _viteReaperTimer = null
+function startViteReaper() {
+  if (_viteReaperTimer) return
+  // First sweep after a short delay so the daemon doesn't compete with
+  // its own startup work. Subsequent sweeps every VITE_SWEEP_INTERVAL_MS.
+  setTimeout(() => {
+    reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message))
+    _viteReaperTimer = setInterval(
+      () => reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message)),
+      VITE_SWEEP_INTERVAL_MS,
+    )
+    _viteReaperTimer.unref?.()
+  }, 10_000)
+}
+
 const RPC_HANDLERS = {
   'send-key': rpcSendKey,
   'send-text': rpcSendText,
   'capture-pane': rpcCapturePane,
   'interrupt': rpcInterrupt,
+  'check-alive': rpcCheckAlive,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
   'kill-session': rpcKillSession,
@@ -1174,6 +1514,8 @@ const RPC_HANDLERS = {
   'stop-terminal-watch': rpcStopTerminalWatch,
   'spawn': rpcSpawn,
   'resolve-file': rpcResolveFile,
+  'rechat': rpcRechat,
+  'kill-orphan-chromium': rpcKillOrphanChromium,
 }
 
 async function handleRpc(msg) {
@@ -1459,4 +1801,5 @@ console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
+startViteReaper()
 connect()

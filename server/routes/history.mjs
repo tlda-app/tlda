@@ -211,7 +211,7 @@ router.post('/git/:hash/build', requireRw, async (req, res) => {
   if (hasGitSnapshot(name, hash)) {
     const id = `git-${hash.slice(0, 7)}`
     const snapDir = getSnapshotPath(name, id)
-    const pages = readdirSync(snapDir).filter(f => /^page-\d+\.svg$/.test(f)).length
+    const pages = readdirSync(snapDir).filter(f => /page-\d+\.svg$/.test(f)).length
     return res.json({ status: 'cached', id, pages })
   }
 
@@ -246,7 +246,7 @@ router.get('/git/:hash/status', requireRead, (req, res) => {
   if (status.status === 'cached') {
     const id = `git-${hash.slice(0, 7)}`
     const snapDir = getSnapshotPath(name, id)
-    const pages = readdirSync(snapDir).filter(f => /^page-\d+\.svg$/.test(f)).length
+    const pages = readdirSync(snapDir).filter(f => /page-\d+\.svg$/.test(f)).length
     return res.json({ status: 'cached', id, pages })
   }
 
@@ -300,7 +300,7 @@ router.get('/:id/diff', requireRead, async (req, res) => {
 
   const outDir = outputDir(name)
   const currentSvgs = existsSync(outDir)
-    ? readdirSync(outDir).filter(f => /^page-\d+\.svg$/.test(f))
+    ? readdirSync(outDir).filter(f => /page-\d+\.svg$/.test(f))
     : []
 
   if (currentSvgs.length === 0) {
@@ -335,7 +335,7 @@ router.get('/:id/diff', requireRead, async (req, res) => {
   }
 
   // Check for deleted pages (in snapshot but not current)
-  const snapSvgs = readdirSync(snapDir).filter(f => /^page-\d+\.svg$/.test(f))
+  const snapSvgs = readdirSync(snapDir).filter(f => /page-\d+\.svg$/.test(f))
   const currentPageNums = new Set(currentSvgs.map(f => parseInt(f.match(/page-(\d+)/)[1], 10)))
   for (const svgFile of snapSvgs) {
     const pageNum = parseInt(svgFile.match(/page-(\d+)\.svg/)[1], 10)
@@ -578,7 +578,7 @@ router.get('/shadow/:hash7/meta', requireRead, (req, res) => {
   // Not yet compiled — check if cached SVGs exist (older entries from cacheSvgSnapshot)
   const svgDir = join(projectDir(name), 'history', `shadow-${hash7}`)
   if (existsSync(svgDir)) {
-    const svgs = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
+    const svgs = readdirSync(svgDir).filter(f => /page-\d+\.svg$/.test(f))
     if (svgs.length > 0) {
       return res.json({ pages: svgs.length, hash7, compiledAt: null })
     }

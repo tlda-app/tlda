@@ -1819,57 +1819,33 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: 'get_feedback',
-      description: 'Get the latest feedback for a document on demand (whether or not it is new). Non-blocking peek.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman")',
-          },
-        },
-      },
-    },
-    {
       name: 'screenshot',
-      description: 'Take a screenshot of the viewer on demand. Sends a request via Yjs and waits for the viewer to capture and return the viewport image. If page is specified, scrolls there first.',
+      description: 'Capture an image of part of the viewer. Specify a target — viewport (current scroll position), screen (the user\'s entire visible area), an annotation region (via screenshotRef from a read_annotations result), or explicit canvas bounds. Always passes through the viewer\'s capture mechanism. There is no default — pick a target intentionally.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          target: {
             type: 'string',
-            description: 'Document name (e.g. "bregman")',
+            enum: ['viewport', 'screen'],
+            description: '"viewport" = the document area currently scrolled into view. "screen" = the user\'s entire visible viewport including UI chrome.',
+          },
+          ref: {
+            type: 'string',
+            description: 'Screenshot ref from an annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h"). Captures that region.',
           },
           page: {
             type: 'number',
-            description: 'Page number to scroll to before capturing (optional — captures current viewport if omitted)',
+            description: 'Page number to scroll to before capturing. Used with target="viewport".',
           },
+          x: { type: 'number', description: 'Canvas X of crop region (with y, w, h — explicit bounds capture).' },
+          y: { type: 'number', description: 'Canvas Y of crop region.' },
+          w: { type: 'number', description: 'Width of crop region.' },
+          h: { type: 'number', description: 'Height of crop region.' },
+          padding: { type: 'number', description: 'Extra pixels around the region (default: 200). Applied to ref or x/y/w/h captures.' },
+          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out.' },
         },
         required: ['doc'],
-      },
-    },
-    {
-      name: 'crop_screenshot',
-      description: 'Take a cropped screenshot of a specific document region. Pass a screenshotRef from an annotation attachment, or specify doc + bounds directly. Returns a PNG image.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          ref: {
-            type: 'string',
-            description: 'Screenshot ref string from annotation attachment (format: "tlda-screenshot:page:page:x,y,w,h")',
-          },
-          doc: {
-            type: 'string',
-            description: 'Document name (required if ref is not provided)',
-          },
-          x: { type: 'number', description: 'Canvas X of crop region' },
-          y: { type: 'number', description: 'Canvas Y of crop region' },
-          w: { type: 'number', description: 'Width of crop region' },
-          h: { type: 'number', description: 'Height of crop region' },
-          padding: { type: 'number', description: 'Extra pixels around the region (default: 200)' },
-          shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out' },
-        },
       },
     },
     {
@@ -1911,7 +1887,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations or get_feedback. Mutually exclusive with `options_file`.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
         required: ['doc'],
@@ -2135,6 +2111,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'input_scratch',
+      description: 'Inject a scratch LaTeX section into a document at a specific location. Write plain LaTeX to a local file (no wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically). The scratch env renders in dark gray with the label visible at the top, so it is visually distinct from the main document. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper)' },
+          label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
+          after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
+          before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
+          replace: { type: 'string', description: 'Label of an existing scratch section to overwrite in-place. Content is replaced; the \\inputscratch{} in main.tex stays. Exclusive with after/before.' },
+        },
+        required: ['doc', 'content_path', 'label'],
+      },
+    },
+    {
+      name: 'inline_scratch',
+      description: 'Promote a polished scratch section into the document proper. Strips the \\begin{scratch}...\\end{scratch} wrapper and replaces the \\inputscratch{} line in main.tex with the bare content. Use this when a scratch section is ready to become real document content.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          label: { type: 'string', description: 'Label of the scratch section to inline (same label used when it was created with input_scratch)' },
+        },
+        required: ['doc', 'label'],
+      },
+    },
+    {
       name: 'set_preamble',
       description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
       inputSchema: {
@@ -2302,7 +2306,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
-  'screenshot', 'crop_screenshot', 'get_feedback',
+  'screenshot',
   'flash_location', 'add_note',
   'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
@@ -2325,73 +2329,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'get_feedback') {
-    const docName = args?.doc;
-    // Try cached screenshot signal first
-    if (docName) {
-      try {
-        const screenshot = await readSignalRest(docName, 'signal:screenshot');
-        if (screenshot?.data) {
-          return {
-            content: [
-              { type: 'text', text: `Viewport screenshot (${Math.round(screenshot.data.length / 1024)}KB)` },
-              { type: 'image', data: screenshot.data, mimeType: screenshot.mimeType || 'image/png' },
-            ],
-          };
-        }
-      } catch {}
-    }
-    // Fallback to file
-    if (fs.existsSync(SCREENSHOT_PATH)) {
-      return {
-        content: [
-          { type: 'text', text: `Viewport screenshot: ${SCREENSHOT_PATH}` },
-          { type: 'image', data: fs.readFileSync(SCREENSHOT_PATH).toString('base64'), mimeType: 'image/png' },
-        ],
-      };
-    }
-    // Request screenshot on demand via signal broadcast + listen for response
-    if (docName) {
-      try {
-        await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now() });
-        const result = await new Promise((resolve) => {
-          const stream = connectSignalStream(docName, (signal) => {
-            if (signal.key === 'signal:screenshot' && signal.data) {
-              clearTimeout(timer);
-              stream.close();
-              resolve(signal);
-            }
-          });
-          const timer = setTimeout(() => {
-            stream.close();
-            resolve(null);
-          }, 8000);
-        });
-        if (result?.data) {
-          return {
-            content: [
-              { type: 'text', text: `Viewport screenshot (${Math.round(result.data.length / 1024)}KB)` },
-              { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-            ],
-          };
-        }
-      } catch {}
-    }
-    return {
-      content: [{ type: 'text', text: 'No screenshot available. No viewer is connected — open the document in a browser or tap the ping button on the iPad.' }],
-    };
-  }
-
   if (name === 'screenshot') {
     const docName = args?.doc;
-    const targetPage = args?.page;
     if (!docName) {
       return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
     }
-    // Use signal-based capture (no puppeteer dependency)
+
+    // Resolve target → signal payload.
+    let bounds = null;
+    let mode = args?.target || null; // 'viewport' | 'screen' | null
+    let labelTag = '';
+
+    if (args?.ref) {
+      // tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>
+      const parts = args.ref.split(':');
+      const coordStr = parts[parts.length - 1];
+      const coords = coordStr.split(',').map(Number);
+      if (coords.length !== 4 || coords.some(isNaN)) {
+        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
+      }
+      bounds = { x: coords[0], y: coords[1], w: coords[2], h: coords[3] };
+      labelTag = ' (annotation region)';
+    } else if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
+      bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
+      labelTag = ' (bounds)';
+    } else if (mode === 'screen') {
+      labelTag = ' (screen)';
+    } else {
+      // Default to viewport when no other target is given.
+      mode = mode || 'viewport';
+      labelTag = mode === 'viewport' ? ' (viewport)' : ` (${mode})`;
+    }
+
+    const signalData = { timestamp: Date.now() };
+    if (bounds) signalData.bounds = bounds;
+    if (mode) signalData.mode = mode;
+    if (args?.page) signalData.page = args.page;
+    if (args?.shapeId) signalData.shapeId = args.shapeId;
+    if (args?.padding != null) signalData.padding = args.padding;
+
     try {
-      const signalData = { timestamp: Date.now() };
-      if (targetPage) signalData.page = targetPage;
       await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
       const result = await new Promise((resolve) => {
         const stream = connectSignalStream(docName, (signal) => {
@@ -2401,15 +2378,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             resolve(signal);
           }
         });
-        const timer = setTimeout(() => {
-          stream.close();
-          resolve(null);
-        }, 8000);
+        const timer = setTimeout(() => { stream.close(); resolve(null); }, 8000);
       });
       if (result?.data) {
         return {
           content: [
-            { type: 'text', text: `Screenshot${targetPage ? ` (page ${targetPage})` : ''} (${Math.round(result.data.length / 1024)}KB)` },
+            { type: 'text', text: `Screenshot${labelTag} (${Math.round(result.data.length / 1024)}KB)` },
             { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
           ],
         };
@@ -2420,62 +2394,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (e) {
       return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'crop_screenshot') {
-    let docName, bounds, padding = args?.padding || 200;
-    if (args?.ref) {
-      // Parse ref: "tlda-screenshot:<pageId>:<x>,<y>,<w>,<h>"
-      const parts = args.ref.split(':');
-      // Expected: ["tlda-screenshot", "page", "page", "<x>,<y>,<w>,<h>"]
-      const coordStr = parts[parts.length - 1];
-      const coords = coordStr.split(',').map(Number);
-      if (coords.length !== 4 || coords.some(isNaN)) {
-        return { content: [{ type: 'text', text: `Invalid ref format: ${args.ref}` }], isError: true };
-      }
-      [bounds] = [{ x: coords[0], y: coords[1], w: coords[2], h: coords[3] }];
-      // Doc name must be provided separately when using ref
-      docName = args.doc;
-    } else {
-      docName = args?.doc;
-      if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
-        bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
-      }
-    }
-    if (!docName) {
-      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
-    }
-    if (!bounds) {
-      return { content: [{ type: 'text', text: 'Missing bounds — provide ref or x/y/w/h' }], isError: true };
-    }
-    try {
-      // Try signal-based capture first (non-disruptive, no puppeteer)
-      await broadcastSignalRest(docName, 'signal:screenshot-request', { timestamp: Date.now(), bounds });
-      const result = await new Promise((resolve) => {
-        const stream = connectSignalStream(docName, (signal) => {
-          if (signal.key === 'signal:screenshot' && signal.data) {
-            clearTimeout(timer);
-            stream.close();
-            resolve(signal);
-          }
-        });
-        const timer = setTimeout(() => { stream.close(); resolve(null) }, 8000);
-      });
-      if (result?.data) {
-        return {
-          content: [
-            { type: 'text', text: `Cropped screenshot (${Math.round(result.data.length / 1024)}KB) — bounds: [${bounds.x}, ${bounds.y}, ${bounds.w}, ${bounds.h}]` },
-            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-          ],
-        };
-      }
-      return {
-        content: [{ type: 'text', text: 'No viewer responded — open the document in a browser first.' }],
-        isError: true,
-      };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Crop screenshot failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -3624,6 +3542,94 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `lookup_theorem error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'input_scratch') {
+    const { doc, content_path, label, after, before, replace } = args;
+    if (!doc || !content_path || !label) {
+      return { content: [{ type: 'text', text: 'doc, content_path, and label are required.' }], isError: true };
+    }
+    if (!after && !before && !replace) {
+      return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
+    }
+    const resolved = path.resolve(content_path);
+    let content;
+    try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
+    }
+    try {
+      const agentId = process.env.FLEET_ID || null;
+      const agentName = process.env.FLEET_NAME || null;
+      const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName }),
+      });
+      const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, sourceDir } = result;
+      if (!sourceDir) {
+        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first so the server knows the local project path.` }], isError: true };
+      }
+      // Write files to the local source directory; the watcher will push them and trigger the build
+      const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
+      fs.mkdirSync(scratchDir, { recursive: true });
+      // Check/write template file. Version-tagged files are tool-managed; untagged files are user-customized.
+      if (scratchTemplatePath && scratchTemplateContent) {
+        const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
+        let writeTemplate = true;
+        if (fs.existsSync(templateAbsPath)) {
+          const existing = fs.readFileSync(templateAbsPath, 'utf8');
+          const versionMatch = existing.match(/% scratch-template-version: (\d+)/);
+          if (!versionMatch) {
+            writeTemplate = false; // user-customized — leave it alone
+          } else {
+            const existingVersion = parseInt(versionMatch[1]);
+            if (existingVersion === result.scratchTemplateVersion) {
+              writeTemplate = false; // already current
+            } else {
+              // Version mismatch — default changed; surface error instead of overwriting
+              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. The default template has changed. Review the new default, reconcile your template, and update the version tag.` }], isError: true };
+            }
+          }
+        }
+        if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
+      }
+      const scratchAbsPath = path.join(sourceDir, scratchPath);
+      fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
+      if (mainContent) {
+        fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
+      }
+      if (result.action === 'replaced') {
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
+      }
+      const loc = after ? `after "${after}"` : `before "${before}"`;
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'inline_scratch') {
+    const { doc, label } = args;
+    if (!doc || !label) {
+      return { content: [{ type: 'text', text: 'doc and label are required.' }], isError: true };
+    }
+    try {
+      const result = await serverFetch(`/api/projects/${doc}/inline-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+      const { mainFile, mainContent, scratchPath, sourceDir } = result;
+      if (!sourceDir) {
+        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first.` }], isError: true };
+      }
+      fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
+      const scratchAbsPath = path.join(sourceDir, scratchPath);
+      try { fs.unlinkSync(scratchAbsPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      return { content: [{ type: 'text', text: `Inlined "${label}" into ${path.join(sourceDir, mainFile)} and removed ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 

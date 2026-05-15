@@ -35,6 +35,20 @@
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
 }
+
+
+/* Fleet HUD sits above all canvas content (notes, doc pages, etc.) */
+[data-shape-type="fleet-docview"] {
+  z-index: 8200 !important;
+}
+[data-shape-type="fleet-agents"],
+[data-shape-type="fleet-search"] {
+  z-index: 8201 !important;
+}
+[data-shape-type="fleet-chat"] {
+  z-index: 8210 !important;
+  isolation: isolate;
+}
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
   opacity: 0.6;
@@ -525,6 +539,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 3px;
   font-size: 12px;
   font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line code.code-unquote-pending {
+  background: color-mix(in srgb, var(--blue) 25%, transparent);
+  outline: 1px solid var(--blue);
+  cursor: pointer;
 }
 .fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
 
@@ -1456,6 +1475,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.fleet-agents-shape .fleet-agents-detail-firstrow {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.fleet-agents-shape .fleet-agents-detail-model {
+  flex-shrink: 0;
+  opacity: 0.7;
+  background: rgba(122, 158, 200, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+.fleet-agents-shape .fleet-agents-detail-effort {
+  flex-shrink: 0;
+  opacity: 0.55;
+  background: rgba(147, 112, 219, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 
 /* --- Column widths --- */
 
@@ -1490,12 +1528,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
-  width: 42px;
+  width: 50px;
   flex-shrink: 0;
   text-align: right;
   font-size: 9px;
   opacity: 0.4;
   margin-right: 8px;
+  white-space: nowrap;
+}
+
+.fleet-agents-shape .fleet-agents-col-ctx {
+  width: 30px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  opacity: 0.7;
+  margin-right: 6px;
 }
 
 /* --- Draggable pills in table --- */
@@ -1670,13 +1718,36 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-search-result {
-  padding: 4px 10px;
+  position: relative;
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
-  cursor: pointer;
   transition: background 0.1s;
 }
 .fleet-search-result:hover {
   background: rgba(128, 128, 128, 0.06);
+}
+.fleet-search-result .chat-line {
+  padding-right: 20px;
+}
+.fleet-search-result mark {
+  background: rgba(255, 220, 80, 0.25);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.search-result-open {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 9px;
+  opacity: 0;
+  cursor: pointer;
+  line-height: 1;
+  transition: opacity 0.15s;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.fleet-search-result:hover .search-result-open {
+  opacity: 0.6;
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);
@@ -1708,27 +1779,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Embedded chat view in search --- */
 
-.fleet-search-embedded-chat {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
 .fleet-search-chat-back {
+  background: none;
+  border: none;
   padding: 4px 10px;
   font-size: 9px;
+  font-family: inherit;
+  color: inherit;
   opacity: 0.5;
   cursor: pointer;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
-  flex-shrink: 0;
   transition: opacity 0.15s;
 }
 .fleet-search-chat-back:hover {
-  opacity: 0.8;
-}
-.fleet-search-embedded-chat .fleet-chat-log {
-  font-size: 10px;
-  padding: 4px 0;
+  opacity: 0.9;
 }
 
 /* Highlight a chat line when scrolled to from search */
@@ -2349,7 +2412,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   left: 0;
   right: 0;
   /* height is set via inline style from React state */
-  background: rgba(13, 13, 20, 0.96);
+  background: rgb(13, 13, 20);
   border: 1px solid rgba(80, 80, 110, 0.35);
   border-radius: 0 0 4px 4px;
   border-top: none;
@@ -2358,8 +2421,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: hidden;
   z-index: 50;
   font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 
 .fleet-chat-shape .fleet-terminal-hover-header {
@@ -2367,7 +2428,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   align-items: center;
   gap: 5px;
   padding: 3px 6px;
-  background: rgba(20, 20, 30, 0.8);
+  background: rgb(20, 20, 30);
   border-bottom: 1px solid rgba(80, 80, 110, 0.2);
   flex-shrink: 0;
   min-height: 18px;
@@ -2746,6 +2807,96 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-bottom-color: rgba(229, 85, 85, 0.2);
 }
 
+/* --- Kill-session card --- */
+.fleet-chat-shape .kill-session-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(229, 85, 85, 0.25);
+  border-radius: 4px;
+  background: rgba(229, 85, 85, 0.05);
+  margin: 3px 0;
+  max-width: 95%;
+  font-size: 11px;
+  color: rgba(229, 85, 85, 0.85);
+}
+.fleet-chat-shape .kill-session-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .kill-session-text {
+  color: rgba(200, 200, 200, 0.7);
+}
+.fleet-chat-shape .kill-session-text strong {
+  color: rgba(229, 85, 85, 0.85);
+  font-weight: 500;
+}
+
+/* --- Build result card (compact, collapsible) --- */
+.fleet-chat-shape .build-result-card {
+  border: 1px solid rgba(100, 160, 220, 0.25);
+  border-radius: 4px;
+  background: rgba(100, 160, 220, 0.04);
+  margin: 3px 0;
+  max-width: 95%;
+  overflow: hidden;
+}
+.fleet-chat-shape .build-result-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-chat-shape .build-result-header:hover {
+  background: rgba(100, 160, 220, 0.07);
+}
+.fleet-chat-shape .build-result-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.fleet-chat-shape .build-result-title {
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-chat-shape .build-result-lint-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 9px;
+  background: rgba(220, 160, 60, 0.2);
+  color: var(--yellow, #dca03c);
+  border: 1px solid rgba(220, 160, 60, 0.3);
+}
+.fleet-chat-shape .build-result-toggle {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+.fleet-chat-shape .build-result-expanded .build-result-toggle {
+  transform: rotate(180deg);
+}
+.fleet-chat-shape .build-result-body {
+  display: none;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--text);
+  border-top: 1px solid rgba(100, 160, 220, 0.12);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.fleet-chat-shape .build-result-expanded .build-result-body {
+  display: block;
+}
+
 /* Plan mode badge on agent nick */
 .fleet-chat-shape .plan-mode-badge {
   display: inline-block;
@@ -2822,25 +2973,3 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: hidden;
 }
 
-/* Unquote context menu */
-.unquote-context-menu {
-  position: fixed;
-  z-index: 99999;
-  background: #1a1a2e;
-  border: 1px solid #2a2a48;
-  border-radius: 6px;
-  padding: 4px 0;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-  min-width: 110px;
-  font-size: 12px;
-}
-.unquote-menu-item {
-  padding: 6px 14px;
-  color: #c0c0d4;
-  cursor: pointer;
-  user-select: none;
-}
-.unquote-menu-item:hover {
-  background: rgba(147, 112, 219, 0.15);
-  color: #e0d0ff;
-}

@@ -122,6 +122,8 @@ This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in
 
 You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
+**Unquote:** Agents often share file paths or URLs in backticks. Double-click any inline code span in a chat message to expand it — a path like `` `scratch/fig.png` `` becomes an inline image, and a `` `https://...` `` becomes a link. Relative paths are resolved against the agent's working directory.
+
 ### Fleet: managing multiple agents
 
 Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
@@ -141,6 +143,84 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 <img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
+
+### Eliza: automated agent coaching
+
+Eliza is a lightweight pseudo-agent (`bin/eliza.mjs`) that watches your outgoing chat messages and sends corrective nudges to agents when it detects frustration signals. It's a pure regex decision tree — no LLM, no latency, just pattern matching → chat dispatch. Auto-starts with `tlda server start`.
+
+**How it works:**
+
+When you send a message to an agent, eliza scans it for trigger phrases. On a match it sends the agent a directive (referencing the relevant skill) before you have to escalate.
+
+| Trigger phrase | What eliza sends |
+|----------------|-----------------|
+| "does that make sense" | Reflect back before proceeding |
+| "slow down" | Read `partner-not-soloist` |
+| "cop-out" | State the precise claim, prove it step by step |
+| "I'm struggling" | Slow down, be more explicit |
+| "you don't understand" | 🛑 STOP — reflect back, don't propose solutions |
+| "that's useless" | Ask what's needed instead |
+| "rude" | Read `partner-not-soloist` + `respond-before-acting` |
+| "hurtful" / "feel stupid" | 🛑 Full stop — acknowledge, listen |
+| "I'm not talking to you until" | Meet the stated condition first |
+| "bro" / "wtf" (standalone) | Re-read CLAUDE.md, say what went wrong |
+
+**Education tracking:**
+
+On re-fire (after a cooldown), eliza checks whether the agent invoked the referenced skill since the last nudge. If they did, the message says "you read it but the pattern is recurring." If they didn't, it says "you were nudged X minutes ago and still haven't read it."
+
+**Cooldowns:** 60 seconds by default, 120 seconds for "does that make sense" (high false-positive rate). Only one trigger fires per message.
+
+**Qualification rules** (`~/.claude/qualifications.json`):
+
+The fleet daemon watches every agent's tool calls. When an agent tries to edit a file without having Read the required prerequisite files, it fires a warning to you in chat. Example config:
+
+```json
+{
+  "rules": [
+    {
+      "edit": "**/*.tex",
+      "requires": ["~/.claude/reference/math-implementation.md"]
+    }
+  ]
+}
+```
+
+Skill invocations (via the `Skill` tool) are tracked alongside file reads — you can require `"skill:partner-not-soloist"` as a prerequisite just like a file path.
+
+### Chat controls
+
+**Scroll to bottom:** When you've scrolled up in a chat panel, a ↓ button appears in the bottom-right corner of the log. Click to jump to the latest messages.
+
+**Magnet (hard-lock scroll):** A small magnet icon sits to the left of the chat input. Smart scroll (default) tries to keep the view at the bottom when messages arrive but backs off when you've scrolled up to read — it can fall behind when activity cards expand mid-stream. Hard-lock mode (click the magnet to activate) scrolls to the bottom unconditionally on every update, which means it will yank you away if you're reading up. Use hard-lock when you want guaranteed live tracking; use smart scroll when you want to scroll up without being pulled back down.
+
+**Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
+
+**Interrupting an agent:** With the chat input focused and filtered to an agent (their name chip in the input bar), pressing Escape interrupts the agent. Three escalating tiers:
+
+| Presses | Action |
+|---------|--------|
+| 1×Esc | Soft interrupt — sends Escape to the tmux session |
+| 2×Esc | Hard interrupt — sends a forceful interrupt signal |
+| 3×Esc | Kill session — tmux kill-session; agent dies immediately |
+
+### Searching chat history
+
+The **fleet search shape** lives in every default layout. Type in the box to search the full fleet chat history — results render as complete chat lines with the same styling as the fleet chat view (colored nick chips, tool cards, rendered math).
+
+**Inline filters** (combine freely with text):
+
+| Filter | Example | What it matches |
+|--------|---------|-----------------|
+| `from:` | `from:skip` | Messages sent by that agent or user |
+| `agent:` | `agent:writer` | Messages involving that agent (sent or received) |
+| `before:` | `before:1d` | Messages older than 1 day (`2h`, `3w`, `today`, `yesterday`) |
+| `after:` | `after:today` | Messages newer than a time |
+| `role:` | `role:user` | Filter by message role |
+
+**↗ Jump to chat:** Each result has a ↗ button. Clicking it opens a live chat panel for that agent right inside the search shape — the search results are replaced by the chat view, with a ← back button at the top to return.
+
+The shape also searches shared document titles, showing a "Docs" section above message results when there are matches.
 
 ### Arranging the canvas
 
@@ -219,6 +299,37 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 **Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
 
 **For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
+
+## Multi-document projects
+
+If your project uses the `xr` or `xr-hyper` package to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` in your main file and automatically builds `X.tex` as a second target. Both documents share the same project — their pages appear together on the canvas and the viewer shows both in sequence.
+
+No configuration is needed: add `\usepackage{xr}` and `\externaldocument{supplement}` to your main file, include `supplement.tex` in your source directory, and both will be compiled and displayed.
+
+Cross-references between the documents resolve normally. tlda builds the referenced document first so `.aux` files are in place for the main compilation.
+
+## Writing linters
+
+tlda supports per-user linters that run after every build. Any scripts placed in `~/.config/tlda/linters/` are invoked automatically: the diff (new lines only) is piped to stdin, `TLDA_SRCDIR` is set to the post-state source directory, and any output is posted to fleet chat as a build finding.
+
+Findings are diff-scoped — only new text in this build is checked, so existing prose is never flagged.
+
+tlda ships three opt-in linters in `server/lib/`:
+
+| Script | What it flags |
+|--------|--------------|
+| `lint-parens.mjs` | New parenthetical asides in prose |
+| `lint-passive.mjs` | New passive-voice constructions |
+| `lint-typography.mjs` | Grammar errors in display math (e.g. comma before conjunction) |
+
+To activate any of them, symlink to your linters directory:
+
+```bash
+mkdir -p ~/.config/tlda/linters
+ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
+```
+
+You can also drop any Node.js script there that reads a unified diff from stdin and prints human-readable findings to stdout.
 
 ## CLI reference
 

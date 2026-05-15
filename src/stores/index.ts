@@ -11,7 +11,7 @@ export {
   type ChangeRegion,
 } from './changeStore'
 export { subscribeSearchFilter, getSearchFilter, setSearchFilter, clearSearchFilter } from './searchFilterStore'
-export { getPageUrl, setPageUrl, clearPageUrls } from './pageUrlStore'
+export { getPageUrl, getPageFilename, setPageUrl, clearPageUrls } from './pageUrlStore'
 
 import { clearSvgTextStore } from './svgTextStore'
 import { svgViewBoxStore } from './svgViewBoxStore'

@@ -425,7 +425,7 @@ export async function cacheSvgSnapshot(name, commitHash) {
   const outDir = outputDir(name)
   if (!existsSync(outDir)) return
 
-  const svgs = readdirSync(outDir).filter(f => /^page-\d+\.svg$/.test(f))
+  const svgs = readdirSync(outDir).filter(f => /page-\d+\.svg$/.test(f))
   if (svgs.length === 0) return
 
   const hash7 = commitHash.slice(0, 7)
