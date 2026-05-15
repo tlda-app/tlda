@@ -2168,7 +2168,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal_attention') {
     if (!fleetStore) return
-    const { agent_id, text, tmux_session } = msg
+    const { agent_id, text, tmux_session, reason } = msg
     if (!agent_id) return
     const agent = fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
@@ -2177,7 +2177,7 @@ function handleDaemonWsMessage(ws, msg) {
       from: agent_id,
       to: SERVER_OWNER_ID,
       text: text || `${label}: needs attention`,
-      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null },
+      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null, reason: reason || null },
     })
     if (event) {
       fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
@@ -2188,7 +2188,7 @@ function handleDaemonWsMessage(ws, msg) {
         id: event.id,
         event_id: event.id,
         text: text || `${label}: needs attention`,
-        metadata: { agentId: agent_id, agentLabel: label },
+        metadata: { agentId: agent_id, agentLabel: label, reason: reason || null },
       })
     }
     return

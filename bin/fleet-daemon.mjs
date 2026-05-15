@@ -477,12 +477,14 @@ async function checkForApprovalPrompt(agentId) {
   // Detect stuck states in the Claude Code UI:
   // 1. Rating prompt: "How is Claude doing this session?"
   // 2. Interrupted state: "Interrupted · What should Claude do instead?"
-  // 3. Permission prompt: "Allow once" / "Allow always" as selectable options
-  //    (these appear as "○ Allow once" or "● Allow once" with box-drawing chars)
+  // 3. Permission prompt (TUI radio buttons): "○ Allow once" / "● Allow once"
+  // 4. Permission prompt (y/n): "Allow this command? (y/n) ›"
   let reason = null
   if (/Interrupted.*What should Claude do/i.test(lastLines)) {
     reason = 'interrupted — needs input'
   } else if (/[○●]\s*Allow once/i.test(lastLines)) {
+    reason = 'permission prompt'
+  } else if (/Allow this .{0,30}\?\s*\(y\/n\)/i.test(lastLines)) {
     reason = 'permission prompt'
   }
   if (!reason) return
@@ -496,6 +498,7 @@ async function checkForApprovalPrompt(agentId) {
     type: 'terminal_attention',
     agent_id: agentId,
     tmux_session: agent.tmux_session,
+    reason,
     text: `${label}: ${reason}`,
   })
   console.log(`[daemon] terminal_attention sent for ${label}: ${reason}`)

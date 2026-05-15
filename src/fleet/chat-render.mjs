@@ -108,9 +108,13 @@ export function renderChatLine(m, ctx) {
     const label = esc(m._agentLabel || agentLabel(m.from))
     const reason = esc(m._reason || 'needs attention')
     const agentCls = getNickClass(m.from)
+    const isPermission = (m._reason || '').includes('permission')
+    const actionBtns = isPermission
+      ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" title="Deny (n)">\u2717</button></span>`
+      : ''
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
       <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
-        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>
       </div></div>`
   }
 
