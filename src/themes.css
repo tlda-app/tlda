@@ -55,59 +55,15 @@ body.fog-dark-mode .scrolly-figure-wrap {
   background: #1a2024;
 }
 
-/* Teal dark — toolbar/panel overrides */
-body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="actions"],
-body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="extras"],
-body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="buttons"],
-body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="panel"],
-body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="menu"],
-body.fog-dark-mode .tl-theme__dark .tlui-toolbar {
-  background: rgba(26, 32, 36, 0.75) !important;
-}
-
-/* Fog dark — doc panel */
-body.fog-dark-mode .doc-panel {
-  background: transparent;
-}
-body.fog-dark-mode .doc-panel:hover,
-body.fog-dark-mode .doc-panel-open {
-  background: rgba(34, 42, 46, 0.88);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-body.fog-dark-mode .doc-panel-tabs {
-  border-bottom-color: rgba(46, 58, 62, 0.4);
-}
-body.fog-dark-mode .doc-panel-tab.active {
-  color: #c8dade;
-}
-body.fog-dark-mode .toc-item:hover,
-body.fog-dark-mode .search-result:hover,
-body.fog-dark-mode .note-item:hover,
-body.fog-dark-mode .proof-item:hover,
-body.fog-dark-mode .toc-diff-hint:hover {
-  background: rgba(46, 58, 62, 0.5);
-}
-
-/* Teal dark — book tabs */
-body.fog-dark-mode .book-tab-bar {
-  background: #222a2e;
-  border-bottom-color: #2e3a3e;
-}
-body.fog-dark-mode .book-tab {
-  color: #6e8890;
-}
-body.fog-dark-mode .book-tab:hover {
-  background: #283234;
-  color: #a0b8bc;
-}
-body.fog-dark-mode .book-tab--active {
-  background: #283234;
-  color: #c8dade;
+/* Panel chrome is nearly invisible at rest in fog modes */
+body.fog-dark-mode .doc-panel-tabs,
+body.fog-dark-mode .doc-panel-content,
+body.fog-dark-mode .search-input-wrap {
+  opacity: 0.04;
 }
 
 /* ------------------------------------------------------------------ */
-/* Fog Light — blue-teal mist, unified surfaces                      */
+/* Fog Light — overcast gray, cool undertone                          */
 /* ------------------------------------------------------------------ */
 
 body.fog-light-mode .tl-container {
@@ -166,76 +122,10 @@ body.fog-light-mode .scrolly-figure-wrap {
   background: #d2dfe3;
 }
 
-/* Teal light — toolbar/panel glass */
-body.fog-light-mode .tlui-layout__bottom {
-  --tl-color-low: rgba(232, 238, 240, 0.5);
-  --tl-color-panel: rgba(232, 238, 240, 0.5);
-}
-body.fog-light-mode [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
-  --tl-color-low: rgba(232, 238, 240, 0.5);
-  --tl-color-panel: rgba(232, 238, 240, 0.5);
-}
-body.fog-light-mode [class*="tlui-"][class*="actions"],
-body.fog-light-mode [class*="tlui-"][class*="extras"],
-body.fog-light-mode [class*="tlui-"][class*="buttons"],
-body.fog-light-mode [class*="tlui-"][class*="panel"],
-body.fog-light-mode [class*="tlui-"][class*="menu"],
-body.fog-light-mode .tlui-toolbar {
-  background: rgba(232, 238, 240, 0.6) !important;
+/* Panel chrome is nearly invisible at rest in fog modes */
+body.fog-light-mode .doc-panel-tabs,
+body.fog-light-mode .doc-panel-content,
+body.fog-light-mode .search-input-wrap {
+  opacity: 0.04;
 }
 
-/* Fog light — doc panel */
-body.fog-light-mode .doc-panel {
-  background: transparent;
-}
-body.fog-light-mode .doc-panel:hover,
-body.fog-light-mode .doc-panel-open {
-  background: rgba(235, 240, 242, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-body.fog-light-mode .doc-panel-tabs {
-  border-bottom-color: rgba(180, 200, 210, 0.4);
-}
-body.fog-light-mode .toc-item:hover,
-body.fog-light-mode .search-result:hover,
-body.fog-light-mode .note-item:hover,
-body.fog-light-mode .proof-item:hover,
-body.fog-light-mode .toc-diff-hint:hover {
-  background: rgba(180, 200, 210, 0.5);
-}
-
-/* Teal light — eliminate white surfaces */
-body.fog-light-mode .canvas-clip-panel,
-body.fog-light-mode .canvas-clip-panel__content {
-  background: #d2dfe3;
-}
-body.fog-light-mode .prefs-select {
-  background: #e8eef0;
-  border-color: #c8d4d8;
-}
-body.fog-light-mode .fleet-chat-shape .doc-link-preview-clip {
-  background: #d2dfe3;
-}
-body.fog-light-mode .history-panel {
-  background: rgba(235, 240, 242, 0.95);
-  border-left-color: rgba(200, 212, 218, 0.3);
-}
-
-/* Teal light — book tabs */
-body.fog-light-mode .book-tab-bar {
-  background: #e8eef0;
-  border-bottom-color: #ccd6da;
-}
-body.fog-light-mode .book-tab {
-  color: #3d5c68;
-}
-body.fog-light-mode .book-tab:hover {
-  background: #dce4e6;
-  color: #1a3540;
-}
-body.fog-light-mode .book-tab--active {
-  background: #dce4e6;
-  color: #0a2530;
-  box-shadow: none;
-}
