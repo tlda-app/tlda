@@ -110,6 +110,16 @@ function lineToCanvasY(
  * Re-resolve all understanding-line shapes to their new canvas positions after a
  * document rebuild. Must be called AFTER clearLineYIndexCache so we read fresh
  * synctex data.
+ *
+ * Three behaviors:
+ * 1. Delete detection — if the start fingerprint is not found in the source,
+ *    the marked text was deleted; remove the shape.
+ * 2. endLine remap — if an end content anchor was stored at mark time, remap
+ *    endLine independently via a second content search; otherwise preserve the
+ *    original line span.
+ * 3. Split — if the remapped span (endLine - startLine) exceeds the original
+ *    span, content was inserted inside an approved region; split into
+ *    [approved][unchecked][approved].
  */
 export async function remapUnderstandingLines(
   editor: Editor,
@@ -122,7 +132,6 @@ export async function remapUnderstandingLines(
   if (index.length === 0) return
 
   const allShapes = editor.getCurrentPageShapes()
-  // Remap all umap shapes except the background shape (it spans the full doc)
   const umapShapes = allShapes.filter(s =>
     (s.type as string) === 'understanding-line' &&
     (s.id as string).startsWith('shape:umap-') &&
@@ -134,18 +143,29 @@ export async function remapUnderstandingLines(
   const serverUrl = (typeof window !== 'undefined' && (window as any).__tlda_server)
     || (typeof window !== 'undefined' ? window.location.origin : '')
 
+  const toDelete: TLShapeId[] = []
+  const toCreate: any[] = []
   const updates: any[] = []
+
   for (const shape of umapShapes) {
     const props = shape.props as any
     let startLine = props.startLine as number
     let endLine = props.endLine as number
     if (startLine == null || endLine == null) continue
 
-    // Content-based remap: use stored fingerprint to find where the marked
-    // text currently lives, then update startLine/endLine for the new position.
-    const sourceAnchor = (shape.meta as any)?.sourceAnchor as
-      { file?: string; line?: number; content?: string } | undefined
+    const originalSpan = endLine - startLine
+
+    type SourceAnchor = {
+      file?: string; line?: number; content?: string
+      endContent?: string; endLine?: number; originalSpan?: number
+    }
+    const sourceAnchor = (shape.meta as any)?.sourceAnchor as SourceAnchor | undefined
+
+    let startFound = false
+    let endFound = false
+
     if (sourceAnchor?.content && serverUrl) {
+      // --- Start anchor: find where the marked text currently lives ---
       try {
         const resp = await fetch(`${serverUrl}/api/projects/${docName}/highlight`, {
           method: 'POST',
@@ -156,13 +176,102 @@ export async function remapUnderstandingLines(
           const data = await resp.json()
           const foundLine: number | undefined = data.startLine ?? data.sourceLines?.[0]?.line
           if (foundLine != null) {
+            startFound = true
             startLine = foundLine
-            endLine = foundLine
+          } else {
+            // Fingerprint search succeeded but returned no match → text was deleted
+            toDelete.push(shape.id as TLShapeId)
+            continue
+          }
+        } else if (resp.status === 404) {
+          // Text not found in document → marked text was deleted; remove the ghost
+          toDelete.push(shape.id as TLShapeId)
+          continue
+        }
+        // Other errors (network, 500, etc.) → fall through to line-number approach
+      } catch {
+        // Network error: fall through, keep shape at stored position
+      }
+
+      // --- End anchor: independently remap endLine ---
+      if (startFound && sourceAnchor.endContent && sourceAnchor.endLine != null) {
+        try {
+          const endResp = await fetch(`${serverUrl}/api/projects/${docName}/highlight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: sourceAnchor.endContent, startLine: sourceAnchor.endLine }),
+          })
+          if (endResp.ok) {
+            const endData = await endResp.json()
+            const foundEnd: number | undefined = endData.startLine ?? endData.sourceLines?.[0]?.line
+            if (foundEnd != null) {
+              endFound = true
+              endLine = foundEnd
+            }
+          }
+        } catch {
+          // Fall through to span-preservation
+        }
+      }
+
+      // If we found the start but not the end, preserve the original span
+      if (startFound && !endFound) {
+        const storedSpan = sourceAnchor.originalSpan ?? originalSpan
+        endLine = startLine + storedSpan
+      }
+    }
+
+    // --- Split detection ---
+    // If the new span is larger than the original, content was inserted inside
+    // an approved region. Split into [approved][unchecked][approved].
+    const storedOriginalSpan = sourceAnchor?.originalSpan ?? originalSpan
+    if (startFound && endFound && endLine > startLine + storedOriginalSpan &&
+        (props.status as string) === 'approved') {
+      const uid = ((props.userId as string) || 'unknown').replace(/[^a-zA-Z0-9]/g, '')
+
+      // Middle unchecked segment (everything between start and end anchors)
+      const midStart = startLine + 1
+      const midEnd = endLine - 1
+      if (midStart <= midEnd) {
+        const midId = `shape:umap-${uid}-${midStart}-${midEnd}` as TLShapeId
+        if (!editor.getShape(midId)) {
+          const midY = lineToCanvasY(index, midStart)
+          const midEndY = lineToCanvasY(index, midEnd)
+          if (midY != null && midEndY != null) {
+            toCreate.push({
+              id: midId,
+              type: 'understanding-line',
+              x: shape.x,
+              y: midY,
+              rotation: 0,
+              isLocked: false,
+              opacity: 1,
+              props: { ...props, h: Math.max(20, midEndY - midY), startLine: midStart, endLine: midEnd, status: 'unchecked' },
+            })
           }
         }
-      } catch {
-        // Fall through to line-number approach
       }
+
+      // End approved segment (the original end-anchor line)
+      const endApprovedId = `shape:umap-${uid}-${endLine}-${endLine}` as TLShapeId
+      if (!editor.getShape(endApprovedId)) {
+        const endY = lineToCanvasY(index, endLine)
+        if (endY != null) {
+          toCreate.push({
+            id: endApprovedId,
+            type: 'understanding-line',
+            x: shape.x,
+            y: endY,
+            rotation: 0,
+            isLocked: false,
+            opacity: 1,
+            props: { ...props, h: 20, startLine: endLine, endLine: endLine, status: 'approved' },
+          })
+        }
+      }
+
+      // Existing shape becomes just the start line (approved)
+      endLine = startLine
     }
 
     const newY = lineToCanvasY(index, startLine)
@@ -179,7 +288,6 @@ export async function remapUnderstandingLines(
         type: shape.type,
         y: newY,
         props: { ...props, h: newH, startLine, endLine },
-        // Update hint line in sourceAnchor so next remap starts from correct position
         meta: sourceAnchor?.content
           ? { ...shape.meta, sourceAnchor: { ...sourceAnchor, line: startLine } }
           : shape.meta,
@@ -187,6 +295,14 @@ export async function remapUnderstandingLines(
     }
   }
 
+  if (toDelete.length > 0) {
+    console.log(`[Ribbon] Deleting ${toDelete.length} ghost shape(s) — marked text no longer in source`)
+    editor.deleteShapes(toDelete)
+  }
+  if (toCreate.length > 0) {
+    console.log(`[Ribbon] Creating ${toCreate.length} split shape(s) — inserted content inside approved region`)
+    for (const s of toCreate) editor.createShape(s)
+  }
   if (updates.length > 0) {
     console.log(`[Ribbon] Remapping ${updates.length} understanding-line shape(s) after rebuild`)
     editor.updateShapes(updates)
@@ -317,35 +433,57 @@ export async function processRibbonHighlight(
       props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex: 0 },
     })
 
-    // Fetch content fingerprint and store as sourceAnchor in meta.
+    // Fetch content fingerprints for start and end lines and store as sourceAnchor.
     // Fire-and-forget — meta update arrives after shape creation.
     void (async () => {
       try {
         const serverUrl = (window as any).__tlda_server || window.location.origin
         const pageInfos = pagesToInfos(pages)
-        const pdfPos = canvasToPdf(0, bounds.minY, pageInfos)
-        if (!pdfPos) return
-        const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ page: pdfPos.page, points: [{ x: pdfPos.x, y: pdfPos.y }] }),
-        })
-        if (!resp.ok) return
-        const data = await resp.json()
-        const firstLine = data.lines?.[0]
+
+        const startPdfPos = canvasToPdf(0, bounds.minY, pageInfos)
+        const endPdfPos = startLine !== endLine ? canvasToPdf(0, bounds.maxY, pageInfos) : null
+        if (!startPdfPos) return
+
+        const [startResp, endResp] = await Promise.all([
+          fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ page: startPdfPos.page, points: [{ x: startPdfPos.x, y: startPdfPos.y }] }),
+          }),
+          endPdfPos ? fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ page: endPdfPos.page, points: [{ x: endPdfPos.x, y: endPdfPos.y }] }),
+          }) : Promise.resolve(null),
+        ])
+
+        if (!startResp.ok) return
+        const startData = await startResp.json()
+        const firstLine = startData.lines?.[0]
         if (!firstLine?.content) return
+
+        const anchor: Record<string, unknown> = {
+          file: startData.file || 'main.tex',
+          line: startLine,
+          content: firstLine.content,
+          originalSpan: endLine - startLine,
+        }
+
+        if (endResp?.ok) {
+          const endData = await endResp.json()
+          const lastLine = endData.lines?.[0]
+          if (lastLine?.content && lastLine.content !== firstLine.content) {
+            anchor.endContent = lastLine.content
+            anchor.endLine = endLine
+          }
+        }
+
         editor.updateShape({
           id: newShapeId,
           type: 'understanding-line' as any,
-          meta: {
-            sourceAnchor: {
-              file: data.file || 'main.tex',
-              line: startLine,
-              content: firstLine.content,
-            },
-          },
+          meta: { sourceAnchor: anchor },
         } as any)
-        console.log(`[Ribbon] Stored content fingerprint for line ${startLine}: "${firstLine.content.substring(0, 60)}"`)
+        console.log(`[Ribbon] Stored anchors for lines ${startLine}–${endLine}: "${firstLine.content.substring(0, 60)}"`)
       } catch {
         // No fingerprint — remap will fall back to line-number approach
       }
