@@ -1800,7 +1800,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-      broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+      fleetStore.markDead(agent.id)
+      const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+      fleetStore.share(killEvent)
+      broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -2412,6 +2415,14 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal-frame') {
     if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
+    return
+  }
+
+  if (type === 'agent-context') {
+    if (msg.agentId != null && msg.contextPercent != null) {
+      _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+      broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+    }
     return
   }
 

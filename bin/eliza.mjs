@@ -85,6 +85,240 @@ const TRIGGERS = [
   },
 ]
 
+// ---- Sequence detection ----
+// Watches correction→ack→correction sequences ("performing understanding")
+// State machine per agent: idle → corrected → acked → [fire on next correction]
+const agentConvState = new Map()
+const SEQ_WINDOW_MS = 10 * 60_000 // 10 minutes
+
+// Patterns that indicate Skip is correcting the agent
+const CORRECTION_PATTERNS = [
+  /does that make sense/i,
+  /slow down/i,
+  /cop.?out/i,
+  /\bi'?m struggling\b/i,
+  /you don'?t understand/i,
+  /\bthat'?s useless\b/i,
+  /\brude\b/i,
+  /\bhurtful\b|\bfeel stupid\b/i,
+  /^(?:bro|wtf)\s*$/i,
+  /\bfuck you\b/i,
+  /\bno[,.]?\s+that/i,
+  /\bthat'?s not (right|what|correct)/i,
+  /\bwrong\b/i,
+  // From log research — real patterns Skip uses when correcting
+  /what the fuck/i,
+  /you'?re wrong/i,
+  /what are you talking about/i,
+  /\bi don'?t understand what you'?re saying\b/i,
+  /\bstop not knowing\b/i,
+  /\byou'?re being (fucking |)thick\b/i,
+]
+
+// Patterns that indicate an agent performed a hollow acknowledgment
+const ACK_OPENER_PATTERNS = [
+  /^right\s*[—\-,.!]/i,
+  /^got it\s*[—\-,.!]/i,
+  /^understood\s*[—\-,.!]/i,
+  /^i see\s*[—\-,.!]/i,
+  /^fair point\s*[—\-,.!]/i,
+  /^you'?re right\s*[—\-,.!]/i,
+  /^noted\s*[—\-,.!]/i,
+  /^of course\s*[—\-,.!]/i,
+  /^apolog/i,
+  /^i apologize/i,
+  /^my apolog/i,
+]
+
+const PERFORMING_UNDERSTANDING_MSG = `🛑 **Pattern: performing understanding.**
+
+Skip corrected you, you acknowledged ("Right —" or similar), and he's correcting you again. Your acknowledgment wasn't real — you said you understood but produced the same mistake.
+
+**Stop. Do NOT produce another version.**
+1. Read Skip's last 2–3 messages carefully.
+2. In one sentence, state what you think the problem is.
+3. Wait for him to confirm before doing anything.
+
+Read \`partner-not-soloist\`.`
+
+const FUCK_YOU_IN_CONTEXT_MSG = `🛑 Skip said "fuck you" — and you're already in a correction loop with him. This is escalation, not casual.
+
+**Full stop.** Re-read CLAUDE.md and his last few messages. Say what you think you're doing wrong. Wait for a response before producing anything.
+
+Read \`partner-not-soloist\`.`
+
+// ---- Punt detector ----
+// Fires when an agent tells Skip to check/verify/try something himself
+// Patterns that indicate an agent is telling Skip to verify/check something himself.
+// These are checked on Agent→Skip messages only.
+// Patterns require directive structure (you + action) to reduce false positives.
+const PUNT_PATTERNS = [
+  /\byou (can |should |)try it out\b/i,
+  /\bgive it a (try|shot)\b/i,
+  /\blet me know if (it works|that works|this works|it helps)\b/i,
+  /\breload and (check|see|verify)\b/i,
+  /\b(check|verify|test) (it|that|this) (yourself|on your end|in the browser|in safari)\b/i,
+  /\byou can (check|verify|test|try) (it|this|that)\b/i,
+  /\bfeel free to (check|test|try)\b/i,
+  /\bgo (ahead and |)(check|verify|test|try) (it|this|that)\b/i,
+  /\bsee if (it|that|this) works (for you|on your end|in the browser)\b/i,
+  /\bsee if (that|this) (looks|feels|seems) (right|correct|good|ok) (to you|for you|on your end)\b/i,
+  /\b(let me know|tell me) what you see\b/i,
+  /\bcheck (it |this |that |)on your end\b/i,
+  /\btest it (on |in )(the |)(browser|safari|ipad|iphone)\b/i,
+]
+
+const PUNT_MSG = `⚠️ **You just told Skip to check something himself.** He has RSI — he can't type "does this work?"
+
+Verify it yourself: use playwright MCP, take a screenshot, confirm it works. Then report.
+
+Never say "try it out", "let me know if it works", "reload and check", or any variant. That's your job.`
+
+// ---- Running-away detector ----
+// Tracks when Skip sends a message that goes unacknowledged while the agent makes write tool calls
+const pendingSkipMessages = new Map()
+// agentId → { ts: number, ackSent: boolean, nudgeSent: boolean }
+const RUNNING_AWAY_GRACE_MS = 2 * 60_000  // 2 min before firing
+const RUNNING_AWAY_COOLDOWN_MS = 10 * 60_000
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit'])
+
+const RUNNING_AWAY_MSG = `⚠️ **Skip sent you a message 2+ minutes ago and you haven't replied — you've been making tool calls instead.**
+
+Stop. Read his last message now. In one sentence, say what you think he's asking. Wait for his confirmation before doing anything.
+
+Don't implement first and engage later. Skip is hands-free — if you build the wrong thing, he can't quickly redirect you.`
+
+function getAgentConvState(agentId) {
+  if (!agentConvState.has(agentId)) {
+    agentConvState.set(agentId, { phase: 'idle', windowStart: 0 })
+  }
+  return agentConvState.get(agentId)
+}
+
+function isCorrection(text) {
+  return CORRECTION_PATTERNS.some(p => p.test(text))
+}
+
+function isAckOpener(text) {
+  return ACK_OPENER_PATTERNS.some(p => p.test(text.trim()))
+}
+
+// Phrases Skip uses to signal "this is an FYI, not an action item"
+// Sourced from Skip's actual speech patterns
+const QUEUING_WORDS = [
+  /^also\b/i,                          // "also, I noticed..."
+  /\bby the way\b/i,
+  /\bbtw\b/i,
+  /\bfor what it'?s worth\b/i,
+  /\bfwiw\b/i,
+  /\bafter (this|that)\b/i,            // "after this, can you..."
+  /\bwhen you'?re (done|finished|free)\b/i,
+  /\bwhen you get a chance\b/i,
+  /\bno rush\b/i,
+  /\bfyi\b/i,
+  /\bnot urgent\b/i,
+]
+
+function isIncidentalMessage(text) {
+  return QUEUING_WORDS.some(p => p.test(text))
+}
+
+function isPuntMessage(text) {
+  return PUNT_PATTERNS.some(p => p.test(text))
+}
+
+// Punt cooldown: per-agent, don't spam
+const puntCooldowns = new Map()
+const PUNT_COOLDOWN_MS = 5 * 60_000
+
+function handleSequence(fromId, toId, text) {
+  const now = Date.now()
+
+  if (fromId === OWNER_ID && toId && toId !== AGENT_ID) {
+    // Skip → Agent
+
+    // Check for correction (performing-understanding state machine)
+    if (isCorrection(text)) {
+      const state = getAgentConvState(toId)
+      if (now - state.windowStart > SEQ_WINDOW_MS) {
+        state.phase = 'idle'
+        state.windowStart = now
+      }
+      if (state.windowStart === 0) state.windowStart = now
+
+      const isFuckYou = /\bfuck you\b/i.test(text)
+
+      if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
+        console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
+        sendChat(toId, FUCK_YOU_IN_CONTEXT_MSG)
+        state.phase = 'idle'
+        state.windowStart = 0
+        // Also clear pending — escalation supersedes running-away
+        pendingSkipMessages.delete(toId)
+        return 'handled'
+      }
+
+      if (state.phase === 'acked') {
+        console.log(`[eliza] performing-understanding → ${toId}`)
+        sendChat(toId, PERFORMING_UNDERSTANDING_MSG)
+        state.phase = 'corrected'
+        return 'handled'
+      }
+
+      state.phase = 'corrected'
+    }
+
+    // Track pending messages for running-away detector (skip incidental messages)
+    if (!isIncidentalMessage(text)) {
+      pendingSkipMessages.set(toId, { ts: now, ackSent: false, nudgeSent: false })
+    }
+
+  } else if (fromId !== OWNER_ID && fromId !== AGENT_ID && toId === OWNER_ID) {
+    // Agent → Skip
+
+    // Ack opener → update performing-understanding state
+    if (isAckOpener(text)) {
+      const state = getAgentConvState(fromId)
+      if (state.phase === 'corrected') {
+        state.phase = 'acked'
+        console.log(`[eliza] ack-opener detected from ${fromId}, phase → acked`)
+      }
+    }
+
+    // Mark that agent replied — clears running-away pending
+    const pending = pendingSkipMessages.get(fromId)
+    if (pending) pending.ackSent = true
+
+    // Punt detection
+    if (isPuntMessage(text)) {
+      const lastPunt = puntCooldowns.get(fromId) || 0
+      if (now - lastPunt > PUNT_COOLDOWN_MS) {
+        console.log(`[eliza] punt detected from ${fromId}`)
+        sendChat(fromId, PUNT_MSG)
+        puntCooldowns.set(fromId, now)
+        return 'handled'
+      }
+    }
+  }
+
+  return null // not handled by sequence detection
+}
+
+// ---- Activity event handler ----
+// Called when an agent makes a tool call (Edit/Write/Bash etc.)
+// Fires the running-away nudge if agent is making write calls while Skip's message sits unanswered
+function handleActivity(agentId, tool) {
+  if (!WRITE_TOOLS.has(tool)) return
+  const pending = pendingSkipMessages.get(agentId)
+  if (!pending || pending.ackSent || pending.nudgeSent) return
+  const elapsed = Date.now() - pending.ts
+  if (elapsed < RUNNING_AWAY_GRACE_MS) return
+
+  console.log(`[eliza] running-away → ${agentId} (${tool} after ${Math.round(elapsed/1000)}s, no reply to Skip)`)
+  sendChat(agentId, RUNNING_AWAY_MSG)
+  pending.nudgeSent = true
+}
+
 // ---- Cooldown tracking ----
 // Map<targetAgentId, Map<patternIndex, lastFiredTimestamp>>
 const cooldowns = new Map()
@@ -189,12 +423,27 @@ function sendChat(to, text) {
 }
 
 function handleMessage(msg) {
-  // Fleet events arrive as { event: 'fleet-event', data: { ... } }
-  if (msg.event === 'fleet-event' && msg.data?.type === 'chat') {
-    const { from_id, to_id, text } = msg.data
-    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && text) {
+  if (msg.event !== 'fleet-event') return
+  const { type, from_id, to_id, text, metadata } = msg.data || {}
+
+  if (type === 'chat') {
+    if (!text) return
+
+    // Sequence detection watches both directions
+    const seqHandled = handleSequence(from_id, to_id, text)
+
+    // Single-message triggers only fire on Skip's outgoing messages (and if sequence didn't already handle it)
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
       checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
     }
+  }
+
+  if (type === 'activity') {
+    // Activity events: from_id === to_id === agent making the tool call
+    if (!from_id || from_id === OWNER_ID || from_id === AGENT_ID) return
+    const meta = typeof metadata === 'string' ? (() => { try { return JSON.parse(metadata) } catch { return {} } })() : (metadata || {})
+    const tool = meta.tool || text || ''
+    handleActivity(from_id, tool)
   }
 }
 
