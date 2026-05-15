@@ -82,28 +82,22 @@ function findClosestLine(
   )[0]?.line ?? null
 }
 
-// Binary-search the line index for the canvas Y of a given line number.
-// Falls back to nearest line if exact match not found.
+// Find the canvas Y for a given source line number.
+// Index is sorted by canvasY (not lineNum), so binary search by line doesn't apply.
+// Linear scan is fine — n is typically ~50 entries per document.
 function lineToCanvasY(
   index: Array<{ line: number; canvasY: number }>,
   lineNum: number
 ): number | null {
   if (index.length === 0) return null
-  // Exact match fast path
-  const exact = index.find(e => e.line === lineNum)
-  if (exact) return exact.canvasY
-  // Binary search on line number
-  let lo = 0, hi = index.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (index[mid].line < lineNum) lo = mid + 1
-    else hi = mid
+  let best: { line: number; canvasY: number } | null = null
+  let bestDiff = Infinity
+  for (const e of index) {
+    const diff = Math.abs(e.line - lineNum)
+    if (diff === 0) return e.canvasY
+    if (diff < bestDiff) { bestDiff = diff; best = e }
   }
-  const candidates = [lo > 0 ? index[lo - 1] : null, index[lo]]
-    .filter((x): x is { line: number; canvasY: number } => x != null)
-  return candidates.sort((a, b) =>
-    Math.abs(a.line - lineNum) - Math.abs(b.line - lineNum)
-  )[0]?.canvasY ?? null
+  return best?.canvasY ?? null
 }
 
 /**
