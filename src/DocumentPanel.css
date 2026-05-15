@@ -1879,11 +1879,7 @@ body.phone-mode .phone-page-indicator.visible {
 .svg-page-background {
   width: 100%;
   height: 100%;
-  background: white;
-}
-
-.tl-theme__dark .svg-page-background {
-  background: #0f0f1a;
+  background: transparent;
 }
 
 /* Warm / sepia reading mode */
@@ -1896,7 +1892,7 @@ body.warm-mode .tl-background {
 }
 
 body.warm-mode .svg-page-background {
-  background: #f5f0e8;
+  background: transparent;
 }
 
 .tl-theme__dark [data-shape-type="fleet-search"] input,

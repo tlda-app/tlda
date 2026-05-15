@@ -7,6 +7,7 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import type { BookMember } from './BookContext'
 import './App.css'
+import './themes.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()

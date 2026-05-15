@@ -663,33 +663,52 @@ export function SemanticHighlightToggle() {
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [warm, setWarm] = useState(() => {
-    const saved = localStorage.getItem('tlda-warm-mode') === 'true'
-    if (saved) document.body.classList.add('warm-mode')
-    return saved || document.body.classList.contains('warm-mode')
+  const [theme, setTheme] = useState<'warm' | 'fog-dark' | 'fog-light' | null>(() => {
+    const stored = localStorage.getItem('tlda-theme')
+    if (stored === 'warm' || stored === 'fog-dark' || stored === 'fog-light') return stored
+    if (localStorage.getItem('tlda-warm-mode') === 'true') return 'warm'
+    return null
   })
 
-  const label = warm ? 'Warm' : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
-  const icon = warm ? '\u2600\uFE0E' : scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'
+  const label = theme === 'warm' ? 'Warm'
+    : theme === 'fog-dark' ? 'Fog Dark'
+    : theme === 'fog-light' ? 'Fog Light'
+    : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
+
+  const icon = theme === 'warm' ? '☀︎'
+    : theme === 'fog-dark' ? '\u{1F30A}'
+    : theme === 'fog-light' ? '\u{1F9CA}'
+    : scheme === 'dark' ? '☾' : scheme === 'light' ? '☀' : '◑'
+
+  const applyTheme = useCallback((t: 'warm' | 'fog-dark' | 'fog-light' | null) => {
+    document.body.classList.remove('warm-mode', 'fog-dark-mode', 'fog-light-mode')
+    if (t === 'warm') document.body.classList.add('warm-mode')
+    else if (t === 'fog-dark') document.body.classList.add('fog-dark-mode')
+    else if (t === 'fog-light') document.body.classList.add('fog-light-mode')
+    localStorage.setItem('tlda-theme', t || '')
+    localStorage.setItem('tlda-warm-mode', t === 'warm' ? 'true' : 'false')
+    setTheme(t)
+  }, [])
 
   const cycle = useCallback(() => {
-    if (warm) {
-      // Warm → System (exit warm mode)
-      document.body.classList.remove('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'false')
-      setWarm(false)
+    if (theme === 'warm') {
+      applyTheme(null)
       editor.user.updateUserPreferences({ colorScheme: 'system' })
+    } else if (theme === 'fog-dark') {
+      applyTheme(null)
+      editor.user.updateUserPreferences({ colorScheme: 'light' })
+    } else if (theme === 'fog-light') {
+      applyTheme('warm')
     } else if (scheme === 'system') {
       editor.user.updateUserPreferences({ colorScheme: 'dark' })
     } else if (scheme === 'dark') {
-      editor.user.updateUserPreferences({ colorScheme: 'light' })
+      applyTheme('fog-dark')
+      editor.user.updateUserPreferences({ colorScheme: 'dark' })
     } else {
-      // Light → Warm
-      document.body.classList.add('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'true')
-      setWarm(true)
+      applyTheme('fog-light')
+      editor.user.updateUserPreferences({ colorScheme: 'light' })
     }
-  }, [editor, scheme, warm])
+  }, [editor, scheme, theme, applyTheme])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>

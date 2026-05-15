@@ -668,15 +668,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>
     const onWheel = () => {
-      document.documentElement.classList.add('is-scrolling')
+      globalThis.document.documentElement.classList.add('is-scrolling')
       clearTimeout(timer)
-      timer = setTimeout(() => document.documentElement.classList.remove('is-scrolling'), 400)
+      timer = setTimeout(() => globalThis.document.documentElement.classList.remove('is-scrolling'), 400)
     }
     window.addEventListener('wheel', onWheel, { passive: true })
     return () => {
       window.removeEventListener('wheel', onWheel)
       clearTimeout(timer)
-      document.documentElement.classList.remove('is-scrolling')
+      globalThis.document.documentElement.classList.remove('is-scrolling')
     }
   }, [])
 
