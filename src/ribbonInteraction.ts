@@ -12,11 +12,17 @@
  * are repositioned to match the new synctex data (clearLineYIndexCache +
  * remapUnderstandingLines). A full-document unchecked background shape
  * (umap-bg-{userId}) fills the ribbon behind status segments.
+ *
+ * Content anchoring: at mark time the source text at the marked position is
+ * fetched and stored in shape.meta.sourceAnchor.content. On remap, that
+ * fingerprint drives a content search (/highlight endpoint) to find the current
+ * line, avoiding the line-number drift that happens when lines are inserted or
+ * deleted before the mark.
  */
 
 import type { Editor, TLShapeId } from 'tldraw'
 import { loadLookup } from './synctexLookup'
-import { pdfToCanvas } from './synctexAnchor'
+import { pdfToCanvas, canvasToPdf } from './synctexAnchor'
 import { getHumanId, getHumanName } from './fleet/fleet-data.mjs'
 import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
@@ -125,12 +131,39 @@ export async function remapUnderstandingLines(
 
   if (umapShapes.length === 0) return
 
+  const serverUrl = (typeof window !== 'undefined' && (window as any).__tlda_server)
+    || (typeof window !== 'undefined' ? window.location.origin : '')
+
   const updates: any[] = []
   for (const shape of umapShapes) {
     const props = shape.props as any
-    const startLine = props.startLine as number
-    const endLine = props.endLine as number
+    let startLine = props.startLine as number
+    let endLine = props.endLine as number
     if (startLine == null || endLine == null) continue
+
+    // Content-based remap: use stored fingerprint to find where the marked
+    // text currently lives, then update startLine/endLine for the new position.
+    const sourceAnchor = (shape.meta as any)?.sourceAnchor as
+      { file?: string; line?: number; content?: string } | undefined
+    if (sourceAnchor?.content && serverUrl) {
+      try {
+        const resp = await fetch(`${serverUrl}/api/projects/${docName}/highlight`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: sourceAnchor.content, startLine }),
+        })
+        if (resp.ok) {
+          const data = await resp.json()
+          const foundLine: number | undefined = data.startLine ?? data.sourceLines?.[0]?.line
+          if (foundLine != null) {
+            startLine = foundLine
+            endLine = foundLine
+          }
+        }
+      } catch {
+        // Fall through to line-number approach
+      }
+    }
 
     const newY = lineToCanvasY(index, startLine)
     const newEndY = lineToCanvasY(index, endLine)
@@ -139,8 +172,18 @@ export async function remapUnderstandingLines(
     const newH = Math.max(20, newEndY - newY)
     const yChanged = Math.abs(shape.y - newY) > 0.5
     const hChanged = Math.abs(props.h - newH) > 0.5
-    if (yChanged || hChanged) {
-      updates.push({ id: shape.id, type: shape.type, y: newY, props: { ...props, h: newH } })
+    const lineChanged = props.startLine !== startLine || props.endLine !== endLine
+    if (yChanged || hChanged || lineChanged) {
+      updates.push({
+        id: shape.id,
+        type: shape.type,
+        y: newY,
+        props: { ...props, h: newH, startLine, endLine },
+        // Update hint line in sourceAnchor so next remap starts from correct position
+        meta: sourceAnchor?.content
+          ? { ...shape.meta, sourceAnchor: { ...sourceAnchor, line: startLine } }
+          : shape.meta,
+      })
     }
   }
 
@@ -273,6 +316,40 @@ export async function processRibbonHighlight(
       opacity: 1,
       props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex: 0 },
     })
+
+    // Fetch content fingerprint and store as sourceAnchor in meta.
+    // Fire-and-forget — meta update arrives after shape creation.
+    void (async () => {
+      try {
+        const serverUrl = (window as any).__tlda_server || window.location.origin
+        const pageInfos = pagesToInfos(pages)
+        const pdfPos = canvasToPdf(0, bounds.minY, pageInfos)
+        if (!pdfPos) return
+        const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ page: pdfPos.page, points: [{ x: pdfPos.x, y: pdfPos.y }] }),
+        })
+        if (!resp.ok) return
+        const data = await resp.json()
+        const firstLine = data.lines?.[0]
+        if (!firstLine?.content) return
+        editor.updateShape({
+          id: newShapeId,
+          type: 'understanding-line' as any,
+          meta: {
+            sourceAnchor: {
+              file: data.file || 'main.tex',
+              line: startLine,
+              content: firstLine.content,
+            },
+          },
+        } as any)
+        console.log(`[Ribbon] Stored content fingerprint for line ${startLine}: "${firstLine.content.substring(0, 60)}"`)
+      } catch {
+        // No fingerprint — remap will fall back to line-number approach
+      }
+    })()
   }
 }
 
