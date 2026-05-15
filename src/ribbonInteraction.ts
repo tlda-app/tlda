@@ -440,8 +440,14 @@ export async function processRibbonHighlight(
         const serverUrl = (window as any).__tlda_server || window.location.origin
         const pageInfos = pagesToInfos(pages)
 
-        const startPdfPos = canvasToPdf(0, bounds.minY, pageInfos)
-        const endPdfPos = startLine !== endLine ? canvasToPdf(0, bounds.maxY, pageInfos) : null
+        // Use canonical line positions (not bounds edges, which can fall in whitespace).
+        // Keep x=0 (pdfX=-72) so the query falls outside all text records — the fallback
+        // then finds the closest line by y distance without being captured by a large
+        // section-heading bounding box that would dominate at any in-page x coordinate.
+        const startCanvasY = lineToCanvasY(index, startLine) ?? bounds.minY
+        const endCanvasY = lineToCanvasY(index, endLine) ?? bounds.maxY
+        const startPdfPos = canvasToPdf(0, startCanvasY, pageInfos)
+        const endPdfPos = startLine !== endLine ? canvasToPdf(0, endCanvasY, pageInfos) : null
         if (!startPdfPos) return
 
         const [startResp, endResp] = await Promise.all([
@@ -459,7 +465,11 @@ export async function processRibbonHighlight(
 
         if (!startResp.ok) return
         const startData = await startResp.json()
-        const firstLine = startData.lines?.[0]
+        // Look for the target startLine specifically, then fall back to first non-blank.
+        // The lines array is a context window — without this, a section heading earlier
+        // in the window would be picked as the content fingerprint.
+        const firstLine = startData.lines?.find((l: any) => l.line >= startLine && l.content?.trim())
+                       ?? startData.lines?.find((l: any) => l.content?.trim())
         if (!firstLine?.content) return
 
         const anchor: Record<string, unknown> = {
@@ -471,7 +481,8 @@ export async function processRibbonHighlight(
 
         if (endResp?.ok) {
           const endData = await endResp.json()
-          const lastLine = endData.lines?.[0]
+          const lastLine = endData.lines?.find((l: any) => l.line >= endLine && l.content?.trim())
+                       ?? endData.lines?.find((l: any) => l.content?.trim())
           if (lastLine?.content && lastLine.content !== firstLine.content) {
             anchor.endContent = lastLine.content
             anchor.endLine = endLine

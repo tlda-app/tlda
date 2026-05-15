@@ -42,8 +42,10 @@ export async function remapAnnotations(
 ): Promise<{ failed: number; total: number }> {
   const allShapes = editor.getCurrentPageShapes()
 
-  // Find shapes with source anchors
+  // Find shapes with source anchors. Exclude understanding-line shapes —
+  // they have their own remap path (remapUnderstandingLines).
   const anchored = allShapes.filter(shape => {
+    if ((shape.type as string) === 'understanding-line') return false
     const meta = shape.meta as { sourceAnchor?: SourceAnchor }
     return meta?.sourceAnchor?.file && meta?.sourceAnchor?.line
   })
