@@ -27,6 +27,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: 800, h: 1035, pageIndex: 0 }
   }
 
+  override canSelect = () => false
   override canEdit = () => false
   override canResize = () => false
   override isAspectRatioLocked = () => true
@@ -41,8 +42,8 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return <SvgPageBackground shape={shape} />
   }
 
-  indicator(_shape: any) {
-    return null
+  indicator(shape: any) {
+    return <rect width={shape.props.w} height={shape.props.h} />
   }
 }
 
