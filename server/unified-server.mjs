@@ -1380,7 +1380,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'store-agents') {
-    reply(fleetStore.getAllAgents())
+    reply(fleetStore.getAliveAgents())
     return
   }
 
@@ -1444,9 +1444,8 @@ async function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over all agents using the same label set the MCP `chat()` uses:
-    // agent.labels + virtual (awake/hibernating) + friendly_name + id.
-    const allAgents = fleetStore.getAllAgents?.() || []
+    // Resolve DNF over all alive agents using labels + virtual + friendly_name + id.
+    const allAgents = fleetStore.getAliveAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
