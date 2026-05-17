@@ -1189,6 +1189,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           editorRef.current = editor
           setEditorMounted(v => v + 1)
 
+          // Sync TLDraw colorScheme with stored fog/warm theme on every mount.
+          // fog-dark requires data-theme="dark"; fog-light/warm require data-theme="light".
+          const storedTheme = localStorage.getItem('tlda-theme')
+          if (storedTheme === 'fog-dark') {
+            editor.user.updateUserPreferences({ colorScheme: 'dark' })
+          } else if (storedTheme === 'fog-light' || storedTheme === 'warm') {
+            editor.user.updateUserPreferences({ colorScheme: 'light' })
+          }
+
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
           // "select.pointing_shape","select.crop.idle") to decide whether to show handles.

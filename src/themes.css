@@ -61,6 +61,15 @@ body.fog-dark-mode .doc-panel-content,
 body.fog-dark-mode .search-input-wrap {
   opacity: 0.04;
 }
+/* Restore on hover / open — higher specificity overrides the at-rest rule */
+body.fog-dark-mode .doc-panel:hover .doc-panel-tabs,
+body.fog-dark-mode .doc-panel:hover .doc-panel-content,
+body.fog-dark-mode .doc-panel:hover .search-input-wrap,
+body.fog-dark-mode .doc-panel-open .doc-panel-tabs,
+body.fog-dark-mode .doc-panel-open .doc-panel-content,
+body.fog-dark-mode .doc-panel-open .search-input-wrap {
+  opacity: 1;
+}
 
 /* Bottom-row buttons: canvas is dark so buttons need light colors.
    These elements use html[data-theme="dark"] in their CSS, but that
@@ -73,6 +82,10 @@ body.fog-dark-mode .build-warning-badge:hover {
 }
 body.fog-dark-mode .fleet-icon-pill-badge {
   color: white;
+  opacity: 0.5;
+}
+body.fog-dark-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
+  opacity: 0.15;
 }
 body.fog-dark-mode .phone-hl-btn {
   color: rgba(255, 255, 255, 0.5);
@@ -146,6 +159,15 @@ body.fog-light-mode .doc-panel-tabs,
 body.fog-light-mode .doc-panel-content,
 body.fog-light-mode .search-input-wrap {
   opacity: 0.04;
+}
+/* Restore on hover / open */
+body.fog-light-mode .doc-panel:hover .doc-panel-tabs,
+body.fog-light-mode .doc-panel:hover .doc-panel-content,
+body.fog-light-mode .doc-panel:hover .search-input-wrap,
+body.fog-light-mode .doc-panel-open .doc-panel-tabs,
+body.fog-light-mode .doc-panel-open .doc-panel-content,
+body.fog-light-mode .doc-panel-open .search-input-wrap {
+  opacity: 1;
 }
 
 /* Bottom-row buttons: fleet pill and build warning use 0.1 element opacity which
