@@ -41,8 +41,8 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return <SvgPageBackground shape={shape} />
   }
 
-  indicator(shape: any) {
-    return <rect width={shape.props.w} height={shape.props.h} />
+  indicator(_shape: any) {
+    return null
   }
 }
 
