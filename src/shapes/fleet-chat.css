@@ -1895,6 +1895,17 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 10px;
   line-height: 1;
 }
+.fleet-chat-shape .ref-chip-broken {
+  background: rgba(200, 100, 60, 0.12);
+  border-color: rgba(200, 100, 60, 0.3);
+  color: rgba(220, 130, 80, 0.85);
+  cursor: default;
+  gap: 3px;
+}
+.fleet-chat-shape .ref-chip-broken:hover {
+  background: rgba(200, 100, 60, 0.2);
+  border-color: rgba(200, 100, 60, 0.5);
+}
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;
   gap: 3px;
