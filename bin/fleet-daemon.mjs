@@ -176,6 +176,18 @@ function globToRegex(glob) {
   return new RegExp('^' + withAlts + '$')
 }
 
+// Derive the virtual skill key from a skill SKILL.md path, e.g.
+// ~/.claude/skills/writing/SKILL.md → 'skill:writing'
+function skillKeyFromPath(resolvedPath) {
+  const home = os.homedir()
+  const skillsDir = path.join(home, '.claude', 'skills')
+  if (!resolvedPath.startsWith(skillsDir + path.sep)) return null
+  const rel = resolvedPath.slice(skillsDir.length + 1) // e.g. 'writing/SKILL.md'
+  const parts = rel.split(path.sep)
+  if (parts.length === 2 && parts[1] === 'SKILL.md') return 'skill:' + parts[0]
+  return null
+}
+
 function checkQualification(agentId, toolName, filePath) {
   if (!filePath || _qualRules.length === 0) return
   if (toolName !== 'Edit' && toolName !== 'Write') return
@@ -183,7 +195,6 @@ function checkQualification(agentId, toolName, filePath) {
   // Normalize path for matching — strip leading home dir for glob matching
   const home = os.homedir()
   const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
-  // Also try matching against the full path
   const reads = _agentReads.get(agentId) || new Set()
   const warned = _agentWarned.get(agentId) || new Set()
 
@@ -191,7 +202,10 @@ function checkQualification(agentId, toolName, filePath) {
     if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
     for (const req of rule.requires) {
       const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
+      // Satisfied by a literal Read of the file OR by invoking the corresponding skill
+      const skillKey = skillKeyFromPath(resolvedReq)
       if (reads.has(resolvedReq)) continue
+      if (skillKey && reads.has(skillKey)) continue
       const warnKey = `${filePath}:${resolvedReq}`
       if (warned.has(warnKey)) continue
       warned.add(warnKey)
