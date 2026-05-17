@@ -1599,6 +1599,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       warning = '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
     }
 
+    const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
+    if (brokenFiles.length) {
+      warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
+    }
+
     return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${warning}` }] };
   }
 
