@@ -90,10 +90,9 @@ export function collectSpecificFiles(dir, paths) {
 
 function walkCollect(root, dir, files) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === '_site') continue
+      if (entry.name === 'node_modules' || entry.name === '_site' || entry.name === '.git') continue
       walkCollect(root, full, files)
     } else {
       if (!SOURCE_EXTENSIONS.has(extname(entry.name))) continue
@@ -105,10 +104,9 @@ function walkCollect(root, dir, files) {
 
 function walkHash(root, dir, hashes) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === '_site') continue
+      if (entry.name === 'node_modules' || entry.name === '_site' || entry.name === '.git') continue
       walkHash(root, full, hashes)
     } else {
       if (!SOURCE_EXTENSIONS.has(extname(entry.name))) continue
