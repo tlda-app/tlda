@@ -1,0 +1,16 @@
+% Draft replacement for lines 1357–1369
+% Penalized form, empirical, footnote on Lagrangian equivalence
+
+The results above establish that balancing weights can beat the true weights, but they do not tell us by how much. These results are part of a long tradition of work on minimax estimation of linear functionals \citep{ibragimov1985nonparametric, donoho1991geometrizing, donoho1994statistical, armstrong2018optimal} that provides the tools to answer this. That literature studies problems like ours: estimating a linear functional $\psi_1 = \E[\mu_1(X)]$ when $\mu_1$ is known to lie in a convex function class. Its central object is the \emph{modulus of continuity},\footnote{This is the Lagrangian dual of the constrained modulus $\bar\omega(\delta) = \sup\{|\frac{1}{n}\sum_i m_1(X_i) - \frac{1}{n}\sum_i m_2(X_i)| : m_1, m_2 \in \model,\, \norm{m_1 - m_2}_{L_2(\Pn)} \le \delta\}$ used by \citet{donoho1994statistical} and \citet{armstrong2018optimal}.}
+\begin{equation}
+\label{eq:modulus-of-continuity}
+\omega(s) = \sup_{m \in \model} \left\{ \frac{1}{n}\sum_{i=1}^n m(X_i) - \frac{1}{2sn} \sum_{W_i=1} m(X_i)^2 \right\},
+\end{equation}
+In our setting, the linear estimators are weighted estimators $\hat\psi_1 = n^{-1}\sum_i W_i \gamma(X_i) Y_i$, and the worst-case bias over the model is our maximal imbalance $\imbalance_\model(\gamma)$. Minimax balancing weights minimize a penalized version of this worst-case bias, making them instances of Donoho's minimax linear estimator \citep{donoho1994statistical, armstrong2018optimal}.
+
+The maximal imbalance of the minimax linear estimator has a clean characterization. At the optimal bias-variance tradeoff parameterized by $s > 0$,
+\begin{equation}
+\label{eq:donoho-liu-bias}
+\imbalance_\model(\hgamma) = \omega(s) - \omega'(s)\,s.
+\end{equation}
+When $\omega$ is approximately linear---$\omega(s) \approx c\,s$ for some constant $c$---the maximal imbalance is approximately zero. So bounding imbalance reduces to bounding the deviation of $\omega$ from linearity.

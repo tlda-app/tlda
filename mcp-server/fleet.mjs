@@ -3756,7 +3756,8 @@ const COMPACTING_RE = /Compacting conversation/;
 // scraping stale "Thinking…" text from scrollback.
 const THINKING_SCAN_LINES = 40;
 // Approval prompt patterns — check last 15 lines only to avoid matching tool output
-const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)/i;
+// Covers: TUI radio-button (○ Allow once), y/n inline, and numbered-choice (Esc to cancel · Tab to amend)
+const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*·\s*Tab to amend/i;
 const APPROVAL_PROMPT_SCAN_LINES = 15;
 let _tmuxSession = null;
 let _wasThinking = false;

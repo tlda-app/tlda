@@ -10,6 +10,7 @@ import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
+import { THEME_FAMILY } from '../hooks/useFleetTheme'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout, forceDeleteShapes } from '../shapes/fleet-utils'
@@ -660,6 +661,25 @@ export function SemanticHighlightToggle() {
   )
 }
 
+type ThemeStep = {
+  theme: 'warm' | 'fog-dark' | 'fog-light' | null
+  scheme: 'system' | 'dark' | 'light'
+  label: string
+  icon: string
+  bodyClass?: string
+}
+
+const THEME_STEPS: ThemeStep[] = [
+  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
+  { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
+  { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
+  { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
+  { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
+  { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
+]
+
+const BODY_CLASSES = THEME_STEPS.map(s => s.bodyClass).filter(Boolean) as string[]
+
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
@@ -670,49 +690,25 @@ export function DarkModeToggle() {
     return null
   })
 
-  const label = theme === 'warm' ? 'Warm'
-    : theme === 'fog-dark' ? 'Fog Dark'
-    : theme === 'fog-light' ? 'Fog Light'
-    : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
+  const cur = THEME_STEPS.findIndex(s => s.theme === theme && s.scheme === scheme)
+  const step = cur >= 0 ? THEME_STEPS[cur] : THEME_STEPS[0]
 
-  const icon = theme === 'warm' ? '☀︎'
-    : theme === 'fog-dark' ? '\u{1F30A}'
-    : theme === 'fog-light' ? '\u{1F9CA}'
-    : scheme === 'dark' ? '☾' : scheme === 'light' ? '☀' : '◑'
-
-  const applyTheme = useCallback((t: 'warm' | 'fog-dark' | 'fog-light' | null) => {
-    document.body.classList.remove('warm-mode', 'fog-dark-mode', 'fog-light-mode')
-    if (t === 'warm') document.body.classList.add('warm-mode')
-    else if (t === 'fog-dark') document.body.classList.add('fog-dark-mode')
-    else if (t === 'fog-light') document.body.classList.add('fog-light-mode')
-    localStorage.setItem('tlda-theme', t || '')
-    localStorage.setItem('tlda-warm-mode', t === 'warm' ? 'true' : 'false')
-    setTheme(t)
-  }, [])
+  const applyStep = useCallback((s: ThemeStep) => {
+    for (const cls of BODY_CLASSES) document.body.classList.remove(cls)
+    if (s.bodyClass) document.body.classList.add(s.bodyClass)
+    localStorage.setItem('tlda-theme', s.theme || '')
+    localStorage.setItem('tlda-warm-mode', s.theme === 'warm' ? 'true' : 'false')
+    setTheme(s.theme)
+    editor.user.updateUserPreferences({ colorScheme: s.scheme })
+  }, [editor])
 
   const cycle = useCallback(() => {
-    if (theme === 'warm') {
-      applyTheme(null)
-      editor.user.updateUserPreferences({ colorScheme: 'system' })
-    } else if (theme === 'fog-dark') {
-      applyTheme(null)
-      editor.user.updateUserPreferences({ colorScheme: 'light' })
-    } else if (theme === 'fog-light') {
-      applyTheme('warm')
-    } else if (scheme === 'system') {
-      editor.user.updateUserPreferences({ colorScheme: 'dark' })
-    } else if (scheme === 'dark') {
-      applyTheme('fog-dark')
-      editor.user.updateUserPreferences({ colorScheme: 'dark' })
-    } else {
-      applyTheme('fog-light')
-      editor.user.updateUserPreferences({ colorScheme: 'light' })
-    }
-  }, [editor, scheme, theme, applyTheme])
+    applyStep(THEME_STEPS[(cur + 1) % THEME_STEPS.length])
+  }, [cur, applyStep])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>
-      <span className="toc-toggle-icon">{icon}</span> {label}
+      <span className="toc-toggle-icon">{step.icon}</span> {step.label}
     </div>
   )
 }

@@ -94,7 +94,7 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme } from './hooks/useFleetTheme'
+import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
@@ -1189,13 +1189,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           editorRef.current = editor
           setEditorMounted(v => v + 1)
 
-          // Sync TLDraw colorScheme with stored fog/warm theme on every mount.
-          // fog-dark requires data-theme="dark"; fog-light/warm require data-theme="light".
           const storedTheme = localStorage.getItem('tlda-theme')
-          if (storedTheme === 'fog-dark') {
-            editor.user.updateUserPreferences({ colorScheme: 'dark' })
-          } else if (storedTheme === 'fog-light' || storedTheme === 'warm') {
-            editor.user.updateUserPreferences({ colorScheme: 'light' })
+          if (storedTheme && THEME_FAMILY[storedTheme]) {
+            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
           }
 
           // Patch isInAny NARROWLY for SelectionFg only.
