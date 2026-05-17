@@ -343,23 +343,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
     applyTinting(textYCacheRef.current, highlights)
   }, [isNearViewport, svgText])
 
-  // Click handler — stable, doesn't depend on SVG content
+  // Pointer/click handlers — stable, don't depend on SVG content
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
-    const onClick = (e: MouseEvent) => {
-      // Cmd-click: open source in editor
+    // Cmd-click: open source in editor.
+    // Must use pointerdown — TLDraw swallows click events before they reach inner divs.
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.metaKey) return
       const onSourceClick = getOnSourceClick()
-      if (e.metaKey && onSourceClick) {
-        e.preventDefault()
-        e.stopPropagation()
-        const rect = el.getBoundingClientRect()
-        const clickY = (e.clientY - rect.top) / rect.height
-        onSourceClick(shape.id, clickY)
-        return
-      }
+      if (!onSourceClick) return
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const clickY = (e.clientY - rect.top) / rect.height
+      onSourceClick(shape.id, clickY)
+    }
 
+    // Anchor navigation (links inside the SVG) — click events do reach via link targets.
+    const onClick = (e: MouseEvent) => {
+      if (e.metaKey) return
       const target = (e.target as Element).closest('a')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
@@ -371,8 +374,13 @@ function SvgPageComponent({ shape }: { shape: any }) {
         navigateToAnchor(anchorId, title)
       }
     }
+
+    el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('click', onClick)
-    return () => { el.removeEventListener('click', onClick) }
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('click', onClick)
+    }
   }, [shape.id])
 
   // Apply text tinting when highlights change (and SVG is injected)
