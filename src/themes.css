@@ -1,0 +1,194 @@
+/* Fog Dark — desaturated cool gray, teal undertone */
+
+body.fog-dark-mode .tl-container {
+  background: #1a2024 !important;
+}
+body.fog-dark-mode .tl-background {
+  background-color: #1a2024 !important;
+}
+body.fog-dark-mode .svg-page-background {
+  background: transparent;
+}
+body.fog-dark-mode [data-shape-type="fleet-search"] input,
+body.fog-dark-mode [data-shape-type="fleet-chat"] textarea {
+  background: rgba(140, 190, 200, 0.06) !important;
+}
+
+body.fog-dark-mode .fleet-chat-shape,
+body.fog-dark-mode .fleet-agents-shape {
+  --bg: #1a2024;
+  --surface: #222a2e;
+  --text: #a0b8bc;
+  --text-dim: #6e8890;
+  --text-bright: #c8dade;
+  --border: #2e3a3e;
+  --accent: #60b8a8;
+  --green: #68b898;
+  --yellow: #b8b468;
+  --blue: #68a0c0;
+  --cyan: #58c0b8;
+  --purple: #9090c0;
+  --orange: #c09868;
+  --glass-1: rgba(140,190,200,0.03);
+  --glass-2: rgba(140,190,200,0.05);
+  --glass-3: rgba(140,190,200,0.06);
+  --glass-4: rgba(140,190,200,0.08);
+  --glass-5: rgba(140,190,200,0.10);
+  --glass-6: rgba(140,190,200,0.12);
+}
+
+body.fog-dark-mode .cluster-shape {
+  --bg: #1a2024;
+  --surface: #222a2e;
+  --text: #a0b8bc;
+  --text-dim: #6e8890;
+  --text-bright: #c8dade;
+  --border: #2e3a3e;
+}
+
+body.fog-dark-mode .identity-picker input {
+  background: #1a2024;
+  border-color: #2e3a3e;
+}
+
+body.fog-dark-mode .scrolly-figure-wrap {
+  background: #1a2024;
+}
+
+/* Panel chrome is nearly invisible at rest in fog modes */
+body.fog-dark-mode .doc-panel-tabs,
+body.fog-dark-mode .doc-panel-content,
+body.fog-dark-mode .search-input-wrap {
+  opacity: 0.04;
+}
+
+/* Bottom-row buttons: canvas is dark so buttons need light colors.
+   These elements use html[data-theme="dark"] in their CSS, but that
+   attribute may not be set if TLDraw hasn't initialized yet. */
+body.fog-dark-mode .build-warning-badge {
+  color: rgba(255, 255, 255, 0.1);
+}
+body.fog-dark-mode .build-warning-badge:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+body.fog-dark-mode .fleet-icon-pill-badge {
+  color: white;
+}
+body.fog-dark-mode .phone-hl-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+body.fog-dark-mode .voice-note-btn {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/* Fog Light — overcast gray, cool undertone                          */
+/* ------------------------------------------------------------------ */
+
+body.fog-light-mode .tl-container {
+  background: #d2dfe3 !important;
+}
+body.fog-light-mode .tl-background {
+  background-color: #d2dfe3 !important;
+}
+body.fog-light-mode .svg-page-background {
+  background: transparent;
+}
+body.fog-light-mode [data-shape-type="fleet-search"] input,
+body.fog-light-mode [data-shape-type="fleet-chat"] textarea {
+  background: rgba(0, 40, 55, 0.05) !important;
+}
+
+body.fog-light-mode .fleet-chat-shape,
+body.fog-light-mode .fleet-agents-shape {
+  --bg: #d2dfe3;
+  --surface: #e8eef0;
+  --text: #1a3540;
+  --text-dim: #3d5c68;
+  --text-bright: #0a2530;
+  --border: #c8d4d8;
+  --accent: #1a7888;
+  --green: #1a8068;
+  --yellow: #807020;
+  --blue: #1a6888;
+  --cyan: #0a7880;
+  --purple: #6868a0;
+  --glass-1: rgba(0,40,55,0.03);
+  --glass-2: rgba(0,40,55,0.04);
+  --glass-3: rgba(0,40,55,0.06);
+  --glass-4: rgba(0,40,55,0.08);
+  --glass-5: rgba(0,40,55,0.10);
+  --glass-6: rgba(0,40,55,0.12);
+  --shadow-lg: rgba(0,30,40,0.12);
+}
+
+body.fog-light-mode .cluster-shape {
+  --bg: #d2dfe3;
+  --surface: #e8eef0;
+  --text: #1a3540;
+  --text-dim: #3d5c68;
+  --text-bright: #0a2530;
+  --border: #c8d4d8;
+}
+
+body.fog-light-mode .identity-picker input {
+  background: #e8eef0;
+  border-color: #c8d4d8;
+  color: #1a3540;
+}
+
+body.fog-light-mode .scrolly-figure-wrap {
+  background: #d2dfe3;
+}
+
+/* Panel chrome is nearly invisible at rest in fog modes */
+body.fog-light-mode .doc-panel-tabs,
+body.fog-light-mode .doc-panel-content,
+body.fog-light-mode .search-input-wrap {
+  opacity: 0.04;
+}
+
+/* Bottom-row buttons: fleet pill and build warning use 0.1 element opacity which
+   becomes invisible on the gray/warm canvas. Bump opacity slightly; keep voice-note
+   at its own 0.15 since its color is now deep enough. */
+body.fog-light-mode .build-warning-badge {
+  color: rgba(0, 40, 55, 0.5);
+}
+body.fog-light-mode .build-warning-badge:hover {
+  color: rgba(0, 40, 55, 0.9);
+}
+body.fog-light-mode .fleet-icon-pill-badge {
+  color: rgba(0, 40, 55, 1);
+  opacity: 0.4;
+}
+body.fog-light-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
+  opacity: 0.15;
+}
+body.fog-light-mode .phone-hl-btn {
+  color: rgba(0, 40, 55, 0.8);
+}
+body.fog-light-mode .voice-note-btn {
+  color: rgba(0, 40, 55, 0.8);
+}
+
+/* Warm mode: off-white canvas, same treatment */
+body.warm-mode .build-warning-badge {
+  color: rgba(0, 0, 0, 0.35);
+}
+body.warm-mode .build-warning-badge:hover {
+  color: rgba(0, 0, 0, 0.75);
+}
+body.warm-mode .fleet-icon-pill-badge {
+  color: rgba(40, 20, 0, 1);
+  opacity: 0.3;
+}
+body.warm-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
+  opacity: 0.12;
+}
+body.warm-mode .phone-hl-btn {
+  color: rgba(0, 0, 0, 0.6);
+}
+body.warm-mode .voice-note-btn {
+  color: rgba(0, 0, 0, 0.75);
+}
+

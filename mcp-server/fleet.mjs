@@ -3755,9 +3755,13 @@ const COMPACTING_RE = /Compacting conversation/;
 // for realistic todo lists + tool output, still tight enough to avoid
 // scraping stale "Thinking…" text from scrollback.
 const THINKING_SCAN_LINES = 40;
+// Approval prompt patterns — check last 15 lines only to avoid matching tool output
+const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)/i;
+const APPROVAL_PROMPT_SCAN_LINES = 15;
 let _tmuxSession = null;
 let _wasThinking = false;
 let _compactingReported = false;
+let _lastApprovalFingerprint = null;
 
 // Detect own tmux session once at startup
 try {
@@ -3802,6 +3806,18 @@ setInterval(() => {
       _channelWS.send(JSON.stringify({ type: 'compacting', agentId: AGENT_ID }));
     } else if (!isCompacting && _compactingReported) {
       _compactingReported = false;
+    }
+
+    // Approval prompt detection — piggybacks on already-captured pane
+    const approvalBottom = pane.split('\n').slice(-APPROVAL_PROMPT_SCAN_LINES).join('\n');
+    if (APPROVAL_PROMPT_RE.test(approvalBottom)) {
+      const fingerprint = approvalBottom.slice(-100);
+      if (fingerprint !== _lastApprovalFingerprint) {
+        _lastApprovalFingerprint = fingerprint;
+        _channelWS.send(JSON.stringify({ type: 'terminal_attention', agent_id: AGENT_ID, reason: 'permission prompt', text: 'permission prompt' }));
+      }
+    } else {
+      _lastApprovalFingerprint = null;
     }
   } catch {}
 }, 3000);

@@ -649,6 +649,33 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   align-items: center;
   flex-shrink: 0;
 }
+.fleet-chat-shape .lifecycle-card .lc-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-approve-btn,
+.fleet-chat-shape .lifecycle-card .lc-deny-btn {
+  border: none;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-approve-btn {
+  background: rgba(0, 200, 100, 0.15);
+  color: #00c864;
+}
+.fleet-chat-shape .lifecycle-card .lc-deny-btn {
+  background: rgba(255, 60, 60, 0.15);
+  color: #ff3c3c;
+}
 
 /* --- Timer messages --- */
 .fleet-chat-shape .chat-timer-countdown {

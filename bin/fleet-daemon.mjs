@@ -456,67 +456,6 @@ function scheduleCheckForPlanModePrompt(agentId) {
   pendingPlanChecks.set(agentId, handle)
 }
 
-// ---------- approval prompt detection ----------
-// Detect Claude Code permission prompts (tool approval dialogs) in the terminal.
-// When found, emit a terminal_attention event so the browser can surface a card.
-
-const approvalHashes = new Map()  // agentId -> last fingerprint
-
-async function checkForApprovalPrompt(agentId) {
-  const agent = agents.find(a => a.id === agentId)
-  if (!agent?.tmux_session) return
-
-  let pane
-  try {
-    const { stdout } = await execFileP('tmux',
-      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-30'],
-      { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
-    pane = stripAnsi(stdout)
-  } catch {
-    return
-  }
-
-  // Only check the LAST ~15 lines of the pane — the prompt area.
-  // This avoids matching tool output or chat text that contains "Allow".
-  const lastLines = pane.split('\n').slice(-15).join('\n')
-
-  // Detect stuck states in the Claude Code UI:
-  // 1. Rating prompt: "How is Claude doing this session?"
-  // 2. Interrupted state: "Interrupted · What should Claude do instead?"
-  // 3. Permission prompt: "Allow once" / "Allow always" as selectable options
-  //    (these appear as "○ Allow once" or "● Allow once" with box-drawing chars)
-  let reason = null
-  if (/Interrupted.*What should Claude do/i.test(lastLines)) {
-    reason = 'interrupted — needs input'
-  } else if (/[○●]\s*Allow once/i.test(lastLines)) {
-    reason = 'permission prompt'
-  }
-  if (!reason) return
-
-  const fingerprint = `${reason}:${lastLines.length}:${lastLines.slice(-100)}`
-  if (approvalHashes.get(agentId) === fingerprint) return  // already sent
-  approvalHashes.set(agentId, fingerprint)
-
-  const label = agent.friendly_name || agentId.slice(0, 12)
-  sendMsg({
-    type: 'terminal_attention',
-    agent_id: agentId,
-    tmux_session: agent.tmux_session,
-    text: `${label}: ${reason}`,
-  })
-  console.log(`[daemon] terminal_attention sent for ${label}: ${reason}`)
-}
-
-const pendingApprovalChecks = new Map()  // agentId -> timeoutHandle
-
-function scheduleApprovalCheck(agentId) {
-  if (pendingApprovalChecks.has(agentId)) return  // already scheduled
-  const handle = setTimeout(() => {
-    pendingApprovalChecks.delete(agentId)
-    checkForApprovalPrompt(agentId)
-  }, 2000)
-  pendingApprovalChecks.set(agentId, handle)
-}
 
 // ---------- activity event buffer ----------
 
@@ -774,10 +713,6 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
 
     // Check for tool approval prompts — these appear when Claude wants to
     // use a tool that requires permission.
-    const hasToolUse = parsedEvents.some(ev =>
-      ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'tool_use')
-    )
-    if (hasToolUse) scheduleApprovalCheck(agentId)
   }
 
   // Extract text content for unified search and send to server.

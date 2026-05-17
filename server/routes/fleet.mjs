@@ -471,7 +471,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       agent_id: agent.id, tmux_session: agent.tmux_session,
     })
     if (result === null) return
-    broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+    fleetStore?.markDead(agent.id)
+    const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+    fleetStore?.share(killEvent)
+    broadcastEvent('fleet-event', killEvent)
+    broadcastState()
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   })
 

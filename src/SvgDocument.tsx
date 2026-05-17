@@ -662,6 +662,24 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  // Mark html.is-scrolling during active wheel scroll so CSS can suppress opacity transitions.
+  // wheel fires for all scroll input: mouse wheel, Magic Mouse, trackpad.
+  // Logitech Lift pan mode is handled in CSS via body.tlda-pan-mode (set by usePanMode).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>
+    const onWheel = () => {
+      globalThis.document.documentElement.classList.add('is-scrolling')
+      clearTimeout(timer)
+      timer = setTimeout(() => globalThis.document.documentElement.classList.remove('is-scrolling'), 400)
+    }
+    window.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      window.removeEventListener('wheel', onWheel)
+      clearTimeout(timer)
+      globalThis.document.documentElement.classList.remove('is-scrolling')
+    }
+  }, [])
+
   // Track last-edited note across all entry methods (double-click, etc.)
   useEffect(() => {
     const editor = editorRef.current

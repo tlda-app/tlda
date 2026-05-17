@@ -1800,7 +1800,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-      broadcastEvent('fleet-event', { type: 'kill-session', to: agent.id, from: SERVER_OWNER_ID, text: 'session killed' })
+      fleetStore.markDead(agent.id)
+      const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+      fleetStore.share(killEvent)
+      broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -2415,6 +2418,14 @@ function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'agent-context') {
+    if (msg.agentId != null && msg.contextPercent != null) {
+      _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+      broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
+    }
+    return
+  }
+
   if (type === 'plan-mode-prompt') {
     if (!fleetStore) return
     const { agent_id, plan_text, tmux_session } = msg
@@ -2437,7 +2448,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal_attention') {
     if (!fleetStore) return
-    const { agent_id, text, tmux_session } = msg
+    const { agent_id, text, tmux_session, reason } = msg
     if (!agent_id) return
     const agent = fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
@@ -2446,7 +2457,7 @@ function handleDaemonWsMessage(ws, msg) {
       from: agent_id,
       to: SERVER_OWNER_ID,
       text: text || `${label}: needs attention`,
-      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null },
+      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null, reason: reason || null },
     })
     if (event) {
       fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
@@ -2457,7 +2468,7 @@ function handleDaemonWsMessage(ws, msg) {
         id: event.id,
         event_id: event.id,
         text: text || `${label}: needs attention`,
-        metadata: { agentId: agent_id, agentLabel: label },
+        metadata: { agentId: agent_id, agentLabel: label, reason: reason || null },
       })
     }
     return

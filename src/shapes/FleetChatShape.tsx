@@ -1931,6 +1931,23 @@ function FleetChatInner({ shape }: { shape: any }) {
         lcMsg.classList.toggle('lc-message-collapsed')
         return
       }
+      // Approve/deny buttons on permission prompt cards
+      const lcApproveBtn = (e.target as HTMLElement).closest('.lc-approve-btn') as HTMLElement | null
+      if (lcApproveBtn) {
+        const agentId = lcApproveBtn.dataset.agentId
+        if (agentId) {
+          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: 'y', enter: true }) })
+          return
+        }
+      }
+      const lcDenyBtn = (e.target as HTMLElement).closest('.lc-deny-btn') as HTMLElement | null
+      if (lcDenyBtn) {
+        const agentId = lcDenyBtn.dataset.agentId
+        if (agentId) {
+          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: 'n', enter: true }) })
+          return
+        }
+      }
       // Terminal lifecycle card — click to pin/unpin terminal
       const termCard = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
       if (termCard) {
