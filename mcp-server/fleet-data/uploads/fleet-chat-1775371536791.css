@@ -1,0 +1,1580 @@
+/* fleet-chat.css — Chat styles for FleetChatShape (extracted from fleet dashboard) */
+
+/* --- Theme variables (default dark theme) --- */
+.fleet-chat-shape {
+  --bg: #0f0f1a;
+  --surface: #161625;
+  --text: #a8a8c0;
+  --text-dim: #8888a0;
+  --text-bright: #c0c0d4;
+  --accent: #9370db;
+  --green: #7ab8a0;
+  --yellow: #c8b060;
+  --blue: #7a9ec8;
+  --purple: #9370db;
+  --orange: #c8956a;
+  --cyan: #6aafb0;
+  --red: #e55;
+  --border: #1e1e32;
+  --nick-pink: #b87a95;
+  --glass-1: rgba(255,255,255,0.02);
+  --glass-2: rgba(255,255,255,0.03);
+  --glass-3: rgba(255,255,255,0.04);
+  --glass-4: rgba(255,255,255,0.05);
+  --glass-5: rgba(255,255,255,0.06);
+  --glass-6: rgba(255,255,255,0.08);
+  --shadow-lg: rgba(0,0,0,0.4);
+}
+
+/* Fleet shapes — thin borders for visibility */
+.fleet-chat-shape,
+.fleet-agents-shape,
+.fleet-search-shape,
+.cluster-shape {
+  background-color: transparent;
+  color: var(--text);
+  border: 1px solid rgba(128, 128, 128, 0.1);
+}
+.fleet-search-shape input::placeholder {
+  color: var(--text-dim, #8888a0);
+  opacity: 0.6;
+}
+
+
+/* --- Send hint (target + enter indicator) --- */
+.fleet-chat-send-hint {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9px;
+  opacity: 0.25;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+  transition: opacity 0.15s;
+  font-family: inherit;
+}
+
+/* --- Button group (close, layout, filter) --- */
+.fleet-shape .fleet-btn-group {
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  border-radius: 4px;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 2s;
+}
+html.mousemove .fleet-shape:has(.fleet-chat-log:hover, .fleet-search-results:hover) .fleet-btn-group,
+html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group {
+  opacity: 1;
+  transition: opacity 2s;
+}
+/* Filter overlay covers the chat log, so the :has(:hover) selector above won't fire — show buttons explicitly */
+.fleet-shape:has(.fleet-filter-overlay) .fleet-btn-group {
+  opacity: 1;
+  transition: none;
+}
+/* Hovering directly on the button panel keeps it visible regardless of motion */
+.fleet-btn-group:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.fleet-btn-group button {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s, font-weight 0.1s;
+  padding: 0;
+  font-family: inherit;
+}
+.fleet-btn-group button:hover {
+  opacity: 1;
+  font-weight: bold;
+}
+.fleet-btn-group .fleet-filter-btn svg {
+  display: block;
+}
+
+/* --- Layout/resize button (inside fleet-btn-group flex column) --- */
+.fleet-shape .fleet-layout-btn {
+  letter-spacing: -1px;
+}
+.fleet-shape .fleet-layout-btn:hover {
+  opacity: 0.6;
+  background: rgba(128, 128, 128, 0.15);
+}
+.fleet-shape:hover .fleet-layout-btn {
+  opacity: 0.35;
+}
+
+/* --- Filter editor overlay --- */
+.fleet-chat-shape .fleet-filter-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  padding: 12px;
+  background: var(--bg, #0f0f1a);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+.fleet-chat-shape .fleet-filter-overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+/* --- Filter AND group boxes (ported from dashboard .filter-and-group) --- */
+.fleet-chat-shape .fleet-filter-group-container {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.fleet-chat-shape .fleet-filter-group-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.fleet-chat-shape .fleet-filter-and-group {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.1s, border-color 0.1s;
+}
+.fleet-chat-shape .fleet-filter-and-group-normal {
+  background: rgba(255, 255, 255, 0.06);
+}
+.fleet-chat-shape .fleet-filter-and-group-highlight {
+  background: rgba(147, 112, 219, 0.15);
+  border: 1px dashed var(--accent, #9370db);
+}
+.fleet-chat-shape .fleet-filter-or-sep {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+/* --- Filter chips (ported from dashboard .filter-chip) --- */
+.fleet-chat-shape .fleet-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.fleet-chat-shape .fleet-filter-chip-to {
+  color: #7a9ec8;
+  border-color: #7a9ec860;
+  background: #7a9ec815;
+}
+.fleet-chat-shape .fleet-filter-chip-from {
+  color: #7ab8a0;
+  border-color: #7ab8a060;
+  background: #7ab8a015;
+}
+.fleet-chat-shape .fleet-filter-chip-ghost {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.fleet-chat-shape .fleet-filter-chip-role {
+  font-size: 8px;
+  margin-right: 2px;
+  opacity: 0.7;
+}
+.fleet-chat-shape .fleet-filter-chip-label {
+  font-size: 10px;
+}
+.fleet-chat-shape .fleet-filter-term-x {
+  cursor: pointer;
+  opacity: 0.3;
+  margin-left: 4px;
+  font-size: 10px;
+}
+.fleet-chat-shape .fleet-filter-term-x:hover {
+  opacity: 0.8;
+  color: var(--red, #e55);
+}
+/* --- Filter drop panes (pill hover: to/from preview) --- */
+.fleet-chat-shape .fleet-filter-drop-panes {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+}
+
+/* Replace zone — bottom-left corner, replaces entire filter with to+from this agent */
+.fleet-chat-shape .fleet-filter-replace-zone {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 28%;
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px;
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+  border-right: 1px solid rgba(128, 128, 128, 0.12);
+  background: rgba(128, 128, 128, 0.03);
+  transition: background 0.15s;
+  z-index: 2;
+}
+.fleet-chat-shape .fleet-filter-replace-zone-active {
+  background: rgba(180, 140, 220, 0.12);
+  border-color: rgba(180, 140, 220, 0.25);
+}
+.fleet-chat-shape .fleet-filter-replace-label {
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.4;
+  margin-bottom: 1px;
+}
+.fleet-chat-shape .fleet-filter-replace-sep {
+  font-size: 7px;
+  opacity: 0.35;
+}
+.fleet-chat-shape .fleet-filter-drop-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 0 10px;
+  transition: background 0.15s;
+}
+.fleet-chat-shape .fleet-filter-pane-to {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+.fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-to {
+  background: rgba(122, 158, 200, 0.08);
+}
+.fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-from {
+  background: rgba(122, 184, 160, 0.08);
+}
+.fleet-chat-shape .fleet-filter-pane-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.4;
+  margin-bottom: 6px;
+}
+.fleet-chat-shape .fleet-filter-empty {
+  opacity: 0.3;
+  font-size: 10px;
+  padding: 20px 0;
+  text-align: center;
+}
+.fleet-chat-shape .fleet-filter-footer {
+  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  padding-top: 4px;
+  margin-top: 4px;
+}
+.fleet-chat-shape .fleet-filter-clear {
+  font-size: 9px;
+  opacity: 0.3;
+  cursor: pointer;
+}
+.fleet-chat-shape .fleet-filter-clear:hover {
+  opacity: 0.6;
+}
+
+/* Light theme overrides */
+.tl-theme__light .fleet-chat-shape,
+.tl-theme__light .fleet-agents-shape {
+  --bg: #fafafa;
+  --surface: #f0f0f5;
+  --text: #444;
+  --text-dim: #888;
+  --text-bright: #222;
+  --border: #ddd;
+  --accent: #7c8aff;
+  --glass-1: rgba(0,0,0,0.02);
+  --glass-2: rgba(0,0,0,0.03);
+  --glass-3: rgba(0,0,0,0.04);
+  --glass-4: rgba(0,0,0,0.05);
+  --glass-5: rgba(0,0,0,0.06);
+  --glass-6: rgba(0,0,0,0.08);
+}
+
+.fleet-chat-shape strong { color: var(--text-bright); font-weight: 500; }
+
+/* --- Chat log container --- */
+.fleet-chat-log {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+/* --- Draggable elements in chat --- */
+.fleet-chat-shape .chat-nick span[class*="nick-"],
+.fleet-chat-shape .chat-ts,
+.fleet-chat-shape .chat-activity-card,
+.fleet-chat-shape .code-block-header,
+.fleet-chat-shape .tool-ref,
+.fleet-chat-shape .md-file-card,
+.fleet-chat-shape .tlda-card {
+  cursor: grab;
+  touch-action: none;
+}
+
+/* --- Chat line base --- */
+.fleet-chat-shape .chat-line {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.fleet-chat-shape .chat-line.from-user {
+  background: rgba(100, 140, 255, 0.04);
+}
+
+/* --- Timestamp --- */
+.fleet-chat-shape .chat-ts {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+/* --- Nick --- */
+.fleet-chat-shape .chat-nick {
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+/* --- Nick colors --- */
+.fleet-chat-shape .nick-human { color: #9370db; }
+.fleet-chat-shape .nick-manager { color: var(--green); }
+.fleet-chat-shape .nick-keepalive { color: var(--text-dim); }
+.fleet-chat-shape .nick-agent-0 { color: var(--blue); }
+.fleet-chat-shape .nick-agent-1 { color: var(--purple); }
+.fleet-chat-shape .nick-agent-2 { color: var(--orange); }
+.fleet-chat-shape .nick-agent-3 { color: var(--cyan); }
+.fleet-chat-shape .nick-agent-4 { color: var(--nick-pink); }
+.fleet-chat-shape .nick-agent-5 { color: var(--yellow); }
+
+/* --- Chat arrow --- */
+.fleet-chat-shape .chat-arrow {
+  margin: 0 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* --- Age-based opacity --- */
+.fleet-chat-shape .chat-line-recent { opacity: 1; }
+.fleet-chat-shape .chat-line-mid { opacity: 0.8; }
+.fleet-chat-shape .chat-line-old { opacity: 0.6; }
+
+/* --- Receipt / delivery indicator --- */
+.fleet-chat-shape .chat-receipt {
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.35;
+}
+.fleet-chat-shape .chat-receipt.chat-delivered {
+  color: var(--text-dim);
+}
+.fleet-chat-shape .chat-receipt.chat-read {
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+
+/* --- CC separator --- */
+.fleet-chat-shape .cc-separator { color: var(--text-dim); }
+
+/* --- Code in chat --- */
+.fleet-chat-shape .chat-line pre {
+  background: var(--glass-4);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 4px 0;
+  overflow-x: auto;
+  font-size: 12px;
+  font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line code {
+  background: var(--glass-6);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
+
+/* --- Lists in chat --- */
+.fleet-chat-shape .chat-line ol,
+.fleet-chat-shape .chat-line ul {
+  padding-left: 1.5em;
+  margin: 2px 0;
+}
+.fleet-chat-shape .chat-line ol { list-style-type: decimal; }
+.fleet-chat-shape .chat-line ul { list-style-type: disc; }
+.fleet-chat-shape .chat-line li { margin: 1px 0; }
+
+/* --- Terminal messages --- */
+.fleet-chat-shape .terminal-msg {
+  border-left: 2px solid var(--text-dim);
+  padding-left: 6px;
+  opacity: 0.85;
+}
+.fleet-chat-shape .terminal-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--text-dim);
+  color: var(--bg);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+/* --- Lifecycle cards --- */
+.fleet-chat-shape .lifecycle-card {
+  display: inline-block;
+  border: 1px solid var(--glass-5);
+  border-radius: 4px;
+  padding: 4px 10px;
+  margin: 2px 0;
+  font-size: 12px;
+  max-width: 90%;
+  vertical-align: top;
+}
+.fleet-chat-shape .lifecycle-card .lc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.fleet-chat-shape .lifecycle-card .lc-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-title {
+  font-weight: 500;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-chat-shape .lifecycle-card .lc-routing {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-arrow {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.fleet-chat-shape .lifecycle-card .lc-criteria {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--glass-3);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.fleet-chat-shape .lifecycle-card .lc-criterion { padding: 1px 0; }
+.fleet-chat-shape .lifecycle-card .lc-chain {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* --- Timer messages --- */
+.fleet-chat-shape .chat-timer-countdown {
+  font-size: 11px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .chat-timer-msg {
+  font-size: 11px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .timer-msg {
+  color: var(--text-dim);
+}
+
+/* --- Compacting / unreachable --- */
+.fleet-chat-shape .compacting {
+  color: var(--orange);
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+}
+.fleet-chat-shape .unreachable {
+  color: var(--red);
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* --- Tool refs --- */
+.fleet-chat-shape .tool-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(200,176,96,0.1);
+  border: 1px solid rgba(200,176,96,0.25);
+  color: var(--yellow);
+  cursor: pointer;
+  position: relative;
+  vertical-align: middle;
+  margin: 0 2px;
+}
+.fleet-chat-shape .tool-ref:hover {
+  background: rgba(200,176,96,0.2);
+  border-color: rgba(200,176,96,0.4);
+}
+.fleet-chat-shape .tool-ref-type { font-weight: 600; }
+.fleet-chat-shape .tool-ref-preview {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: var(--glass-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px 4px;
+  font-family: 'SF Mono','Menlo',monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: normal;
+  max-width: 400px;
+  max-height: 200px;
+  overflow: auto;
+  z-index: 100;
+  box-shadow: 0 4px 12px var(--shadow-lg);
+  line-height: 1.5;
+}
+.fleet-chat-shape .tool-ref:hover .tool-ref-preview { display: block; }
+
+/* --- Warnings / voicemail / retracted --- */
+.fleet-chat-shape .chat-warning {
+  color: var(--orange);
+  font-size: 10px;
+}
+.fleet-chat-shape .chat-voicemail {
+  opacity: 0.5;
+  border-left: 2px solid var(--orange);
+  padding-left: 8px;
+  margin-left: 4px;
+}
+.fleet-chat-shape .chat-voicemail-label {
+  color: var(--orange);
+  font-size: 10px;
+  font-style: italic;
+}
+.fleet-chat-shape .chat-retracted {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
+/* --- Chat interrupt line --- */
+.fleet-chat-shape .chat-interrupt-line {
+  border: none;
+  border-top: 1px solid var(--text-dim);
+  margin: 8px 0;
+  opacity: 0.18;
+}
+
+/* --- Chat images --- */
+.fleet-chat-shape .chat-image {
+  max-width: 80%;
+  max-height: 300px;
+  border-radius: 4px;
+  margin: 8px auto;
+  display: block;
+  cursor: pointer;
+}
+.fleet-chat-shape .chat-image-shared-doc {
+  width: 75%;
+  max-width: 75%;
+}
+
+/* --- Long messages --- */
+.fleet-chat-shape .message-long {
+  display: block;
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* --- File cards (draggable → doc pill on canvas) --- */
+.fleet-chat-shape .md-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(122,158,200,0.1);
+  border: 1px solid rgba(122,158,200,0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--blue);
+  cursor: grab;
+  touch-action: none;
+}
+.fleet-chat-shape .md-file-chip {
+  font-weight: 500;
+}
+
+/* --- TLDA card (draggable → doc pill on canvas) --- */
+.fleet-chat-shape .tlda-card {
+  margin: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  width: 100%;
+  max-height: 150px;
+  cursor: grab;
+  touch-action: none;
+}
+.fleet-chat-shape .tlda-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  background: rgba(147, 112, 219, 0.08);
+  border-bottom: 1px solid var(--border);
+}
+.fleet-chat-shape .doc-name {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.fleet-chat-shape .doc-open-link {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+/* --- Ambient messages --- */
+.fleet-chat-shape .ambient {
+  opacity: 0.6;
+}
+
+/* --- Syntax highlighting tokens --- */
+.fleet-chat-shape .sh-keyword { color: var(--purple); }
+.fleet-chat-shape .sh-string { color: var(--green); }
+.fleet-chat-shape .sh-number { color: var(--orange); }
+.fleet-chat-shape .sh-comment { color: var(--text-dim); font-style: italic; }
+.fleet-chat-shape .sh-builtin { color: var(--cyan); }
+.fleet-chat-shape .sh-operator { color: var(--text-dim); }
+.fleet-chat-shape .sh-property { color: var(--blue); }
+.fleet-chat-shape .sh-function { color: var(--yellow); }
+.fleet-chat-shape .sh-tag { color: var(--orange); }
+.fleet-chat-shape .sh-attr { color: var(--purple); }
+.fleet-chat-shape .sh-value { color: var(--green); }
+.fleet-chat-shape .sh-bool { color: var(--orange); }
+.fleet-chat-shape .sh-key { color: var(--blue); }
+
+/* --- Code block header + folding --- */
+.fleet-chat-shape .code-block-wrap { margin: 4px 0; }
+.fleet-chat-shape .code-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--glass-2);
+  border-radius: 4px 4px 0 0;
+  border-bottom: 1px solid var(--glass-5);
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-chat-shape .code-block-lang { font-weight: 500; color: var(--cyan); }
+.fleet-chat-shape .code-block-toggle { font-size: 10px; color: var(--text-dim); }
+.fleet-chat-shape .code-block-copy {
+  margin-left: auto;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 14px;
+  user-select: none;
+  transition: opacity 0.1s, color 0.1s;
+  padding: 0 2px;
+}
+.fleet-chat-shape .code-block-copy:hover {
+  opacity: 1;
+}
+.fleet-chat-shape .code-block-copy-success {
+  opacity: 1;
+  color: var(--green, #4caf50);
+}
+.fleet-chat-shape .code-block-wrap pre {
+  margin-top: 0;
+  border-radius: 0 0 4px 4px;
+}
+.fleet-chat-shape .code-block-wrap pre.code-collapsed {
+  max-height: calc(10 * 1.4em + 12px);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+}
+
+/* --- Markdown tables --- */
+.fleet-chat-shape .md-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 4px 0;
+}
+.fleet-chat-shape .md-table th,
+.fleet-chat-shape .md-table td {
+  border: 1px solid var(--glass-5);
+  padding: 2px 6px;
+}
+.fleet-chat-shape .md-table th {
+  background: var(--glass-2);
+  font-weight: 500;
+}
+
+/* --- Retract button (hidden in tlda context) --- */
+.fleet-chat-shape .chat-retract { display: none; }
+
+/* --- Tool lines --- */
+.fleet-chat-shape .tool-line {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+}
+.fleet-chat-shape .tool-linenum {
+  color: var(--text-dim);
+  opacity: 0.5;
+  min-width: 16px;
+}
+.fleet-chat-shape .tool-name { color: var(--text); }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
+.fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: 0.7; }
+.fleet-chat-shape .tool-count { color: var(--text-dim); font-size: 9px; }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
+.fleet-chat-shape .tool-copy { display: none; }
+.fleet-chat-shape .tool-detail { color: var(--text-dim); opacity: 0.5; font-size: 9px; }
+
+/* --- Activity cards --- */
+.fleet-chat-shape .chat-activity-inline-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+.fleet-chat-shape .chat-activity-inline-wrap > .chat-activity-card:not(.collapsed) {
+  width: 100%;
+}
+.fleet-chat-shape .chat-activity-card {
+  position: relative;
+  margin: 3px 0;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
+.fleet-chat-shape .chat-activity-card .activity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+.fleet-chat-shape .chat-activity-card .activity-agent { font-weight: 500; }
+.fleet-chat-shape .chat-activity-card .activity-ctx {
+  font-size: 10px;
+  color: var(--text-dim, #666);
+  opacity: 0.7;
+}
+.fleet-chat-shape .chat-activity-card .activity-signal {
+  font-size: 10px;
+  opacity: 0.4;
+  line-height: 1;
+}
+.fleet-chat-shape .chat-activity-card .activity-header .activity-signal { margin-left: auto; }
+.fleet-chat-shape .chat-activity-card.will-fold .activity-signal::after { content: '\25BD'; }
+.fleet-chat-shape .chat-activity-card .activity-detail {
+  padding: 2px 8px 4px;
+  line-height: 1.5;
+}
+.fleet-chat-shape .chat-activity-card .activity-badge {
+  float: right;
+  font-size: 11px;
+  color: var(--text-dim, #666);
+  opacity: 0.6;
+  margin-left: 8px;
+}
+.fleet-chat-shape .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
+.fleet-chat-shape .chat-activity-card .activity-count {
+  font-size: 10px;
+  color: var(--text-dim, #666);
+  opacity: 0.5;
+  margin-left: 2px;
+}
+.fleet-chat-shape .chat-activity-card .activity-text-block {
+  color: var(--text, #8888a0);
+  opacity: 0.85;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0;
+}
+.fleet-chat-shape .chat-activity-card .activity-text-block.scrollable {
+  max-height: none;
+  overflow-y: visible;
+}
+.fleet-chat-shape .chat-activity-card:not(.collapsed) .activity-header { display: none; }
+.fleet-chat-shape .activity-more { color: var(--text-dim, #666); font-size: 10px; font-weight: 300; }
+.fleet-chat-shape .activity-last-tool { color: var(--blue, #6c8aff); margin-left: 2px; font-weight: 400; }
+.fleet-chat-shape .activity-status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.fleet-chat-shape .interrupt-badge { color: var(--orange, #e88); }
+
+/* --- Tool run cards (inside activity) --- */
+.fleet-chat-shape .tool-run-card {
+  margin: 4px 0;
+  border: 1px solid rgba(128, 128, 128, 0.08);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
+}
+.fleet-chat-shape .tool-run-card .tool-run-body { padding: 3px 0; }
+.fleet-chat-shape .tool-run-card .tool-line {
+  padding: 0 6px;
+  line-height: 1.6;
+}
+
+/* --- Edit diffs --- */
+.fleet-chat-shape .edit-diff {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0;
+  font-size: 10px;
+}
+.fleet-chat-shape .diff-side {
+  flex: 1;
+  overflow-x: auto;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.fleet-chat-shape .diff-old { background: rgba(255, 80, 80, 0.08); }
+.fleet-chat-shape .diff-new { background: rgba(80, 255, 80, 0.08); }
+.fleet-chat-shape .diff-label {
+  font-weight: 600;
+  opacity: 0.5;
+  margin-right: 4px;
+}
+.fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
+.fleet-chat-shape .diff-side code { font-size: 10px; }
+.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: 10px; }
+
+/* --- Code cards (inside activity) --- */
+.fleet-chat-shape .code-block-wrap {
+  margin: 4px 0;
+  border: 1px solid rgba(128, 128, 128, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.fleet-chat-shape .chat-activity-card .code-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  font-size: 9px;
+  opacity: 0.5;
+}
+.fleet-chat-shape .code-block-wrap pre {
+  margin: 0;
+  padding: 4px 8px;
+  overflow-x: auto;
+  font-size: 10px;
+}
+.fleet-chat-shape .code-block-wrap pre.code-collapsed {
+  max-height: calc(10 * 1.4em);
+  overflow: hidden;
+}
+
+/* --- Document reference links --- */
+.fleet-chat-shape .doc-link {
+  color: var(--accent);
+  cursor: pointer;
+  border-bottom: 1px dotted var(--accent);
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .doc-link:hover {
+  opacity: 0.8;
+}
+.fleet-chat-shape .doc-link-unresolved {
+  color: inherit;
+  opacity: 0.5;
+  border-bottom-style: dashed;
+  cursor: default;
+}
+
+/* --- Document link hover preview --- */
+.fleet-chat-shape .doc-link-preview {
+  background: var(--surface, #161625);
+  border: 1px solid var(--border, #1e1e32);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  pointer-events: auto;
+}
+.fleet-chat-shape .doc-link-preview-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--accent, #9370db);
+  background: rgba(147, 112, 219, 0.06);
+  border-bottom: 1px solid var(--border, #1e1e32);
+}
+.fleet-chat-shape .doc-link-preview-page {
+  opacity: 0.5;
+  font-size: 8px;
+  font-weight: 400;
+}
+.fleet-chat-shape .doc-link-preview-clip {
+  background: #fff;
+}
+
+/* --- Fleet Agents Table --- */
+
+.fleet-agents-shape .fleet-agents-header {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  font-size: 8px;
+  font-weight: 500;
+  opacity: 0.35;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.fleet-agents-shape .fleet-agents-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+.fleet-agents-shape .fleet-agents-empty {
+  padding: 20px 8px;
+  opacity: 0.4;
+  text-align: center;
+  font-size: 9px;
+}
+
+.fleet-agents-shape .fleet-agents-footer {
+  height: 20px;
+  padding: 0 6px 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
+  font-size: 9px;
+  opacity: 0.4;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+.fleet-agents-shape:hover .fleet-agents-footer {
+  opacity: 0.7;
+}
+
+/* --- Agent row --- */
+
+.fleet-agents-shape .fleet-agents-row {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  transition: background 0.1s;
+}
+.fleet-agents-shape .fleet-agents-row:hover {
+  background: rgba(100, 140, 255, 0.05);
+}
+.fleet-agents-shape .fleet-agents-row.dimmed {
+  opacity: 0.4;
+}
+
+/* --- Column widths --- */
+
+.fleet-agents-shape .fleet-agents-col-name {
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+}
+
+.fleet-agents-shape .fleet-agents-col-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 9px;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-agents-shape .fleet-agents-col-labels {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 120px;
+  overflow: hidden;
+}
+
+.fleet-agents-shape .fleet-agents-col-seen {
+  width: 28px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  opacity: 0.4;
+  margin-right: 8px;
+}
+
+/* --- Draggable pills in table --- */
+
+.fleet-agents-shape .fleet-agents-pill {
+  touch-action: none;
+}
+
+.fleet-agents-shape .fleet-agents-label-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 2px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+  opacity: 0.75;
+}
+
+/* --- Section headers (stale) --- */
+
+.fleet-agents-shape .fleet-agents-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 8px;
+  font-weight: 600;
+  opacity: 0.3;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-top: 1px solid rgba(128, 128, 128, 0.06);
+  margin-top: 2px;
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-agents-shape .fleet-agents-section-toggle {
+  font-size: 7px;
+}
+.fleet-agents-shape .fleet-agents-section-count {
+  opacity: 0.6;
+}
+
+/* --- Respawn button --- */
+
+.fleet-agents-shape .fleet-agents-respawn-btn {
+  background: none;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  color: rgba(128,128,128,0.5);
+  font-size: 10px;
+  padding: 0 4px;
+  cursor: pointer;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  border-color: rgba(128,128,128,0.4);
+  color: rgba(128,128,128,0.7);
+}
+
+/* --- Unread dot --- */
+
+.fleet-agents-shape .fleet-agents-unread-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 4px;
+  background: transparent;
+  transition: background 0.2s;
+}
+.fleet-agents-shape .fleet-agents-unread-dot.active {
+  background: #7a9ec8;
+}
+
+/* --- Respawnable agent name --- */
+
+.fleet-agents-shape .fleet-agents-col-name.respawnable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+/* --- Spawn buttons --- */
+
+.fleet-agents-shape .fleet-agents-spawn-btns {
+  display: flex;
+  gap: 3px;
+}
+.fleet-agents-shape .fleet-agents-spawn-btn {
+  background: none;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  font-size: 8px;
+  padding: 0 4px;
+  line-height: 14px;
+  cursor: pointer;
+  opacity: 0.5;
+}
+.fleet-agents-shape .fleet-agents-spawn-btn:hover {
+  opacity: 1;
+  border-color: rgba(128,128,128,0.4);
+}
+
+/* --- Reference chips (dropped from drag) --- */
+
+.fleet-chat-shape .ref-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(147, 112, 219, 0.15);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: default;
+  border: 1px solid rgba(147, 112, 219, 0.2);
+}
+.fleet-chat-shape .ref-chip {
+  position: relative;
+}
+.fleet-chat-shape .ref-chip:hover {
+  background: rgba(147, 112, 219, 0.25);
+  border-color: rgba(147, 112, 219, 0.4);
+}
+.fleet-chat-shape .ref-chip .ref-chip-preview {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  max-width: 360px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface, #161625);
+  border: 1px solid var(--border, #1e1e32);
+  color: var(--text, #a8a8c0);
+  font-size: 10px;
+  font-weight: 300;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  z-index: 100;
+  pointer-events: none;
+}
+.fleet-chat-shape .ref-chip:hover .ref-chip-preview {
+  display: block;
+}
+
+/* Annotation chips use AnnotationViewer — suppress CSS tooltip */
+.fleet-chat-shape .ref-chip-annotation .ref-chip-preview,
+.fleet-chat-shape .ref-chip-annotation:hover .ref-chip-preview {
+  display: none !important;
+}
+
+/* Annotation chips — colored dot, location badge, clickable */
+.fleet-chat-shape .ref-chip-doc {
+  cursor: grab;
+  gap: 3px;
+  background: rgba(99, 160, 219, 0.15);
+  border-color: rgba(99, 160, 219, 0.25);
+  color: var(--accent);
+}
+.fleet-chat-shape .ref-chip-doc:hover {
+  background: rgba(99, 160, 219, 0.25);
+  border-color: rgba(99, 160, 219, 0.45);
+}
+.fleet-chat-shape .ref-chip-doc-icon {
+  font-size: 10px;
+  line-height: 1;
+}
+.fleet-chat-shape .ref-chip-annotation {
+  cursor: pointer;
+  gap: 3px;
+}
+.fleet-chat-shape .ref-chip-annotation:hover {
+  background: rgba(147, 112, 219, 0.3);
+  border-color: rgba(147, 112, 219, 0.5);
+}
+.fleet-chat-shape .ref-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .ref-chip-loc {
+  font-size: 8px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
+/* --- Input highlight underlay (mirrors textarea, highlights <<ref>> tokens) --- */
+
+.fleet-chat-shape .fleet-chat-input-underlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Must exactly match textarea: same padding, border, font */
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-family: inherit;
+  font-weight: 300;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  background: rgba(128, 128, 128, 0.08);
+  box-sizing: border-box;
+}
+.fleet-chat-shape .ref-chip-underlay {
+  background: rgba(147, 112, 219, 0.18);
+  border-radius: 3px;
+  padding: 0 0.6em 0 0.2em;
+  margin: 0 -0.6em 0 -0.2em;
+  color: transparent;
+}
+
+/* Thinking indicator */
+.chat-thinking {
+  font-style: italic;
+  font-size: 11px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.chat-thinking .thinking-text {
+  color: var(--text-dim, #888);
+}
+.chat-thinking .thinking-elapsed {
+  color: var(--text-dim, #888);
+  opacity: 0.5;
+  font-size: 10px;
+}
+
+/* =============================================================================
+   Pointer-events architecture
+   HTMLContainer: always pointer-events: all (content always interactive).
+   BrowseTool handles fleet shapes by passing events to DOM.
+   Layout button selects the shape for resize/move via tldraw.
+   When selected for drag (fleet-drag-mode), pointer-events on HTMLContainer
+   are disabled so clicks fall through to tldraw's canvas for drag/resize.
+   ============================================================================= */
+
+/* Drag mode — BrowseIdle adds this class to the shape wrapper when selected.
+   Apply to all descendants, not just the container — child elements with
+   explicit pointer-events:all (chips, buttons, etc.) would otherwise intercept
+   the click and start their own drag handlers instead of letting tldraw move
+   the whole shape. */
+.fleet-drag-mode .tl-html-container {
+  pointer-events: none !important;
+}
+
+/* Button group — always interactive even in drag mode */
+.fleet-shape .fleet-btn-group {
+  pointer-events: auto;
+}
+
+/* --- ClusterShape --- */
+
+.cluster-shape {
+  --bg: #0f0f1a;
+  --surface: #161625;
+  --text: #a8a8c0;
+  --text-dim: #8888a0;
+  --text-bright: #c0c0d4;
+  --border: #1e1e32;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-theme__light .cluster-shape {
+  --bg: #fafafa;
+  --surface: #f0f0f5;
+  --text: #444;
+  --text-dim: #888;
+  --text-bright: #222;
+  --border: #ddd;
+}
+
+.cluster-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  min-height: 20px;
+}
+
+.cluster-title {
+  color: var(--text-bright);
+  font-weight: 600;
+  flex: 1;
+  font-size: 9px;
+}
+
+.cluster-updated {
+  color: var(--text-dim);
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.cluster-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.cluster-refresh-btn:hover {
+  opacity: 1;
+}
+
+.cluster-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.cluster-empty,
+.cluster-error {
+  padding: 10px 8px;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-align: center;
+}
+.cluster-error {
+  color: #e55;
+}
+
+.cluster-row {
+  display: grid;
+  grid-template-columns: 1fr 32px 36px 52px 80px;
+  gap: 0;
+  padding: 2px 8px;
+  align-items: center;
+  min-height: 18px;
+}
+
+.cluster-row-header {
+  color: var(--text-dim);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.cluster-row-job {
+  cursor: pointer;
+  color: var(--text);
+  border-bottom: 1px solid rgba(128,128,128,0.05);
+  transition: background 0.1s;
+}
+.cluster-row-job:hover {
+  background: rgba(255,255,255,0.03);
+}
+.cluster-row-job.expanded {
+  background: rgba(255,255,255,0.04);
+}
+
+.cluster-col-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 4px;
+}
+.cluster-col-run,
+.cluster-col-pend,
+.cluster-col-done {
+  font-size: 8px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.cluster-user {
+  color: var(--text-dim);
+  font-size: 8px;
+  margin-right: 4px;
+}
+
+.cluster-progress-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+  width: 100%;
+}
+.cluster-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #7ab8a0;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.cluster-progress-label {
+  position: absolute;
+  right: 3px;
+  top: -1px;
+  font-size: 6px;
+  color: var(--text-dim);
+  line-height: 8px;
+}
+
+.cluster-log-file {
+  color: var(--text-dim);
+  font-size: 7.5px;
+  margin-bottom: 3px;
+  opacity: 0.6;
+}
+
+.cluster-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  color: var(--text-dim);
+  font-size: 8px;
+  cursor: pointer;
+  opacity: 0.6;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.cluster-section-header:hover {
+  opacity: 1;
+}
+.cluster-section-count {
+  opacity: 0.5;
+}
+
+.cluster-row-done {
+  opacity: 0.4;
+}
+
+.cluster-log-panel {
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid var(--border);
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.cluster-log-loading {
+  color: var(--text-dim);
+  font-size: 8px;
+  padding: 4px 0;
+}
+
+.cluster-log-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+  font-size: 7.5px;
+  line-height: 1.4;
+  font-family: inherit;
+}
+
+.cluster-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 8px;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+}
+.cluster-shape:hover .cluster-footer {
+  opacity: 1;
+}

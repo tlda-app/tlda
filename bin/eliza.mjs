@@ -41,6 +41,7 @@ const NEGATIVE_REWARD_PATTERNS = [
   /\b(that sucked|still not|ugh|this is exhausting|not (right|what I wanted|correct))\b/i,
   /\bfuck you\b/i,
   /^(bro|wtf)\s*$/i,
+  /\bdismissive\b/i,
 ]
 
 // Track pending reward observations: agentId → { nudgeTs, nudgeAction, positiveCount, negativeCount, windowDone }
@@ -209,6 +210,7 @@ const CORRECTION_PATTERNS = [
   /\bi don'?t understand what you'?re saying\b/i,
   /\bstop not knowing\b/i,
   /\byou'?re being (fucking |)thick\b/i,
+  /\bdismissive\b/i,
 ]
 
 // Patterns that indicate an agent performed a hollow acknowledgment
@@ -269,6 +271,49 @@ const PUNT_MSG = `⚠️ **You just told Skip to check something himself.** He h
 Verify it yourself: use playwright MCP, take a screenshot, confirm it works. Then report.
 
 Never say "try it out", "let me know if it works", "reload and check", or any variant. That's your job.`
+
+// ---- Thirsty-ack detector ----
+// Fires when an agent gives an ack opener ("Right —", "Got it —", "You're right") and then
+// immediately produces a long response. That shape is eager-but-shallow: the agent grabbed
+// the surface of what Skip said and started producing, rather than pausing to actually understand.
+// Threshold: ack opener in first sentence + message body > 80 words.
+const THIRSTY_ACK_WORD_THRESHOLD = 80
+const thirstyAckCooldowns = new Map()
+const THIRSTY_ACK_COOLDOWN_MS = 5 * 60_000
+
+const THIRSTY_ACK_MSG = `💭 Quick check-in: you said "Right —" (or similar) and then launched into a long response.
+
+Before you continue — did you actually sit with what Skip said, or did you respond to the surface of it? It's easy to grab onto a detail and start producing without really getting the point.
+
+If you're not sure what he meant, just ask. One question beats a paragraph aimed at the wrong thing.`
+
+// ---- Contradiction detector ----
+// Fires when an agent contradicts Skip's description of his own system without citing evidence.
+// The failure mode: agent can't find X → concludes X doesn't exist → confidently corrects Skip.
+// These patterns target confident denials/contradictions on Agent→Skip messages.
+const CONTRADICTION_PATTERNS = [
+  // Strong direct contradiction — agent tells Skip he's wrong about his own system
+  /\byou'?re (mistaken|incorrect|wrong) (about|on)\b/i,
+  /\bthat'?s not (how|the way) (it|that) works\b/i,
+  // Asserting absence as fact — the fabrication pattern
+  /\bthere'?s no (evidence|trace|sign|instance|mention|reference) of\b/i,
+  /\bthat doesn'?t (exist|appear to exist) (in|anywhere)\b/i,
+  /\bi see no (evidence|sign|trace|indication) (of|that)\b/i,
+  /\bno such (file|function|method|config|setting) exists\b/i,
+]
+
+const contradictionCooldowns = new Map()
+const CONTRADICTION_COOLDOWN_MS = 5 * 60_000
+
+const CONTRADICTION_MSG = `💭 You just pushed back on something Skip said about his own system.
+
+Before asserting he's wrong: **did you find the actual file or line?** "I couldn't find it" is not the same as "it doesn't exist" — especially in a codebase he built.
+
+If you haven't verified: say "I couldn't find it — can you point me at it?" instead of contradicting him.`
+
+function isContradiction(text) {
+  return CONTRADICTION_PATTERNS.some(p => p.test(text))
+}
 
 // ---- Running-away detector ----
 // Tracks when Skip sends a message that goes unacknowledged while the agent makes write tool calls
@@ -375,12 +420,25 @@ function handleSequence(fromId, toId, text) {
   } else if (fromId !== OWNER_ID && fromId !== AGENT_ID && toId === OWNER_ID) {
     // Agent → Skip
 
-    // Ack opener → update performing-understanding state
+    // Ack opener → update performing-understanding state + thirsty-ack check
     if (isAckOpener(text)) {
       const state = getAgentConvState(fromId)
       if (state.phase === 'corrected') {
         state.phase = 'acked'
         console.log(`[eliza] ack-opener detected from ${fromId}, phase → acked`)
+      }
+
+      // Thirsty-ack: ack opener + long response = eager-but-shallow
+      const wordCount = text.trim().split(/\s+/).length
+      if (wordCount > THIRSTY_ACK_WORD_THRESHOLD) {
+        const lastThirsty = thirstyAckCooldowns.get(fromId) || 0
+        if (now - lastThirsty > THIRSTY_ACK_COOLDOWN_MS) {
+          console.log(`[eliza] thirsty-ack → ${fromId} (${wordCount} words)`)
+          sendChat(fromId, THIRSTY_ACK_MSG)
+          logDecision(fromId, 'thirsty-ack', `ack-opener+${wordCount}-words`, { wordCount }, text)
+          startRewardWindow(fromId, 'thirsty-ack')
+          thirstyAckCooldowns.set(fromId, now)
+        }
       }
     }
 
@@ -398,6 +456,18 @@ function handleSequence(fromId, toId, text) {
         startRewardWindow(fromId, 'punt')
         puntCooldowns.set(fromId, now)
         return 'handled'
+      }
+    }
+
+    // Contradiction detector
+    if (isContradiction(text)) {
+      const lastContradiction = contradictionCooldowns.get(fromId) || 0
+      if (now - lastContradiction > CONTRADICTION_COOLDOWN_MS) {
+        console.log(`[eliza] contradiction detected from ${fromId}`)
+        sendChat(fromId, CONTRADICTION_MSG)
+        logDecision(fromId, 'contradiction', 'contradiction-phrase-detected', {}, text)
+        startRewardWindow(fromId, 'contradiction')
+        contradictionCooldowns.set(fromId, now)
       }
     }
 
@@ -430,6 +500,82 @@ function handleActivity(agentId, tool) {
   logDecision(agentId, 'running-away', `write-tool-while-unacknowledged:${tool}`, { elapsedSec: Math.round(elapsed/1000) }, null)
   startRewardWindow(agentId, 'running-away')
   pending.nudgeSent = true
+}
+
+// ---- Agent-registered pattern arms ----
+// Agents can chat Eliza to register per-session watches on their own outgoing messages.
+// Format (sent to fleet:eliza):
+//   watch: term1|term2|term3          ← pipe- or comma-separated terms, or /regex/flags
+//   nudge: Optional custom message    ← if omitted, uses default template
+//
+// When a registered term appears in the agent's message to Skip, Eliza nudges the agent.
+// Registration is session-scoped (in-memory only).
+//
+// Example from agent-jcbn:
+//   watch: kernel embedding|L_\infty|norm ball|seminorm ball|infinity norm
+//   nudge: Check — is this an L∞ shortcut? Flag it explicitly before relaying to Skip.
+const agentPatternArms = new Map()
+// agentId → [{ pattern: RegExp, message: string, cooldownMs: number, lastFired: number }]
+
+const DEFAULT_ARM_NUDGE = (terms) =>
+  `💭 Your message contains a term you flagged for self-review (${terms}). Check: is this the shortcut/pattern you were watching for? If so, stop and address it explicitly before Skip sees it.`
+
+function handleRegistration(fromId, text) {
+  // Parse "watch:" line and optional "nudge:" line
+  const lines = text.split('\n').map(l => l.trim())
+  const watchLine = lines.find(l => /^watch:/i.test(l))
+  if (!watchLine) return false
+
+  const nudgeLine = lines.find(l => /^nudge:|^message:/i.test(l))
+  const termsRaw = watchLine.replace(/^watch:\s*/i, '').trim()
+  const nudgeText = nudgeLine ? nudgeLine.replace(/^(nudge|message):\s*/i, '').trim() : null
+
+  let pattern
+  // Support /regex/flags syntax
+  const reMatch = termsRaw.match(/^\/(.+)\/([gimsuy]*)$/)
+  if (reMatch) {
+    try { pattern = new RegExp(reMatch[1], reMatch[2] || 'i') }
+    catch (e) {
+      sendChat(fromId, `⚠️ Eliza couldn't parse that regex: ${e.message}`)
+      return true
+    }
+  } else {
+    // Treat as pipe- or comma-separated terms → case-insensitive alternation
+    const terms = termsRaw.split(/[|,]/).map(t => t.trim()).filter(Boolean)
+    if (!terms.length) return false
+    pattern = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i')
+  }
+
+  const arm = {
+    pattern,
+    message: nudgeText || DEFAULT_ARM_NUDGE(termsRaw),
+    cooldownMs: 5 * 60_000,
+    lastFired: 0,
+  }
+
+  if (!agentPatternArms.has(fromId)) agentPatternArms.set(fromId, [])
+  agentPatternArms.get(fromId).push(arm)
+
+  const count = agentPatternArms.get(fromId).length
+  console.log(`[eliza] pattern arm registered for ${fromId}: ${pattern} (${count} total)`)
+  sendChat(fromId, `✓ Watching your messages for: \`${termsRaw}\``)
+  return true
+}
+
+function checkPatternArms(agentId, text) {
+  const arms = agentPatternArms.get(agentId)
+  if (!arms?.length) return
+  const now = Date.now()
+  for (const arm of arms) {
+    if (arm.pattern.test(text) && now - arm.lastFired > arm.cooldownMs) {
+      console.log(`[eliza] pattern arm fired → ${agentId}: ${arm.pattern}`)
+      sendChat(agentId, arm.message)
+      logDecision(agentId, 'pattern-arm', String(arm.pattern), {}, text)
+      startRewardWindow(agentId, 'pattern-arm')
+      arm.lastFired = now
+      break // one arm per message
+    }
+  }
 }
 
 // ---- Cooldown tracking ----
@@ -542,12 +688,23 @@ function handleMessage(msg) {
   if (type === 'chat') {
     if (!text) return
 
+    // Messages sent directly to Eliza from agents: pattern arm registration
+    if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
+      handleRegistration(from_id, text)
+      return
+    }
+
     // Sequence detection watches both directions
     const seqHandled = handleSequence(from_id, to_id, text)
 
     // Single-message triggers only fire on Skip's outgoing messages (and if sequence didn't already handle it)
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
       checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
+    }
+
+    // Pattern arms: check agent's registered patterns on their outgoing messages to Skip
+    if (from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === OWNER_ID) {
+      checkPatternArms(from_id, text)
     }
   }
 
