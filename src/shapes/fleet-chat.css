@@ -1906,6 +1906,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: rgba(200, 100, 60, 0.2);
   border-color: rgba(200, 100, 60, 0.5);
 }
+.fleet-chat-shape .att-upload-failed {
+  color: rgba(220, 130, 80, 0.9);
+  font-size: 9px;
+  font-style: italic;
+}
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;
   gap: 3px;
