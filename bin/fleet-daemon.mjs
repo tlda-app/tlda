@@ -982,6 +982,69 @@ function flushSourceChanges(projectName) {
   })
 }
 
+// ---------- Backing file watchers ----------
+// The server sends `watch-backing-files` with the current set of files to watch.
+// When a file changes, we read it and send `file-content-changed`.
+// When we write a file (via RPC), we suppress the next watcher event for it.
+
+/** @type {Map<string, {watcher: import('fs').FSWatcher, docNames: string[], lastWriteAt: number}>} */
+const backingWatchers = new Map()
+
+/** Expand ~ in file paths */
+function expandHome(p) {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+}
+
+function syncBackingWatchers(files) {
+  // files = [{filePath: string, docNames: string[]}]
+  const incoming = new Map(files.map(f => [expandHome(f.filePath), f.docNames]))
+
+  // Remove watchers for files no longer in the list
+  for (const [fp, entry] of [...backingWatchers]) {
+    if (!incoming.has(fp)) {
+      try { entry.watcher.close() } catch {}
+      backingWatchers.delete(fp)
+    }
+  }
+
+  // Add watchers for new files
+  for (const [fp, docNames] of incoming) {
+    if (backingWatchers.has(fp)) {
+      backingWatchers.get(fp).docNames = docNames
+      continue
+    }
+    try {
+      let debounce = null
+      const watcher = fs.watch(fp, { persistent: false }, () => {
+        const entry = backingWatchers.get(fp)
+        if (!entry) return
+        if (Date.now() - entry.lastWriteAt < 2000) return  // suppress echo from own write
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(() => {
+          try {
+            const content = fs.readFileSync(fp, 'utf8')
+            sendMsg({ type: 'file-content-changed', filePath: fp, content })
+          } catch (e) {
+            console.warn(`[daemon] read backing file ${fp}: ${e.message}`)
+          }
+        }, 200)
+      })
+      backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
+    } catch (e) {
+      console.warn(`[daemon] watch backing file ${fp}: ${e.message}`)
+    }
+  }
+}
+
+async function rpcWriteBackingFile({ filePath, content }) {
+  const fp = expandHome(filePath)
+  // Record write time before writing to suppress the watcher echo
+  const entry = backingWatchers.get(fp)
+  if (entry) entry.lastWriteAt = Date.now()
+  fs.writeFileSync(fp, content ?? '', 'utf8')
+  return { ok: true }
+}
+
 // ---------- RPC handlers (server → daemon) ----------
 //
 // Each handler receives the params object from the inbound `rpc`
@@ -1530,6 +1593,7 @@ const RPC_HANDLERS = {
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,
+  'write-backing-file': rpcWriteBackingFile,
 }
 
 async function handleRpc(msg) {
@@ -1577,6 +1641,8 @@ function teardownWatchers() {
   sourceWatchers.clear()
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
+  for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
+  backingWatchers.clear()
 }
 
 function connect() {
@@ -1678,6 +1744,10 @@ function handleServerMessage(msg) {
     teardownWatchers()
     try { ws.close() } catch {}
     scheduleReconnect()
+    return
+  }
+  if (msg.type === 'watch-backing-files') {
+    syncBackingWatchers(msg.files || [])
     return
   }
   if (msg.type === 'rpc') {
