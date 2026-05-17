@@ -176,6 +176,18 @@ function globToRegex(glob) {
   return new RegExp('^' + withAlts + '$')
 }
 
+// Derive the virtual skill key from a skill SKILL.md path, e.g.
+// ~/.claude/skills/writing/SKILL.md → 'skill:writing'
+function skillKeyFromPath(resolvedPath) {
+  const home = os.homedir()
+  const skillsDir = path.join(home, '.claude', 'skills')
+  if (!resolvedPath.startsWith(skillsDir + path.sep)) return null
+  const rel = resolvedPath.slice(skillsDir.length + 1) // e.g. 'writing/SKILL.md'
+  const parts = rel.split(path.sep)
+  if (parts.length === 2 && parts[1] === 'SKILL.md') return 'skill:' + parts[0]
+  return null
+}
+
 function checkQualification(agentId, toolName, filePath) {
   if (!filePath || _qualRules.length === 0) return
   if (toolName !== 'Edit' && toolName !== 'Write') return
@@ -183,7 +195,6 @@ function checkQualification(agentId, toolName, filePath) {
   // Normalize path for matching — strip leading home dir for glob matching
   const home = os.homedir()
   const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
-  // Also try matching against the full path
   const reads = _agentReads.get(agentId) || new Set()
   const warned = _agentWarned.get(agentId) || new Set()
 
@@ -191,7 +202,10 @@ function checkQualification(agentId, toolName, filePath) {
     if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
     for (const req of rule.requires) {
       const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
+      // Satisfied by a literal Read of the file OR by invoking the corresponding skill
+      const skillKey = skillKeyFromPath(resolvedReq)
       if (reads.has(resolvedReq)) continue
+      if (skillKey && reads.has(skillKey)) continue
       const warnKey = `${filePath}:${resolvedReq}`
       if (warned.has(warnKey)) continue
       warned.add(warnKey)
@@ -968,6 +982,69 @@ function flushSourceChanges(projectName) {
   })
 }
 
+// ---------- Backing file watchers ----------
+// The server sends `watch-backing-files` with the current set of files to watch.
+// When a file changes, we read it and send `file-content-changed`.
+// When we write a file (via RPC), we suppress the next watcher event for it.
+
+/** @type {Map<string, {watcher: import('fs').FSWatcher, docNames: string[], lastWriteAt: number}>} */
+const backingWatchers = new Map()
+
+/** Expand ~ in file paths */
+function expandHome(p) {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+}
+
+function syncBackingWatchers(files) {
+  // files = [{filePath: string, docNames: string[]}]
+  const incoming = new Map(files.map(f => [expandHome(f.filePath), f.docNames]))
+
+  // Remove watchers for files no longer in the list
+  for (const [fp, entry] of [...backingWatchers]) {
+    if (!incoming.has(fp)) {
+      try { entry.watcher.close() } catch {}
+      backingWatchers.delete(fp)
+    }
+  }
+
+  // Add watchers for new files
+  for (const [fp, docNames] of incoming) {
+    if (backingWatchers.has(fp)) {
+      backingWatchers.get(fp).docNames = docNames
+      continue
+    }
+    try {
+      let debounce = null
+      const watcher = fs.watch(fp, { persistent: false }, () => {
+        const entry = backingWatchers.get(fp)
+        if (!entry) return
+        if (Date.now() - entry.lastWriteAt < 2000) return  // suppress echo from own write
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(() => {
+          try {
+            const content = fs.readFileSync(fp, 'utf8')
+            sendMsg({ type: 'file-content-changed', filePath: fp, content })
+          } catch (e) {
+            console.warn(`[daemon] read backing file ${fp}: ${e.message}`)
+          }
+        }, 200)
+      })
+      backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
+    } catch (e) {
+      console.warn(`[daemon] watch backing file ${fp}: ${e.message}`)
+    }
+  }
+}
+
+async function rpcWriteBackingFile({ filePath, content }) {
+  const fp = expandHome(filePath)
+  // Record write time before writing to suppress the watcher echo
+  const entry = backingWatchers.get(fp)
+  if (entry) entry.lastWriteAt = Date.now()
+  fs.writeFileSync(fp, content ?? '', 'utf8')
+  return { ok: true }
+}
+
 // ---------- RPC handlers (server → daemon) ----------
 //
 // Each handler receives the params object from the inbound `rpc`
@@ -1516,6 +1593,7 @@ const RPC_HANDLERS = {
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,
+  'write-backing-file': rpcWriteBackingFile,
 }
 
 async function handleRpc(msg) {
@@ -1563,6 +1641,8 @@ function teardownWatchers() {
   sourceWatchers.clear()
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
+  for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
+  backingWatchers.clear()
 }
 
 function connect() {
@@ -1664,6 +1744,10 @@ function handleServerMessage(msg) {
     teardownWatchers()
     try { ws.close() } catch {}
     scheduleReconnect()
+    return
+  }
+  if (msg.type === 'watch-backing-files') {
+    syncBackingWatchers(msg.files || [])
     return
   }
   if (msg.type === 'rpc') {

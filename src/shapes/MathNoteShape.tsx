@@ -215,6 +215,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     collapsed: T.optional(T.boolean),
     docName: T.optional(T.string),
     docView: T.optional(T.boolean),
+    backingFile: T.optional(T.string),
   }
 
   getDefaultProps() {
@@ -403,6 +404,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const interval = setInterval(poll, 3000)
       return () => clearInterval(interval)
     }, [docName, shape.id, editor])
+
+    // Backing file: write to file when exiting editing
+    const backingFile = shape.props.backingFile as string | undefined
+    useEffect(() => {
+      if (isEditing || !backingFile) return
+      const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+      fetch('/api/backing-file-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: backingFile, content }),
+      }).catch(() => {})
+    }, [isEditing])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(

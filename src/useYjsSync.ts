@@ -243,6 +243,14 @@ const sharedDocHandle = bus.register<SharedDocSignal>({
 })
 export const onSharedDocSignal = sharedDocHandle.on
 
+export type FileUpdatedSignal = {
+  filePath: string   // absolute path on the author's machine
+  content: string    // current file contents
+  timestamp: number
+}
+const fileUpdatedHandle = bus.register<FileUpdatedSignal>({ key: 'signal:file-updated' })
+export const onFileUpdatedSignal = fileUpdatedHandle.on
+
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.
  * Also caches locally and dispatches to the signal bus so own UI reacts.

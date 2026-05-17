@@ -1,0 +1,110 @@
+\newif\ifarXiv
+\newif\ifappendix
+\arXivfalse
+\appendixtrue
+
+\ifarXiv
+\documentclass{article} 
+\usepackage{amsthm, amssymb}
+\usepackage[table,x11names,html]{xcolor}
+\usepackage{graphicx}
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+\newcommand{\inthesupplement}{}
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{remark}{Remark}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+
+%% Author stuff
+\makeatletter
+\newcommand{\myfnsymbol}[1]{%
+  \expandafter\@myfnsymbol\csname c@#1\endcsname
+}
+\newcommand{\@myfnsymbol}[1]{%
+  \ifcase #1
+    % 0
+  \or 1% 1
+  \or 2% 2
+  \or 3
+  \or 4
+  \fi
+}
+\newcommand{\affiliationA}{\@myfnsymbol{1}}
+\newcommand{\affiliationB}{\@myfnsymbol{2}}
+\newcommand{\affiliationC}{\@myfnsymbol{3}}
+\newcommand{\affiliationD}{\@myfnsymbol{4}}
+\author{
+  David A. Hirshberg\textsuperscript{\affiliationA}, 
+  Michele Santacatterina\textsuperscript{\affiliationB}, \\
+  Khiem Pham\textsuperscript{\affiliationC},
+  Ser-Nam Lim\textsuperscript{\affiliationD},
+  Ramin Zabih\textsuperscript{\affiliationC}
+}
+
+\else
+
+\documentclass[lineno]{biometrika}
+\bibliographystyle{biometrika}
+\usepackage{newtxtext}
+\usepackage[table,x11names,html]{xcolor}
+\usepackage[subscriptcorrection]{newtxmath}
+\newcommand{\inthesupplement}{ in the supplement}
+\newcommand{\paragraph}[1]{\textbf{#1}. }
+
+\author{David A. Hirshberg}
+\affil{Department of Quantitative Theory and Methods, Emory University, \\ 
+Atlanta, GA, 30322 \email{davidahirshberg@emory.edu}
+}
+
+\author{Michele Santacatterina}
+\affil{Department of Population Health,
+New York University School of Medicine,\\ 
+New York, NY, 10016
+\email{santam13@nyu.edu}
+}
+
+\author{Ser-Nam Lim}
+\affil{Department of Computer Science, University Central Florida,\\ Orlando, FL 32816
+\email{sernam@gmail.com}}
+
+\author{Khiem Pham and Ramin Zabih}
+\affil{Department of Computer Science, Cornell University,\\  Ithaca, NY 14853
+\email{dkp45@cornell.edu},\email{rdz@cs.cornell.edu}}
+
+
+
+\fi 
+
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{placeins}
+
+% For appendix propositions with primed numbers matching body propositions
+\newenvironment{propositionprime}[1]{%
+  \par\medskip\noindent\textbf{Proposition #1$'$.}\itshape\space
+}{%
+  \par\medskip
+}
+
+\DeclareMathOperator{\E}{E}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator*{\argmin}{argmin}
+
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert} 
+\newcommand{\inner}[1]{\left\langle #1 \right\rangle}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert} 
+\newcommand{\smallinner}[1]{\langle #1 \rangle}
+\newcommand{\smallnorm}[1]{\lVert #1 \rVert}
+\newcommand{\smallabs}[1]{\lvert #1 \rvert}
+
+\newcommand{\td}{\tilde}
+\newcommand{\one}{1}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\hgamma}{\hat\gamma} 
+\newcommand{\hlambda}{\hat\lambda}
+\newcommand{\estimand}{\psi}
+\newcommand{\F}{\mathcal{F}}
+\newcommand{\Fr}{\F_r}

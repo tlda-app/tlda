@@ -58,6 +58,7 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
@@ -290,9 +291,7 @@ export function renderChatLine(m, ctx) {
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
-      if (att.broken) {
-        return `<span class="ref-chip ref-chip-broken" data-path="${filePath}" title="File not found: ${filePath}"><span class="ref-chip-doc-icon">\u26A0</span>${name}</span>`
-      }
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) {

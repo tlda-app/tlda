@@ -42,7 +42,7 @@ import { initProjectStore, listProjects, readProject, getProjectsDir } from './l
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
@@ -666,7 +666,7 @@ app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', (req, res) => {
-  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
+  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
@@ -712,6 +712,67 @@ app.get('/api/local-image', requireRead, (req, res) => {
   res.set('Content-Type', mimeType)
   res.set('Cache-Control', 'public, max-age=3600')
   res.sendFile(resolve(expanded), { dotfiles: 'allow' })
+})
+
+// ---------- Backing file registry ----------
+// Maps filePath → Set of docNames. Server tells daemon which files to watch.
+// Registry is in-memory; rebuilt from room shapes on daemon connect.
+
+/** @type {Map<string, Set<string>>} filePath → Set<docName> */
+const backingFileRegistry = new Map()
+
+function backingFileRegister(filePath, docName) {
+  if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())
+  backingFileRegistry.get(filePath).add(docName)
+  sendWatchBackingFiles()
+}
+
+function sendWatchBackingFiles() {
+  if (daemonConnections.size === 0) return
+  const files = [...backingFileRegistry.entries()].map(([filePath, docNames]) => ({
+    filePath, docNames: [...docNames],
+  }))
+  for (const [, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch {}
+  }
+}
+
+// Rebuild registry from room shapes when daemon connects.
+async function rebuildBackingFileRegistry() {
+  backingFileRegistry.clear()
+  for (const docName of listActiveRooms()) {
+    try {
+      const shapes = await getRoomRecords(docName, 'math-note')
+      for (const shape of shapes) {
+        if (shape.props?.backingFile) {
+          backingFileRegister(shape.props.backingFile, docName)
+        }
+      }
+    } catch {}
+  }
+}
+
+// POST /api/backing-file-register — client registers a backing file watch
+app.post('/api/backing-file-register', requireRead, (req, res) => {
+  const { filePath, docName } = req.body || {}
+  if (!filePath || !docName) return res.status(400).json({ error: 'Missing filePath or docName' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  backingFileRegister(expanded, docName)
+  res.json({ ok: true })
+})
+
+// POST /api/backing-file-write — write content to a file via daemon RPC
+app.post('/api/backing-file-write', requireRead, async (req, res) => {
+  const { filePath, content } = req.body || {}
+  if (!filePath) return res.status(400).json({ error: 'Missing filePath' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  try {
+    await sendRpc(LOCAL_MACHINE_ID, 'write-backing-file', { filePath: expanded, content: content ?? '' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(503).json({ error: e.message })
+  }
 })
 
 // ---------- Doc asset serving ----------
@@ -1380,7 +1441,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'store-agents') {
-    reply(fleetStore.getAllAgents())
+    reply(fleetStore.getAliveAgents())
     return
   }
 
@@ -1444,9 +1505,8 @@ async function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over all agents using the same label set the MCP `chat()` uses:
-    // agent.labels + virtual (awake/hibernating) + friendly_name + id.
-    const allAgents = fleetStore.getAllAgents?.() || []
+    // Resolve DNF over all alive agents using labels + virtual + friendly_name + id.
+    const allAgents = fleetStore.getAliveAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
@@ -2324,6 +2384,8 @@ function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
     }
+    // Rebuild backing file registry from current rooms and push watch list to daemon.
+    rebuildBackingFileRegistry().then(() => sendWatchBackingFiles()).catch(() => {})
     return
   }
 
@@ -2495,6 +2557,17 @@ function handleDaemonWsMessage(ws, msg) {
     }).catch(e => {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
     })
+    return
+  }
+
+  if (type === 'file-content-changed') {
+    const { filePath, content } = msg
+    if (!filePath) return
+    const docNames = backingFileRegistry.get(filePath)
+if (!docNames || docNames.size === 0) return
+    for (const docName of docNames) {
+      broadcastSignal(docName, 'signal:file-updated', { filePath, content: content ?? '' })
+    }
     return
   }
 

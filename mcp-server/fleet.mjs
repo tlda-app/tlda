@@ -1599,6 +1599,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       warning = '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
     }
 
+    const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
+    if (brokenFiles.length) {
+      warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
+    }
+
     return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${warning}` }] };
   }
 
@@ -3756,7 +3761,8 @@ const COMPACTING_RE = /Compacting conversation/;
 // scraping stale "Thinking…" text from scrollback.
 const THINKING_SCAN_LINES = 40;
 // Approval prompt patterns — check last 15 lines only to avoid matching tool output
-const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)/i;
+// Covers: TUI radio-button (○ Allow once), y/n inline, and numbered-choice (Esc to cancel · Tab to amend)
+const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*·\s*Tab to amend/i;
 const APPROVAL_PROMPT_SCAN_LINES = 15;
 let _tmuxSession = null;
 let _wasThinking = false;
