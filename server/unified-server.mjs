@@ -666,7 +666,7 @@ app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', (req, res) => {
-  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
+  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
