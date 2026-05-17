@@ -11,13 +11,15 @@
 .build-warning-badge {
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(0, 0, 0, 0.1);
+  color: var(--pill-icon-color, rgba(0, 0, 0, 1));
   cursor: pointer;
-  transition: color 0.3s;
+  opacity: 0.15;
+  transition: color 0.3s, opacity 0.3s;
 }
 
 .build-warning-badge:hover {
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--pill-icon-color-hover, rgba(0, 0, 0, 1));
+  opacity: 0.5;
 }
 
 /* Popup list */
@@ -71,11 +73,11 @@
 
 /* Dark mode */
 html[data-theme="dark"] .build-warning-badge {
-  color: rgba(255, 255, 255, 0.1);
+  color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
 html[data-theme="dark"] .build-warning-badge:hover {
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--pill-icon-color-hover, rgba(255, 255, 255, 1));
 }
 
 html[data-theme="dark"] .build-warning-list {

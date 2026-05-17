@@ -55,21 +55,10 @@ body.fog-dark-mode .scrolly-figure-wrap {
   background: #1a2024;
 }
 
-/* Bottom-row buttons: canvas is dark so buttons need light colors */
-body.fog-dark-mode .build-warning-badge {
-  color: rgba(255, 255, 255, 0.1);
-}
-body.fog-dark-mode .build-warning-badge:hover {
-  color: rgba(255, 255, 255, 0.6);
-}
-body.fog-dark-mode .fleet-icon-pill-badge {
-  color: white;
-}
-body.fog-dark-mode .phone-hl-btn {
-  color: rgba(255, 255, 255, 0.5);
-}
-body.fog-dark-mode .voice-note-btn {
-  color: rgba(255, 255, 255, 0.5);
+/* Bottom-row icon color — fog-dark canvas needs light icons */
+body.fog-dark-mode {
+  --pill-icon-color: rgba(255, 255, 255, 1);
+  --pill-icon-color-hover: rgba(255, 255, 255, 1);
 }
 
 /* Teal dark — toolbar/panel overrides */
@@ -181,25 +170,10 @@ body.fog-light-mode .scrolly-figure-wrap {
   background: #d2dfe3;
 }
 
-/* Bottom-row buttons: fog-light canvas needs deeper/colored icons for contrast */
-body.fog-light-mode .build-warning-badge {
-  color: rgba(0, 40, 55, 0.5);
-}
-body.fog-light-mode .build-warning-badge:hover {
-  color: rgba(0, 40, 55, 0.9);
-}
-body.fog-light-mode .fleet-icon-pill-badge {
-  color: rgba(0, 40, 55, 1);
-  opacity: 0.4;
-}
-body.fog-light-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.15;
-}
-body.fog-light-mode .phone-hl-btn {
-  color: rgba(0, 40, 55, 0.8);
-}
-body.fog-light-mode .voice-note-btn {
-  color: rgba(0, 40, 55, 0.8);
+/* Bottom-row icon color — fog-light canvas needs deep-teal icons */
+body.fog-light-mode {
+  --pill-icon-color: rgba(0, 40, 55, 1);
+  --pill-icon-color-hover: rgba(0, 40, 55, 1);
 }
 
 /* Teal light — toolbar/panel glass */
@@ -278,23 +252,8 @@ body.fog-light-mode .book-tab--active {
 /* Warm mode — off-white canvas, warm undertone                       */
 /* ------------------------------------------------------------------ */
 
-/* Bottom-row buttons: off-white canvas needs stronger dark colors */
-body.warm-mode .build-warning-badge {
-  color: rgba(0, 0, 0, 0.35);
-}
-body.warm-mode .build-warning-badge:hover {
-  color: rgba(0, 0, 0, 0.75);
-}
-body.warm-mode .fleet-icon-pill-badge {
-  color: rgba(40, 20, 0, 1);
-  opacity: 0.3;
-}
-body.warm-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.12;
-}
-body.warm-mode .phone-hl-btn {
-  color: rgba(0, 0, 0, 0.6);
-}
-body.warm-mode .voice-note-btn {
-  color: rgba(0, 0, 0, 0.75);
+/* Bottom-row icon color — warm canvas needs dark-warm icons */
+body.warm-mode {
+  --pill-icon-color: rgba(40, 20, 0, 1);
+  --pill-icon-color-hover: rgba(40, 20, 0, 1);
 }
