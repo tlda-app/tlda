@@ -71,11 +71,13 @@
   pointer-events: auto !important;
 }
 /* In layout/drag mode (fleet-drag-mode on the shape), disable pointer-events
-   on shape content so clicks pass through to TLDraw's canvas — enabling drag.
-   This needs higher specificity than the fleet-shape auto rule above (0,4,0)
-   so it actually wins. Keep fleet-btn-group interactive so the ⊞ / × buttons work. */
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .tl-html-container,
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .tl-html-container * {
+   on the fleet shape CONTENT so clicks reach the .tl-html-container, which
+   TLDraw uses as the event target for shape hit-testing. The .tl-html-container
+   itself must keep pointer-events: auto — without it, events pass through to
+   .tl-canvas and TLDraw dispatches target:"canvas" instead of target:"shape",
+   preventing drag/translate. */
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .fleet-shape,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .fleet-shape * {
   pointer-events: none !important;
 }
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape.fleet-drag-mode .fleet-btn-group,
@@ -93,6 +95,12 @@
    click-to-deselect work on empty areas. Without this, clicks on empty
    canvas pass through to the main editor. */
 .fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
+  pointer-events: auto !important;
+}
+/* Layout mode: re-enable pointer-events on tldraw selection overlays so
+   shapes can be dragged/resized. fleet-chat.css disables these globally
+   in the HUD to prevent event interception during normal browsing. */
+.fleet-hud-wrap.hud-layout-active .fleet-hud .tl-overlays__item {
   pointer-events: auto !important;
 }
 
