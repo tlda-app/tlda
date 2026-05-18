@@ -3,6 +3,12 @@
   inset: 0;
 }
 
+/* Pan mode: override cursor to grab when active */
+body.tlda-pan-mode,
+body.tlda-pan-mode * {
+  cursor: grab !important;
+}
+
 /* Canvas background */
 .tl-background {
   background-color: white !important;

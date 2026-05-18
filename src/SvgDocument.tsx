@@ -50,7 +50,7 @@ import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
@@ -94,10 +94,11 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme } from './hooks/useFleetTheme'
+import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
+import { usePanMode } from './hooks/usePanMode'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
@@ -282,46 +283,86 @@ function ViewPinBadge({ docName }: { docName: string }) {
 const MAX_VISIBLE_VERSIONS = 5
 
 function VersionStamp({ docName }: { docName: string }) {
-  const [versions, setVersions] = useState<Array<{ hash: string; timestamp: string | number }>>([])
+  const editor = useEditor()
+  const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
+  const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
   const [activeIdx, setActiveIdx] = useState(0)
+  const [hovering, setHovering] = useState(false)
+  const lastReloadAtRef = useRef<number>(0)
+  const prevHashRef = useRef<string | null>(null)
 
-  const fetchVersions = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/projects/${docName}/history/shadow`)
-      if (!res.ok) return
-      const raw = await res.json()
-      const data: Array<{ hash: string; timestamp: number }> = raw.versions || raw
-      if (!data || data.length === 0) return
-      setVersions(data.slice(0, MAX_VISIBLE_VERSIONS))
-      setActiveIdx(0)
-    } catch {}
-  }, [docName])
-
-  useEffect(() => { fetchVersions() }, [fetchVersions])
+  // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
+  // Yjs is convergent: reconnecting always delivers the latest state.
   useEffect(() => {
-    return onBuildStatusSignal(() => { setTimeout(fetchVersions, 1000) })
-  }, [fetchVersions])
+    if (!editor) return
+    const read = () => {
+      const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId)
+      const p = (s as any)?.props
+      if (!p?.commitHash || p.commitHash === 'unknown') return null
+      return { commitHash: p.commitHash as string, buildReadyAt: (p.buildReadyAt || p.timestamp || 0) as number }
+    }
+    const v = read()
+    if (v) {
+      setSentinel(v)
+      // Baseline: treat current build as already-reloaded on first mount
+      if (lastReloadAtRef.current === 0) lastReloadAtRef.current = v.buildReadyAt
+    }
+    return editor.store.listen(() => {
+      const v = read()
+      if (v) setSentinel(v)
+    }, { source: 'remote', scope: 'all' })
+  }, [editor])
 
-  const handleClick = useCallback(async (idx: number) => {
-    if (idx === 0) return // index 0 = most recent build, dismiss handled by scrubber
-    const v = versions[idx]
+  // When the commit hash changes: fetch version history + check for missed reload.
+  useEffect(() => {
+    if (!sentinel?.commitHash || sentinel.commitHash === prevHashRef.current) return
+    prevHashRef.current = sentinel.commitHash
+
+    fetch(`/api/projects/${docName}/history/shadow`)
+      .then(r => r.ok ? r.json() : null)
+      .then(raw => {
+        const data: Array<{ hash: string; timestamp: number }> = raw?.versions || raw
+        if (data?.length > 0) { setHistory(data.slice(0, MAX_VISIBLE_VERSIONS)); setActiveIdx(0) }
+      }).catch(() => {})
+
+    // If SVGs were ready but we missed the reload signal, trigger a reload now.
+    if (lastReloadAtRef.current > 0 && sentinel.buildReadyAt > lastReloadAtRef.current + 5000) {
+      dispatchSignalDirect('signal:reload', { type: 'full', timestamp: Date.now() })
+    }
+  }, [sentinel?.commitHash, docName])
+
+  // Track reload signals to detect misses.
+  useEffect(() => {
+    return onReloadSignal(sig => { lastReloadAtRef.current = sig.timestamp })
+  }, [])
+
+  const handleClick = useCallback((idx: number) => {
+    if (idx === 0) return
+    const v = history[idx]
     if (!v) return
-    // Activate shadow column for this version using the time-axis scrubber
     ;(window as any).__shadowScrubVersion?.(v)
     setActiveIdx(idx)
-  }, [versions])
+  }, [history])
 
-  if (versions.length === 0) return null
+  if (!sentinel) return null
+
+  // Use history if loaded; fall back to a single synthetic entry from the sentinel.
+  const display: Array<{ hash: string; timestamp: number }> = history.length > 0
+    ? history
+    : [{ hash: sentinel.commitHash, timestamp: sentinel.buildReadyAt }]
 
   return (
     <div
       className="version-stamp"
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={e => e.stopPropagation()}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
     >
-      {/* Current version at top, older versions fading downward. */}
-      {versions.map((v, i) => {
+      {display.map((v, i) => {
+        // Most recent entry: use buildReadyAt (when SVGs were published) not git commit time
+        const ts = i === 0 ? sentinel.buildReadyAt || v.timestamp : v.timestamp
         const hash7 = v.hash.slice(0, 7)
-        const time = new Date(v.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        const time = new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
         const isActive = i === activeIdx
         const baseOpacity = isActive ? 0.7 : Math.max(0.08, 0.35 - i * 0.07)
         return (
@@ -330,9 +371,9 @@ function VersionStamp({ docName }: { docName: string }) {
             className={`version-stamp-entry${isActive ? ' active' : ''}`}
             style={{ opacity: baseOpacity }}
             onClick={() => handleClick(i)}
-            title={`${hash7} — ${new Date(v.timestamp).toLocaleString()}`}
+            title={`${hash7} — ${new Date(ts).toLocaleString()}`}
           >
-            {time}{i === 0 && <span className="version-stamp-hash"> · {hash7}</span>}
+            {time}{hovering && i === 0 && <span className="version-stamp-hash"> · {hash7}</span>}
           </div>
         )
       })}
@@ -527,6 +568,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     hissEnabled,
   })
 
+  // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
+  usePanMode(editorRef)
+
   useYjsSignals({
     editorRef, document,
     diffDataRef, setDiffFetchSeq,
@@ -573,6 +617,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const buildWarnings = useMemo(() => [...texWarnings, ...remapWarnings], [texWarnings, remapWarnings])
 
+  // File-backed notes: update shape text when the backing file changes on disk
+  useEffect(() => {
+    return onFileUpdatedSignal((signal) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const shapes = editor.getCurrentPageShapes() as any[]
+      for (const shape of shapes) {
+        if (shape.type !== 'math-note') continue
+        if (shape.props.backingFile !== signal.filePath) continue
+        if (shape.props.text === signal.content) continue  // no-op if identical
+        if (editor.getEditingShapeId() === shape.id) continue  // don't interrupt editing
+        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content } })
+      }
+    })
+  }, [])
+
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {
     const tag = window.document.activeElement?.tagName
@@ -616,6 +676,24 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // Mark html.is-scrolling during active wheel scroll so CSS can suppress opacity transitions.
+  // wheel fires for all scroll input: mouse wheel, Magic Mouse, trackpad.
+  // Logitech Lift pan mode is handled in CSS via body.tlda-pan-mode (set by usePanMode).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>
+    const onWheel = () => {
+      globalThis.document.documentElement.classList.add('is-scrolling')
+      clearTimeout(timer)
+      timer = setTimeout(() => globalThis.document.documentElement.classList.remove('is-scrolling'), 400)
+    }
+    window.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      window.removeEventListener('wheel', onWheel)
+      clearTimeout(timer)
+      globalThis.document.documentElement.classList.remove('is-scrolling')
+    }
   }, [])
 
   // Track last-edited note across all entry methods (double-click, etc.)
@@ -1127,6 +1205,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           editorRef.current = editor
           setEditorMounted(v => v + 1)
 
+          const storedTheme = localStorage.getItem('tlda-theme')
+          if (storedTheme && THEME_FAMILY[storedTheme]) {
+            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
+          }
+
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
           // "select.pointing_shape","select.crop.idle") to decide whether to show handles.
@@ -1147,8 +1230,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
-          // Load source map (labels index) for ref resolution
-          sourceMap.load(document.name)
+          // Load source map (labels index) for ref resolution.
+          // For multi-target docs, pass targets so per-target source-maps are merged
+          // with global page offsets — the bare alias only covers the primary target.
+          sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
 
           setNavigateToAnchor((anchorId: string, title: string) => {
             let page = -1
@@ -1319,7 +1404,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
-
+              // Recompute HUD panOffset ONLY if no saved position exists.
+              // With a saved panOffset (from a previous session), restoring from
+              // localStorage is correct — don't nuke it. Without one (first visit),
+              // we need to recompute after camera restoration so pageToScreen()
+              // uses the correct camera (commit 4031e60).
+              if (localStorage.getItem('fleet-hud-panOffset') === null) {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  })
+                })
+              }
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
                 // Defer slightly so SVG content is injected and we can measure text bounds

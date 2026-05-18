@@ -126,6 +126,8 @@ export function renderAgentPill(agentId, opts = {}) {
 export function agentMatchesDnf(dnf, agent) {
   if (!dnf || dnf.length === 0) return true
   const labels = [...(agent.labels || [])]
+  if (agent.status === 'awake') labels.push('awake')
+  else if (agent.status === 'hibernating') labels.push('hibernating')
   if (agent.friendly_name) labels.push(agent.friendly_name)
   if (agent.id) labels.push(agent.id)
   // Terms are [role, label] tuples or plain strings
@@ -505,10 +507,7 @@ export function renderMarkdown(html, extraMacros) {
   })
 
   // Linkify bare URLs not already inside <a> tags
-  // Also convert <code>URL</code> into clickable links
-  result = result.replace(/<code>(https?:\/\/[^<]+)<\/code>/g, (_, url) => {
-    return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
-  })
+  // Backtick-quoted URLs (<code>https://...</code>) are intentionally left as code spans.
   // Bare URLs in text (not inside tags, not already linked)
   let _inTag = false
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {

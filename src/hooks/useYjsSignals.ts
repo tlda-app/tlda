@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected } from '../useYjsSync'
+import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -72,6 +72,16 @@ export function useYjsSignals({
           lookupSnapshotRef.current = await loadLookup(document.name)
         })
       }
+    })
+  }, [document])
+
+  // Re-fetch visible pages when source files change — triggers the ensure system
+  // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.
+  useEffect(() => {
+    return onSourceChangedSignal(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      reloadPages(editor, document, null)
     })
   }, [document])
 
@@ -242,10 +252,8 @@ export function useYjsSignals({
         // Find the most recent screenshot placeholder in any chat
         const placeholder = window.document.querySelector('.screenshot-placeholder') as HTMLElement | null
         if (!placeholder) {
-          // No placeholder visible — show as floating panel
-          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-            detail: { bounds: signal.bounds, shapeIds: [], label, pinned: true }
-          }))
+          // No placeholder visible — do not surface anything in Skip's viewer.
+          // The agent gets the screenshot in their own chat; no floating panel here.
           return
         }
         const rect = placeholder.getBoundingClientRect()

@@ -35,6 +35,8 @@ import { onBuildStatusSignal, type BuildError, onSharedDocSignal, type SharedDoc
 import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
+import { getPageUrl } from '../stores/pageUrlStore'
+import { getPref } from '../preferences'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -86,7 +88,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: '["ref"]', label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
   }
 
   component(shape: any) {
@@ -363,8 +365,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     if (getSvgText(sid)) { setSvgReady(true); return }
     // Not loaded — fetch and set ready when done
     setSvgReady(false)
-    const pageNum = boundsPageIdx + 1
-    const url = `/docs/${doc.docName}/page-${pageNum}.svg`
+    const url = getPageUrl(boundsPageIdx)
+    if (!url) return
     fetch(url)
       .then(r => r.ok ? r.text() : null)
       .then(text => {

@@ -35,6 +35,43 @@ export function timeShort(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
+// --- Standalone att-token resolver ---
+// Used by unquote Tier 2 to render a rechat result (resolvedMessage + inlineAttachments)
+// into HTML without the full chat-line wrapper. renderMarkdown is the same function
+// passed via ctx to renderChatLine.
+export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown) {
+  // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
+  let processed = text
+  if (inlineAttachments?.length) {
+    processed = processed.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
+      const att = inlineAttachments[+idx]
+      if (att?.url && /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')) {
+        return `![${alt}](${att.url})`
+      }
+      return match
+    })
+  }
+  let html = renderMarkdown(esc(processed))
+  // Replace remaining {{att:N}} markers
+  html = html.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
+    const att = inlineAttachments?.[+idx]
+    if (att?.type === 'file') {
+      const name = esc(att.name || att.path?.split('/').pop() || 'file')
+      const filePath = esc(att.path || '')
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
+      const fileUrl = att.url ? esc(att.url) : ''
+      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
+      if (isImage && fileUrl) return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
+      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
+      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
+    }
+    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
+  })
+  return html
+}
+
 // --- Main renderer ---
 
 export function renderChatLine(m, ctx) {
@@ -49,21 +86,21 @@ export function renderChatLine(m, ctx) {
     const secs = r % 60
     const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
     const msg = esc(m._timerMessage)
-    return `<div class="chat-line chat-timer-countdown" data-msg-from="${esc(m.from || '')}" data-timer-until="${esc(m._timerUntil || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="${cls}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${timeStr} \u2192 ${msg}</span></div>`
+    return `<div class="chat-line chat-timer-countdown" data-msg-from="${esc(m.from || '')}" data-timer-until="${esc(m._timerUntil || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${timeStr} \u2192 ${msg}</span></div>`
   }
   // Compacting indicator
   if (m._compacting) {
     const nick = agentLabel(m.from)
     const cls = getNickClass(m.from)
     const ts = timeShort(m.timestamp)
-    return `<div class="chat-line compacting"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> compacting...</div>`
+    return `<div class="chat-line compacting"><span class="chat-ts">${ts}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> compacting...</div>`
   }
   // Unreachable indicator
   if (m._unreachable) {
     const nick = agentLabel(m.from)
     const cls = getNickClass(m.from)
     const ts = timeShort(m.timestamp)
-    return `<div class="chat-line unreachable"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> unreachable</div>`
+    return `<div class="chat-line unreachable"><span class="chat-ts">${ts}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> unreachable</div>`
   }
   // Chat break markers: skip
   if (m._chatBreak) return ''
@@ -73,7 +110,7 @@ export function renderChatLine(m, ctx) {
     const cls = getNickClass(m.from)
     const ts = timeShort(m.timestamp)
     const msg = esc((m.text || '').replace(/^⏰\s*/, ''))
-    return `<div class="chat-line chat-timer-msg"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${msg}</span></div>`
+    return `<div class="chat-line chat-timer-msg"><span class="chat-ts">${ts}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${msg}</span></div>`
   }
 
   // Kick messages and channel notifications — infrastructure noise, filter from chat UI
@@ -97,9 +134,29 @@ export function renderChatLine(m, ctx) {
     const toCls = getNickClass(m.to)
     const isFromUser = isHumanId(m.from)
     const nickHtml = isFromUser
-      ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="${toCls}">${esc(toNick)}</span>:</span>`
+      ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toNick)}</span>:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
+  }
+
+  // --- Plan mode approval card ---
+  if (m._evType === 'plan_approval') {
+    const ts = timeShort(m.timestamp)
+    const label = esc(m._agentLabel || agentLabel(m.from))
+    const agentCls = getNickClass(m.from)
+    const agentId = esc(m._agentId || m.from || '')
+    const planText = (m._planText || '').trim()
+    const planSnippet = planText.length > 800 ? '\u2026' + planText.slice(-800) : planText
+    const planHtml = planSnippet
+      ? `<pre class="plan-approval-plan">${esc(planSnippet)}</pre>`
+      : ''
+    return `<div class="chat-line plan-approval-card" data-agent-id="${agentId}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}">
+      <span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-plan-approval">
+        <div class="lc-header"><span class="lc-icon">\uD83D\uDCCB</span> <span class="lc-title">Ready to proceed</span> <span class="lc-routing"><span class="${agentCls}">${label}</span> wants to start implementation</span></div>
+        ${planHtml}
+        <div class="plan-approval-hint">Reply <strong>yes</strong> / <strong>no</strong> to approve or reject</div>
+      </div></div>`
   }
 
   // --- Terminal attention card (permission prompt auto-pop) ---
@@ -108,9 +165,13 @@ export function renderChatLine(m, ctx) {
     const label = esc(m._agentLabel || agentLabel(m.from))
     const reason = esc(m._reason || 'needs attention')
     const agentCls = getNickClass(m.from)
+    const isPermission = (m._reason || '').includes('permission')
+    const actionBtns = isPermission
+      ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" title="Deny (n)">\u2717</button></span>`
+      : ''
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention" data-lc-type="attention">
-        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${label}</span></span></div>
+      <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>
       </div></div>`
   }
 
@@ -122,8 +183,8 @@ export function renderChatLine(m, ctx) {
     const reason = esc(m._reason || 'requested attention')
     const agentCls = getNickClass(m.from)
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention" data-lc-type="attention">
-        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${label}</span></span></div>
+      <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span></div>
       </div></div>`
   }
 
@@ -148,7 +209,7 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="drag-handle" title="Drag"></div>
-        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${fromCls}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="${toCls}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toLabel)}</span></span></div>
         ${messageHtml}
         ${criteriaHtml}
       </div></div>`
@@ -163,7 +224,7 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-done" data-task-id="${esc(taskId)}" data-lc-type="done">
         <div class="drag-handle" title="Drag"></div>
-        <div class="lc-header"><span class="lc-icon">\u2713</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${agentCls}">${esc(agentName)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u2713</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(agentId)}">${esc(agentName)}</span></span></div>
       </div></div>`
   }
   if (/^\*\*Task bounced back:\*\*/.test(m.text || '')) {
@@ -175,7 +236,7 @@ export function renderChatLine(m, ctx) {
     const feedback = (m.text || '').replace(/^\*\*Task bounced back:\*\*\s*/, '')
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-bounced" data-lc-type="bounced">
-        <div class="lc-header"><span class="lc-icon">\u21A9</span> <span class="lc-title">${esc(feedback)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="${fromCls}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="${toCls}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u21A9</span> <span class="lc-title">${esc(feedback)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toLabel)}</span></span></div>
       </div></div>`
   }
 
@@ -250,9 +311,7 @@ export function renderChatLine(m, ctx) {
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
-      if (att.broken) {
-        return `<span class="ref-chip ref-chip-broken" data-path="${filePath}" title="File not found: ${filePath}"><span class="ref-chip-doc-icon">\u26A0</span>${name}</span>`
-      }
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) {
@@ -278,11 +337,11 @@ export function renderChatLine(m, ctx) {
   // Multi-target: show all cc recipients
   let toHtml
   if (m.cc && m.cc.length > 1) {
-    toHtml = m.cc.map(id => `<span class="${getNickClass(id)}">${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
+    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
   } else {
     const toNick = agentLabel(m.to)
     const toCls = getNickClass(m.to)
-    toHtml = `<span class="${toCls}">${esc(toNick)}</span>`
+    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toNick)}</span>`
   }
 
   // Render attachments as interactive refs
@@ -348,17 +407,17 @@ export function renderChatLine(m, ctx) {
   }
   // Failed local messages
   if (m._failed) {
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span></div>`
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span></div>`
   }
   // Voicemail
   if (m._voicemail) {
     const vmColor = m._voicemailReason === 'unreachable' ? 'var(--red, #e55)' : 'var(--orange)'
     const vmLabel = m._voicemailReason || 'queued'
-    return `<div class="chat-line from-user chat-queued chat-voicemail" data-vm-color="${vmColor}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span class="chat-voicemail-label">${vmLabel}</span></div>`
+    return `<div class="chat-line from-user chat-queued chat-voicemail" data-vm-color="${vmColor}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-voicemail-label">${vmLabel}</span></div>`
   }
   // Retracted messages
   if (m._retracted) {
-    return `<div class="chat-line from-user chat-retracted"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText}</div>`
+    return `<div class="chat-line from-user chat-retracted"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText}</div>`
   }
   // Retract button for recent user messages
   const msgAge = Date.now() - new Date(m.timestamp).getTime()
@@ -379,8 +438,8 @@ export function renderChatLine(m, ctx) {
   const planMode = sender?.metadata?.permission_mode === 'plan'
   const planBadge = planMode ? '<span class="plan-mode-badge" title="plan mode">P</span>' : ''
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
-    : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span>${planBadge}:</span>`
+    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20

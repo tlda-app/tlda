@@ -13,7 +13,7 @@
  * Each step writes output to server/projects/{name}/output/.
  */
 
-import { exec as execCb, execSync } from 'child_process'
+import { exec as execCb, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
 // Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
@@ -28,7 +28,7 @@ const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
@@ -81,14 +81,8 @@ function generateStubPdfs(buildDir, addLog) {
   const svgFiles = findSvgFigures(buildDir)
   for (const svgPath of svgFiles) {
     const pdfPath = svgPath.replace(/\.svg$/, '.pdf')
-    // Skip if PDF already exists and is newer
-    if (existsSync(pdfPath)) {
-      try {
-        const svgStat = statSync(svgPath)
-        const pdfStat = statSync(pdfPath)
-        if (pdfStat.mtimeMs >= svgStat.mtimeMs) continue
-      } catch {}
-    }
+    // Always generate stub from SVG dimensions — never trust existing PDFs.
+    // Real figure PDFs may have wrong/unreadable MediaBox (e.g. corrupted cairo output).
     // Parse SVG dimensions
     const head = readFileSync(svgPath, 'utf8').slice(0, 500)
     let w, h
@@ -102,21 +96,29 @@ function generateStubPdfs(buildDir, addLog) {
       if (wm && hm) { w = parseFloat(wm[1]); h = parseFloat(hm[1]) }
     }
     if (!w || !h) continue
-    // Write minimal PDF — just enough for LaTeX to read the MediaBox
-    const pdf = `%PDF-1.0
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj
-xref
-0 4
-0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>
-startxref
-190
-%%EOF`
+    // Write minimal PDF with correct xref byte offsets so pdflatex can read the MediaBox.
+    // Hardcoded offsets break when w/h vary in length — compute them dynamically.
+    const obj1 = '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
+    const obj2 = '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n'
+    const obj3 = `3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj\n`
+    const hdr = '%PDF-1.0\n'
+    const off1 = hdr.length
+    const off2 = off1 + obj1.length
+    const off3 = off2 + obj2.length
+    const xrefOffset = off3 + obj3.length
+    const pad = (n) => String(n).padStart(10, '0')
+    const pdf = hdr + obj1 + obj2 + obj3 +
+      `xref\n0 4\n0000000000 65535 f \n${pad(off1)} 00000 n \n${pad(off2)} 00000 n \n${pad(off3)} 00000 n \n` +
+      `trailer<</Size 4/Root 1 0 R>>\nstartxref\n${xrefOffset}\n%%EOF`
     writeFileSync(pdfPath, pdf)
+    // Write .bb file for graphicx in DVI mode — latex cannot read PDF MediaBox,
+    // so without this it falls back to a square placeholder (width × width).
+    const bbPath = svgPath.replace(/\.svg$/, '.bb')
+    const bb = `%%BoundingBox: 0 0 ${Math.ceil(w)} ${Math.ceil(h)}\n%%HiResBoundingBox: 0.0 0.0 ${w} ${h}\n`
+    writeFileSync(bbPath, bb)
     count++
   }
-  if (count > 0) addLog(`Generated ${count} stub PDF(s) from SVG figures`)
+  if (count > 0) addLog(`Generated ${count} stub PDF(s) + .bb files from SVG figures`)
 }
 
 /** Recursively find .svg files in a directory (skipping node_modules, hidden dirs). */
@@ -153,6 +155,10 @@ function loadPageHashes(outDir) {
 
 // Active builds tracked in memory
 const activeBuilds = new Map()
+
+// Monotonic version counter per doc. Incremented when a build starts.
+// The mirror callback captures its version and skips if superseded.
+const buildVersion = new Map()
 
 export function getBuildStatus(name) {
   return activeBuilds.get(name) || null
@@ -228,7 +234,10 @@ export function killAllBuilds() {
 // Pretex commands injected before \documentclass.
 // draft mode for graphicx (placeholder boxes instead of images),
 // hypertex driver for hyperref, and ensure hyperref loads.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+// DeclareGraphicsRule tells dvips driver (used by pdflatex --output-format=dvi)
+// to read bounding box for .pdf files from the .bb companion file we generate.
+// Without this, dvips falls back to width×width square placeholders.
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{begindocument}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
@@ -1374,6 +1383,19 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
     renameSync(shadowDir, shadowDir + '-pre-init-' + ts)
   }
   await initShadowFromProjectRepo(name, sourceDir, scope)
+  // The re-init created a new git history. Clean up stale shadow/* tags from the
+  // working copy — they pointed at the old history and would cause `git fetch --tags`
+  // to fail on the next build (git refuses to overwrite tags without --force).
+  try {
+    const stale = execSync(`git tag -l "shadow/*"`, { cwd: sourceDir, encoding: 'utf8', timeout: 5000 }).trim()
+    if (stale) {
+      const tagList = stale.split('\n').filter(Boolean)
+      execSync(`git tag -d ${tagList.map(t => `"${t}"`).join(' ')}`, { cwd: sourceDir, stdio: 'pipe', timeout: 5000 })
+      console.log(`[build:${name}] cleared ${tagList.length} stale shadow/* tags from working copy after bootstrap`)
+    }
+  } catch (e) {
+    console.warn(`[build:${name}] failed to clear stale shadow tags: ${e.message}`)
+  }
 }
 
 // ─── Exported helpers ────────────────────────────────────────────────────────
@@ -1417,6 +1439,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     existing.building = false
     existing.phase = 'cancelled'
   }
+
+  // Increment version so any in-flight mirror callbacks from previous builds
+  // can detect they've been superseded and skip.
+  const myVersion = (buildVersion.get(name) || 0) + 1
+  buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
   try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch {}
@@ -1605,6 +1632,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     }
 
     // Send the reload signal once, after all targets finish.
+    const svgsReadyAt = Date.now()
     signalReload(name, null)
 
     // Total pages across all targets — what the viewer reports as project.pages.
@@ -1655,10 +1683,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     })
 
     // Commit source snapshot to shadow repo (non-blocking)
+    const snapshotVersion = myVersion
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
-        updateDocVersionSentinel(name, result.hash).catch(e => {
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
@@ -1669,6 +1698,8 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         // that). We update the working copy's master ref + index to match
         // shadow's HEAD without touching the working tree, so any uncommitted
         // edits survive and show as "modified" relative to the new master.
+        // Skip mirror if a newer build has already started — its callback will mirror.
+        if (buildVersion.get(name) !== snapshotVersion) return
         try {
           const project = readProject(name)
           if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
@@ -1686,13 +1717,43 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             // Fetch shadow's history into the working copy, then move the
             // working copy's current branch to shadow's HEAD. --mixed updates
             // the index but leaves the working tree untouched (preserves any
-            // uncommitted edits). FETCH_HEAD is branch-name-agnostic, so this
-            // works whether the shadow's default branch is "main" or "master".
-            execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
-            execSync(`git reset --mixed FETCH_HEAD`, { cwd, stdio: 'pipe', timeout: 10000 })
+            // uncommitted edits). Uses result.hash directly (not FETCH_HEAD) so
+            // the reset targets the exact commit we just committed.
+            try {
+              execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+            } catch (fetchErr) {
+              // Stale remote ref lock (concurrent builds or prior failed fetch).
+              // Prune and retry once; if it fails again, rethrow.
+              if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
+                execSync(`git remote prune tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+                execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+              } else {
+                throw fetchErr
+              }
+            }
+            execSync(`git reset --mixed ${result.hash}`, { cwd, stdio: 'pipe', timeout: 10000 })
+            updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
         } catch (mirrorErr) {
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+          // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
+          // window to edits that happened after the last clean mirror.
+          const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
+          // Include build file list so the handler matches edits to actual build files.
+          let buildFiles = null
+          try {
+            const relPath = join(projDir, 'output', 'relevant-files.json')
+            buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
+          } catch {}
+          emitGlobalEvent('build-card', {
+            name,
+            hash: result.hash.slice(0, 7),
+            summary: null,
+            lintFindings: [],
+            mirrorFailed: mirrorErr.message,
+            lastMirrorSuccess,
+            buildFiles,
+          })
         }
         // Build change summary: diff against previous shadow commit
         try {
@@ -1704,78 +1765,55 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
           if (diffOutput.trim()) {
             const summary = summarizeDiff(diffOutput, name)
             console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+            // Broadcast viewer signal regardless of lint
             if (summary) {
-              // Emit as global event — unified-server.mjs routes to fleet chat
-              emitGlobalEvent('build-chat', {
-                name,
-                hash: result.hash.slice(0, 7),
-                text: `**Build ${result.hash.slice(0, 7)}:**\n${summary}`,
-              })
-              // Also broadcast as a signal for the viewer
               broadcastSignal(`doc-${name}`, 'signal:build-summary', {
                 hash: result.hash.slice(0, 7),
                 summary,
                 timestamp: Date.now(),
               })
-              // Lint: agent-parentheticals
-              try {
-                const { lintDiff } = await import('./lint-parens.mjs')
-                const findings = lintDiff(diffOutput, (file) => {
+            }
+            // BYOL linters: collect all findings, then emit ONE build-card event.
+            const lintFindings = []
+            try {
+              const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
+              if (existsSync(lintersDir)) {
+                const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
+                for (const script of scripts) {
+                  const scriptPath = join(lintersDir, script)
                   try {
-                    return readFileSync(join(shadowDir, file), 'utf8')
-                  } catch { return null }
-                })
-                if (findings.length > 0) {
-                  const grouped = new Map()
-                  for (const f of findings) {
-                    if (!grouped.has(f.file)) grouped.set(f.file, [])
-                    grouped.get(f.file).push(f)
+                    const output = await new Promise((resolve, reject) => {
+                      const child = spawn(process.execPath, [scriptPath], {
+                        env: { ...process.env, TLDA_SRCDIR: shadowDir },
+                        stdio: ['pipe', 'pipe', 'inherit'],
+                      })
+                      const chunks = []
+                      child.stdout.on('data', d => chunks.push(d))
+                      child.stdin.write(diffOutput)
+                      child.stdin.end()
+                      child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
+                      child.on('error', reject)
+                    })
+                    if (output) {
+                      lintFindings.push({ source: script, text: output })
+                      console.log(`[build:${name}] Lint (${script}): ${output.split('\n')[0]}`)
+                    }
+                  } catch (scriptErr) {
+                    console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
                   }
-                  const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
-                  for (const [file, items] of grouped) {
-                    lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
-                  }
-                  lines.push('Agent-written parentheticals are usually fig leaves for weak structure — see `~/work/dot-claude/spellbook/math/writing/SKILL.md`. Skip writes them freely; this only flags ones added in build diffs.')
-                  emitGlobalEvent('build-chat', {
-                    name,
-                    hash: result.hash.slice(0, 7),
-                    text: lines.join('\n'),
-                  })
-                  console.log(`[build:${name}] Parens lint: ${findings.length} findings`)
                 }
-              } catch (lintErr) {
-                console.error(`[build:${name}] Parens lint failed:`, lintErr.message)
               }
-              // Lint: passive voice
-              try {
-                const { lintDiff: lintPassiveDiff } = await import('./lint-passive.mjs')
-                const findings = lintPassiveDiff(diffOutput, (file) => {
-                  try {
-                    return readFileSync(join(shadowDir, file), 'utf8')
-                  } catch { return null }
-                })
-                if (findings.length > 0) {
-                  const grouped = new Map()
-                  for (const f of findings) {
-                    if (!grouped.has(f.file)) grouped.set(f.file, [])
-                    grouped.get(f.file).push(f)
-                  }
-                  const lines = [`🟡 **Passive-voice lint** — ${findings.length} passive construction(s) flagged in this build:`]
-                  for (const [file, items] of grouped) {
-                    const detail = items.map((i) => `L${i.line} (${i.pattern}): ${i.snippet}`).join('; ')
-                    lines.push(`- \`${file}\`: ${detail}`)
-                  }
-                  lines.push('Passive voice in math prose makes the reader work harder to identify who is doing what. Prefer active: "we bound …" / "Cauchy–Schwarz gives …" instead of "is bounded by …" / "is given by …".')
-                  emitGlobalEvent('build-chat', {
-                    name,
-                    hash: result.hash.slice(0, 7),
-                    text: lines.join('\n'),
-                  })
-                  console.log(`[build:${name}] Passive lint: ${findings.length} findings`)
-                }
-              } catch (lintErr) {
-                console.error(`[build:${name}] Passive lint failed:`, lintErr.message)
-              }
+            } catch (lintErr) {
+              console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
+            }
+            // Emit single build-card event (aggregates summary + all lint findings)
+            if (summary || lintFindings.length > 0) {
+              emitGlobalEvent('build-card', {
+                name,
+                hash: result.hash.slice(0, 7),
+                summary: summary || null,
+                lintFindings,
+              })
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
@@ -1860,7 +1898,7 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
   const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
@@ -1881,6 +1919,7 @@ async function updateDocVersionSentinel(name, shadowHash) {
       h: 1,
       commitHash,
       timestamp: Date.now(),
+      buildReadyAt: buildReadyAt || Date.now(),
     },
   }
 

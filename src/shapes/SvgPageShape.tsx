@@ -10,8 +10,9 @@ import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
 import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
-import { getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
-import { getPageUrl } from '../stores/pageUrlStore'
+import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { svgViewBoxStore } from '../stores/svgViewBoxStore'
+import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -26,6 +27,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: 800, h: 1035, pageIndex: 0 }
   }
 
+  override canSelect = () => false
   override canEdit = () => false
   override canResize = () => false
   override isAspectRatioLocked = () => true
@@ -122,7 +124,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
         const ref = sig?.data?.ref
         if (!ref) return
         const hash7 = ref.slice(0, 7)
-        const url = `/docs/${docName}/history/shadow-${hash7}/page-${pageIdx + 1}.svg`
+        const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
+        const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
         const res = await fetch(url)
         if (!res.ok) return
         const text = await res.text()
@@ -182,11 +185,32 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const controller = new AbortController()
     abortRef.current = controller
 
-    const url = getPageUrl(shape.props.pageIndex) || `/docs/${docName}/page-${shape.props.pageIndex + 1}.svg`
+    const url = getPageUrl(shape.props.pageIndex)
+    if (!url) return
     fetch(url, { signal: controller.signal }).then(async res => {
       if (!res.ok) return
       const newText = await res.text()
       if (newText !== svgText) setSvgText(shape.id as string, newText)
+      // Populate anchorIndex and viewBox store from <view> elements.
+      // Enables ref-click navigation for pages that haven't been through a reload cycle.
+      const parser = new DOMParser()
+      const svgDoc = parser.parseFromString(newText, 'image/svg+xml')
+      const svgEl = svgDoc.querySelector('svg')
+      if (svgEl) {
+        const vb = svgEl.getAttribute('viewBox')
+        if (vb) {
+          const parts = vb.split(/\s+/).map(Number)
+          if (parts.length === 4) {
+            svgViewBoxStore.set(shape.id as string, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+          }
+        }
+      }
+      for (const view of svgDoc.querySelectorAll('view')) {
+        const id = view.getAttribute('id')
+        if (id) {
+          anchorIndex.set(id, { pageShapeId: shape.id as string, viewBox: view.getAttribute('viewBox') || undefined })
+        }
+      }
     }).catch(() => {}) // AbortError is expected when scrolling fast
   }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
@@ -320,23 +344,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
     applyTinting(textYCacheRef.current, highlights)
   }, [isNearViewport, svgText])
 
-  // Click handler — stable, doesn't depend on SVG content
+  // Pointer/click handlers — stable, don't depend on SVG content
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
-    const onClick = (e: MouseEvent) => {
-      // Cmd-click: open source in editor
+    // Cmd-click: open source in editor.
+    // Must use pointerdown — TLDraw swallows click events before they reach inner divs.
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.metaKey) return
       const onSourceClick = getOnSourceClick()
-      if (e.metaKey && onSourceClick) {
-        e.preventDefault()
-        e.stopPropagation()
-        const rect = el.getBoundingClientRect()
-        const clickY = (e.clientY - rect.top) / rect.height
-        onSourceClick(shape.id, clickY)
-        return
-      }
+      if (!onSourceClick) return
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const clickY = (e.clientY - rect.top) / rect.height
+      onSourceClick(shape.id, clickY)
+    }
 
+    // Anchor navigation (links inside the SVG) — click events do reach via link targets.
+    const onClick = (e: MouseEvent) => {
+      if (e.metaKey) return
       const target = (e.target as Element).closest('a')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
@@ -348,8 +375,13 @@ function SvgPageComponent({ shape }: { shape: any }) {
         navigateToAnchor(anchorId, title)
       }
     }
+
+    el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('click', onClick)
-    return () => { el.removeEventListener('click', onClick) }
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('click', onClick)
+    }
   }, [shape.id])
 
   // Apply text tinting when highlights change (and SVG is injected)

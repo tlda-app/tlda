@@ -1,0 +1,30 @@
+% Draft replacement for lines 1529–1566
+% Fixes: (1) tighter flow, (2) equation-minus-equation notation, (3) lower bound placed after
+
+A simple way to turn a weighting estimator into a matching one is through \emph{Bernoulli rounding}. We shave off the fractional parts $\hat r_i = \hat\theta_i - \floor{\hat\theta_i}$ of our weights and replace them with independent Bernoullis $B_i \sim \text{Bernoulli}(\hat r_i)$ with means matching what we have shaved. This gives us a \emph{randomized estimator} with integer weights $\floor{\hat\theta_i} + B_i$. The procedure is unbiased, as the expectation of the estimator is unchanged, but it increases the variance solely to obtain integral weights. By the law of total variance,
+\begin{equation}
+\label{eq:bernoulli-rounding-variance}
+\begin{aligned}
+\Var\left(\frac{1}{N_1} \sum_i \overset{\neg}{W}_i (\floor{\hat\theta_i} + B_i) Y_i\right)
+&= \E\left(\frac{1}{N_1^2} \sum_i \overset{\neg}{W}_i \, \hat r_i(1 - \hat r_i) \, Y_i^2 \right) + \Var\left(\frac{1}{N_1} \sum_i \overset{\neg}{W}_i \hat\theta_i Y_i\right).
+\end{aligned}
+\end{equation}
+This is not the irreducible cost of matching. We can do better. The variance of \emph{any} negligibly-biased estimator using deterministic integer weights $\tilde\theta_i$ is
+\begin{equation}
+\label{eq:rounding-variance-deterministic}
+\begin{aligned}
+\Var\left(\frac{1}{N_1} \sum_i \overset{\neg}{W}_i \tilde\theta_i Y_i\right)
+&= \E\left(\frac{1}{N_1^2} \sum_i \overset{\neg}{W}_i \, \hat r_i(1 - \hat r_i) \, \Var\{Y_i \mid W_i, X_i\} \right) + \Var\left(\frac{1}{N_1} \sum_i \overset{\neg}{W}_i \hat\theta_i Y_i\right),
+\end{aligned}
+\end{equation}
+given mild conditions on $\hat\theta$ (see Proposition~\ref{prop:rounding-efficiency}). Our proof involves thinking about balance in a particular function, much like we did for the efficiency of weighting estimators in Section~\ref{sec:asymptotic}. The difference between these two variances---call it $\Delta V$---is the mean-squared \emph{change in imbalance in the conditional mean $\mu$} that happens when we randomly round the weights:
+\begin{equation}
+\label{eq:rounding-excess}
+\begin{aligned}
+\Delta V
+&= \E\left(\frac{1}{N_1^2} \sum_i \overset{\neg}{W}_i \, \hat r_i(1 - \hat r_i) \, \mu(X_i)^2\right)
+= \E\left[\left\{\frac{1}{N_1} \sum_i \overset{\neg}{W}_i (B_i - \hat r_i) \mu(X_i)\right\}^2\right].
+\end{aligned}
+\end{equation}
+This is the same phenomenon that makes AIPW preferable to IPW with the true weights $\gammaipw$: mean-zero imbalance costs nothing in bias but inflates variance. Here, it is the \emph{change} in $\mu$-imbalance from rounding, rather than the $\mu$-imbalance itself. To avoid this cost, we need to round with negligible change in imbalance. Given a model $\model$ for $\mu$, we can ask for that to happen with
+this integer program, which minimizes the rounding-induced change in imbalance uniformly over the functions $m\in\model$.

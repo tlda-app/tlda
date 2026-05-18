@@ -999,7 +999,7 @@ export class SearchIndex {
 
   // --- Search ---
 
-  search(query, { project, agent, role, limit = 50 } = {}) {
+  search(query, { project, agent, role, limit = 50, since } = {}) {
     // FTS5 query syntax: wrap in quotes for phrase, or use as-is for term matching
     // Escape double quotes in the query
     const ftsQuery = query.replace(/"/g, '""');
@@ -1009,6 +1009,7 @@ export class SearchIndex {
       const params = [q];
       if (project) { clauses.push('e.project = ?'); params.push(project); }
       if (role) { clauses.push('e.role = ?'); params.push(role); }
+      if (since) { clauses.push('e.timestamp >= ?'); params.push(since); }
       if (agent && Array.isArray(agent) && agent.length > 0) {
         const placeholders = agent.map(() => '?').join(',');
         clauses.push(`(e.session_id IN (${placeholders}) OR e.from_id IN (${placeholders}) OR e.to_id IN (${placeholders}))`);
@@ -1050,7 +1051,7 @@ export class SearchIndex {
 
   // --- Chat search ---
 
-  searchChat(query, { agent, role, limit = 50, context = 3 } = {}) {
+  searchChat(query, { agent, role, limit = 50, context = 3, since } = {}) {
     const ftsQuery = query.replace(/"/g, '""');
 
     const runQuery = (q) => {
@@ -1061,6 +1062,7 @@ export class SearchIndex {
         clauses.push(`(c.from_id IN (${placeholders}) OR c.to_id IN (${placeholders}))`);
         params.push(...agent, ...agent);
       }
+      if (since) { clauses.push('c.timestamp >= ?'); params.push(since); }
       if (role === 'user') {
         clauses.push(`c.source = 'terminal'`);
       } else if (role === 'chat' || role === 'delegate' || role === 'task_done') {

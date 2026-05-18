@@ -83,7 +83,9 @@ function agentMatchesLabel(agentId, label) {
     if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
     return false
   }
-  const labels = [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean)
+  // Virtual labels derived from agent.status (mirrors server-side resolution).
+  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : []
+  const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
   return labels.includes(label)
 }
 
@@ -95,7 +97,8 @@ function resolveFilter(filter) {
   const allAgents = [..._agents]
   if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
   for (const a of allAgents) {
-    const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+    const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+    const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
     const matches = filter.some(clause =>
       clause.every(term => {
         const label = Array.isArray(term) ? term[1] : term
@@ -192,18 +195,27 @@ export function updateOptimisticEvent(tempId, updates) {
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
-export function reconcileOptimistic(tempId, serverEventId) {
+export function reconcileOptimistic(tempId, serverEventId, newTo) {
   const ev = _events.find(e => e._tempId === tempId)
   // SSE handler may have already reconciled — only act if _tempId still present
-  if (ev) { ev._dbId = serverEventId; delete ev._tempId; notify('messages', null) }
+  if (ev) {
+    ev._dbId = serverEventId
+    // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
+    // On reconcile we rewrite it to the first concrete recipient so the line transitions
+    // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
+    // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
+    if (newTo) ev.to = newTo
+    delete ev._tempId
+    notify('messages', null)
+  }
 }
 
 export function respawnAgent(id) {
   return wsSend({ type: 'spawn', agent: id, respawn: true })
 }
 
-export function spawnAgent(model, doc) {
-  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}) })
+export function spawnAgent(model, doc, name) {
+  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}), ...(name ? { name } : {}) })
 }
 
 export function renameAgent(id, name) {
@@ -341,8 +353,13 @@ export function connect() {
           // Reconcile optimistic events SYNCHRONOUSLY before resolving —
           // the next WS message may be the echo, and _dbId must be set
           // before the echo's dedup check runs.
-          if (msg.result && msg.result._tempId && msg.result.event_id) {
-            reconcileOptimistic(msg.result._tempId, msg.result.event_id)
+          if (msg.result && msg.result._tempId && Array.isArray(msg.result.event_ids) && msg.result.event_ids.length > 0) {
+            // Server fans out chats over recipients (DNF resolution). Reconcile the optimistic event
+            // with the first event_id; broadcasts for the other event_ids arrive as new events
+            // (dedup is keyed on _dbId, so the first echo is silently absorbed).
+            const firstRecipient = Array.isArray(msg.result.recipients) && msg.result.recipients.length > 0
+              ? msg.result.recipients[0] : null
+            reconcileOptimistic(msg.result._tempId, msg.result.event_ids[0], firstRecipient)
           }
           if (msg.error) cb.reject(new Error(msg.error))
           else cb.resolve(msg.result)
@@ -364,6 +381,10 @@ export function connect() {
         }
         for (const [agent, ts] of Object.entries(msg.compacting || {})) {
           notify('compacting', { agent, compacting: true, ts })
+        }
+        // Context percent state
+        for (const [agent, ctx] of Object.entries(msg.context || {})) {
+          notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
         }
         // Clear any agent NOT in the server's set
         notify('thinking-sync', serverThinking)
@@ -399,6 +420,13 @@ export function connect() {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
         }
         notify('messages', event)
+      } else if (eventType === 'event-update') {
+        const ev = _events.find(e => e._dbId === data.id)
+        if (ev) {
+          ev.text = data.text
+          if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+          notify('messages', null)
+        }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
         for (const ev of _events) {
@@ -409,6 +437,8 @@ export function connect() {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {
         if (data.agent) notify('compacting', data)
+      } else if (eventType === 'agent-context') {
+        if (data.agent) notify('context', data)
       } else if (eventType === 'agent-status') {
         if (data.agent) notify('status', data)
       } else if (eventType === 'reload') {
@@ -440,7 +470,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
   _events = chatEvents
@@ -500,6 +530,13 @@ export function convertChatEvent(e) {
     msg._reason = e.metadata?.reason || ''
     msg._agentLabel = e.metadata?.agentLabel || ''
     msg._snippet = e.metadata?.snippet || ''
+  } else if (type === 'plan_approval') {
+    msg._evType = 'plan_approval'
+    msg._agentId = e.metadata?.agentId || ''
+    msg._agentLabel = e.metadata?.agentLabel || ''
+    msg._planText = e.metadata?.planText || ''
+    msg._tmuxSession = e.metadata?.tmux_session || ''
+    msg._machineId = e.metadata?.machine_id || ''
   } else if (type === 'terminal_card') {
     msg._evType = 'terminal_card'
     msg._reason = e.metadata?.reason || ''
@@ -553,7 +590,7 @@ export async function fetchHistory(agentId, limit = 200) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
 
@@ -576,7 +613,7 @@ export async function loadBefore(agentId, beforeTs, count = 100) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
 

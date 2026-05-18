@@ -472,14 +472,11 @@ Agents interact with the canvas through MCP tools. Key tools:
 | `place_response_bar` | Margin bar next to highlight indicating agent responded | Working |
 | `create_shape` | Generic low-level shape creation | Working |
 | **Feedback reading** | | |
-| `read_pen_annotations` | Read all drawn shapes with source mapping | Working |
-| `get_highlight_feedback` | Read highlights with color-intent | Working |
-| `get_feedback` | Peek at latest feedback (non-blocking) | Rethink — redundancy with above two |
+| `read_annotations` | Read all annotations (notes + drawn shapes) with source mapping | Working |
 | **Navigation** | | |
 | `scroll_to_line` | Scroll viewer to a source line | Working |
 | `flash_location` | Flash a red circle at a source line | Working |
-| `screenshot` | Capture the viewer viewport | Rethink — should use doc viewer, not hijack main screen |
-| `crop_screenshot` | Capture a specific region | Working |
+| `screenshot` | Capture viewer (target: viewport / screen / annotation ref / explicit bounds) | Working |
 | **Understanding** | | |
 | `set_understanding` / `get_understanding` | Line-level reading status | Untested — good idea, needs docs and verification |
 | **Build** | | |
@@ -527,7 +524,6 @@ Agents interact with the canvas through MCP tools. Key tools:
 - Health/status display (three dots for one server is meaningless — needs redesign)
 - `screenshot` — should use doc viewer instead of hijacking main screen
 - `suggest` vs `add_note` — unify note creation (always markdown, text or file)
-- Feedback tool factoring — `get_feedback` vs `read_pen_annotations` vs `get_highlight_feedback` redundancy
 - `signal_reload` — fold into `push`
 
 ### MCP tools to remove

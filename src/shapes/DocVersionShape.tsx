@@ -15,10 +15,11 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     commitHash: T.string,
     timestamp: T.number,
+    buildReadyAt: T.number,
   }
 
   getDefaultProps() {
-    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0 }
+    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0, buildReadyAt: 0 }
   }
 
   override canEdit = () => false

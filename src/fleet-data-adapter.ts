@@ -38,6 +38,13 @@ import {
   getPlaybackChatEvents,
   getPlaybackAgents,
 } from './playback-context'
+import { loadPrefs } from './preferences'
+
+// Load prefs whenever the user's fleet identity is established
+subscribe('identity', null, (ev: any) => {
+  const userId = ev.id || getHumanId()
+  if (userId) loadPrefs(userId)
+})
 
 // --- Lazy initialization ---
 
@@ -371,9 +378,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
-      if (cancelled || !filter) return
+      if (cancelled) return
 
+      // null filter = all agents; non-null = only agents matching the current chat filter
       function inFilter(agentId: string): boolean {
+        if (!filter) return true
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
@@ -540,6 +549,49 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
+/**
+ * Subscribe to context-percent events for agents matching the filter.
+ * Returns a Map of agentId → percent remaining (0–100).
+ */
+export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
+  const [context, setContext] = useState<Map<string, number>>(new Map())
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+
+  useEffect(() => {
+    if (frameId && getPlaybackData(frameId)) return
+
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
+
+    ensureInit().then(() => {
+      if (cancelled) return
+
+      function inFilter(agentId: string): boolean {
+        if (!filter) return true
+        return matchesFilter(filter, { agent: agentId, from: agentId })
+      }
+
+      unsub = subscribe('context', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        setContext(prev => {
+          const next = new Map(prev)
+          next.set(data.agent, data.percent)
+          return next
+        })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+      setContext(new Map())
+    }
+  }, [filterKey])
+
+  return context
+}
+
 // --- Search API ---
 
 const DASHBOARD_URL = 'http://localhost:5176'
@@ -547,10 +599,8 @@ const DASHBOARD_URL = 'http://localhost:5176'
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
   try {
-    const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.results || data || []
+    const data = await _fleetWS('fleet-search', { query, limit })
+    return data?.results || []
   } catch { return [] }
 }
 

@@ -65,6 +65,9 @@ const reloadHandle = bus.register<ReloadSignal>({
 })
 export const onReloadSignal = reloadHandle.on
 
+const sourceChangedHandle = bus.register<{ timestamp: number }>({ key: 'signal:source-changed' })
+export const onSourceChangedSignal = sourceChangedHandle.on
+
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
   | { type: 'highlight', x: number, y: number, page: number, timestamp: number }
@@ -239,6 +242,14 @@ const sharedDocHandle = bus.register<SharedDocSignal>({
   recentMs: 86_400_000,
 })
 export const onSharedDocSignal = sharedDocHandle.on
+
+export type FileUpdatedSignal = {
+  filePath: string   // absolute path on the author's machine
+  content: string    // current file contents
+  timestamp: number
+}
+const fileUpdatedHandle = bus.register<FileUpdatedSignal>({ key: 'signal:file-updated' })
+export const onFileUpdatedSignal = fileUpdatedHandle.on
 
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.

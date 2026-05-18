@@ -13,6 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
+import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor } from './ribbonInteraction'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -68,7 +69,9 @@ export async function remapAnnotations(
 
   const updates: TLShapePartial[] = []
 
-  // Solo shapes (math notes): resolve anchor, position directly
+  // Solo shapes (math notes): resolve anchor, update Y only.
+  // Synctex x varies between builds (nearby-line fallback, display-math offsets), causing
+  // horizontal drift that is confusing and not meaningful for note placement.
   for (const shape of solo) {
     const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
     try {
@@ -77,15 +80,13 @@ export async function remapAnnotations(
       const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
       if (!canvasPos) continue
 
-      const newX = canvasPos.x - 100
       const newY = canvasPos.y - 100
-      const dx = Math.abs(shape.x - newX)
       const dy = Math.abs(shape.y - newY)
-      if (dx > 1 || dy > 1) {
+      if (dy > 1) {
         updates.push({
           id: shape.id,
           type: shape.type,
-          x: newX,
+          x: shape.x,
           y: newY,
         })
       }
@@ -548,6 +549,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   }, { scope: 'document' })
 
+  // Eraser resets understanding-line shapes to 'unchecked' instead of deleting them
+  registerEraserInterceptor(editor)
+
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
     const shapes = [...shapeIdSet]
@@ -615,28 +619,41 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
       if (shape.type === 'highlight') {
-        let attempts = 0
-        const checkSnap = () => {
-          attempts++
-          if (attempts > 30) return // give up after 6s
+        // Wait for pen lift by polling editor.inputs.isPointing.
+        // editor.on('event', pointer_up) doesn't fire during highlight.drawing state
+        // because TLDraw's state machine consumes the event first.
+        // isPointing is TLDraw's own reactive state — no event interception needed.
+        let done = false
+
+        const processShape = () => {
+          if (done) return
+          done = true
           const s = editor.getShape(shape.id as any)
           if (!s) return
-          // Check if user is still drawing (highlight tool is active and pointing)
-          const currentTool = editor.getCurrentToolId()
-          if (currentTool === 'highlight' && editor.inputs.isPointing) {
-            setTimeout(checkSnap, 200)
-            return
-          }
           const bounds = editor.getShapePageBounds(shape.id as any)
-          if (!bounds || bounds.width < 5) {
-            setTimeout(checkSnap, 200)
+          if (!bounds || (bounds.width < 5 && bounds.height < 10)) return
+          // Ribbon zone: highlight drawn in left margin → update understanding lines
+          if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
+            processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
-          snapHighlighterToText(editor, shape.id, document.name)
-          // Process highlight for feedback integration (understanding-line updates + signal)
+          snapHighlighterToText(editor, shape.id, document.name, document.targets)
           processHighlightFeedback(editor, shape.id, document.name)
         }
-        setTimeout(checkSnap, 300)
+
+        const tryProcess = () => {
+          if (done) return
+          if (editor.inputs.isPointing) {
+            setTimeout(tryProcess, 100)
+            return
+          }
+          processShape()
+        }
+
+        // Wait 200ms (shape geometry settles), then poll until pen is lifted
+        setTimeout(tryProcess, 200)
+        // Safety fallback: process after 5s regardless
+        setTimeout(() => { if (!done) processShape() }, 5000)
       }
     }
   })

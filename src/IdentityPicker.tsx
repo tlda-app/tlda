@@ -3,8 +3,9 @@
  * Two modes: login (returning user) or register (new user).
  * ?name= auto-login is for agents opening browsers — uses login, never creates.
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
+import { isDevMode, subscribeCanPresent } from './authToken'
 
 export function IdentityPicker() {
   const { needsIdentity, login, register } = useFleetIdentity()
@@ -13,20 +14,28 @@ export function IdentityPicker() {
   const [submitting, setSubmitting] = useState(false)
   const [autoIdentified, setAutoIdentified] = useState(false)
   const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [, setAuthTick] = useState(0)
 
-  // Auto-login from ?name= query param (agents opening browsers for testing)
+  // Re-render when auth data arrives from the server (isDevMode() updates)
+  useEffect(() => subscribeCanPresent(() => setAuthTick(n => n + 1)), [])
+
+  // Auto-login from ?name= query param, or in dev mode use a default (no modal in dev)
   if (needsIdentity && !autoIdentified) {
     const urlName = new URLSearchParams(window.location.search).get('name')
-    if (urlName) {
-      const trimmed = urlName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
-      if (trimmed) {
-        setAutoIdentified(true)
-        login(trimmed).catch(() => {
-          // Login failed — agent not registered. Just show nothing, no ghost created.
+    const isDev = import.meta.env.DEV || isDevMode()
+    const devFallback = isDev ? 'dev' : null
+    const targetName = urlName?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || devFallback
+    if (targetName) {
+      setAutoIdentified(true)
+      login(targetName).catch(() => {
+        if (isDev) {
+          // In dev mode, register if login fails (fresh environment)
+          register(targetName).catch(() => setAutoIdentified(false))
+        } else {
           setAutoIdentified(false)
-        })
-        return null
-      }
+        }
+      })
+      return null
     }
   }
 

@@ -10,6 +10,7 @@ import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
+import { THEME_FAMILY } from '../hooks/useFleetTheme'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout, forceDeleteShapes } from '../shapes/fleet-utils'
@@ -430,8 +431,6 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
         {/* HideDefsToggle removed */}
       </div>
@@ -458,8 +457,6 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
         {/* HideDefsToggle removed */}
       </div>
@@ -628,8 +625,6 @@ export function TocTab() {
       <div className="toc-diff-hint" onClick={handleCenterHorizontally}>
         <span className="toc-toggle-icon">{'\u2299'}</span> Center
       </div>
-      <DarkModeToggle />
-      <VimModeToggle />
       <CameraLinkToggle />
       {/* HideDefsToggle removed */}
     </div>
@@ -666,40 +661,54 @@ export function SemanticHighlightToggle() {
   )
 }
 
+type ThemeStep = {
+  theme: 'warm' | 'fog-dark' | 'fog-light' | null
+  scheme: 'system' | 'dark' | 'light'
+  label: string
+  icon: string
+  bodyClass?: string
+}
+
+const THEME_STEPS: ThemeStep[] = [
+  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
+  { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
+  { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
+  { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
+  { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
+  { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
+]
+
+const BODY_CLASSES = THEME_STEPS.map(s => s.bodyClass).filter(Boolean) as string[]
+
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [warm, setWarm] = useState(() => {
-    const saved = localStorage.getItem('tlda-warm-mode') === 'true'
-    if (saved) document.body.classList.add('warm-mode')
-    return saved || document.body.classList.contains('warm-mode')
+  const [theme, setTheme] = useState<'warm' | 'fog-dark' | 'fog-light' | null>(() => {
+    const stored = localStorage.getItem('tlda-theme')
+    if (stored === 'warm' || stored === 'fog-dark' || stored === 'fog-light') return stored
+    if (localStorage.getItem('tlda-warm-mode') === 'true') return 'warm'
+    return null
   })
 
-  const label = warm ? 'Warm' : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
-  const icon = warm ? '\u2600\uFE0E' : scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'
+  const cur = THEME_STEPS.findIndex(s => s.theme === theme && s.scheme === scheme)
+  const step = cur >= 0 ? THEME_STEPS[cur] : THEME_STEPS[0]
+
+  const applyStep = useCallback((s: ThemeStep) => {
+    for (const cls of BODY_CLASSES) document.body.classList.remove(cls)
+    if (s.bodyClass) document.body.classList.add(s.bodyClass)
+    localStorage.setItem('tlda-theme', s.theme || '')
+    localStorage.setItem('tlda-warm-mode', s.theme === 'warm' ? 'true' : 'false')
+    setTheme(s.theme)
+    editor.user.updateUserPreferences({ colorScheme: s.scheme })
+  }, [editor])
 
   const cycle = useCallback(() => {
-    if (warm) {
-      // Warm → System (exit warm mode)
-      document.body.classList.remove('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'false')
-      setWarm(false)
-      editor.user.updateUserPreferences({ colorScheme: 'system' })
-    } else if (scheme === 'system') {
-      editor.user.updateUserPreferences({ colorScheme: 'dark' })
-    } else if (scheme === 'dark') {
-      editor.user.updateUserPreferences({ colorScheme: 'light' })
-    } else {
-      // Light → Warm
-      document.body.classList.add('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'true')
-      setWarm(true)
-    }
-  }, [editor, scheme, warm])
+    applyStep(THEME_STEPS[(cur + 1) % THEME_STEPS.length])
+  }, [cur, applyStep])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>
-      <span className="toc-toggle-icon">{icon}</span> {label}
+      <span className="toc-toggle-icon">{step.icon}</span> {step.label}
     </div>
   )
 }

@@ -60,14 +60,14 @@ router.get('/meta', requireRead, (req, res) => {
 })
 
 // GET /health — check sync health for all docs that have a snapshot
-router.get('/health', requireRead, (req, res) => {
+router.get('/health', requireRead, async (req, res) => {
   const health = {}
   const dir = getProjectsDir()
   for (const project of listProjects()) {
     const snapPath = join(dir, project.name, 'sync-snapshot.json')
     if (!existsSync(snapPath)) continue
     try {
-      const room = getOrCreateRoom(syncRoomName(project.name))
+      const room = await getOrCreateRoom(syncRoomName(project.name))
       const snapshot = room.getCurrentSnapshot()
       const shapes = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
       health[project.name] = { ok: true, shapes }
@@ -204,12 +204,35 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
 // Synctex path-based lookup: trace highlight path through synctex records
 router.post('/:name/synctex-path', requireRead, async (req, res) => {
   const { getSourceFromPath } = await import('../lib/synctex-query.mjs')
-  const { page, points, text, fragments } = req.body
+  const { page, points, text, fragments, target } = req.body
   if (!page || !points?.length) {
     return res.status(400).json({ error: 'Required: page, points[]' })
   }
   try {
-    const result = await getSourceFromPath(req.params.name, page, points, text || '', fragments || [])
+    // For multi-target projects, convert global page to local page within the target
+    let localPage = page
+    let resolvedTarget = target || ''
+    if (!resolvedTarget) {
+      // Client didn't send target — compute from project metadata
+      const project = readProject(req.params.name)
+      if (project?.targets?.length > 1) {
+        let offset = 0
+        for (const t of project.targets) {
+          if (page <= offset + t.pages) { resolvedTarget = t.texBase; break }
+          offset += t.pages
+        }
+      }
+    }
+    if (resolvedTarget) {
+      const project = readProject(req.params.name)
+      let offset = 0
+      for (const t of (project?.targets || [])) {
+        if (t.texBase === resolvedTarget) break
+        offset += t.pages
+      }
+      localPage = page - offset
+    }
+    const result = await getSourceFromPath(req.params.name, localPage, points, text || '', fragments || [], resolvedTarget)
     if (!result) return res.status(404).json({ error: 'No synctex data or no match' })
     res.json(result)
   } catch (e) {
@@ -453,20 +476,20 @@ function syncRoomName(projectName) {
 }
 
 // GET /:name/shapes — list shapes, optionally filter by type
-router.get('/:name/shapes', requireRead, (req, res) => {
+router.get('/:name/shapes', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
-  const records = getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
+  const records = await getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
   res.json(records)
 })
 
 // GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
-router.get('/:name/shapes/at/:timestamp', requireRead, (req, res) => {
+router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const ts = parseInt(req.params.timestamp, 10)
   if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
-  const result = getShapesAt(req.params.name, ts)
+  const result = await getShapesAt(req.params.name, ts)
   res.json(result)
 })
 
@@ -561,11 +584,11 @@ router.post('/:name/sync/clear', requireRw, (req, res) => {
 })
 
 // GET /:name/sync/health — check if a doc's sync room can load without errors
-router.get('/:name/sync/health', requireRead, (req, res) => {
+router.get('/:name/sync/health', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
-    const room = getOrCreateRoom(syncRoomName(req.params.name))
+    const room = await getOrCreateRoom(syncRoomName(req.params.name))
     const snapshot = room.getCurrentSnapshot()
     const shapeCount = snapshot.documents?.filter(d => d.state?.typeName === 'shape').length || 0
     res.json({ ok: true, shapes: shapeCount })
@@ -631,11 +654,11 @@ const HIGHLIGHT_THEMES = {
   'light-blue':  { type: 'info', label: 'Note / reference' },
   'blue':        { type: 'info', label: 'Note / reference' },
 }
-router.get('/:name/highlight-feedback', requireRead, (req, res) => {
+router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
-  const records = getRoomRecords(syncRoomName(req.params.name), 'highlight')
+  const records = await getRoomRecords(syncRoomName(req.params.name), 'highlight')
   const feedback = records
     .filter(shape => shape.meta?.highlightText)
     .map(shape => {
@@ -674,8 +697,8 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   // SSE keepalive to prevent proxy (Fly) from killing idle connections
   const keepalive = setInterval(() => res.write(':\n\n'), 15000)
 
-  // Ensure room exists so we get change notifications
-  getOrCreateRoom(syncRoomName(req.params.name))
+  // Ensure room exists so we get change notifications (fire-and-forget — SSE doesn't wait)
+  getOrCreateRoom(syncRoomName(req.params.name)).catch(() => {})
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
     // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff
@@ -694,11 +717,11 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
 })
 
 // GET /:name/shapes/:id — get a single shape
-router.get('/:name/shapes/:id', requireRead, (req, res) => {
+router.get('/:name/shapes/:id', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
-  const record = getRecord(syncRoomName(req.params.name), shapeId)
+  const record = await getRecord(syncRoomName(req.params.name), shapeId)
   if (!record) return res.status(404).json({ error: 'Shape not found' })
   res.json(record)
 })
@@ -989,7 +1012,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
     // 6. Create highlight shape via putShape (on top of all existing shapes)
     const shapeId = `shape:hl-${Date.now().toString(36)}`
-    const allRecords = getRoomRecords(syncRoomName(req.params.name), null)
+    const allRecords = await getRoomRecords(syncRoomName(req.params.name), null)
     const maxIndex = allRecords
       .map(r => r.index || 'a0')
       .sort()
@@ -1047,6 +1070,211 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// POST /:name/input-scratch — inject a scratch .tex file into the document
+router.post('/:name/input-scratch', requireRw, (req, res) => {
+  const { content, label, after, before, replace, agentId, agentName } = req.body
+  if (!content) return res.status(400).json({ error: 'content is required' })
+  if (!label) return res.status(400).json({ error: 'label is required' })
+  if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
+
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile (book format not supported)' })
+
+  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+
+  // Derive scratch filename from label
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+
+  // Wrap content in scratch environment, signed with agent + timestamp
+  const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
+  const signer = agentName || agentId || 'agent'
+  const displayHeader = `${label} — ${signer} — ${timestamp}`
+  const wrappedContent = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
+
+  if (replace) {
+    // Overwrite existing scratch section — no main.tex edit needed; caller writes the file
+    return res.json({ ok: true, scratchPath, wrappedContent, sourceDir: project.sourceDir || null, action: 'replaced' })
+  }
+
+  // Resolve location label to a line number in main.tex
+  const locationLabel = after || before
+  const mainLines = mainContent.split('\n')
+
+  // Environments treated as document-level containers — don't climb out of these
+  const TRANSPARENT_ENVS = new Set(['document', 'appendix'])
+
+  // Given a 0-indexed label line, scan backward to find an enclosing \begin{ENV},
+  // then forward to the matching \end{ENV}, and return the 1-indexed line after it.
+  // Falls back to labelLineIdx+1 (after label line) if no enclosing env is found.
+  function climbToEnvEnd(labelLineIdx) {
+    const openCounts = {}
+    for (let j = labelLineIdx - 1; j >= 0; j--) {
+      // Check for \end{ENV} first (going backward, ends precede their begins)
+      const endM = mainLines[j].match(/\\end\{([^}]+)\}/)
+      if (endM) {
+        const env = endM[1]
+        openCounts[env] = (openCounts[env] || 0) + 1
+        continue
+      }
+      const beginM = mainLines[j].match(/\\begin\{([^}]+)\}/)
+      if (beginM) {
+        const env = beginM[1]
+        if (TRANSPARENT_ENVS.has(env)) continue
+        if ((openCounts[env] || 0) > 0) {
+          openCounts[env]--  // this begin matches an end we already passed
+        } else {
+          // Unclosed \begin{env} at line j — the label is inside it; find the matching \end
+          let depth = 0
+          for (let k = j; k < mainLines.length; k++) {
+            if (mainLines[k].includes(`\\begin{${env}}`)) depth++
+            if (mainLines[k].includes(`\\end{${env}}`)) {
+              depth--
+              if (depth === 0) return k + 1  // 1-indexed: after \end{env}
+            }
+          }
+          break  // couldn't find matching \end — fall back
+        }
+      }
+    }
+    return labelLineIdx + 1  // no enclosing env, or couldn't close it — after label line
+  }
+
+  function resolveLocation(locLabel) {
+    // 1. Search main file for \label{X}
+    for (let i = 0; i < mainLines.length; i++) {
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return climbToEnvEnd(i)
+    }
+
+    // 2. Search included files; map back to the \input{} line in main
+    for (const file of listSourceFiles(req.params.name)) {
+      if (file === project.mainFile) continue
+      const fc = readSourceFile(req.params.name, file)
+      if (!fc || !fc.includes(`\\label{${locLabel}}`)) continue
+      const baseName = file.replace(/\.tex$/, '')
+      for (let i = 0; i < mainLines.length; i++) {
+        if (new RegExp(`\\\\(?:input|include)\\{${baseName}(?:\\.tex)?\\}`).test(mainLines[i])) return i + 1
+      }
+    }
+
+    // 3. Fall back to line:N magic label
+    const lineMatch = locLabel.match(/^line:(\d+)$/)
+    if (lineMatch) return parseInt(lineMatch[1])
+
+    return null
+  }
+
+  const resolvedLine = resolveLocation(locationLabel)
+  if (resolvedLine === null) {
+    return res.status(400).json({
+      error: `Cannot resolve location "${locationLabel}": not a label in the document, and not in line:N format`,
+    })
+  }
+
+  // Insert \inputscratch{} into main.tex
+  const newLines = [...mainLines]
+  const insertLine = `\\inputscratch{${scratchPath}}`
+  if (after) {
+    newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
+  } else {
+    newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
+  }
+
+  // Canonical scratch template — defines the scratch environment and helpers.
+  // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
+  // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
+  const SCRATCH_TEMPLATE_VERSION = 1
+  const scratchTemplatePath = '.scratchinputs/scratch-template.tex'
+  const scratchTemplateContent = [
+    `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
+    '\\usepackage{xcolor}',
+    '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
+    '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
+    '',
+  ].join('\n')
+
+  // Ensure preamble references the scratch template file.
+  // Remove any old inline scratch defs (from before the template-file design) and replace with \input.
+  const templateInputLine = `\\input{${scratchTemplatePath.replace(/\.tex$/, '')}}`
+  const hasTemplateInput = newLines.some(l => l.includes(templateInputLine))
+  if (!hasTemplateInput) {
+    // Remove old inline lines if present
+    const oldScratchLines = ['\\usepackage{xcolor}', '\\providecommand{\\inputscratch}', '\\newenvironment{scratch}', '\\renewenvironment{scratch}']
+    for (let i = newLines.length - 1; i >= 0; i--) {
+      if (oldScratchLines.some(prefix => newLines[i].trimStart().startsWith(prefix))) {
+        newLines.splice(i, 1)
+      }
+    }
+    const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
+    const insertAt = beginDocIdx >= 0 ? beginDocIdx : 0
+    newLines.splice(insertAt, 0, templateInputLine)
+  }
+
+  // Return content for the caller to write locally — watcher syncs to server and triggers build
+  res.json({
+    ok: true,
+    scratchPath,
+    wrappedContent,
+    scratchTemplatePath,
+    scratchTemplateContent,
+    scratchTemplateVersion: SCRATCH_TEMPLATE_VERSION,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    sourceDir: project.sourceDir || null,
+    insertedAt: resolvedLine,
+    action: after ? 'inserted-after' : 'inserted-before',
+  })
+})
+
+// POST /:name/inline-scratch — promote a polished scratch section into the document
+// Strips the scratch wrapper and replaces \inputscratch{} with the bare content in main.tex.
+router.post('/:name/inline-scratch', requireRw, (req, res) => {
+  const { label } = req.body
+  if (!label) return res.status(400).json({ error: 'label is required' })
+
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile' })
+
+  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+
+  const scratchContent = readSourceFile(req.params.name, scratchPath)
+  if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
+
+  // Strip \begin{scratch}{label}{header} and \end{scratch} wrapper, keep inner content
+  const scratchLines = scratchContent.split('\n')
+  let innerLines = scratchLines
+  if (innerLines[0] && /^\\begin\{scratch\}/.test(innerLines[0])) innerLines = innerLines.slice(1)
+  const endIdx = innerLines.lastIndexOf('\\end{scratch}')
+  if (endIdx >= 0) innerLines = innerLines.slice(0, endIdx)
+  while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
+
+  // Replace \inputscratch{scratchPath} line in main.tex with the bare content
+  const mainLines = mainContent.split('\n')
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch{${scratchPath}}`))
+  if (scratchLineIdx < 0) {
+    return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
+  }
+
+  const newLines = [...mainLines]
+  newLines.splice(scratchLineIdx, 1, ...innerLines)
+
+  res.json({
+    ok: true,
+    mainFile: project.mainFile,
+    mainContent: newLines.join('\n'),
+    scratchPath,
+    sourceDir: project.sourceDir || null,
+  })
 })
 
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps

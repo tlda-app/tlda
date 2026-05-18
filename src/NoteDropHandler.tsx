@@ -77,11 +77,13 @@ export function NoteDropHandler() {
               type: 'math-note',
               x: point.x,
               y: point.y,
+              opacity: 1,
               props: {
                 text: dropData.content,
                 color: 'violet',
                 w: 300,
                 h,
+                collapsed: false,
               },
               meta: {
                 createdAt: Date.now(),
@@ -127,11 +129,13 @@ export function NoteDropHandler() {
             type: 'math-note',
             x: point.x,
             y: point.y,
+            opacity: 1,
             props: {
               text,
               color: isDoc ? 'violet' : 'blue',
               w,
               h,
+              collapsed: false,
             },
             meta: {
               createdAt: Date.now(),
@@ -181,11 +185,13 @@ export function NoteDropHandler() {
         type: 'math-note',
         x: point.x,
         y: point.y,
+        opacity: 1,
         props: {
           text,
           color: data.color || 'orange',
           w: 200,
           h: 150,
+          collapsed: false,
         },
         meta: {
           createdAt: Date.now(),

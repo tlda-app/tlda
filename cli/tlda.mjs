@@ -448,16 +448,13 @@ async function cmdCreate() {
       }
     }
 
-    // Push .md file (and any images/assets alongside it)
-    const allFiles = []
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile()) continue
-      const content = readFileSync(join(dir, entry.name))
-      allFiles.push({ path: entry.name, content: content.toString('base64'), encoding: 'base64' })
-    }
+    // Push just the main file as a build trigger — the server reads from
+    // sourceDir directly, so we don't need to send the whole directory.
+    const content = readFileSync(join(dir, mainFile))
+    const files = [{ path: mainFile, content: content.toString('base64'), encoding: 'base64' }]
 
-    console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    console.log(`Pushing ${mainFile}...`)
+    await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
     console.log(green('Markdown project processed.'))
 
     const server = getServer()
@@ -550,6 +547,16 @@ async function cmdPush() {
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const _cliDir = dirname(fileURLToPath(import.meta.url))
+const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
+const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
+  : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const ELIZA_LOGFILE = join(homedir(), '.config', 'tlda', 'eliza.log')
+const ELIZA_PIDFILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
+const ELIZA_SCRIPT = _cliWorktreeMatch
+  ? join(_cliWorktreeMatch[1], 'bin', 'eliza.mjs')
+  : join(_cliDir, '..', 'bin', 'eliza.mjs')
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -560,7 +567,7 @@ async function ensureFleetDaemonRunning() {
     const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
     try { process.kill(pid, 0); return } catch {} // stale pid → fall through
   }
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
   if (!existsSync(daemonScript)) return // not installed; silently skip
   const { spawn: cpSpawn } = await import('child_process')
   const { openSync: fsOpenSync } = await import('fs')
@@ -581,8 +588,33 @@ async function ensureFleetDaemonRunning() {
   }
 }
 
+async function ensureElizaRunning() {
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = parseInt(readFileSync(ELIZA_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
+  }
+  if (!existsSync(ELIZA_SCRIPT)) return // not installed; silently skip
+  const { spawn: cpSpawn } = await import('child_process')
+  const { openSync: fsOpenSync } = await import('fs')
+  if (!existsSync(dirname(ELIZA_LOGFILE))) mkdirSync(dirname(ELIZA_LOGFILE), { recursive: true })
+  const logFd = fsOpenSync(ELIZA_LOGFILE, 'a')
+  const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: { ...process.env },
+  })
+  child.unref()
+  await new Promise(r => setTimeout(r, 800))
+  if (existsSync(ELIZA_PIDFILE)) {
+    const pid = readFileSync(ELIZA_PIDFILE, 'utf8').trim()
+    console.log(green('Eliza started') + dim(` (pid ${pid})`))
+  } else {
+    console.log(dim('Eliza failed to start — see ' + ELIZA_LOGFILE))
+  }
+}
+
 async function cmdFleetWatch(sub) {
-  const daemonScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-daemon.mjs')
+  const daemonScript = FLEET_DAEMON_SCRIPT
 
   if (sub === 'stop') {
     if (existsSync(FLEET_DAEMON_PIDFILE)) {
@@ -1408,6 +1440,22 @@ Example:
 }
 
 // ---- spawn: forward to bin/fleet-spawn.py ----
+async function cmdAttach() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda attach <agent-name>')
+    process.exit(1)
+  }
+  const { spawnSync } = await import('child_process')
+  const cfg = loadConfig()
+  const socket = cfg.tmuxSocket || null
+  const sess = name.startsWith('fleet-') ? name : `fleet-${name}`
+  const tmuxArgs = socket ? ['-L', socket, 'attach-session', '-t', sess]
+                          : ['attach-session', '-t', sess]
+  const result = spawnSync('tmux', tmuxArgs, { stdio: 'inherit' })
+  process.exit(result.status ?? 0)
+}
+
 async function cmdSpawn() {
   const { spawn: cpSpawn } = await import('child_process')
   const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
@@ -1517,7 +1565,7 @@ async function cmdDoctor() {
         const logFd = fsOpenSync(LOGFILE, 'a')
         const child = cpSpawn(process.execPath, [serverScript], {
           detached: true, stdio: ['ignore', logFd, logFd],
-          env: { ...process.env, PORT: getPort() }
+          env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
         child.unref()
       }
@@ -1923,7 +1971,11 @@ ${tokenEnvLines.join('\n')}
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
     }
-    // No fallback — if /health doesn't respond, the server is already dead.
+    // Also kill any zombie server processes that aren't bound to the port
+    // (e.g., old servers from worktrees that failed to bind but are still running
+    // their daemon-supervisor loops). pkill is safe here — unified-server.mjs is unique.
+    try { execSync('pkill -f "server/unified-server.mjs"', { stdio: 'pipe' }) } catch {}
+    // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
     for (let i = 0; i < 20; i++) {
@@ -2001,7 +2053,7 @@ ${tokenEnvLines.join('\n')}
       const child = spawn('node', serverArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PORT: port },
+        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined },
       })
       child.unref()
     }
@@ -2016,10 +2068,9 @@ ${tokenEnvLines.join('\n')}
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon is up. The server depends on it for
-          // activity cards, terminal-chat extraction, and source watching;
-          // a server start with no daemon = silent failure for Skip.
+          // Also ensure the fleet daemon and eliza are up.
           await ensureFleetDaemonRunning()
+          await ensureElizaRunning()
           return
         }
       } catch {}
@@ -2288,6 +2339,7 @@ async function main() {
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
+      case 'attach': await cmdAttach(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break

@@ -22,6 +22,7 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
+import { getPageUrl } from '../stores/pageUrlStore'
 
 const BAR_H = 8
 
@@ -90,7 +91,8 @@ function DocClipComponent({ shape }: { shape: any }) {
     if (!sid) { setSvgReady(false); return }
     if (getSvgText(sid)) { setSvgReady(true); return }
     setSvgReady(false)
-    const url = `/docs/${doc.docName}/page-${page}.svg`
+    const url = getPageUrl(pageIdx)
+    if (!url) return
     fetch(url)
       .then(r => r.ok ? r.text() : null)
       .then(text => {

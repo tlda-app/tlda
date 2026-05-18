@@ -14,6 +14,7 @@ import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
+import { PrefsTab } from './panels/PrefsTab'
 
 import './DocumentPanel.css'
 
@@ -79,7 +80,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'history' | 'toc' | 'notes' | 'fleet'
+type Tab = 'history' | 'toc' | 'notes' | 'fleet' | 'prefs'
 
 export function DocumentPanel() {
   const doc = useContext(DocContext)
@@ -163,10 +164,14 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           Notes
         </button>
+        <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
+        </button>
       </div>
       {tab === 'toc' && <TocTab />}
       {/* HistoryTab removed */}
       {tab === 'notes' && <NotesTab />}
+      {tab === 'prefs' && <PrefsTab />}
       <ZoneWidthSlider />
     </div>
   )
@@ -342,13 +347,14 @@ function PhoneHighlighterButton() {
 
     if (currentMode === 'color') {
       // Use absolute cursor position relative to button left edge (= slider right edge)
-      const hiresScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1
       const btnRect = dragBtnRectRef.current
       if (!btnRect) return
       const distFromBtnLeft = btnRect.left - e.clientX // positive = cursor to left of button
-      const slotW = 29 * hiresScale // 27px slot + 2px gap, scaled
-      // 16.5 * hiresScale = padding(3) + halfSlot(13.5), scaled — distance from right edge to first slot center
-      const slotPos = Math.round((distFromBtnLeft - 16.5 * hiresScale) / slotW)
+      const slotW = 29 // 27px slot + 2px gap (native sizes, no zoom)
+      // 17.5 = padding(3) + halfSlot(13.5) + halfGap(1) — places snap boundary at
+      // each slot's right edge (the far edge of the inter-slot gap from the button),
+      // so cursor must visually enter the next slot to switch (no midway-in-gap snap).
+      const slotPos = Math.round((distFromBtnLeft - 17.5) / slotW)
       // Active slot is the button itself — filter it from the slider
       const activeOrigIdx = colorIdxRef.current
       const filteredIndices = HL_SLOTS.map((_, i) => i).filter(i => i !== activeOrigIdx)
@@ -424,20 +430,17 @@ function PhoneHighlighterButton() {
     ? (HL_SLOTS.find(s => s.id === activeColorName)?.color || '#1d1d1d')
     : (btnSlotDef?.color || HL_SLOTS[1].color)
   const isActive = mode !== 'hand'
-  // zoom: hiresScale on .phone-hl-slider means position values are scaled — divide to compensate
-  const hiresScale = typeof window !== 'undefined'
-    ? (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1)
-    : 1
 
   return (
     <>
-      {/* Color slider popup — horizontal drag left */}
+      {/* Color slider popup — horizontal drag left.
+          Position uses raw viewport coords (no zoom to compensate for). */}
       {dragging && dragMode === 'color' && dragBtnRect && (
         <div
           className="phone-hl-slider"
           style={{
-            bottom: `${(window.innerHeight - dragBtnRect.bottom) / hiresScale}px`,
-            right: `${(window.innerWidth - dragBtnRect.left) / hiresScale}px`,
+            bottom: `${window.innerHeight - dragBtnRect.bottom}px`,
+            right: `${window.innerWidth - dragBtnRect.left}px`,
           }}
           onPointerDown={stopEventPropagation}
           onTouchStart={stopEventPropagation}

@@ -223,7 +223,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         style={{ touchAction: 'none' }}
       >
         {/* Basestar SVG with agent count knocked out via mask */}
-        <svg viewBox="0 0 960 960" width={14} height={14} aria-hidden="true"
+        <svg viewBox="0 0 960 960" width={27} height={27} aria-hidden="true"
           style={{ display: 'block', flexShrink: 0 }}>
           <defs>
             <mask id="fleet-count-mask">
@@ -231,7 +231,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
               <rect width="960" height="960" fill="white" />
               {aliveCount > 0 && (
                 <text x="480" y="580" textAnchor="middle" dominantBaseline="central"
-                  fill="black" fontSize={aliveCount >= 10 ? 420 : 480}
+                  fill="black" fontSize={aliveCount >= 10 ? 210 : 240}
                   fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
                   fontWeight="700">{aliveCount}</text>
               )}

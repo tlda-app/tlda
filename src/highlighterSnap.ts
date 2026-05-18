@@ -15,6 +15,7 @@ import { canvasToPdf } from './synctexAnchor'
 import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
 import { dragCoordinator } from './shapes/dragCoordinator'
+import type { TargetInfo } from './loaders/types'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -102,15 +103,15 @@ export interface SourceLine {
  * Attempt to extract text under a highlight shape and attach as metadata.
  * Call this after a highlight stroke is completed.
  */
-export function snapHighlighterToText(editor: Editor, shapeId: string, docName?: string) {
+export function snapHighlighterToText(editor: Editor, shapeId: string, docName?: string, targets?: TargetInfo[]) {
   try {
-    _snapHighlighterToText(editor, shapeId, docName)
+    _snapHighlighterToText(editor, shapeId, docName, targets)
   } catch (e: any) {
     console.warn('[highlighter-snap] Error:', e?.message || String(e))
   }
 }
 
-function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: string) {
+function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: string, targets?: TargetInfo[]) {
   const shape = editor.getShape(shapeId as any)
   if (!shape) return
 
@@ -283,7 +284,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   const fragmentPositions = matchedFragments.map(f => ({ text: f.text, x: f.x, y: f.y, w: f.width }))
 
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions) : []
+    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions, targets) : []
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -446,7 +447,8 @@ async function findSourceLinesFromBounds(
   editor: Editor,
   highlightText = '',
   shape?: any,
-  fragments?: Array<{ text: string; x: number; y: number; w: number }>
+  fragments?: Array<{ text: string; x: number; y: number; w: number }>,
+  targets?: TargetInfo[]
 ): Promise<SourceLine[]> {
   const pages = editor.getCurrentPageShapes()
     .filter(s => (s.type as string) === 'svg-page')
@@ -490,6 +492,16 @@ async function findSourceLinesFromBounds(
   const firstPdf = canvasToPdf(bounds.minX, bounds.minY, pages)
   if (!firstPdf) return []
 
+  // Map global page (1-indexed) to the target it belongs to
+  let targetName: string | undefined
+  if (targets && targets.length > 1) {
+    let offset = 0
+    for (const t of targets) {
+      if (firstPdf.page <= offset + t.pages) { targetName = t.name; break }
+      offset += t.pages
+    }
+  }
+
   // Sample path to ~20 points max for the query
   const sampled = pathPoints.length <= 20 ? pathPoints
     : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
@@ -504,6 +516,7 @@ async function findSourceLinesFromBounds(
         points: sampled,
         text: highlightText || undefined,
         fragments: fragments || undefined,
+        target: targetName || undefined,
       }),
     })
     if (!resp.ok) return []
