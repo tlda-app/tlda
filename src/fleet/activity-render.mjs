@@ -415,14 +415,17 @@ export function renderCodeCard(toolName, input, ctx) {
       </div>`
     }
     if (isMd) {
-      // Markdown files: never fold (collapse resets on re-render), word-wrap, draggable chip.
-      // The md-file-card chip enables the same drag-to-canvas action as chat-received .md files.
+      // Markdown files: never fold (collapse resets on re-render), draggable chip.
+      // Render content with markdown+KaTeX so LaTeX in scratch files is readable.
       const isScratch = /\/scratch\//.test(filePath)
       const name = filePath.split('/').pop() || 'file.md'
       const chipClass = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
+      const body = ctx.renderMarkdown
+        ? `<div class="pretty-msg-body md-write-body">${ctx.renderMarkdown(esc(content))}</div>`
+        : `<pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>`
       return `<div class="code-block-wrap code-card">
       <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span><span class="code-block-copy" title="Copy">⎘</span></div>
-      <pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>
+      ${body}
     </div>`
     }
     const shouldFold = lines.length > 10

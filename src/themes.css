@@ -55,34 +55,63 @@ body.fog-dark-mode .scrolly-figure-wrap {
   background: #1a2024;
 }
 
-/* Panel chrome is nearly invisible at rest in fog modes */
-body.fog-dark-mode .doc-panel-tabs,
-body.fog-dark-mode .doc-panel-content,
-body.fog-dark-mode .search-input-wrap {
-  opacity: 0.04;
+/* Bottom-row icon color — fog-dark canvas needs light icons */
+body.fog-dark-mode {
+  --pill-icon-color: rgba(255, 255, 255, 1);
+  --pill-icon-color-hover: rgba(255, 255, 255, 1);
 }
 
-/* Bottom-row buttons: canvas is dark so buttons need light colors.
-   These elements use html[data-theme="dark"] in their CSS, but that
-   attribute may not be set if TLDraw hasn't initialized yet. */
-body.fog-dark-mode .build-warning-badge {
-  color: rgba(255, 255, 255, 0.1);
+/* Teal dark — toolbar/panel overrides */
+body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="actions"],
+body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="extras"],
+body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="buttons"],
+body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="panel"],
+body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="menu"],
+body.fog-dark-mode .tl-theme__dark .tlui-toolbar {
+  background: rgba(26, 32, 36, 0.75) !important;
 }
-body.fog-dark-mode .build-warning-badge:hover {
-  color: rgba(255, 255, 255, 0.6);
+
+/* Teal dark — doc panel */
+body.fog-dark-mode .doc-panel {
+  background: rgba(26, 32, 36, 0.5);
 }
-body.fog-dark-mode .fleet-icon-pill-badge {
-  color: white;
+body.fog-dark-mode .doc-panel:hover,
+body.fog-dark-mode .doc-panel-open {
+  background: rgba(34, 42, 46, 0.92);
 }
-body.fog-dark-mode .phone-hl-btn {
-  color: rgba(255, 255, 255, 0.5);
+body.fog-dark-mode .doc-panel-tabs {
+  border-bottom-color: rgba(46, 58, 62, 0.4);
 }
-body.fog-dark-mode .voice-note-btn {
-  color: rgba(255, 255, 255, 0.5);
+body.fog-dark-mode .doc-panel-tab.active {
+  color: #c8dade;
+}
+body.fog-dark-mode .toc-item:hover,
+body.fog-dark-mode .search-result:hover,
+body.fog-dark-mode .note-item:hover,
+body.fog-dark-mode .proof-item:hover,
+body.fog-dark-mode .toc-diff-hint:hover {
+  background: rgba(46, 58, 62, 0.5);
+}
+
+/* Teal dark — book tabs */
+body.fog-dark-mode .book-tab-bar {
+  background: #222a2e;
+  border-bottom-color: #2e3a3e;
+}
+body.fog-dark-mode .book-tab {
+  color: #6e8890;
+}
+body.fog-dark-mode .book-tab:hover {
+  background: #283234;
+  color: #a0b8bc;
+}
+body.fog-dark-mode .book-tab--active {
+  background: #283234;
+  color: #c8dade;
 }
 
 /* ------------------------------------------------------------------ */
-/* Fog Light — overcast gray, cool undertone                          */
+/* Fog Light — blue-teal mist, unified surfaces                      */
 /* ------------------------------------------------------------------ */
 
 body.fog-light-mode .tl-container {
@@ -141,54 +170,90 @@ body.fog-light-mode .scrolly-figure-wrap {
   background: #d2dfe3;
 }
 
-/* Panel chrome is nearly invisible at rest in fog modes */
-body.fog-light-mode .doc-panel-tabs,
-body.fog-light-mode .doc-panel-content,
-body.fog-light-mode .search-input-wrap {
-  opacity: 0.04;
+/* Bottom-row icon color — fog-light canvas needs deep-teal icons */
+body.fog-light-mode {
+  --pill-icon-color: rgba(0, 40, 55, 1);
+  --pill-icon-color-hover: rgba(0, 40, 55, 1);
 }
 
-/* Bottom-row buttons: fleet pill and build warning use 0.1 element opacity which
-   becomes invisible on the gray/warm canvas. Bump opacity slightly; keep voice-note
-   at its own 0.15 since its color is now deep enough. */
-body.fog-light-mode .build-warning-badge {
-  color: rgba(0, 40, 55, 0.5);
+/* Teal light — toolbar/panel glass */
+body.fog-light-mode .tlui-layout__bottom {
+  --tl-color-low: rgba(232, 238, 240, 0.5);
+  --tl-color-panel: rgba(232, 238, 240, 0.5);
 }
-body.fog-light-mode .build-warning-badge:hover {
-  color: rgba(0, 40, 55, 0.9);
+body.fog-light-mode [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) > * {
+  --tl-color-low: rgba(232, 238, 240, 0.5);
+  --tl-color-panel: rgba(232, 238, 240, 0.5);
 }
-body.fog-light-mode .fleet-icon-pill-badge {
-  color: rgba(0, 40, 55, 1);
-  opacity: 0.4;
-}
-body.fog-light-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.15;
-}
-body.fog-light-mode .phone-hl-btn {
-  color: rgba(0, 40, 55, 0.8);
-}
-body.fog-light-mode .voice-note-btn {
-  color: rgba(0, 40, 55, 0.8);
+body.fog-light-mode [class*="tlui-"][class*="actions"],
+body.fog-light-mode [class*="tlui-"][class*="extras"],
+body.fog-light-mode [class*="tlui-"][class*="buttons"],
+body.fog-light-mode [class*="tlui-"][class*="panel"],
+body.fog-light-mode [class*="tlui-"][class*="menu"],
+body.fog-light-mode .tlui-toolbar {
+  background: rgba(232, 238, 240, 0.6) !important;
 }
 
-/* Warm mode: off-white canvas, same treatment */
-body.warm-mode .build-warning-badge {
-  color: rgba(0, 0, 0, 0.35);
+/* Teal light — doc panel (override white backgrounds) */
+body.fog-light-mode .doc-panel {
+  background: rgba(232, 238, 240, 0.5);
 }
-body.warm-mode .build-warning-badge:hover {
-  color: rgba(0, 0, 0, 0.75);
+body.fog-light-mode .doc-panel:hover,
+body.fog-light-mode .doc-panel-open {
+  background: rgba(235, 240, 242, 0.92);
 }
-body.warm-mode .fleet-icon-pill-badge {
-  color: rgba(40, 20, 0, 1);
-  opacity: 0.3;
+body.fog-light-mode .doc-panel-tabs {
+  border-bottom-color: rgba(180, 200, 210, 0.4);
 }
-body.warm-mode .fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.12;
-}
-body.warm-mode .phone-hl-btn {
-  color: rgba(0, 0, 0, 0.6);
-}
-body.warm-mode .voice-note-btn {
-  color: rgba(0, 0, 0, 0.75);
+body.fog-light-mode .toc-item:hover,
+body.fog-light-mode .search-result:hover,
+body.fog-light-mode .note-item:hover,
+body.fog-light-mode .proof-item:hover,
+body.fog-light-mode .toc-diff-hint:hover {
+  background: rgba(180, 200, 210, 0.5);
 }
 
+/* Teal light — eliminate white surfaces */
+body.fog-light-mode .canvas-clip-panel,
+body.fog-light-mode .canvas-clip-panel__content {
+  background: #d2dfe3;
+}
+body.fog-light-mode .prefs-select {
+  background: #e8eef0;
+  border-color: #c8d4d8;
+}
+body.fog-light-mode .fleet-chat-shape .doc-link-preview-clip {
+  background: #d2dfe3;
+}
+body.fog-light-mode .history-panel {
+  background: rgba(235, 240, 242, 0.95);
+  border-left-color: rgba(200, 212, 218, 0.3);
+}
+
+/* Teal light — book tabs */
+body.fog-light-mode .book-tab-bar {
+  background: #e8eef0;
+  border-bottom-color: #ccd6da;
+}
+body.fog-light-mode .book-tab {
+  color: #3d5c68;
+}
+body.fog-light-mode .book-tab:hover {
+  background: #dce4e6;
+  color: #1a3540;
+}
+body.fog-light-mode .book-tab--active {
+  background: #dce4e6;
+  color: #0a2530;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Warm mode — off-white canvas, warm undertone                       */
+/* ------------------------------------------------------------------ */
+
+/* Bottom-row icon color — warm canvas needs dark-warm icons */
+body.warm-mode {
+  --pill-icon-color: rgba(40, 20, 0, 1);
+  --pill-icon-color-hover: rgba(40, 20, 0, 1);
+}

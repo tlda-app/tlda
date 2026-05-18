@@ -176,6 +176,18 @@ function globToRegex(glob) {
   return new RegExp('^' + withAlts + '$')
 }
 
+// Derive the virtual skill key from a skill SKILL.md path, e.g.
+// ~/.claude/skills/writing/SKILL.md → 'skill:writing'
+function skillKeyFromPath(resolvedPath) {
+  const home = os.homedir()
+  const skillsDir = path.join(home, '.claude', 'skills')
+  if (!resolvedPath.startsWith(skillsDir + path.sep)) return null
+  const rel = resolvedPath.slice(skillsDir.length + 1) // e.g. 'writing/SKILL.md'
+  const parts = rel.split(path.sep)
+  if (parts.length === 2 && parts[1] === 'SKILL.md') return 'skill:' + parts[0]
+  return null
+}
+
 function checkQualification(agentId, toolName, filePath) {
   if (!filePath || _qualRules.length === 0) return
   if (toolName !== 'Edit' && toolName !== 'Write') return
@@ -183,7 +195,6 @@ function checkQualification(agentId, toolName, filePath) {
   // Normalize path for matching — strip leading home dir for glob matching
   const home = os.homedir()
   const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
-  // Also try matching against the full path
   const reads = _agentReads.get(agentId) || new Set()
   const warned = _agentWarned.get(agentId) || new Set()
 
@@ -191,7 +202,10 @@ function checkQualification(agentId, toolName, filePath) {
     if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
     for (const req of rule.requires) {
       const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
+      // Satisfied by a literal Read of the file OR by invoking the corresponding skill
+      const skillKey = skillKeyFromPath(resolvedReq)
       if (reads.has(resolvedReq)) continue
+      if (skillKey && reads.has(skillKey)) continue
       const warnKey = `${filePath}:${resolvedReq}`
       if (warned.has(warnKey)) continue
       warned.add(warnKey)
@@ -704,12 +718,10 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       }
     }
 
-    // If Claude just emitted an assistant text block, schedule a terminal
-    // capture to check for a plan-mode approval prompt.
-    const hasAssistantText = parsedEvents.some(ev =>
-      ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'text' && b.text?.length > 0)
-    )
-    if (hasAssistantText) scheduleCheckForPlanModePrompt(agentId)
+    // Plan-mode capture DISABLED 2026-05-18 — was spawning tmux capture-pane
+    // per active agent on every JSONL write, flooding the process table under
+    // load. Re-enable only after replacing with a tmux-free detection path
+    // (e.g. regex scan of the JSONL text itself for the plan-mode sentinel).
 
     // Check for tool approval prompts — these appear when Claude wants to
     // use a tool that requires permission.
@@ -968,6 +980,69 @@ function flushSourceChanges(projectName) {
   })
 }
 
+// ---------- Backing file watchers ----------
+// The server sends `watch-backing-files` with the current set of files to watch.
+// When a file changes, we read it and send `file-content-changed`.
+// When we write a file (via RPC), we suppress the next watcher event for it.
+
+/** @type {Map<string, {watcher: import('fs').FSWatcher, docNames: string[], lastWriteAt: number}>} */
+const backingWatchers = new Map()
+
+/** Expand ~ in file paths */
+function expandHome(p) {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+}
+
+function syncBackingWatchers(files) {
+  // files = [{filePath: string, docNames: string[]}]
+  const incoming = new Map(files.map(f => [expandHome(f.filePath), f.docNames]))
+
+  // Remove watchers for files no longer in the list
+  for (const [fp, entry] of [...backingWatchers]) {
+    if (!incoming.has(fp)) {
+      try { entry.watcher.close() } catch {}
+      backingWatchers.delete(fp)
+    }
+  }
+
+  // Add watchers for new files
+  for (const [fp, docNames] of incoming) {
+    if (backingWatchers.has(fp)) {
+      backingWatchers.get(fp).docNames = docNames
+      continue
+    }
+    try {
+      let debounce = null
+      const watcher = fs.watch(fp, { persistent: false }, () => {
+        const entry = backingWatchers.get(fp)
+        if (!entry) return
+        if (Date.now() - entry.lastWriteAt < 2000) return  // suppress echo from own write
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(() => {
+          try {
+            const content = fs.readFileSync(fp, 'utf8')
+            sendMsg({ type: 'file-content-changed', filePath: fp, content })
+          } catch (e) {
+            console.warn(`[daemon] read backing file ${fp}: ${e.message}`)
+          }
+        }, 200)
+      })
+      backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
+    } catch (e) {
+      console.warn(`[daemon] watch backing file ${fp}: ${e.message}`)
+    }
+  }
+}
+
+async function rpcWriteBackingFile({ filePath, content }) {
+  const fp = expandHome(filePath)
+  // Record write time before writing to suppress the watcher echo
+  const entry = backingWatchers.get(fp)
+  if (entry) entry.lastWriteAt = Date.now()
+  fs.writeFileSync(fp, content ?? '', 'utf8')
+  return { ok: true }
+}
+
 // ---------- RPC handlers (server → daemon) ----------
 //
 // Each handler receives the params object from the inbound `rpc`
@@ -1054,28 +1129,10 @@ async function rpcListSessions() {
 }
 
 async function rpcCheckAlive({ tmux_session }) {
+  // Read from the cache populated by checkAgentLiveness every 30s.
+  // Zero spawns per call — the periodic poll handles the expensive pgrep work.
   if (!tmux_session) return { alive: false }
-  const { sessions } = await rpcListSessions()
-  if (!new Set(sessions).has(tmux_session)) return { alive: false }
-  const { stdout } = await execFileP('tmux',
-    [...TMUX_ARGS, 'list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
-    { timeout: 3000, encoding: 'utf8' })
-  const panePids = stdout.trim().split('\n').filter(Boolean)
-  for (const pid of panePids) {
-    // The pane PID may itself be the claude process (no shell wrapper).
-    try {
-      const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
-        { timeout: 2000, encoding: 'utf8' })
-      if (self.includes('claude')) return { alive: true }
-    } catch {}
-    // Or claude may be a direct child of the pane's shell process.
-    try {
-      const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
-        { timeout: 2000, encoding: 'utf8' })
-      if (children.trim()) return { alive: true }
-    } catch {} // pgrep exits non-zero when no match — not an error
-  }
-  return { alive: false }
+  return { alive: _alivenessCache.get(tmux_session) ?? false }
 }
 
 async function rpcKick({ agent_id }) {
@@ -1183,8 +1240,13 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
+// Cache populated by checkAgentLiveness every 30s.
+// rpcCheckAlive reads from here — zero spawns per call.
+const _alivenessCache = new Map()  // tmux_session → boolean
+
 async function checkAgentLiveness() {
   if (!agents.length) return
+  // One list-sessions call to find candidate sessions cheaply.
   let sessions
   try {
     const r = await rpcListSessions()
@@ -1196,8 +1258,8 @@ async function checkAgentLiveness() {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
 
-    const tmuxExists = sessions.has(agent.tmux_session)
-    if (!tmuxExists) {
+    if (!sessions.has(agent.tmux_session)) {
+      _alivenessCache.set(agent.tmux_session, false)
       if (!agent.hibernating) {
         console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
       }
@@ -1205,7 +1267,7 @@ async function checkAgentLiveness() {
       continue
     }
 
-    // Tmux exists — check if a claude process is running in it
+    // Session exists — verify a claude process is running inside it.
     let claudeAlive = false
     try {
       const { stdout } = await execFileP('tmux',
@@ -1214,33 +1276,35 @@ async function checkAgentLiveness() {
       const panePids = stdout.trim().split('\n').filter(Boolean)
       for (const pid of panePids) {
         try {
+          const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
+            { timeout: 2000, encoding: 'utf8' })
+          if (self.includes('claude')) { claudeAlive = true; break }
+        } catch {}
+        try {
           const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
             { timeout: 2000, encoding: 'utf8' })
           if (children.trim()) { claudeAlive = true; break }
-        } catch {}  // pgrep exits non-zero when no match
+        } catch {}
       }
     } catch {}
 
+    _alivenessCache.set(agent.tmux_session, claudeAlive)
+
     if (!claudeAlive) {
       if (!agent.hibernating) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
-        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
       }
       agent.hibernating = true
       continue
     }
 
-    // Process is live — clear hibernation if it was set (agent came back).
     if (agent.hibernating) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (claude process found in ${agent.tmux_session})`)
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake`)
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
   }
 
-  // Report current alive set to the server. Server uses this (per machine_id)
-  // as ground truth for awake/hibernating status. Hibernating = registered
-  // and not dead, but no claude process — the agent went to sleep.
   sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
 }
 
@@ -1516,6 +1580,7 @@ const RPC_HANDLERS = {
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,
+  'write-backing-file': rpcWriteBackingFile,
 }
 
 async function handleRpc(msg) {
@@ -1563,6 +1628,8 @@ function teardownWatchers() {
   sourceWatchers.clear()
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
+  for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
+  backingWatchers.clear()
 }
 
 function connect() {
@@ -1629,10 +1696,9 @@ function handleServerMessage(msg) {
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
-    // Start periodic death detection
+    // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
-      // Run once immediately after welcome
       setTimeout(checkAgentLiveness, 5000)
     }
     return
@@ -1664,6 +1730,10 @@ function handleServerMessage(msg) {
     teardownWatchers()
     try { ws.close() } catch {}
     scheduleReconnect()
+    return
+  }
+  if (msg.type === 'watch-backing-files') {
+    syncBackingWatchers(msg.files || [])
     return
   }
   if (msg.type === 'rpc') {

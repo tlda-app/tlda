@@ -58,6 +58,7 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
@@ -136,6 +137,26 @@ export function renderChatLine(m, ctx) {
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span>`
       : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toNick)}</span>:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
+  }
+
+  // --- Plan mode approval card ---
+  if (m._evType === 'plan_approval') {
+    const ts = timeShort(m.timestamp)
+    const label = esc(m._agentLabel || agentLabel(m.from))
+    const agentCls = getNickClass(m.from)
+    const agentId = esc(m._agentId || m.from || '')
+    const planText = (m._planText || '').trim()
+    const planSnippet = planText.length > 800 ? '\u2026' + planText.slice(-800) : planText
+    const planHtml = planSnippet
+      ? `<pre class="plan-approval-plan">${esc(planSnippet)}</pre>`
+      : ''
+    return `<div class="chat-line plan-approval-card" data-agent-id="${agentId}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}">
+      <span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-plan-approval">
+        <div class="lc-header"><span class="lc-icon">\uD83D\uDCCB</span> <span class="lc-title">Ready to proceed</span> <span class="lc-routing"><span class="${agentCls}">${label}</span> wants to start implementation</span></div>
+        ${planHtml}
+        <div class="plan-approval-hint">Reply <strong>yes</strong> / <strong>no</strong> to approve or reject</div>
+      </div></div>`
   }
 
   // --- Terminal attention card (permission prompt auto-pop) ---
@@ -290,9 +311,7 @@ export function renderChatLine(m, ctx) {
     if (att?.type === 'file') {
       const name = esc(att.name || att.path?.split('/').pop() || 'file')
       const filePath = esc(att.path || '')
-      if (att.broken) {
-        return `<span class="ref-chip ref-chip-broken" data-path="${filePath}" title="File not found: ${filePath}"><span class="ref-chip-doc-icon">\u26A0</span>${name}</span>`
-      }
+      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
       const fileUrl = att.url ? esc(att.url) : ''
       const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
       if (isImage && fileUrl) {

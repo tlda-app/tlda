@@ -42,7 +42,7 @@ import { initProjectStore, listProjects, readProject, getProjectsDir } from './l
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
@@ -332,6 +332,37 @@ const pendingRpcs = new Map()
 let _rpcSeq = 0
 const RPC_TIMEOUT_MS = 10_000
 
+// ---------- Plan mode approval tracking ----------
+//
+// When a terminal frame shows the Claude Code plan mode approval prompt
+// ("Would you like to proceed?"), we fire a plan_approval fleet event and
+// track the pending approval so Skip's voice response can be routed back
+// as a keystroke to the correct agent's tmux pane.
+//
+// keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
+const pendingPlanApprovals = new Map()
+
+const ANSI_RE = /\u001b\[[0-9;?]*[a-zA-Z]/g
+
+// Returns the stripped pane text if it contains a plan mode approval prompt,
+// or null otherwise.
+function detectPlanApproval(pane) {
+  if (!pane) return null
+  const stripped = pane.replace(ANSI_RE, '')
+  if (stripped.includes('Would you like to proceed')) return stripped
+  return null
+}
+
+// Fuzzy match Skip's reply to an affirmative or negative.
+// Returns 'y', 'n', or null.
+function matchApprovalResponse(text) {
+  const t = text.trim().toLowerCase()
+  // Negative — check first so "no go ahead" isn't misread as affirmative
+  if (/\b(no|nope|stop|cancel|wait|hold on|don'?t|not yet|abort|reject|denied)\b/.test(t)) return 'n'
+  if (/\b(yes|yeah|yep|yup|go ahead|do it|approve|proceed|proceed|sounds good|let'?s go|sure|absolutely|okay|ok)\b/.test(t)) return 'y'
+  return null
+}
+
 /**
  * Send an RPC to the daemon owning a specific machine and wait for its
  * reply. Returns a promise that resolves with `result` or rejects with an
@@ -460,9 +491,37 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
+    // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
+    // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
+    // fleet-spawn.py pre-registers the agent before starting tmux, so findAgent() works
+    // immediately after the spawn RPC resolves — no register hook or name-pattern needed.
+    if (fleetStore) {
+      const docName = event.name
+      const qaName = `qa-${docName}`
+      const existing = fleetStore.findAgent(qaName)
+      if (!existing || existing.dead) {
+        const machineIds = [...daemonConnections.keys()]
+        if (machineIds.length > 0) {
+          const taskDesc = `Watch the ${docName} writing project. Read the qa-writing-watch skill for your full spec.`
+          sendRpc(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
+            .then(() => {
+              const agent = fleetStore.findAgent(qaName)
+              if (agent) {
+                const taskId = `qa-task-${docName}-${Date.now()}`
+                fleetStore.delegate('fleet:tlda', agent.id, taskId, taskDesc, { type: 'qa_watch', project: docName })
+                console.log(`[qa-watch] delegated task to ${qaName} (${agent.id}) for project ${docName}`)
+              } else {
+                console.warn(`[qa-watch] spawn succeeded but agent ${qaName} not found in store`)
+              }
+            })
+            .catch(e => console.warn(`[qa-watch] spawn failed for ${qaName}: ${e.message}`))
+          console.log(`[qa-watch] spawning ${qaName} for project ${docName}`)
+        }
+      }
+    }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, buildFiles } = event
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, lastBuildSuccess, buildFiles } = event
     const text = mirrorFailed
       ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
       : `Build ${hash} — ${docName}`
@@ -471,10 +530,12 @@ onGlobalEvent((event) => {
     // Notify monitoring subscribers
     const subs = new Set(tldaFeedback.subscribers(docName))
 
-    // For mirror failures, also notify agents who used editor tools on the build files
-    // since the last successful mirror — those are the agents who could be responsible.
-    if (mirrorFailed && buildFiles?.length && lastMirrorSuccess) {
-      for (const id of fleetStore.recentDocAgents(buildFiles, lastMirrorSuccess)) subs.add(id)
+    // Also notify agents who recently edited the build files — they need build cards
+    // regardless of whether they remembered to subscribe via `tlda monitor`.
+    // Use last successful build as the cutoff; fall back to last mirror, then 2 hours ago.
+    if (buildFiles?.length) {
+      const since = lastBuildSuccess ?? lastMirrorSuccess ?? (Date.now() - 2 * 60 * 60 * 1000)
+      for (const id of fleetStore.recentDocAgents(buildFiles, since)) subs.add(id)
     }
 
     for (const agentId of subs) {
@@ -666,7 +727,7 @@ app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', (req, res) => {
-  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true })
+  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
@@ -712,6 +773,67 @@ app.get('/api/local-image', requireRead, (req, res) => {
   res.set('Content-Type', mimeType)
   res.set('Cache-Control', 'public, max-age=3600')
   res.sendFile(resolve(expanded), { dotfiles: 'allow' })
+})
+
+// ---------- Backing file registry ----------
+// Maps filePath → Set of docNames. Server tells daemon which files to watch.
+// Registry is in-memory; rebuilt from room shapes on daemon connect.
+
+/** @type {Map<string, Set<string>>} filePath → Set<docName> */
+const backingFileRegistry = new Map()
+
+function backingFileRegister(filePath, docName) {
+  if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())
+  backingFileRegistry.get(filePath).add(docName)
+  sendWatchBackingFiles()
+}
+
+function sendWatchBackingFiles() {
+  if (daemonConnections.size === 0) return
+  const files = [...backingFileRegistry.entries()].map(([filePath, docNames]) => ({
+    filePath, docNames: [...docNames],
+  }))
+  for (const [, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch {}
+  }
+}
+
+// Rebuild registry from room shapes when daemon connects.
+async function rebuildBackingFileRegistry() {
+  backingFileRegistry.clear()
+  for (const docName of listActiveRooms()) {
+    try {
+      const shapes = await getRoomRecords(docName, 'math-note')
+      for (const shape of shapes) {
+        if (shape.props?.backingFile) {
+          backingFileRegister(shape.props.backingFile, docName)
+        }
+      }
+    } catch {}
+  }
+}
+
+// POST /api/backing-file-register — client registers a backing file watch
+app.post('/api/backing-file-register', requireRead, (req, res) => {
+  const { filePath, docName } = req.body || {}
+  if (!filePath || !docName) return res.status(400).json({ error: 'Missing filePath or docName' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  backingFileRegister(expanded, docName)
+  res.json({ ok: true })
+})
+
+// POST /api/backing-file-write — write content to a file via daemon RPC
+app.post('/api/backing-file-write', requireRead, async (req, res) => {
+  const { filePath, content } = req.body || {}
+  if (!filePath) return res.status(400).json({ error: 'Missing filePath' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  try {
+    await sendRpc(LOCAL_MACHINE_ID, 'write-backing-file', { filePath: expanded, content: content ?? '' })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(503).json({ error: e.message })
+  }
 })
 
 // ---------- Doc asset serving ----------
@@ -1380,7 +1502,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'store-agents') {
-    reply(fleetStore.getAllAgents())
+    reply(fleetStore.getAliveAgents())
     return
   }
 
@@ -1444,9 +1566,8 @@ async function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over all agents using the same label set the MCP `chat()` uses:
-    // agent.labels + virtual (awake/hibernating) + friendly_name + id.
-    const allAgents = fleetStore.getAllAgents?.() || []
+    // Resolve DNF over all alive agents using labels + virtual + friendly_name + id.
+    const allAgents = fleetStore.getAliveAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
@@ -1529,6 +1650,30 @@ async function handleFleetWsMessage(ws, msg) {
     reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
     for (const to of recipients) respawnIfNotDead(to)
+
+    // Plan mode approval routing: if Skip sends an affirmative/negative and
+    // there's a pending plan approval for the targeted agent (or any agent),
+    // route the keystroke to the agent's tmux pane.
+    if (from === 'fleet:skip' && pendingPlanApprovals.size > 0) {
+      const key = matchApprovalResponse(text)
+      if (key) {
+        let approval = null
+        for (const r of recipients) {
+          if (pendingPlanApprovals.has(r)) { approval = pendingPlanApprovals.get(r); pendingPlanApprovals.delete(r); break }
+        }
+        if (!approval && pendingPlanApprovals.size === 1) {
+          const [aid, a] = [...pendingPlanApprovals.entries()][0]
+          approval = a; pendingPlanApprovals.delete(aid)
+        }
+        if (approval?.tmux_session && approval?.machine_id) {
+          sendRpc(approval.machine_id, 'send-text', {
+            tmux_session: approval.tmux_session,
+            text: key,
+            enter: true,
+          }).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
+        }
+      }
+    }
     return
   }
 
@@ -2324,6 +2469,8 @@ function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
     }
+    // Rebuild backing file registry from current rooms and push watch list to daemon.
+    rebuildBackingFileRegistry().then(() => sendWatchBackingFiles()).catch(() => {})
     return
   }
 
@@ -2415,6 +2562,52 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal-frame') {
     if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
+    // Plan mode approval detection — fire once per unique prompt appearance.
+    if (fleetStore && msg.agent_id && !msg.dead) {
+      const stripped = detectPlanApproval(msg.pane)
+      if (stripped) {
+        const hash = stripped.slice(-300) // fingerprint: tail of stripped pane
+        const existing = pendingPlanApprovals.get(msg.agent_id)
+        if (!existing || existing.lastHash !== hash) {
+          // Extract plan text: everything before "Would you like to proceed"
+          const proceedIdx = stripped.indexOf('Would you like to proceed')
+          const planText = proceedIdx > 0
+            ? stripped.slice(0, proceedIdx).replace(/^\s+|\s+$/g, '').slice(-2000)
+            : ''
+          const agent = fleetStore.findAgent(msg.agent_id)
+          const agentLabel = agent?.friendly_name || msg.agent_id.replace('fleet:', '')
+          const text = `${agentLabel}: ready to proceed with implementation`
+          const event = fleetStore.share({
+            type: 'plan_approval',
+            from: msg.agent_id,
+            to: 'fleet:skip',
+            text,
+            // Pass as object — share() JSON-stringifies for DB;
+            // onEvent listener receives it as-is (no double-encode).
+            metadata: {
+              agentId: msg.agent_id,
+              agentLabel,
+              planText,
+              tmux_session: msg.tmux_session || agent?.tmux_session,
+              machine_id: agent?.machine_id,
+            },
+          })
+          // Add to unread (share() only auto-tracks unread for type='chat')
+          fleetStore.addUnread?.(event?.id, 'fleet:skip')
+          // No manual broadcastEvent — share() fires onEvent → broadcastEvent automatically
+          pendingPlanApprovals.set(msg.agent_id, {
+            tmux_session: msg.tmux_session || agent?.tmux_session,
+            machine_id: agent?.machine_id,
+            planText,
+            lastHash: hash,
+            eventId: event?.id,
+          })
+        }
+      } else if (pendingPlanApprovals.has(msg.agent_id)) {
+        // Prompt gone — agent moved on (approval given or rejected externally)
+        pendingPlanApprovals.delete(msg.agent_id)
+      }
+    }
     return
   }
 
@@ -2495,6 +2688,17 @@ function handleDaemonWsMessage(ws, msg) {
     }).catch(e => {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
     })
+    return
+  }
+
+  if (type === 'file-content-changed') {
+    const { filePath, content } = msg
+    if (!filePath) return
+    const docNames = backingFileRegistry.get(filePath)
+if (!docNames || docNames.size === 0) return
+    for (const docName of docNames) {
+      broadcastSignal(docName, 'signal:file-updated', { filePath, content: content ?? '' })
+    }
     return
   }
 

@@ -1850,7 +1850,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'flash_location',
-      description: 'Flash a temporary red circle at a source location in the TLDraw viewer. Use this for forward sync from TeX source to the canvas. Not persistent — use draw_highlight for persistent marks.',
+      description: 'DEPRECATED — prefer mentioning a label or line number in chat (auto-links to hoverable reference), or use draw_highlight for persistent marks. Flash a temporary red circle at a source location — disruptive, moves the user\'s viewport.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2008,7 +2008,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'scroll_to_line',
-      description: 'Scroll the viewer to a source line. Looks up the line position and broadcasts a scroll command to all connected viewers.',
+      description: 'Scroll the viewer to a source line. DISRUPTIVE — moves the user\'s viewport. Prefer mentioning a label or line number in chat (auto-links to hoverable reference). Only use scroll_to_line when the user explicitly asks to be shown something.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -32,6 +32,7 @@ const customShapeSchemas = {
       collapsed: T.optional(T.boolean),
       docName: T.optional(T.string),
       docView: T.optional(T.boolean),
+      backingFile: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
@@ -333,6 +334,11 @@ const schema = createTLSchema({
 
 /** @type {Map<string, TLSocketRoom>} */
 const rooms = new Map()
+
+/** Returns all currently active room docNames. */
+export function listActiveRooms() {
+  return [...rooms.keys()]
+}
 
 /** @type {string} */
 let projectsDir = ''

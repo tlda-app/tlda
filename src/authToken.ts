@@ -55,6 +55,7 @@ export function getToken(): string | null {
 // --- Auth level (fetched from server) ---
 
 let _canPresent: boolean | null = null  // null = not yet fetched
+let _isDev: boolean = false
 const presentListeners = new Set<() => void>()
 
 /** Fetch auth level from server. Call after initToken(). */
@@ -64,11 +65,14 @@ export async function fetchAuthLevel(): Promise<void> {
     if (res.ok) {
       const data = await res.json()
       _canPresent = data.presenter ?? true
+      _isDev = data.dev ?? false
     } else {
       _canPresent = false  // unauthorized = no presenter
+      _isDev = false
     }
   } catch {
     _canPresent = true  // fetch failed (no server / local dev) = unlocked
+    _isDev = false
   }
   presentListeners.forEach(fn => fn())
 }
@@ -77,6 +81,9 @@ export async function fetchAuthLevel(): Promise<void> {
 export function canPresent(): boolean {
   return _canPresent ?? true  // default true until fetched (local dev)
 }
+
+/** Whether the server is running in dev mode (auth disabled). */
+export function isDevMode(): boolean { return _isDev }
 
 export function subscribeCanPresent(fn: () => void): () => void {
   presentListeners.add(fn)

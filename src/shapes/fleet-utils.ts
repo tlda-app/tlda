@@ -5,6 +5,8 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
 
+export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
+
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
   for (const id of ids) {

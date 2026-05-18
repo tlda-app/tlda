@@ -10,7 +10,7 @@ import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
 import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
-import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { anchorIndex, getNavigateToAnchor } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 
@@ -27,6 +27,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: 800, h: 1035, pageIndex: 0 }
   }
 
+  override canSelect = () => false
   override canEdit = () => false
   override canResize = () => false
   override isAspectRatioLocked = () => true
@@ -343,23 +344,13 @@ function SvgPageComponent({ shape }: { shape: any }) {
     applyTinting(textYCacheRef.current, highlights)
   }, [isNearViewport, svgText])
 
-  // Click handler — stable, doesn't depend on SVG content
+  // Anchor navigation (links inside the SVG) — click events do reach via link targets.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
     const onClick = (e: MouseEvent) => {
-      // Cmd-click: open source in editor
-      const onSourceClick = getOnSourceClick()
-      if (e.metaKey && onSourceClick) {
-        e.preventDefault()
-        e.stopPropagation()
-        const rect = el.getBoundingClientRect()
-        const clickY = (e.clientY - rect.top) / rect.height
-        onSourceClick(shape.id, clickY)
-        return
-      }
-
+      if (e.metaKey) return
       const target = (e.target as Element).closest('a')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
@@ -371,8 +362,11 @@ function SvgPageComponent({ shape }: { shape: any }) {
         navigateToAnchor(anchorId, title)
       }
     }
+
     el.addEventListener('click', onClick)
-    return () => { el.removeEventListener('click', onClick) }
+    return () => {
+      el.removeEventListener('click', onClick)
+    }
   }, [shape.id])
 
   // Apply text tinting when highlights change (and SVG is injected)

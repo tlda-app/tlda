@@ -720,6 +720,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
 
+  // Keep a ref to the current filter so the rename effect can read it without a stale closure
+  const filterRef = useRef(filter)
+  filterRef.current = filter
+
+  // Track previous agent friendly names to detect renames (populated after agents is declared below)
+  const prevAgentNamesRef = useRef<Record<string, string>>({})
 
   // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
   const dnfFilter = filter.length > 0 ? filter : null
@@ -750,6 +756,32 @@ function FleetChatInner({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
   const [olderEvents, setOlderEvents] = useState<any[]>([])
+
+  // When an agent renames itself, auto-update any filter terms that used the old name.
+  useEffect(() => {
+    const prev = prevAgentNamesRef.current
+    const curr: Record<string, string> = {}
+    for (const a of agents) {
+      if (a.id && a.friendly_name) curr[a.id] = a.friendly_name
+    }
+    const currentFilter = filterRef.current
+    let newFilter = currentFilter
+    let changed = false
+    for (const [id, oldName] of Object.entries(prev)) {
+      const newName = curr[id]
+      if (!newName || oldName === newName) continue
+      const hasOldName = newFilter.some(clause => clause.some(([, label]) => label === oldName))
+      if (!hasOldName) continue
+      newFilter = newFilter.map(clause =>
+        clause.map(([role, label]) => [role, label === oldName ? newName : label] as [string, string])
+      )
+      changed = true
+    }
+    prevAgentNamesRef.current = curr
+    if (changed) {
+      editor.updateShape({ id: shape.id, type: 'fleet-chat', props: { filter: newFilter } })
+    }
+  }, [agents])
 
   // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
   const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)

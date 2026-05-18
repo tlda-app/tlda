@@ -10,12 +10,16 @@ import {
   AssetRecordType,
 } from 'tldraw'
 // Type imports not needed with 'any' approach
-import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore, useContext } from 'react'
 // noteThreading removed — no tabs, no merge
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
+import { DocContext } from '../PanelContext'
+import { fetchProofInfo } from '../docInfoCache'
+import { linkifyArrowRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
+import { PDF_HEIGHT } from '../layoutConstants'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -215,6 +219,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     collapsed: T.optional(T.boolean),
     docName: T.optional(T.string),
     docView: T.optional(T.boolean),
+    backingFile: T.optional(T.string),
   }
 
   getDefaultProps() {
@@ -320,6 +325,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // True while this note is pushing content to the doc — prevents echo-back on next poll
     const pushingToDocRef = useRef(false)
 
+    // Label regions from the current document (for [->label] links)
+    const pageDoc = useContext(DocContext)
+    const [labelRegions, setLabelRegions] = useState<Record<string, LabelRegionInfo>>({})
+    useEffect(() => {
+      if (!pageDoc?.docName) return
+      fetchProofInfo(pageDoc.docName).then(data => {
+        if (data?.labelRegions) setLabelRegions(data.labelRegions)
+      })
+    }, [pageDoc?.docName])
+
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
@@ -404,15 +419,31 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => clearInterval(interval)
     }, [docName, shape.id, editor])
 
+    // Backing file: write to file when exiting editing
+    const backingFile = shape.props.backingFile as string | undefined
+    useEffect(() => {
+      if (isEditing || !backingFile) return
+      const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+      fetch('/api/backing-file-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: backingFile, content }),
+      }).catch(() => {})
+    }, [isEditing])
+
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(
       () => {
         const t = shape.props.text || ''
-        if (hasMath(t) || hasMarkdown(t)) return renderMarkdownMath(t)
-        return null
+        if (!hasMath(t) && !hasMarkdown(t) && !t.includes('[->')) return null
+        let html = renderMarkdownMath(t)
+        if (Object.keys(labelRegions).length > 0) {
+          html = linkifyArrowRefs(html, labelRegions)
+        }
+        return html
       },
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [shape.props.text, imgVersion],
+      [shape.props.text, imgVersion, labelRegions],
     )
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
@@ -747,6 +778,71 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [editor, useVim])
 
+    // Click handler for [->label] doc-link spans
+    const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+      const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
+      if (!target || !pageDoc) return
+      if (target.classList.contains('doc-link-unresolved')) return
+      const page = parseInt(target.dataset.refPage || '')
+      const yTop = parseFloat(target.dataset.refYTop || '')
+      if (isNaN(page)) return
+      const resolved: ResolvedRef = { page, pdfY: !isNaN(yTop) ? yTop : undefined }
+      const canvasPos = refToCanvas(resolved, pageDoc.pages, PDF_HEIGHT)
+      if (!canvasPos) return
+      e.stopPropagation()
+      editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
+    }, [pageDoc, editor])
+
+    // Hover handler for [->label] doc-link spans
+    const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    useEffect(() => {
+      const el = contentRef.current
+      if (!el) return
+      function onMouseOver(e: MouseEvent) {
+        const target = (e.target as HTMLElement).closest('.doc-link') as HTMLElement | null
+        if (!target || !pageDoc) return
+        if (target.classList.contains('doc-link-unresolved')) return
+        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+        docLinkHoverTimerRef.current = setTimeout(() => {
+          const page = parseInt(target.dataset.refPage || '')
+          const yTop = parseFloat(target.dataset.refYTop || '')
+          if (isNaN(page) || !pageDoc) return
+          const pageIdx = page - 1
+          if (pageIdx < 0 || pageIdx >= pageDoc.pages.length) return
+          const pageBounds = pageDoc.pages[pageIdx].bounds
+          const REGION_H = pageBounds.height * 0.3
+          let cy: number
+          if (!isNaN(yTop)) {
+            const scale = pageBounds.height / PDF_HEIGHT
+            cy = pageBounds.y + yTop * scale
+          } else {
+            cy = pageBounds.y + pageBounds.height / 2
+          }
+          const bounds = { x: pageBounds.x, y: cy - REGION_H / 2, w: pageBounds.width, h: REGION_H }
+          const chipRect = target.getBoundingClientRect()
+          const label = target.textContent?.trim() || `p.${page}`
+          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+            detail: { bounds, shapeIds: [], label, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
+          }))
+        }, 800)
+      }
+      function onMouseOut(e: MouseEvent) {
+        const target = e.target as HTMLElement
+        if (!target.closest('.doc-link')) return
+        const related = e.relatedTarget as HTMLElement | null
+        if (related?.closest('.annotation-viewer')) return
+        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+        window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+      }
+      el.addEventListener('mouseover', onMouseOver)
+      el.addEventListener('mouseout', onMouseOut)
+      return () => {
+        el.removeEventListener('mouseover', onMouseOver)
+        el.removeEventListener('mouseout', onMouseOut)
+        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+      }
+    }, [pageDoc, editor])
+
     // Divider drag handlers
     const handleDividerPointerDown = useCallback((e: React.PointerEvent) => {
       e.preventDefault()
@@ -941,6 +1037,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose table td, .math-note-prose table th { border: 1px solid rgba(0,0,0,0.15); padding: 4px 8px; }
               .math-note-prose p { margin: 0 0 0.6em; }
               .math-note-prose p:last-child { margin-bottom: 0; }
+              .math-note-prose .doc-link { color: #7c3aed; cursor: pointer; border-bottom: 1px dotted #7c3aed; transition: opacity 0.15s; }
+              .math-note-prose .doc-link:hover { opacity: 0.7; }
+              .math-note-prose .doc-link-unresolved { color: inherit; opacity: 0.45; border-bottom-style: dashed; cursor: default; }
             `}</style>
             <div
               className="math-note-prose"
@@ -969,6 +1068,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       content = (
         <div
           ref={contentRef}
+          onClick={handleDocLinkClick}
           onPointerUp={(e) => {
             // Trackpad click in pen mode: enter editing if shape is already selected
             if (!editor.getInstanceState().isPenMode) return

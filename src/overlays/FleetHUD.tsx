@@ -3,14 +3,17 @@
  * transparent overlay showing fleet shapes via CanvasClipPanel.
  *
  * The overlay covers the entire screen. Fleet shapes render at their canvas
- * positions mapped to screen via a camera with z=1. Horizontal position tracks
- * the main canvas (pans with the document); vertical position is fixed.
- * Pointer events pass through to the main canvas for non-fleet areas.
+ * positions mapped to screen via a camera with z=1. Position is derived from
+ * the HUD anchor shape (shape:fleet-hud-anchor) stored in Yjs. The anchor
+ * encodes the desired screen position of the overlay — updated on every camera
+ * change to keep pageToScreen(anchor) constant, fixing fleet shapes at constant
+ * screen positions regardless of document panning or zoom.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
+import { FLEET_HUD_ANCHOR_ID } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
@@ -33,29 +36,20 @@ interface FleetHUDProps {
   licenseKey: string
 }
 
-/**
- * Repack remaining fleet shapes into a clean grid after a deletion.
- * Sorts shapes in reading order, computes a grid from the existing bounding
- * box, and resizes + repositions each shape to fill a cell.
- */
 /** Anisotropic scale: normalize each shape's position and size relative to the
- *  current bounding box, then apply to the target bounding box. Preserves
- *  each shape's proportional position and size — no packing, no uniform cells. */
+ *  current bounding box, then apply to the target bounding box. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y: number; w: number; h: number }) {
   const shapes = editor.getCurrentPageShapes()
     .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
   if (shapes.length === 0) return
 
-  // Current bounding box
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const s of shapes) {
     const b = editor.getShapePageBounds(s.id)
     if (!b) continue
-    minX = Math.min(minX, b.x)
-    minY = Math.min(minY, b.y)
-    maxX = Math.max(maxX, b.x + b.w)
-    maxY = Math.max(maxY, b.y + b.h)
+    minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+    maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
   }
   if (!isFinite(minX)) return
 
@@ -72,14 +66,12 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
     const relW = b.w / srcW
     const relH = b.h / srcH
     updates.push({
-      id: s.id,
-      type: s.type,
+      id: s.id, type: s.type,
       x: tgt.x + relX * tgt.w,
       y: tgt.y + relY * tgt.h,
       props: { w: Math.round(relW * tgt.w), h: Math.round(relH * tgt.h) },
     })
   }
-
   editor.updateShapes(updates)
 }
 
@@ -92,65 +84,37 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   for (const s of shapes) {
     const bounds = editor.getShapePageBounds(s.id)
     if (!bounds) continue
-    minX = Math.min(minX, bounds.x)
-    minY = Math.min(minY, bounds.y)
-    maxX = Math.max(maxX, bounds.x + bounds.w)
-    maxY = Math.max(maxY, bounds.y + bounds.h)
+    minX = Math.min(minX, bounds.x); minY = Math.min(minY, bounds.y)
+    maxX = Math.max(maxX, bounds.x + bounds.w); maxY = Math.max(maxY, bounds.y + bounds.h)
   }
   if (!isFinite(minX)) return null
 
   const PAD = 20
-  return {
-    x: minX - PAD,
-    y: minY - PAD,
-    w: maxX - minX + PAD * 2,
-    h: maxY - minY + PAD * 2,
-  }
+  return { x: minX - PAD, y: minY - PAD, w: maxX - minX + PAD * 2, h: maxY - minY + PAD * 2 }
 }
 
-export function FleetHUD({
-  mainEditor,
-  shapeUtils,
-  tools,
-  licenseKey,
-}: FleetHUDProps) {
+export function FleetHUD({ mainEditor, shapeUtils, tools, licenseKey }: FleetHUDProps) {
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
-  // Camera tick used to recompute canvas→screen for the render on camera change
+  // cameraTick triggers re-render when camera changes so overlayCam recomputes
   const [cameraTick, setCameraTick] = useState(0)
-  // True once document page shapes are present — panOffset must not be computed before this.
-  // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
-  // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
-  const [docShapesReady, setDocShapesReady] = useState(() => {
-    const s = mainEditor.getCurrentPageShapes()
-    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
-  })
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  // Track whether any fleet shapes are selected in the HUD editor (layout mode).
-  // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
-  // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
   const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
-  // Camera offsets: initialized once on first expand, then frozen.
-  // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
-  // cameraYRef (Y): set once, never updated by shape moves.
-  // Persisted in localStorage so panning survives browser reloads.
-  const storedPan = localStorage.getItem('fleet-hud-panOffset')
-  const storedCamY = localStorage.getItem('fleet-hud-cameraY')
-  const panOffsetRef = useRef<number | null>(storedPan !== null ? parseFloat(storedPan) : null)
-  const cameraYRef = useRef<number | null>(storedCamY !== null ? parseFloat(storedCamY) : null)
+  // Anchor-based position: local ref tracks the anchor's page coords at the
+  // CURRENT camera. The anchor shape also carries meta.{cameraX,cameraY,cameraZ}
+  // — the camera at which it was last saved. On every load (even if TLDraw
+  // temporarily restores a stale local-persistence camera before Yjs overwrites
+  // it), we reconstruct the anchor's invariant screen position from meta, then
+  // convert to the current camera's page coords. This prevents the right-shift bug.
+  const anchorPageRef = useRef<{ x: number; y: number } | null>(null)
+  const fleetBoundsRef = useRef(fleetBounds)
+  fleetBoundsRef.current = fleetBounds
 
   // Reactively update fleet bounds when shapes change.
-  //
-  // Position updates: freeze during USER drag (so the auto-zoom panel doesn't
-  // thrash mid-resize), recalculate on pointerup. Updates from remote sync
-  // (Yjs from another tab or the server) recalculate IMMEDIATELY — those
-  // aren't drags and deferring them caused a nasty bug where the HUD would
-  // appear to "spontaneously zoom" minutes later when the user happened to
-  // click anywhere on the page (which fired the deferred handler).
   useEffect(() => {
     setFleetBounds(getFleetBounds(mainEditor))
 
@@ -158,29 +122,18 @@ export function FleetHUD({
       const isFleetChange = (record: any) =>
         record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
 
-      // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
       const hasRemoval = Object.values(changes.removed).some(isFleetChange)
-      const hasAddOrRemove = hasAddition || hasRemoval
-
-      if (hasAddOrRemove) {
+      if (hasAddition || hasRemoval) {
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
-        // Auto-reflow disabled — it was making things worse, not better.
-        // TODO: reimplement add+delete-as-identity later. For now shapes
-        // stay where they are on add/remove; user drags manually.
         return
       }
 
-      // Position/size updates
       const hasUpdate = Object.values(changes.updated)
         .some(([from, to]) => isFleetChange(from) || isFleetChange(to))
-
       if (!hasUpdate) return
 
-      // Only defer if the user is actively dragging (pointer is down inside
-      // tldraw). For programmatic/remote updates, recalc immediately so the
-      // HUD reflects the new bounds at the moment they change.
       const isUserDragging = !!mainEditor.inputs?.isPointing
       if (isUserDragging) {
         draggingRef.current = true
@@ -197,53 +150,63 @@ export function FleetHUD({
       }
     }
     window.addEventListener('pointerup', handlePointerUp, true)
-
-    return () => {
-      unsub()
-      window.removeEventListener('pointerup', handlePointerUp, true)
-    }
+    return () => { unsub(); window.removeEventListener('pointerup', handlePointerUp, true) }
   }, [mainEditor])
 
-  // Watch for SVG/HTML page shapes to arrive (async on browser restore).
-  // If no saved panOffset exists, reset so it recomputes with real shape bounds.
-  // If a saved panOffset exists (from a previous session), keep it — that's the user's position.
+  // Watch for anchor shape creation/update from Yjs (createFleetLayout or another tab).
+  // Refresh anchorPageRef when the anchor is added or significantly repositioned.
+  // Uses meta.{cameraX,cameraY,cameraZ} to reconstruct screen position regardless
+  // of what the current camera is — safe even during TLDraw's pre-Yjs camera restore.
   useEffect(() => {
-    if (docShapesReady) return
+    const adoptAnchor = (anchor: any, why: string) => {
+      const cam = mainEditor.getCamera()
+      const meta = anchor.meta || {}
+      // Reference camera: what the anchor's page coords are relative to.
+      // Falls back to current camera for anchors created before meta was added.
+      const refCamX = typeof meta.cameraX === 'number' ? meta.cameraX : cam.x
+      const refCamY = typeof meta.cameraY === 'number' ? meta.cameraY : cam.y
+      const refCamZ = typeof meta.cameraZ === 'number' ? meta.cameraZ : cam.z
+      // Reconstruct screen position using reference camera, then convert to current camera
+      const screenX = (anchor.x + refCamX) * refCamZ
+      const screenY = (anchor.y + refCamY) * refCamZ
+      anchorPageRef.current = { x: screenX / cam.z - cam.x, y: screenY / cam.z - cam.y }
+    }
+
+    const existing = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+    if (existing && anchorPageRef.current === null) adoptAnchor(existing, 'mount')
+
     const unsub = mainEditor.store.listen(({ changes }) => {
-      const hasPage = Object.values(changes.added).some((r: any) =>
-        r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
-      if (hasPage) {
-        setDocShapesReady(true)
-        // Only force recompute if we don't have a saved position
-        if (localStorage.getItem('fleet-hud-panOffset') === null) {
-          panOffsetRef.current = null
+      const added = Object.values(changes.added).find((r: any) => r.id === FLEET_HUD_ANCHOR_ID) as any
+      if (added) {
+        adoptAnchor(added, 'added')
+        setCameraTick(t => t + 1)
+        return
+      }
+      const updated = Object.values(changes.updated)
+        .map(([, to]) => to as any)
+        .find((r: any) => r.id === FLEET_HUD_ANCHOR_ID)
+      if (updated && anchorPageRef.current !== null) {
+        const dx = Math.abs(updated.x - anchorPageRef.current.x)
+        const dy = Math.abs(updated.y - anchorPageRef.current.y)
+        // Only adopt remote repositioning (layout reset) — ignore our own debounced persists
+        if (dx > 10 || dy > 10) {
+          adoptAnchor(updated, 'updated-remote')
+          setCameraTick(t => t + 1)
         }
       }
     }, { source: 'all', scope: 'document' })
-    return unsub
-  }, [mainEditor, docShapesReady])
 
-  // When HUD is expanded, add a body class so CSS can hide fleet shapes in the
-  // main canvas — avoids the "two copies" issue where both the HUD and main
-  // canvas show the same shapes simultaneously.
-  // Body class + visibility ref (no shape updates here — that causes loops
-  // since updating shapes triggers fleetBounds recalc which re-runs this effect)
+    return unsub
+  }, [mainEditor])
+
   useEffect(() => {
     const isOpen = !!(expanded && fleetBounds)
     fleetHudOpenRef.current = isOpen
-    if (isOpen) {
-      document.body.classList.add('fleet-hud-open')
-    } else {
-      document.body.classList.remove('fleet-hud-open')
-    }
-    return () => {
-      document.body.classList.remove('fleet-hud-open')
-      fleetHudOpenRef.current = false
-    }
+    if (isOpen) document.body.classList.add('fleet-hud-open')
+    else document.body.classList.remove('fleet-hud-open')
+    return () => { document.body.classList.remove('fleet-hud-open'); fleetHudOpenRef.current = false }
   }, [expanded, fleetBounds])
 
-  // Touch fleet shapes to invalidate getShapeVisibility cache — only when
-  // expanded state actually changes, not on every fleetBounds update.
   const prevExpandedRef = useRef(false)
   useEffect(() => {
     const isOpen = !!(expanded && fleetBounds)
@@ -259,45 +222,73 @@ export function FleetHUD({
     }
   }, [expanded, fleetBounds, mainEditor])
 
-  // Track main camera for pan: update panOffsetRef by screen-pixel deltas
-  // when the user pans (cam.z unchanged). Zoom changes are ignored (fleet
-  // shapes stay at their current screen positions).
+  // Camera tracking: keep anchorPageRef stable in screen space as the camera changes.
+  // Settle detection (2 stable frames) guards against re-expressing during rapid
+  // camera transitions. The meta-camera in the anchor handles the initial-load case.
   useEffect(() => {
     if (!expanded) return
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
+    let lastCamY = mainEditor.getCamera().y
     let lastCamZ = mainEditor.getCamera().z
-    // Skip camera changes during the first 2s after mount — these are camera
-    // restoration and page-shape-driven adjustments, not user pans. Without
-    // this, the deltas get added to panOffset, corrupting the saved position.
-    // A single skipFirst wasn't enough: there can be multiple camera changes
-    // during load (default → restored → page-shape adjustment).
-    const mountTime = Date.now()
+    let stableFrames = 0
+    let persistTimeout: ReturnType<typeof setTimeout> | null = null
+
+    const persistAnchor = () => {
+      if (!anchorPageRef.current) return
+      const existing = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any)
+      if (existing) {
+        const cam = mainEditor.getCamera()
+        mainEditor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+        mainEditor.updateShape({
+          id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: true,
+          x: anchorPageRef.current.x, y: anchorPageRef.current.y,
+          meta: { cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z },
+        })
+      }
+    }
+
     const poll = () => {
       const cam = mainEditor.getCamera()
-      if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (Date.now() - mountTime < 2000) {
-          // Settling period — don't update panOffset
-        } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
-          // Pure pan: update offset by screen-pixel delta
-          panOffsetRef.current += (cam.x - lastCamX) * cam.z
-          localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
+      if (cam.x !== lastCamX || cam.y !== lastCamY || cam.z !== lastCamZ) {
+        if (anchorPageRef.current !== null && stableFrames >= 2) {
+          // Re-express Y only: keep fleet shapes at a fixed screen Y as the camera scrolls.
+          // X is not re-expressed — it follows the canvas naturally (fleet shapes pan with the doc).
+          const screenY = (anchorPageRef.current.y + lastCamY) * lastCamZ
+          anchorPageRef.current = { x: anchorPageRef.current.x, y: screenY / cam.z - cam.y }
+          if (persistTimeout) clearTimeout(persistTimeout)
+          persistTimeout = setTimeout(persistAnchor, 500)
         }
-        lastCamX = cam.x
-        lastCamZ = cam.z
+        stableFrames = 0
+        lastCamX = cam.x; lastCamY = cam.y; lastCamZ = cam.z
         setCameraTick(t => t + 1)
+      } else {
+        stableFrames = Math.min(stableFrames + 1, 100)
+        // After settling: migrate old anchors that lack meta.camera, and initialize
+        // anchorPageRef if not yet set (e.g., anchor arrived before camera settled).
+        if (stableFrames === 3) {
+          const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+          if (anchor && !anchor.meta?.cameraX) {
+            // Anchor exists but lacks reference camera — resynthesize from document.
+            // Store listener picks up the update via changes.updated → adoptAnchor.
+            _synthesizeAnchor(mainEditor, fleetBoundsRef.current)
+          } else if (!anchor && anchorPageRef.current === null) {
+            _synthesizeAnchor(mainEditor, fleetBoundsRef.current)
+            // Store listener will pick up the new shape and set anchorPageRef
+          } else if (anchor && anchorPageRef.current === null) {
+            // Has meta but adoptAnchor hasn't run yet (race: anchor arrived before effect)
+            anchorPageRef.current = { x: anchor.x, y: anchor.y }
+            setCameraTick(t => t + 1)
+          }
+        }
       }
       rafId = requestAnimationFrame(poll)
     }
     rafId = requestAnimationFrame(poll)
-    return () => cancelAnimationFrame(rafId)
+    return () => { cancelAnimationFrame(rafId); if (persistTimeout) clearTimeout(persistTimeout) }
   }, [mainEditor, expanded])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
-  // With the full-viewport overlay, we check if the drop target is inside
-  // an actual fleet shape, not the HUD bounding rect.
-  // Drops onto chat input areas are allowed (file attachments).
-  // Drops on empty canvas (not on a fleet shape) pass through to tldraw.
   useEffect(() => {
     if (!expanded) return
     const isInsideFleetShape = (clientX: number, clientY: number) => {
@@ -314,29 +305,20 @@ export function FleetHUD({
     const onDragOver = (e: DragEvent) => {
       if (!isInsideFleetShape(e.clientX, e.clientY)) return
       if (isInsideChatInput(e)) return
-      e.preventDefault()
-      e.stopPropagation()
+      e.preventDefault(); e.stopPropagation()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'
     }
     const onDrop = (e: DragEvent) => {
       if (!isInsideFleetShape(e.clientX, e.clientY)) return
       if (isInsideChatInput(e)) return
-      e.preventDefault()
-      e.stopPropagation()
+      e.preventDefault(); e.stopPropagation()
     }
     document.addEventListener('dragover', onDragOver, true)
     document.addEventListener('drop', onDrop, true)
-    return () => {
-      document.removeEventListener('dragover', onDragOver, true)
-      document.removeEventListener('drop', onDrop, true)
-    }
+    return () => { document.removeEventListener('dragover', onDragOver, true); document.removeEventListener('drop', onDrop, true) }
   }, [expanded])
 
-  // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
-  // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box
-  // select works — but ONLY when the user has already clicked ⊞ to enter layout
-  // mode. Normal browsing (nothing selected) keeps the canvas pointer-events: none
-  // so empty-area clicks pass through to the main canvas as always.
+  // Toggle .hud-layout-active when fleet shapes are selected in the HUD editor.
   useEffect(() => {
     if (!expanded) return
     const el = hudRef.current
@@ -350,28 +332,14 @@ export function FleetHUD({
         return s && FLEET_TYPES_HUD.has(s.type as string)
       })
       if (hasFleetSelected) {
-        // ADD immediately — user selected a fleet shape, enable interaction
         fleetLayoutActiveRef.current = true
         el.classList.add('hud-layout-active')
       }
-      // REMOVAL is handled by BrowseIdle.onEnter — never from here.
-      // Removing from a store listener races with TLDraw's state machine
-      // and kills pointer-events mid-interaction.
     }
 
-    // Poll via RAF until overlayEditorRef is set, then switch to store listener
     let rafId: number
     let unsub: (() => void) | null = null
     const onPointerUp = () => checkSelection()
-    // HACK: Safety valve — if pointer-events:none was restored mid-drag
-    // (e.g. class removed by a React re-render), TLDraw never sees pointerup
-    // and stays stuck in brushing/pointing_canvas with isPointing=true.
-    // On any window pointerup, if the overlay editor is still "pointing" AND
-    // the canvas is blocked (pointer-events:none), force-dispatch pointer_up.
-    // Guard: if the canvas is pointer-events:auto (hud-layout-active), TLDraw
-    // will receive the native pointerup itself — dispatching here causes a
-    // double pointer_up that fires selectOnCanvasPointerUp in idle state,
-    // clearing the brush selection immediately after it completes.
     const onWindowPointerUp = (e: PointerEvent) => {
       const editor = overlayEditorRef.current
       if (!editor) return
@@ -379,17 +347,10 @@ export function FleetHUD({
       const canvas = el.querySelector('.tl-canvas')
       if (canvas && getComputedStyle(canvas).pointerEvents !== 'none') return
       editor.dispatch({
-        type: 'pointer',
-        name: 'pointer_up',
-        target: 'canvas',
-        pointerId: e.pointerId,
-        point: { x: e.clientX, y: e.clientY, z: 0.5 },
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        ctrlKey: e.ctrlKey,
-        metaKey: e.metaKey,
-        button: e.button,
-        buttons: e.buttons,
+        type: 'pointer', name: 'pointer_up', target: 'canvas',
+        pointerId: e.pointerId, point: { x: e.clientX, y: e.clientY, z: 0.5 },
+        shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey, button: e.button, buttons: e.buttons,
       })
     }
     const trySubscribe = () => {
@@ -398,14 +359,8 @@ export function FleetHUD({
         unsub = overlayEditorRef.current.store.listen(({ changes }) => {
           for (const [, to] of Object.values(changes.updated)) {
             const typeName = (to as any).typeName
-            if (typeName === 'instance_page_state') {
-              checkSelection()
-              return
-            }
-            if (typeName === 'instance' && (to as any).brush == null) {
-              checkSelection()
-              return
-            }
+            if (typeName === 'instance_page_state') { checkSelection(); return }
+            if (typeName === 'instance' && (to as any).brush == null) { checkSelection(); return }
           }
         }, { scope: 'session', source: 'all' })
         el.addEventListener('pointerup', onPointerUp, true)
@@ -417,134 +372,157 @@ export function FleetHUD({
     trySubscribe()
 
     return () => {
-      cancelAnimationFrame(rafId)
-      unsub?.()
+      cancelAnimationFrame(rafId); unsub?.()
       el.removeEventListener('pointerup', onPointerUp, true)
       window.removeEventListener('pointerup', onWindowPointerUp, true)
-      // Only clear layout mode when the HUD is actually closing (expanded going false).
-      if (!expanded) {
-        fleetLayoutActiveRef.current = false
-        el.classList.remove('hud-layout-active')
-      }
+      if (!expanded) { fleetLayoutActiveRef.current = false; el.classList.remove('hud-layout-active') }
     }
   }, [expanded])
 
-  const aliveCount = useMemo(() => {
-    return agents.filter((a: any) => !a.dead && !a.human).length
-  }, [agents])
+  const aliveCount = useMemo(() => agents.filter((a: any) => !a.dead && !a.human).length, [agents])
+  void aliveCount
 
-  // Emergency reset: when the Fleet button in the TOC is clicked, it
-  // recreates the fleet shapes AND fires a `fleet-hud-reset` event.
-  // Reset camera refs so the overlay re-centers on the new shapes.
   useEffect(() => {
-    const onReset = () => {
-      panOffsetRef.current = null
-      cameraYRef.current = null
-      localStorage.removeItem('fleet-hud-panOffset')
-      localStorage.removeItem('fleet-hud-cameraY')
-      setFleetBounds(getFleetBounds(mainEditor))
-    }
-    // Toggle: FleetIconPill click dispatches fleet-hud-toggle
-    const onToggle = () => {
-      setExpanded(prev => {
-        const next = !prev
-        localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
-        return next
-      })
-    }
-    window.addEventListener('fleet-hud-reset', onReset)
+    const onToggle = () => setExpanded(prev => {
+      const next = !prev
+      localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
+      return next
+    })
     window.addEventListener('fleet-hud-toggle', onToggle)
-    return () => {
-      window.removeEventListener('fleet-hud-reset', onReset)
-      window.removeEventListener('fleet-hud-toggle', onToggle)
-    }
-  }, [mainEditor])
+    return () => window.removeEventListener('fleet-hud-toggle', onToggle)
+  }, [])
 
-  // Don't render if no fleet shapes
   if (!fleetBounds) return null
+  if (!expanded) return null
 
-  // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
-  if (!expanded) {
-    return null
-  }
-
-  // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
-  // from document's screen position each render. Y frozen on first expand.
   void cameraTick
 
-  // Camera offsets: computed once on first expand from the document's
-  // current screen position, then frozen. X tracks pan only (no zoom).
-  // Y is fixed after initial layout.
-  const MARGIN_GAP = 20
-  const TOP_PAD = 80
+  // Anchor not yet initialized — wait for Yjs sync or camera settle
+  if (!anchorPageRef.current) return null
 
-  if (panOffsetRef.current === null) {
-    // Compute initial X: fleet right edge sits MARGIN_GAP px left of
-    // the document's left margin at the current camera position.
-    // Guard: if SVG/HTML page shapes haven't loaded yet (browser restore path),
-    // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
-    // placed fleet shapes in the middle of the document text.
-    if (!docShapesReady) return null
-    const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-    if (docShapes.length === 0) return null
-    let minPageX = Infinity
-    for (const s of docShapes) {
-      const b = mainEditor.getShapePageBounds(s.id)
-      if (b && b.x < minPageX) minPageX = b.x
-    }
-    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-    // Use the left group's right edge for camera positioning — not the full
-    // fleet bounds, which may include a right-margin chat far to the right.
-    // "Left group" = shapes within 1200px of the leftmost fleet shape.
-    const fleetShapes = mainEditor.getCurrentPageShapes()
-      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
-    let leftGroupRight = fleetBounds.x + fleetBounds.w
-    if (fleetShapes.length > 0) {
-      const rights = fleetShapes.map(s => {
-        const b = mainEditor.getShapePageBounds(s.id)
-        return b ? b.x + b.w : 0
-      }).sort((a, b) => a - b)
-      // Find the right edge of the "left group" — shapes whose right edge
-      // is within 1200px of the leftmost shape's left edge
-      const leftGroupShapes = rights.filter(r => r - fleetBounds.x < 1500)
-      if (leftGroupShapes.length > 0) leftGroupRight = Math.max(...leftGroupShapes)
-    }
-    panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
-    cameraYRef.current = TOP_PAD - fleetBounds.y
-    localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
-    localStorage.setItem('fleet-hud-cameraY', String(cameraYRef.current))
-  }
-
+  // Derive overlay camera: mixed anchoring.
+  // Y: fixed in screen space — anchorPageRef.y is re-expressed on scroll to maintain constant
+  //    screen Y, so anchorScreenY never changes with vertical camera movement.
+  // X: follows the canvas — anchorPageRef.x is NOT re-expressed, so the anchor's canvas X is
+  //    fixed. As cam.x changes, anchorScreenX changes by the same amount → panel pans with doc.
+  const cam = mainEditor.getCamera()
+  const anchorScreenX = (anchorPageRef.current.x + cam.x) * cam.z
+  const anchorScreenY = (anchorPageRef.current.y + cam.y) * cam.z
   const overlayCam = {
-    x: panOffsetRef.current,
-    y: cameraYRef.current!,
+    x: anchorScreenX - fleetBounds.x,
+    y: anchorScreenY - fleetBounds.y,
     z: 1,
   }
 
   return (
-    <>
-      <div
-        className="fleet-hud-wrap"
-        ref={hudRef}
-        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
-      >
-        <CanvasClipPanel
-          mainEditor={mainEditor}
-          bounds={fleetBounds}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={licenseKey}
-          panelWidth={window.innerWidth}
-          maxHeightFraction={1}
-          lockCamera={true}
-          liveEdit={true}
-          cameraOverride={overlayCam}
-          fullViewport={true}
-          onEditorMount={(e) => { overlayEditorRef.current = e; (window as any).__tldraw_hud_editor__ = e }}
-          className="fleet-hud"
-        />
-      </div>
-    </>
+    <div
+      className="fleet-hud-wrap"
+      ref={hudRef}
+      style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
+    >
+      <CanvasClipPanel
+        mainEditor={mainEditor}
+        bounds={fleetBounds}
+        shapeUtils={shapeUtils}
+        tools={tools}
+        licenseKey={licenseKey}
+        panelWidth={window.innerWidth}
+        maxHeightFraction={1}
+        lockCamera={true}
+        liveEdit={true}
+        cameraOverride={overlayCam}
+        fullViewport={true}
+        onEditorMount={(e) => { overlayEditorRef.current = e; (window as any).__tldraw_hud_editor__ = e }}
+        className="fleet-hud"
+      />
+    </div>
   )
+}
+
+/**
+ * Synthesize (create or update) the HUD anchor from the current fleet layout and camera.
+ * Called when no anchor exists, or when an anchor lacks meta.camera (migration).
+ * Computes position from document + fleet shape geometry directly from the editor store.
+ */
+function _synthesizeAnchor(editor: Editor) {
+  const cam = editor.getCamera()
+  const PAD = 20
+  const TOP_PAD = 80
+  const MARGIN_GAP = 20
+
+  // Compute fleet bounds directly from store (don't rely on React state)
+  const fleetShapeTypes = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+  const fleetShapes = editor.getCurrentPageShapes()
+    .filter(s => fleetShapeTypes.includes(s.type as string))
+  if (fleetShapes.length === 0) return
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity
+  for (const s of fleetShapes) {
+    const b = editor.getShapePageBounds(s.id)
+    if (!b) continue
+    if (b.x < minX) minX = b.x; if (b.y < minY) minY = b.y
+    if (b.x + b.w > maxX) maxX = b.x + b.w
+  }
+  if (!isFinite(minX)) return
+
+  const fleetBoundsX = minX - PAD
+  const fleetBoundsY = minY - PAD
+
+  let overlayCamX: number
+  let overlayCamY: number
+
+  const storedPan = localStorage.getItem('fleet-hud-panOffset')
+  const storedCamY = localStorage.getItem('fleet-hud-cameraY')
+
+  if (storedPan !== null) {
+    overlayCamX = parseFloat(storedPan)
+    overlayCamY = storedCamY !== null ? parseFloat(storedCamY) : TOP_PAD - fleetBoundsY
+    localStorage.removeItem('fleet-hud-panOffset')
+    localStorage.removeItem('fleet-hud-cameraY')
+  } else {
+    const docShapes = editor.getCurrentPageShapes()
+      .filter(s => (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+    let minPageX = Infinity
+    for (const s of docShapes) {
+      const b = editor.getShapePageBounds(s.id)
+      if (b && b.x < minPageX) minPageX = b.x
+    }
+    if (!isFinite(minPageX)) return
+    const docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
+    const rights = fleetShapes.map(s => {
+      const b = editor.getShapePageBounds(s.id)
+      return b ? b.x + b.w : 0
+    })
+    const leftGroupShapes = rights.filter(r => r - minX < 1500)
+    const leftGroupRight = leftGroupShapes.length > 0 ? Math.max(...leftGroupShapes) : maxX
+    overlayCamX = docLeftScreen - MARGIN_GAP - leftGroupRight
+    overlayCamY = TOP_PAD - fleetBoundsY
+  }
+
+  // TLDraw: screenX = (pageX + cam.x) * cam.z  →  pageX = screenX / cam.z - cam.x
+  const anchorScreenX = overlayCamX + fleetBoundsX
+  const anchorScreenY = overlayCamY + fleetBoundsY
+  const anchorShapeX = anchorScreenX / cam.z - cam.x
+  const anchorShapeY = anchorScreenY / cam.z - cam.y
+
+  const existingAnchor = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+  if (existingAnchor) {
+    editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+    editor.updateShape({
+      id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: true,
+      x: anchorShapeX, y: anchorShapeY,
+      meta: { cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z },
+    })
+  } else {
+    editor.createShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      x: anchorShapeX,
+      y: anchorShapeY,
+      opacity: 0,
+      isLocked: true,
+      meta: { cameraX: cam.x, cameraY: cam.y, cameraZ: cam.z },
+      props: { w: 1, h: 1, geo: 'rectangle' },
+    })
+  }
 }

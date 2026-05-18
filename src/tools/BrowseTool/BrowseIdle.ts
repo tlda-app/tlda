@@ -30,6 +30,7 @@ import {
   startEditingShapeWithRichText,
 } from 'tldraw'
 import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
+import { getOnSourceClick } from '../../stores'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
@@ -310,6 +311,17 @@ export class BrowseIdle extends StateNode {
           // In the main canvas, keep passing through to DOM.
           if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
             this.parent.transition('pointing_canvas', info)
+            return
+          }
+          // Cmd-click on svg-page: open source in editor
+          if ((hitShape.type as string) === 'svg-page' && info.accelKey) {
+            const onSourceClick = getOnSourceClick()
+            if (onSourceClick) {
+              const pagePoint = this.editor.inputs.getCurrentPagePoint()
+              const h = (hitShape.props as Record<string, number>).h ?? 1035
+              const yFraction = (pagePoint.y - hitShape.y) / h
+              onSourceClick(hitShape.id, yFraction)
+            }
             return
           }
           this.editor.selectNone()

@@ -25,6 +25,12 @@ import { useIsInViewport } from './useIsInViewport'
 const DEFAULT_W = 340
 const DEFAULT_H = 400
 
+function parseSpawnInput(raw: string): { doc: string; name: string | undefined } {
+  const colon = raw.indexOf(':')
+  if (colon < 0) return { doc: raw, name: undefined }
+  return { doc: raw.slice(0, colon), name: raw.slice(colon + 1) || undefined }
+}
+
 // --- Nick color system (shared with FleetChatShape) ---
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
 const nickMap = new Map<string, string>()
@@ -487,7 +493,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   value={spawnDoc}
                   onChange={(e) => setSpawnDoc(e.target.value)}
                   onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setShowSpawnPicker(false) }}
-                  placeholder="project"
+                  placeholder="project or project:name"
                   autoFocus
                   list="spawn-projects"
                 />
@@ -507,12 +513,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <button
               className="fleet-agents-spawn-btn"
               title={`Spawn Sonnet in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6', spawnDoc || undefined) }}
+              onPointerUp={(e) => { e.stopPropagation(); const { doc, name } = parseSpawnInput(spawnDoc); spawnAgent('claude-sonnet-4-6', doc || undefined, name) }}
             >+S</button>
             <button
               className="fleet-agents-spawn-btn"
               title={`Spawn Opus in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6', spawnDoc || undefined) }}
+              onPointerUp={(e) => { e.stopPropagation(); const { doc, name } = parseSpawnInput(spawnDoc); spawnAgent('claude-opus-4-6', doc || undefined, name) }}
             >+O</button>
           </span>
         </div>

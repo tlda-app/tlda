@@ -643,6 +643,39 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .lifecycle-card.lc-attention .lc-icon {
   color: #ffaa00;
 }
+.fleet-chat-shape .lifecycle-card.lc-plan-approval {
+  border-color: rgba(100, 180, 255, 0.35);
+  background: rgba(100, 180, 255, 0.06);
+  max-width: 95%;
+  display: block;
+}
+.fleet-chat-shape .lifecycle-card.lc-plan-approval .lc-icon {
+  color: #64b4ff;
+}
+.fleet-chat-shape .plan-approval-plan {
+  margin: 6px 0 4px;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  border: 1px solid var(--glass-3);
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  user-select: text;
+}
+.fleet-chat-shape .plan-approval-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 3px 0 1px;
+}
+.fleet-chat-shape .plan-approval-hint strong {
+  color: #64b4ff;
+}
 .fleet-chat-shape .lifecycle-card .lc-chain {
   display: inline-flex;
   gap: 3px;
@@ -1894,6 +1927,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .ref-chip-doc-icon {
   font-size: 10px;
   line-height: 1;
+}
+.fleet-chat-shape .ref-chip-broken {
+  background: rgba(200, 100, 60, 0.12);
+  border-color: rgba(200, 100, 60, 0.3);
+  color: rgba(220, 130, 80, 0.85);
+  cursor: default;
+  gap: 3px;
+}
+.fleet-chat-shape .ref-chip-broken:hover {
+  background: rgba(200, 100, 60, 0.2);
+  border-color: rgba(200, 100, 60, 0.5);
+}
+.fleet-chat-shape .att-upload-failed {
+  color: rgba(220, 130, 80, 0.9);
+  font-size: 9px;
+  font-style: italic;
 }
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;

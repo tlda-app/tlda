@@ -53,14 +53,20 @@ export function detectAttachments(message, agentCwd) {
   return { resolvedMessage: working, inlineAttachments }
 }
 
-// Upload all attachments to the server. Mutates att.url in place.
+// Upload all attachments to the server. Mutates att.url / att.broken in place.
+// If upload fails, marks att.broken = true so the renderer shows a broken-chip style.
 export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
   for (const att of inlineAttachments) {
     if (att.path && fs.existsSync(att.path)) {
       try {
         const { url } = await uploadFileToServer(att.path, serverBaseUrl)
         att.url = url
-      } catch (err) { console.error('[message-processing] upload failed:', att.path, err.message) }
+      } catch (err) {
+        console.error('[message-processing] upload failed:', att.path, err.message)
+        att.broken = true
+      }
+    } else {
+      att.broken = true
     }
   }
 }

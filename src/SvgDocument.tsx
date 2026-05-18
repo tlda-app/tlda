@@ -50,7 +50,7 @@ import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
@@ -94,7 +94,7 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme } from './hooks/useFleetTheme'
+import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
@@ -616,6 +616,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   }, [])
 
   const buildWarnings = useMemo(() => [...texWarnings, ...remapWarnings], [texWarnings, remapWarnings])
+
+  // File-backed notes: update shape text when the backing file changes on disk
+  useEffect(() => {
+    return onFileUpdatedSignal((signal) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const shapes = editor.getCurrentPageShapes() as any[]
+      for (const shape of shapes) {
+        if (shape.type !== 'math-note') continue
+        if (shape.props.backingFile !== signal.filePath) continue
+        if (shape.props.text === signal.content) continue  // no-op if identical
+        if (editor.getEditingShapeId() === shape.id) continue  // don't interrupt editing
+        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content } })
+      }
+    })
+  }, [])
 
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {
@@ -1188,6 +1204,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
           setEditorMounted(v => v + 1)
+
+          const storedTheme = localStorage.getItem('tlda-theme')
+          if (storedTheme && THEME_FAMILY[storedTheme]) {
+            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
+          }
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
