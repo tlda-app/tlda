@@ -18,9 +18,7 @@ import {
   T,
   useEditor,
   useValue,
-  stopEventPropagation,
 } from 'tldraw'
-import { useCallback, useState } from 'react'
 
 export type LineStatus = 'approved' | 'presentation' | 'uncertain' | 'rejected' | 'unchecked'
 
@@ -93,7 +91,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
   getDefaultProps() {
     return {
-      w: 3, h: 20,
+      w: 2, h: 20,
       userId: '', displayName: '',
       startLine: 0, endLine: 0,
       status: 'unchecked',
@@ -115,25 +113,15 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
     const status = (shape.props.status as LineStatus) || 'unchecked'
     const color = STATUS_COLORS[status] || STATUS_COLORS.unchecked
     const isOwn = shape.props.userId === (window as any).__tlda_userId
-    const [hovered, setHovered] = useState(false)
+
+    const hovered = useValue('uline-hovered', () =>
+      editor.getHoveredShapeId() === shape.id, [editor, shape.id])
 
     const activeHighlightColor = useValue('active-hl-color', () => {
       const tool = editor.getCurrentToolId()
       if (tool !== 'highlight') return null
       return (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || null
     }, [editor])
-
-    const handleClick = useCallback((e: React.PointerEvent) => {
-      if (!isOwn) return
-      stopEventPropagation(e)
-      const cycle: LineStatus[] = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
-      const idx = cycle.indexOf(status)
-      const nextStatus = cycle[(idx + 1) % cycle.length]
-      editor.store.update(shape.id, (s: any) => ({
-        ...s,
-        props: { ...s.props, status: nextStatus },
-      }))
-    }, [editor, shape.id, status, isOwn])
 
     const targetStatus = activeHighlightColor ? HIGHLIGHT_TO_STATUS[activeHighlightColor as string] : undefined
     const showTransition = hovered && targetStatus && targetStatus !== status
@@ -152,7 +140,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             height: '100%',
             backgroundColor: color,
             borderRadius: 1,
-            opacity: status === 'unchecked' ? 0.3 : (isOwn ? 0.7 : 0.4),
+            opacity: status === 'unchecked' ? 0.15 : (isOwn ? 0.4 : 0.25),
             transition: 'opacity 0.2s',
           }}
         />

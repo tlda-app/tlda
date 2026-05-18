@@ -28,7 +28,7 @@ import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
 
 const MARGIN_X = 0
-const BAR_WIDTH = 3
+const BAR_WIDTH = 2
 
 // Cache: docName → sorted [{line, canvasY}] for reverse lookup.
 // Cleared via clearLineYIndexCache() after every document rebuild.
@@ -244,7 +244,7 @@ export async function remapUnderstandingLines(
               x: shape.x,
               y: midY,
               rotation: 0,
-              isLocked: true,
+              isLocked: false,
               opacity: 1,
               props: { ...props, h: Math.max(20, midEndY - midY), startLine: midStart, endLine: midEnd, status: 'unchecked' },
             })
@@ -263,7 +263,7 @@ export async function remapUnderstandingLines(
             x: shape.x,
             y: endY,
             rotation: 0,
-            isLocked: true,
+            isLocked: false,
             opacity: 1,
             props: { ...props, h: 20, startLine: endLine, endLine: endLine, status: 'approved' },
           })
@@ -347,14 +347,13 @@ export async function initRibbonBackground(
     const xOk = Math.abs(existing.x - MARGIN_X) <= 0.5
     const yOk = Math.abs(existing.y - docTop) <= 0.5
     const hOk = Math.abs(props.h - docHeight) <= 0.5
-    const lockOk = existing.isLocked === true
-    if (!xOk || !yOk || !hOk || !lockOk) {
+    if (!xOk || !yOk || !hOk) {
       editor.updateShape({
         id: bgId,
         type: 'understanding-line' as any,
         x: MARGIN_X,
         y: docTop,
-        isLocked: true,
+        isLocked: false,
         props: { ...props, h: docHeight },
       })
     }
@@ -365,7 +364,7 @@ export async function initRibbonBackground(
       x: MARGIN_X,
       y: docTop,
       rotation: 0,
-      isLocked: true,
+      isLocked: false,
       opacity: 1,
       props: {
         w: BAR_WIDTH,
@@ -432,7 +431,7 @@ export async function processRibbonHighlight(
       x,
       y: bounds.minY,
       rotation: 0,
-      isLocked: true,
+      isLocked: false,
       opacity: 1,
       props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex: 0 },
     })
@@ -533,7 +532,7 @@ export function registerEraserInterceptor(editor: Editor): void {
         x: shape.x,
         y: shape.y,
         rotation: shape.rotation ?? 0,
-        isLocked: true,
+        isLocked: false,
         opacity: 1,
         props: { ...(shape.props as any), status: 'unchecked' },
       })

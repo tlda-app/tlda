@@ -295,7 +295,7 @@ export class BrowseIdle extends StateNode {
         // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
         // Fleet shapes and locked HTML pages get DOM passthrough when NOT selected.
         // When selected (via ⊞ button), fall through so the shape can be dragged/resized.
-        if (hitShape && (FLEET_TYPES.has(hitShape.type as string) || hitShape.isLocked)) {
+        if (hitShape && (FLEET_TYPES.has(hitShape.type as string) || hitShape.isLocked || (hitShape.type as string) === 'understanding-line')) {
           if (this.editor.getSelectedShapeIds().includes(hitShape.id)) {
             // Shape is selected — treat as pointing_selection for drag
             this.onPointerDown({ ...info, target: 'selection' })
