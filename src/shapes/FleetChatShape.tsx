@@ -1862,11 +1862,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             }
 
             if (existingId) {
-              // Update existing sticky content
+              // Update existing sticky content + ensure backingFile and authorId are set
+              const existing = mainEditor.getShape(existingId) as any
               mainEditor.updateShape({
                 id: existingId,
                 type: 'math-note',
-                props: { text: content },
+                props: { text: content, backingFile: filePath },
+                meta: { ...existing?.meta, authorId: existing?.meta?.authorId || m.from },
               })
               broadcastSharedDoc(existingId, filePath)
             } else {
@@ -1896,11 +1898,13 @@ function FleetChatInner({ shape }: { shape: any }) {
                   text: content,
                   color: 'light-violet',
                   autoSize: true,
+                  backingFile: filePath,
                 },
                 meta: {
                   sharedDocPath: filePath,
                   sharedDoc: true,
                   fromAgent: m.from,
+                  authorId: m.from,
                   createdAt: Date.now(),
                 },
               })
@@ -2636,10 +2640,11 @@ function FleetChatInner({ shape }: { shape: any }) {
               if (dragRef.current) dragRef.current.content = resolved
             }).catch(() => {})
           }
+          const chatLine = fileChip.closest('[data-msg-from]') as HTMLElement | null
           drag = {
             pillId: null, pillType: 'file' as any, value: token,
             displayName: label, color: '#9370db',
-            content: fileContent,
+            content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -2694,6 +2699,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             displayName: drag.displayName,
             color: drag.color,
           },
+          meta: drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : undefined,
         })
         drag.pillId = pillId as unknown as string
         // Reset tldraw's state machine via API — avoids cancelling the real pointer stream.
@@ -2739,6 +2745,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 displayName: drag.displayName,
                 color: drag.color,
               },
+              meta: drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : undefined,
             })
             ;(drag as any)._onMain = true
           } else if (!outside && onMain) {

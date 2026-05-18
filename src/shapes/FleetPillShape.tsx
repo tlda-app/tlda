@@ -185,6 +185,7 @@ export function dropPillOnTarget(
     // File chip pill dropped on canvas → create collapsed math-note
     const pill = editor.getShape(pillId) as any
     const noteContent = content || pill?.props?.displayName || ''
+    const sourceAgent = pill?.meta?.sourceAgent as string | undefined
     createEditor.createShape({
       id: createShapeId(),
       type: 'math-note' as any,
@@ -199,6 +200,7 @@ export function dropPillOnTarget(
         autoSize: true,
         collapsed: true,
       },
+      meta: sourceAgent ? { authorId: sourceAgent, createdAt: Date.now() } : undefined,
     })
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
