@@ -1709,12 +1709,11 @@ function handleServerMessage(msg) {
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
-    // Start periodic death detection
-    if (!_deathCheckInterval) {
-      _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
-      // Run once immediately after welcome
-      setTimeout(checkAgentLiveness, 5000)
-    }
+    // Periodic death detection DISABLED 2026-05-17 — was spawning
+    // tmux list-panes + pgrep per alive agent (~392) every 30s, flooding
+    // the process table on tlda start. Re-enable only after batching the
+    // tmux calls or driving liveness off a single `tmux list-sessions`.
+    console.log('[daemon] checkAgentLiveness disabled (process-table flood mitigation)')
     return
   }
   if (msg.type === 'agents-updated') {
