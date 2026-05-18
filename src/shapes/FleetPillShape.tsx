@@ -229,8 +229,18 @@ export function dropPillOnTarget(
               color: 'light-violet',
               autoSize: true,
               collapsed: true,
+              backingFile: filePath,
             },
           })
+          // Register backing file watch so the server notifies us when the file changes on disk
+          const docName = new URLSearchParams(window.location.search).get('doc') || ''
+          if (docName) {
+            fetch('/api/backing-file-register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filePath, docName }),
+            }).catch(() => {})
+          }
         } catch (e) {
           console.error('[fleet] Failed to read file for membrane drop:', e)
           createEditor.createShape({
