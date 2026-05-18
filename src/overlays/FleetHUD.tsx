@@ -541,7 +541,9 @@ export function FleetHUD({
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
-    saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current)
+    // Defer store write to after render — writing during render triggers
+    // "Cannot update a component while rendering" and breaks drag state.
+    queueMicrotask(() => saveAnchorOffsets(mainEditor, panOffsetRef.current!, cameraYRef.current!))
   }
 
   const overlayCam = {
