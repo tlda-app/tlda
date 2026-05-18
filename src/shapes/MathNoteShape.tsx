@@ -836,7 +836,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
 
       const token = `«bullet:${shape.id}:${bulletIndex}»`
-      chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token, owner } }))
+      // Defer insert so set-chat-target signal can update the chat's sendTargets
+      // before the insert handler checks them (React state update is async)
+      setTimeout(() => {
+        chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token, owner } }))
+      }, 50)
 
       return true
     }, [backingFile, shape.id, shape.meta?.authorId])
