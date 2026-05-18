@@ -1641,10 +1641,12 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     // Finalize. `targets` always reflects the current target set so the
     // viewer doesn't have to special-case single-target — it just renders
     // a one-element list.
+    const lastBuildSuccess = readProject(name)?.lastBuildSuccess || null
     updateProject(name, {
       pages: expectedPages,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
+      lastBuildSuccess: new Date().toISOString(),
       targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     })
     saveBuildCache(ctx)
@@ -1808,11 +1810,18 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             }
             // Emit single build-card event (aggregates summary + all lint findings)
             if (summary || lintFindings.length > 0) {
+              let buildFiles = null
+              try {
+                const relPath = join(projDir, 'output', 'relevant-files.json')
+                buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
+              } catch {}
               emitGlobalEvent('build-card', {
                 name,
                 hash: result.hash.slice(0, 7),
                 summary: summary || null,
                 lintFindings,
+                buildFiles,
+                lastBuildSuccess,
               })
             }
           } else {

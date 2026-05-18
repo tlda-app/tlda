@@ -521,7 +521,7 @@ onGlobalEvent((event) => {
     }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, buildFiles } = event
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, lastBuildSuccess, buildFiles } = event
     const text = mirrorFailed
       ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
       : `Build ${hash} — ${docName}`
@@ -532,9 +532,9 @@ onGlobalEvent((event) => {
 
     // Also notify agents who recently edited the build files — they need build cards
     // regardless of whether they remembered to subscribe via `tlda monitor`.
-    // Use lastMirrorSuccess as the cutoff when available; otherwise 2 hours ago.
+    // Use last successful build as the cutoff; fall back to last mirror, then 2 hours ago.
     if (buildFiles?.length) {
-      const since = lastMirrorSuccess ?? (Date.now() - 2 * 60 * 60 * 1000)
+      const since = lastBuildSuccess ?? lastMirrorSuccess ?? (Date.now() - 2 * 60 * 60 * 1000)
       for (const id of fleetStore.recentDocAgents(buildFiles, since)) subs.add(id)
     }
 
