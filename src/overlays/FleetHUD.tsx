@@ -11,9 +11,35 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
+import { FLEET_HUD_ANCHOR_ID } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
+  const existing = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+  if (existing) {
+    if (existing.isLocked) {
+      editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+    }
+    editor.updateShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      meta: { ...existing.meta, panOffset, cameraY },
+      isLocked: true,
+    })
+  } else {
+    editor.createShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      x: 0, y: 0,
+      opacity: 0,
+      isLocked: true,
+      props: { w: 1, h: 1, geo: 'rectangle' as const },
+      meta: { panOffset, cameraY },
+    })
+  }
+}
 const FLEET_SHAPE_TYPES_SET = new Set(FLEET_SHAPE_TYPES)
 
 /** Mutable flag: true when the HUD overlay is expanded. Read by
@@ -137,11 +163,16 @@ export function FleetHUD({
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
   // cameraYRef (Y): set once, never updated by shape moves.
-  // Persisted in localStorage so panning survives browser reloads.
-  const storedPan = localStorage.getItem('fleet-hud-panOffset')
-  const storedCamY = localStorage.getItem('fleet-hud-cameraY')
-  const panOffsetRef = useRef<number | null>(storedPan !== null ? parseFloat(storedPan) : null)
-  const cameraYRef = useRef<number | null>(storedCamY !== null ? parseFloat(storedCamY) : null)
+  // Persisted via an invisible anchor shape in Yjs (survives across sessions/devices).
+  const panOffsetRef = useRef<number | null>(null)
+  const cameraYRef = useRef<number | null>(null)
+  if (panOffsetRef.current === null && cameraYRef.current === null) {
+    const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+    if (anchor?.meta?.panOffset !== undefined) {
+      panOffsetRef.current = anchor.meta.panOffset
+      cameraYRef.current = anchor.meta.cameraY
+    }
+  }
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -215,7 +246,8 @@ export function FleetHUD({
       if (hasPage) {
         setDocShapesReady(true)
         // Only force recompute if we don't have a saved position
-        if (localStorage.getItem('fleet-hud-panOffset') === null) {
+        const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+        if (anchor?.meta?.panOffset === undefined) {
           panOffsetRef.current = null
         }
       }
@@ -281,7 +313,7 @@ export function FleetHUD({
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
-          localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
+          saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
         }
         lastCamX = cam.x
         lastCamZ = cam.z
@@ -432,8 +464,13 @@ export function FleetHUD({
     const onReset = () => {
       panOffsetRef.current = null
       cameraYRef.current = null
-      localStorage.removeItem('fleet-hud-panOffset')
-      localStorage.removeItem('fleet-hud-cameraY')
+      try {
+        const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any)
+        if (anchor) {
+          if (anchor.isLocked) mainEditor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+          mainEditor.deleteShape(FLEET_HUD_ANCHOR_ID as any)
+        }
+      } catch {}
       setFleetBounds(getFleetBounds(mainEditor))
     }
     // Toggle: FleetIconPill click dispatches fleet-hud-toggle
@@ -504,8 +541,9 @@ export function FleetHUD({
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
-    localStorage.setItem('fleet-hud-panOffset', String(panOffsetRef.current))
-    localStorage.setItem('fleet-hud-cameraY', String(cameraYRef.current))
+    // Defer store write to after render — writing during render triggers
+    // "Cannot update a component while rendering" and breaks drag state.
+    queueMicrotask(() => saveAnchorOffsets(mainEditor, panOffsetRef.current!, cameraYRef.current!))
   }
 
   const overlayCam = {

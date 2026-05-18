@@ -34,10 +34,14 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-  // Clear HUD position override so the wrap reverts to auto-layout. Without
-  // this the HUD might still render at a wedged position even after the
-  // shapes are recreated.
-  try { localStorage.removeItem('fleet-hud-override') } catch {}
+  // Clear HUD anchor shape so the offset recomputes from new shape positions.
+  try {
+    const anchor = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+    if (anchor) {
+      if (anchor.isLocked) editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+      editor.deleteShape(FLEET_HUD_ANCHOR_ID as any)
+    }
+  } catch {}
   // Force a global reload of the FleetHUD's hudOverride state. The simplest
   // signal: dispatch a custom event the FleetHUD listens for. We also nuke
   // any leftover proxy shape from a half-finished layout-mode entry.
