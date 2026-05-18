@@ -29,6 +29,8 @@ interface ViewerData {
   label?: string
   color?: string
   chipRect?: { left: number; top: number; right: number; bottom: number; width: number; height: number }
+  useFullBounds?: boolean
+  bulletIdx?: number
 }
 
 export function AnnotationViewer({
@@ -55,6 +57,8 @@ export function AnnotationViewer({
         label: detail.label,
         color: detail.color,
         chipRect: detail.chipRect,
+        useFullBounds: detail.useFullBounds,
+        bulletIdx: detail.bulletIdx,
       })
       setState('hovering')
       prevCameraRef.current = null
@@ -86,9 +90,26 @@ export function AnnotationViewer({
     }
   }, [])
 
-  // Click-to-pin: track pointerdown/pointerup, if < 5px movement → pin
-  // Passive capture listeners so tldraw still gets events for panning
   const canvasWrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (data?.bulletIdx == null) return
+    const el = canvasWrapRef.current
+    if (!el) return
+    const timer = setTimeout(() => {
+      const shapeId = data.shapeIds?.[0]
+      if (!shapeId) return
+      const noteEl = el.querySelector(`[data-shape-id="${CSS.escape(shapeId)}"]`)
+      if (!noteEl) return
+      const lis = noteEl.querySelectorAll('.math-note-prose li')
+      const li = lis[data.bulletIdx!]
+      if (!li) return
+      ;(li as HTMLElement).style.background = 'rgba(124, 58, 237, 0.2)'
+      ;(li as HTMLElement).style.borderRadius = '4px'
+      li.scrollIntoView({ block: 'nearest' })
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [data])
   useEffect(() => {
     const el = canvasWrapRef.current
     if (!el || !data) return
@@ -112,17 +133,22 @@ export function AnnotationViewer({
     }
   }, [data])
 
-  // Navigate: vertical only, maintain x
   const handleGo = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!data) return
     const cam = mainEditor.getCamera()
     prevCameraRef.current = { x: cam.x, y: cam.y, z: cam.z }
-    const targetY = -(data.bounds.y - 100)
-    mainEditor.setCamera(
-      { x: cam.x, y: targetY, z: cam.z },
-      { animation: { duration: 300 } }
-    )
+    if (data.useFullBounds) {
+      const cx = data.bounds.x + data.bounds.w / 2
+      const cy = data.bounds.y + data.bounds.h / 2
+      mainEditor.centerOnPoint({ x: cx, y: cy }, { animation: { duration: 300 } })
+    } else {
+      const targetY = -(data.bounds.y - 100)
+      mainEditor.setCamera(
+        { x: cam.x, y: targetY, z: cam.z },
+        { animation: { duration: 300 } }
+      )
+    }
     setState('navigated')
   }, [data, mainEditor])
 
@@ -215,7 +241,12 @@ export function AnnotationViewer({
       <div ref={canvasWrapRef} className="annotation-viewer-canvas" style={{ height: size.h }}>
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={{
+          bounds={data.useFullBounds ? {
+            x: data.bounds.x - 20,
+            y: data.bounds.y - 20,
+            w: data.bounds.w + 40,
+            h: data.bounds.h + 40,
+          } : {
             x: 0,
             y: data.bounds.y - 200,
             w: 800,
