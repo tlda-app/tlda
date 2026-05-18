@@ -46,7 +46,7 @@ class RibbonHighlightIdle extends StateNode {
 
     let best: { shape: TLShape; area: number } | null = null
     for (const s of this.editor.getCurrentPageShapes()) {
-      if (s.type !== 'understanding-line') continue
+      if ((s.type as string) !== 'understanding-line') continue
       const bounds = this.editor.getShapePageBounds(s.id)
       if (!bounds) continue
       if (point.y < bounds.minY || point.y > bounds.maxY) continue

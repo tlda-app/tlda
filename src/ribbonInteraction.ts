@@ -385,13 +385,14 @@ export async function initRibbonBackground(
   // Self-heal stale segment shapes (unlock + fix width)
   const allShapes = editor.getCurrentPageShapes()
   for (const s of allShapes) {
-    if (s.type !== 'understanding-line') continue
-    if (s.id === bgId) continue
-    const p = s.props as any
+    if ((s.type as string) !== 'understanding-line') continue
+    const ul = s as any
+    if (ul.id === bgId) continue
+    const p = ul.props as any
     if (p.userId !== userId) continue
-    if (!s.isLocked || p.w !== BAR_WIDTH) {
+    if (!ul.isLocked || p.w !== BAR_WIDTH) {
       editor.updateShape({
-        id: s.id,
+        id: ul.id,
         type: 'understanding-line' as any,
         isLocked: true,
         props: { ...p, w: BAR_WIDTH },
@@ -565,15 +566,16 @@ export function registerEraserInterceptor(editor: Editor): void {
       const allShapes = editor.getCurrentPageShapes()
       const userId = getHumanId()
       for (const s of allShapes) {
-        if (s.type !== 'understanding-line') continue
-        const p = s.props as any
+        if ((s.type as string) !== 'understanding-line') continue
+        const ul2 = s as any
+        const p = ul2.props as any
         if (p.userId !== userId) continue
         if (p.status === 'unchecked') continue
-        const bounds = editor.getShapePageBounds(s.id)
+        const bounds = editor.getShapePageBounds(ul2.id)
         if (!bounds) continue
         if (point.y >= bounds.minY && point.y <= bounds.maxY) {
           editor.updateShape({
-            id: s.id,
+            id: ul2.id,
             type: 'understanding-line' as any,
             props: { ...p, status: 'unchecked' },
           })

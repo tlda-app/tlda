@@ -27,7 +27,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: 800, h: 1035, pageIndex: 0 }
   }
 
-  override canSelect = () => false
+  canSelect = () => false
   override canEdit = () => false
   override canResize = () => false
   override isAspectRatioLocked = () => true

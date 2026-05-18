@@ -6,7 +6,7 @@
  * Collapses to a small pill when minimized.
  */
 
-import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react'
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
 import type { FootController, FootControlState } from './footControl'
 import type { ClickDetector } from './clickDetect'
 import { subscribeInputModes, getInputMode, toggleInputMode, type InputMode } from './inputModes'

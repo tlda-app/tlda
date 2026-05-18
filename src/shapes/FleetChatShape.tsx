@@ -774,7 +774,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     prevAgentNamesRef.current = curr
     if (changed) {
-      editor.updateShape({ id: shape.id, type: 'fleet-chat', props: { filter: newFilter } })
+      editor.updateShape({ id: shape.id, type: 'fleet-chat' as any, props: { filter: newFilter } })
     }
   }, [agents])
 

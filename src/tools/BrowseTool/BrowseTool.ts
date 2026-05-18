@@ -21,7 +21,7 @@ export class BrowseTool extends SelectTool {
     const parentChildren = super.children()
     return parentChildren.map(child => {
       if (child.id === 'idle') return BrowseIdle
-      if (child.id === 'pointing_canvas') return BrowsePointingCanvas
+      if (child.id === 'pointing_canvas') return BrowsePointingCanvas as unknown as TLStateNodeConstructor
       return child
     })
   }

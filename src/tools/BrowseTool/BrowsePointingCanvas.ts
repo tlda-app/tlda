@@ -25,7 +25,7 @@ const PointingCanvasBase = SelectTool.children().find(c => c.id === 'pointing_ca
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class BrowsePointingCanvas extends (PointingCanvasBase as any) {
-  static override id = 'pointing_canvas'
+  static id = 'pointing_canvas'
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onEnter(_info: TLPointerEventInfo & { target: 'canvas' }) {

@@ -414,7 +414,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     editor.run(() => {
       editor.createShape({
         id: newId,
-        type: 'fleet-chat',
+        type: 'fleet-chat' as any,
         x: rec.x,
         y: rec.y + CHAT_HEADER_H,
         props: {

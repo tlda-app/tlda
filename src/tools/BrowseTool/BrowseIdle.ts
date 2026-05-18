@@ -51,7 +51,7 @@ function _updateHoveredShapeId(editor: Editor) {
   if (point.x < 10) {
     let best: { shape: TLShape; area: number } | null = null
     for (const s of editor.getCurrentPageShapes()) {
-      if (s.type !== 'understanding-line') continue
+      if ((s.type as string) !== 'understanding-line') continue
       const bounds = editor.getShapePageBounds(s.id)
       if (!bounds) continue
       if (point.y < bounds.minY || point.y > bounds.maxY) continue
@@ -310,7 +310,7 @@ export class BrowseIdle extends StateNode {
     // Skip bg shapes (startLine=0, endLine=999999) — only segments cycle.
     let best: { shape: any; area: number } | null = null
     for (const s of this.editor.getCurrentPageShapes()) {
-      if (s.type !== 'understanding-line') continue
+      if ((s.type as string) !== 'understanding-line') continue
       const p = s.props as Record<string, unknown>
       if (p.userId !== userId) continue
       if ((p.startLine as number) === 0 && (p.endLine as number) >= 999999) continue

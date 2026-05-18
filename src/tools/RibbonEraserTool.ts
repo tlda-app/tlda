@@ -11,7 +11,6 @@
  */
 import {
   StateNode,
-  isAccelKey,
   pointInPolygon,
 } from '@tldraw/editor'
 import type {
@@ -20,6 +19,10 @@ import type {
   TLShapeId,
 } from '@tldraw/editor'
 import { getHumanId } from '../fleet/fleet-data.mjs'
+
+// Not in type declarations but exists at runtime
+const isAccelKey = (inputs: any): boolean =>
+  navigator.platform.toLowerCase().includes('mac') ? inputs.ctrlKey : inputs.metaKey
 
 class RibbonEraserIdle extends StateNode {
   static override id = 'idle'
@@ -73,7 +76,7 @@ class RibbonEraserPointing extends StateNode {
       const userId = getHumanId()
       if (userId) {
         for (const shape of this.editor.getCurrentPageShapes()) {
-          if (shape.type !== 'understanding-line') continue
+          if ((shape.type as string) !== 'understanding-line') continue
           const p = shape.props as Record<string, unknown>
           if (p.userId !== userId || p.status === 'unchecked') continue
           const bounds = this.editor.getShapePageBounds(shape.id)
@@ -124,7 +127,6 @@ class RibbonEraserPointing extends StateNode {
       for (const id of tool._ribbonShapesToReset) {
         const shape = this.editor.getShape(id)
         if (!shape) continue
-        const p = shape.props as Record<string, unknown>
         this.editor.store.update(shape.id, (s: any) => ({
           ...s,
           props: { ...s.props, status: 'unchecked' },
@@ -264,7 +266,7 @@ class RibbonErasing extends StateNode {
       if (userId) {
         const tool = this.parent as RibbonEraserTool
         for (const shape of this.editor.getCurrentPageShapes()) {
-          if (shape.type !== 'understanding-line') continue
+          if ((shape.type as string) !== 'understanding-line') continue
           const p = shape.props as Record<string, unknown>
           if (p.userId !== userId || p.status === 'unchecked') continue
           const bounds = this.editor.getShapePageBounds(shape.id)
@@ -288,7 +290,6 @@ class RibbonErasing extends StateNode {
       for (const id of tool._ribbonShapesToReset) {
         const shape = editor.getShape(id)
         if (!shape) continue
-        const p = shape.props as Record<string, unknown>
         editor.store.update(shape.id, (s: any) => ({
           ...s,
           props: { ...s.props, status: 'unchecked' },

@@ -150,7 +150,7 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
     }
   }
 
-  for (const [lineStr, entry] of Object.entries(lines)) {
+  for (const [, entry] of Object.entries(lines)) {
     // Sort key: always use page position for consistent ordering across
     // plain line numbers and multi-file keys ("file.tex:N")
     const lineNum = entry.page * 10000 + Math.round(entry.y)
