@@ -319,7 +319,8 @@ export class BrowseIdle extends StateNode {
             const onSourceClick = getOnSourceClick()
             if (onSourceClick) {
               const pagePoint = this.editor.inputs.getCurrentPagePoint()
-              const yFraction = (pagePoint.y - hitShape.y) / (hitShape as any).props.h
+              const h = (hitShape.props as Record<string, number>).h ?? 1035
+              const yFraction = (pagePoint.y - hitShape.y) / h
               onSourceClick(hitShape.id, yFraction)
             }
             return
