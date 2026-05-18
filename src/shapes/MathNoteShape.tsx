@@ -979,7 +979,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               justifyContent: 'space-between',
             }}
           >
-            <span>{useVim ? `-- ${vimMode.toUpperCase()} --` : ''}</span>
+            <span>
+              {backingFile && <span title={backingFile} style={{ opacity: 0.5, marginRight: 4 }}>⇄</span>}
+              {useVim ? `-- ${vimMode.toUpperCase()} --` : ''}
+            </span>
             <span className="math-note-colors" style={{
               display: 'flex',
               gap: '2px',
@@ -1261,6 +1264,26 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
+          {/* File-backed indicator */}
+          {backingFile && (
+            <div
+              title={backingFile}
+              style={{
+                position: 'absolute',
+                top: 3,
+                left: 16,
+                fontSize: 10,
+                lineHeight: '16px',
+                color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)',
+                userSelect: 'none',
+                zIndex: 10,
+                opacity: 0.6,
+                transition: 'opacity 0.15s',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.6' }}
+            >⇄</div>
+          )}
           {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
           {docName && (
             <div
