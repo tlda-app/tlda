@@ -7,7 +7,7 @@ Usage:
   fleet-spawn --session <uuid>                 Respawn by session UUID (no name needed)
 
 Options:
-  --model <model>    Override model (default: sonnet, or agent's stored model)
+  --model <model>    Override model (default: opus46, or agent's stored model)
   --cwd <path>       Override working directory (fresh mode only)
   --effort <level>   Effort level: low|medium|high|xhigh|max (default: inherit global config)
   --no-attach        Don't attach to the tmux session after spawning
@@ -29,7 +29,7 @@ import websocket
 DASH_PORT = os.environ.get("FLEET_DASH_PORT", "5176")
 DASH_HOST = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
 API = f"http://{DASH_HOST}:{DASH_PORT}"
-DEFAULT_MODEL = 'claude-sonnet-4-6'
+DEFAULT_MODEL = 'claude-opus-4-6[1m]'
 
 TLDA_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 
@@ -637,7 +637,7 @@ def main():
     parser.add_argument("name", nargs="?", default=None, help="Agent friendly name (optional if --session is given)")
     parser.add_argument("--fresh", action="store_true", help="Spawn a new agent instead of respawning")
     parser.add_argument("--refresh", action="store_true", help="Fresh session for existing agent (same fleet ID, breaks compaction loops)")
-    parser.add_argument("--model", default=None, help="Override model (default: sonnet)")
+    parser.add_argument("--model", default=None, help="Override model (default: opus46)")
     parser.add_argument("--cwd", default=None, help="Override working directory")
     parser.add_argument("--effort", default=None, help="Effort level: low|medium|high|xhigh|max")
     parser.add_argument("--mode", default=None, help="Permission mode passed to claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json")
