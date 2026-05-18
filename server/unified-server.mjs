@@ -127,6 +127,23 @@ function isSyncHeartbeat(raw) {
   return raw.toString('utf8', 0, Math.min(raw.length, 30)).includes('"ping"')
 }
 
+const _activeViewerDocs = new Set()
+
+function _recomputeActiveViewers() {
+  const prev = new Set(_activeViewerDocs)
+  _activeViewerDocs.clear()
+  for (const ws of _trackedWs) {
+    if (ws._wsKind === 'sync' && ws._wsDocName?.startsWith('doc-')) {
+      _activeViewerDocs.add(ws._wsDocName.slice(4))
+    }
+  }
+  if (prev.size !== _activeViewerDocs.size || ![...prev].every(d => _activeViewerDocs.has(d))) {
+    broadcastDaemonActiveViewers()
+  }
+}
+
+function getActiveViewerProjects() { return _activeViewerDocs }
+
 function trackWs(ws, meta) {
   ws._wsKind = meta.kind            // 'sync' | 'fleet'
   ws._wsDocName = meta.docName || null
@@ -142,15 +159,15 @@ function trackWs(ws, meta) {
       ws._wsLastInputAt = Date.now()
     })
   } else {
-    // /ws/fleet: no client-side periodic traffic from browsers; MCP-sent
-    // `heartbeat` messages come from real agents and (correctly) mark them
-    // active — the binary-path check in the daemon prevents us from
-    // touching anything that isn't a playwright chromium anyway.
     ws.on('message', () => { ws._wsLastInputAt = Date.now() })
   }
-  const cleanup = () => { _trackedWs.delete(ws) }
+  const cleanup = () => {
+    _trackedWs.delete(ws)
+    if (ws._wsKind === 'sync') _recomputeActiveViewers()
+  }
   ws.on('close', cleanup)
   ws.on('error', cleanup)
+  if (meta.kind === 'sync') _recomputeActiveViewers()
 }
 
 function normalizeAddr(a) {
@@ -2378,6 +2395,15 @@ function broadcastDaemonProjectsUpdated() {
   }
 }
 
+function broadcastDaemonActiveViewers() {
+  if (daemonConnections.size === 0) return
+  const viewers = [...getActiveViewerProjects()]
+  for (const [, dws] of daemonConnections) {
+    if (dws.readyState !== 1) continue
+    try { dws.send(JSON.stringify({ type: 'active-viewers', projects: viewers })) } catch {}
+  }
+}
+
 function broadcastDaemonVersionCommitted(projectName, hash) {
   if (daemonConnections.size === 0) return
   const project = readProject(projectName)
@@ -2465,6 +2491,7 @@ function handleDaemonWsMessage(ws, msg) {
         server_boot_id: SERVER_BOOT_ID,
         agents: agentsForMachine,
         projects: projectsForDaemon(),
+        activeViewers: [...getActiveViewerProjects()],
       }))
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)

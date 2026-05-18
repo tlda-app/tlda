@@ -850,29 +850,29 @@ function stopPolling(state, rel) {
   try { fs.unwatchFile(path.join(state.sourceDir, rel)) } catch {}
 }
 
-function syncSourceWatchers(projectList) {
+let _activeViewerSet = new Set()
+
+function syncSourceWatchers(projectList, activeViewers) {
+  if (activeViewers) _activeViewerSet = new Set(activeViewers)
   const activeNames = new Set()
   for (const p of projectList) {
     if (!p.sourceDir) continue
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
 
-    // watchSet: relative paths the build reads (from .fls). Falls back to
-    // mainFile before the first build. Absolute paths derived via state.sourceDir.
     const watchSet = new Set(
       p.watchFiles?.length ? p.watchFiles : p.mainFile ? [p.mainFile] : []
     )
 
     if (sourceWatchers.has(p.name)) {
       const existing = sourceWatchers.get(p.name)
-      // Add pollers for files newly in the set; remove pollers for files leaving.
       for (const rel of existing.watchSet) if (!watchSet.has(rel)) stopPolling(existing, rel)
       for (const rel of watchSet) if (!existing.watchSet.has(rel)) startPolling(existing, rel)
       existing.watchSet = watchSet
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, watchFired: new Set() }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, watchFired: new Set(), projectName: p.name }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
@@ -883,31 +883,28 @@ function syncSourceWatchers(projectList) {
       }
       if (!fromPoll) {
         state.watchFired.add(filename)
-      } else if (!state.watchFired.has(filename)) {
-        // Poll caught a change that fs.watch missed — recreate once
+      } else if (state.watcher && !state.watchFired.has(filename)) {
         if (!state._recreatedRecently) {
           state._recreatedRecently = true
           setTimeout(() => { state._recreatedRecently = false }, 10000)
-          console.warn(`[daemon] fs.watch missed ${filename} in ${p.name} — recreating`)
+          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — recreating`)
           try { state.watcher?.close() } catch {}
           try {
-            state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
-          } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
+            state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
+          } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${state.projectName}: ${e.message}`) }
         }
       }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
       state.debounce = setTimeout(() => {
         state.watchFired.clear()
-        flushSourceChanges(p.name)
+        flushSourceChanges(state.projectName)
       }, 200)
     }
     state.onFileChange = onFileChange
 
     try {
-      state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_event, filename) => onFileChange(filename, false))
       for (const rel of watchSet) startPolling(state, rel)
-
       sourceWatchers.set(p.name, state)
       console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files)`)
       pushWatchedFiles(p.name, p.sourceDir, watchSet)
@@ -920,6 +917,22 @@ function syncSourceWatchers(projectList) {
       try { state.watcher?.close() } catch {}
       for (const rel of state.watchSet) stopPolling(state, rel)
       sourceWatchers.delete(name)
+    }
+  }
+  syncFsWatchers()
+}
+
+function syncFsWatchers() {
+  for (const [name, state] of sourceWatchers) {
+    const needsWatch = _activeViewerSet.has(name)
+    if (needsWatch && !state.watcher) {
+      try {
+        state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn, false))
+        console.log(`[daemon] fs.watch started for ${name} (viewer connected)`)
+      } catch (e) { console.error(`[daemon] fs.watch failed for ${name}: ${e.message}`) }
+    } else if (!needsWatch && state.watcher) {
+      try { state.watcher.close() } catch {}
+      state.watcher = null
     }
   }
 }
@@ -1716,7 +1729,7 @@ function handleServerMessage(msg) {
     projects = msg.projects || []
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
-    syncSourceWatchers(projects)
+    syncSourceWatchers(projects, msg.activeViewers)
     flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
@@ -1733,6 +1746,11 @@ function handleServerMessage(msg) {
   if (msg.type === 'projects-updated') {
     projects = msg.projects || []
     syncSourceWatchers(projects)
+    return
+  }
+  if (msg.type === 'active-viewers') {
+    _activeViewerSet = new Set(msg.projects || [])
+    syncFsWatchers()
     return
   }
   if (msg.type === 'version-committed') {
