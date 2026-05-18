@@ -182,12 +182,14 @@ export function dropPillOnTarget(
     }))
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
-    // File chip pill dropped on canvas → create collapsed math-note
+    // File chip pill dropped on canvas → create file-backed math-note
     const pill = editor.getShape(pillId) as any
-    const noteContent = content || pill?.props?.displayName || ''
     const sourceAgent = pill?.meta?.sourceAgent as string | undefined
+    const filePath = pill?.meta?.filePath as string | undefined
+    const fileUrl = pill?.meta?.fileUrl as string | undefined
+    const noteId = createShapeId()
     createEditor.createShape({
-      id: createShapeId(),
+      id: noteId,
       type: 'math-note' as any,
       x: pagePoint.x - 5,
       y: pagePoint.y - 5,
@@ -195,13 +197,32 @@ export function dropPillOnTarget(
       props: {
         w: 320,
         h: 50,
-        text: noteContent,
+        text: content || pill?.props?.displayName || '',
         color: 'light-violet',
         autoSize: true,
         collapsed: true,
+        ...(filePath ? { backingFile: filePath } : {}),
       },
-      meta: sourceAgent ? { authorId: sourceAgent, createdAt: Date.now() } : undefined,
+      meta: {
+        ...(sourceAgent ? { authorId: sourceAgent } : {}),
+        ...(filePath ? { sharedDocPath: filePath, sharedDoc: true, fromAgent: sourceAgent } : {}),
+        createdAt: Date.now(),
+      },
     })
+    // Fetch real file content (the drag content may not have loaded yet)
+    const fetchUrl = fileUrl || (filePath ? `/api/read-file?path=${encodeURIComponent(filePath)}` : '')
+    if (fetchUrl) {
+      fetch(fetchUrl).then(r => r.ok ? r.text() : null).then(text => {
+        if (!text) return
+        const shape = createEditor.getShape(noteId)
+        if (!shape) return
+        createEditor.updateShape({
+          id: noteId,
+          type: 'math-note' as any,
+          props: { text },
+        })
+      }).catch(() => {})
+    }
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc/file pill dropped on canvas → create collapsed math-note with file content

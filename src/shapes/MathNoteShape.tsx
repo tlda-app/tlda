@@ -47,7 +47,8 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 }
 import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
-import { subscribeSearchFilter, getSearchFilter, setBulletContext, subscribeBulletContext, getBulletContext } from '../stores'
+import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts } from '../stores'
+import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
 
@@ -340,7 +341,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
-    const activeBullet = useSyncExternalStore(subscribeBulletContext, getBulletContext)
+    const activeBullets = useSyncExternalStore(subscribeBulletContext, getBulletContexts)
 
     // Lazy image registration: fetch local images, store as tldraw assets + module cache
     useEffect(() => {
@@ -447,16 +448,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       [shape.props.text, imgVersion, labelRegions],
     )
 
-    // Inject bullet-selected class into the Nth <li> when this note has an active bullet
+    // Inject bullet-selected class into <li> elements that have active bullets
     const renderedHtml = useMemo(() => {
-      if (!renderedHtmlBase || !activeBullet || activeBullet.noteShapeId !== shape.id) return renderedHtmlBase
-      const idx = activeBullet.bulletIndex
+      if (!renderedHtmlBase) return renderedHtmlBase
+      const myBullets = activeBullets.filter(b => b.noteShapeId === shape.id)
+      if (myBullets.length === 0) return renderedHtmlBase
+      const selectedIndices = new Set(myBullets.map(b => b.bulletIndex))
       let count = 0
       return renderedHtmlBase.replace(/<li>/g, (match) => {
-        if (count++ === idx) return '<li class="bullet-selected">'
+        if (selectedIndices.has(count++)) return '<li class="bullet-selected">'
         return match
       })
-    }, [renderedHtmlBase, activeBullet, shape.id])
+    }, [renderedHtmlBase, activeBullets, shape.id])
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
@@ -823,7 +826,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         backingFile,
         bulletIndex,
       }
-      setBulletContext(ctx)
+      addBulletContext(ctx)
 
       if (owner) {
         dispatchSignalDirect('signal:set-chat-target', {
@@ -831,6 +834,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           timestamp: Date.now(),
         })
       }
+
+      const token = `«bullet:${shape.id}:${bulletIndex}»`
+      chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token, owner } }))
+
       return true
     }, [backingFile, shape.id, shape.meta?.authorId])
 
@@ -1099,6 +1106,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose.tappable-bullets li { cursor: pointer; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; transition: background-color 0.15s; }
               .math-note-prose.tappable-bullets li:hover { background-color: rgba(124, 58, 237, 0.08); }
               .math-note-prose.tappable-bullets li:active { background-color: rgba(124, 58, 237, 0.15); }
+              .math-note-prose li.bullet-flash { animation: bullet-flash-anim 1.5s ease-out; }
+              @keyframes bullet-flash-anim { 0% { background: rgba(124, 58, 237, 0.3); } 100% { background: transparent; } }
               .math-note-prose.tappable-bullets li.bullet-selected { background-color: rgba(124, 58, 237, 0.15); border-left: 3px solid rgba(124, 58, 237, 0.6); padding-left: 6px; }
             `}</style>
             <div
