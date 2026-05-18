@@ -842,7 +842,7 @@ function startPolling(state, rel) {
   if (!fs.existsSync(full)) return
   fs.watchFile(full, { interval: 2000 }, (curr, prev) => {
     if (curr.mtimeMs === prev.mtimeMs) return
-    state.onFileChange(rel, true)
+    state.onFileChange(rel)
   })
 }
 
@@ -872,34 +872,18 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, watchFired: new Set(), projectName: p.name }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name }
 
-    const onFileChange = (filename, fromPoll) => {
+    const onFileChange = (filename) => {
       if (!filename) return
       if (state.watchSet.size > 0) {
         if (!state.watchSet.has(filename)) return
       } else {
         if (!isSourceFile(filename)) return
       }
-      if (!fromPoll) {
-        state.watchFired.add(filename)
-      } else if (state.watcher && !state.watchFired.has(filename)) {
-        if (!state._recreatedRecently) {
-          state._recreatedRecently = true
-          setTimeout(() => { state._recreatedRecently = false }, 10000)
-          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — recreating`)
-          try { state.watcher?.close() } catch {}
-          try {
-            state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
-          } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${state.projectName}: ${e.message}`) }
-        }
-      }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
-      state.debounce = setTimeout(() => {
-        state.watchFired.clear()
-        flushSourceChanges(state.projectName)
-      }, 200)
+      state.debounce = setTimeout(() => flushSourceChanges(state.projectName), 200)
     }
     state.onFileChange = onFileChange
 
@@ -927,7 +911,7 @@ function syncFsWatchers() {
     const needsWatch = _activeViewerSet.has(name)
     if (needsWatch && !state.watcher) {
       try {
-        state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn, false))
+        state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
         console.log(`[daemon] fs.watch started for ${name} (viewer connected)`)
       } catch (e) { console.error(`[daemon] fs.watch failed for ${name}: ${e.message}`) }
     } else if (!needsWatch && state.watcher) {
