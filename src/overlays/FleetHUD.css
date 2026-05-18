@@ -97,12 +97,6 @@
 .fleet-hud-wrap.hud-layout-active .clip-panel-fullvp .tl-canvas {
   pointer-events: auto !important;
 }
-/* Layout mode: re-enable pointer-events on tldraw selection overlays so
-   shapes can be dragged/resized. fleet-chat.css disables these globally
-   in the HUD to prevent event interception during normal browsing. */
-.fleet-hud-wrap.hud-layout-active .fleet-hud .tl-overlays__item {
-  pointer-events: auto !important;
-}
 
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
