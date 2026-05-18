@@ -11,7 +11,7 @@ export {
   type ChangeRegion,
 } from './changeStore'
 export { subscribeSearchFilter, getSearchFilter, setSearchFilter, clearSearchFilter } from './searchFilterStore'
-export { setBulletContext, getBulletContext, subscribeBulletContext, consumeBulletContext, type BulletContext } from './bulletContextStore'
+export { addBulletContext, removeBulletContext, getBulletContexts, subscribeBulletContext, consumeBulletContexts, clearBulletContexts, type BulletContext } from './bulletContextStore'
 export { getPageUrl, getPageFilename, setPageUrl, clearPageUrls } from './pageUrlStore'
 
 import { clearSvgTextStore } from './svgTextStore'

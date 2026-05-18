@@ -41,7 +41,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import { getPageFilename } from '../stores/pageUrlStore'
-import { consumeBulletContext, subscribeBulletContext, getBulletContext } from '../stores/bulletContextStore'
+import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -723,7 +723,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Track previous agent friendly names to detect renames (populated after agents is declared below)
   const prevAgentNamesRef = useRef<Record<string, string>>({})
 
-  const activeBullet = useSyncExternalStore(subscribeBulletContext, getBulletContext)
+  const activeBullets = useSyncExternalStore(subscribeBulletContext, getBulletContexts)
 
   // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
   const dnfFilter = filter.length > 0 ? filter : null
@@ -1063,6 +1063,46 @@ function FleetChatInner({ shape }: { shape: any }) {
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
+      if (typePrefix === 'bullet') {
+        const lastColon = display.lastIndexOf(':')
+        const shapeId = lastColon > 0 ? display.slice(0, lastColon) : ''
+        const bulletIdx = lastColon > 0 ? parseInt(display.slice(lastColon + 1), 10) : -1
+        let bulletText = display
+        let accentColor = '#7c3aed'
+        let noteName = ''
+        let authorId = ''
+        if (shapeId && bulletIdx >= 0) {
+          const mainEditor = (window as any).__tldraw_editor__ || editor
+          const noteShape = (editor.getShape(shapeId as any) || mainEditor.getShape(shapeId as any)) as any
+          if (noteShape?.props?.text) {
+            const raw = noteShape.props.text as string
+            const bullets = raw.split('\n').filter((l: string) => /^\s*[-*]\s/.test(l))
+            if (bullets[bulletIdx]) {
+              bulletText = bullets[bulletIdx].replace(/^\s*[-*]\s+/, '').trim()
+            }
+          }
+          if (noteShape?.props?.backingFile) {
+            const bf = noteShape.props.backingFile as string
+            noteName = bf.split('/').pop()?.replace(/\.md$/i, '') || bf
+          }
+          if (noteShape?.meta?.authorId) {
+            authorId = noteShape.meta.authorId as string
+          }
+          if (noteShape?.props?.color) {
+            const DOT_COLORS: Record<string, string> = {
+              yellow: '#eab308', red: '#ef4444', green: '#22c55e', blue: '#3b82f6',
+              violet: '#8b5cf6', orange: '#f97316', grey: '#9ca3af',
+              'light-red': '#ef4444', 'light-green': '#22c55e', 'light-blue': '#3b82f6',
+              'light-violet': '#8b5cf6', black: '#6b7280', white: '#d4d4d4',
+            }
+            accentColor = DOT_COLORS[noteShape.props.color] || accentColor
+          }
+        }
+        const textEsc = bulletText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        const nameEsc = noteName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        const authorEsc = authorId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        return `<div class="bullet-card" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}" style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}</span><button class="bullet-card-go" title="Go to bullet" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}">→</button></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
+      }
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
       let ref: any = undefined
@@ -1801,9 +1841,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const mainEditor = (window as any).__tldraw_editor__ as any
     if (!mainEditor) return
 
-    // Only process the last few messages to avoid re-processing old history
-    const recentMessages = chatMessages.slice(-3)
-    for (const m of recentMessages) {
+    for (const m of chatMessages) {
       const msgKey = `${m.timestamp}:${m.from}`
       if (sharedDocProcessed.current.has(msgKey)) continue
       sharedDocProcessed.current.add(msgKey)
@@ -1811,42 +1849,27 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Skip messages from the human user — only auto-display agent-shared files
       if (m.from && !m.from.startsWith('fleet:')) continue
 
-      // Extract .md file paths from message text and inline attachments
-      const mdPaths: string[] = []
-
-      // Check inline attachments
+      // Extract .md file attachments (the chipifier already replaced raw paths
+      // with {{att:N}} tokens — inline_attachments metadata is the sole source)
+      const mdAtts: Array<{ path: string; url?: string }> = []
       if (m._inlineAttachments) {
         for (const att of m._inlineAttachments) {
           if (att?.path && /\.md$/i.test(att.path)) {
-            mdPaths.push(att.path)
+            mdAtts.push(att)
           }
         }
       }
 
-      // Check message text for absolute .md paths
-      const text = m.text || ''
-      const absPathMatches = text.match(/\/Users\/\w+\/[\w/._-]+\.md/g)
-      if (absPathMatches) {
-        for (const p of absPathMatches) {
-          if (!mdPaths.includes(p)) mdPaths.push(p)
-        }
-      }
-      // Check [file:/path.md] syntax
-      const fileRefMatches = text.match(/\[file:(\/[\w/._-]+\.md)\]/g)
-      if (fileRefMatches) {
-        for (const match of fileRefMatches) {
-          const p = match.slice(6, -1) // strip [file: and ]
-          if (!mdPaths.includes(p)) mdPaths.push(p)
-        }
-      }
-
-      if (mdPaths.length === 0) continue
+      if (mdAtts.length === 0) continue
 
       // Create a sticky for each .md file found
-      for (const filePath of mdPaths) {
+      for (const att of mdAtts) {
+        const filePath = att.path
         ;(async () => {
           try {
-            const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`)
+            // Prefer the uploaded copy (works cross-machine), fall back to direct path
+            const fetchUrl = att.url || `/api/read-file?path=${encodeURIComponent(filePath)}`
+            const res = await fetch(fetchUrl)
             if (!res.ok) return
             const content = await res.text()
             if (!content.trim()) return
@@ -1981,6 +2004,36 @@ function FleetChatInner({ shape }: { shape: any }) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
           return
         }
+      }
+      // Bullet card "go" button — navigate to note shape + highlight bullet
+      const bulletGoBtn = (e.target as HTMLElement).closest('.bullet-card-go') as HTMLElement | null
+      if (bulletGoBtn) {
+        e.stopPropagation()
+        const sid = bulletGoBtn.dataset.shapeId
+        const idx = parseInt(bulletGoBtn.dataset.bulletIdx || '', 10)
+        if (sid) {
+          const mainEd = (window as any).__tldraw_editor__ || editor
+          const noteShape = mainEd.getShape(sid as any)
+          if (noteShape) {
+            const bounds = mainEd.getShapePageBounds(noteShape.id)
+            if (bounds) {
+              mainEd.centerOnPoint({ x: bounds.midX, y: bounds.midY }, { animation: { duration: 300 } })
+              mainEd.select(noteShape.id)
+              if (!isNaN(idx) && idx >= 0) {
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-shape-id="${sid}"]`)
+                  if (!el) return
+                  const lis = el.querySelectorAll('.math-note-prose li')
+                  if (lis[idx]) {
+                    lis[idx].classList.add('bullet-flash')
+                    setTimeout(() => lis[idx].classList.remove('bullet-flash'), 1500)
+                  }
+                }, 400)
+              }
+            }
+          }
+        }
+        return
       }
       // Terminal lifecycle card — click to pin/unpin terminal
       const termCard = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
@@ -2641,10 +2694,12 @@ function FleetChatInner({ shape }: { shape: any }) {
             }).catch(() => {})
           }
           const chatLine = fileChip.closest('[data-msg-from]') as HTMLElement | null
+          const filePath = fileChip.dataset.path || ''
           drag = {
             pillId: null, pillType: 'file' as any, value: token,
             displayName: label, color: '#9370db',
             content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
+            filePath, fileUrl,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -2699,7 +2754,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             displayName: drag.displayName,
             color: drag.color,
           },
-          meta: drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : undefined,
+          meta: {
+            ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
+            ...(drag.filePath ? { filePath: drag.filePath } : {}),
+            ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
+          },
         })
         drag.pillId = pillId as unknown as string
         // Reset tldraw's state machine via API — avoids cancelling the real pointer stream.
@@ -2745,7 +2804,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                 displayName: drag.displayName,
                 color: drag.color,
               },
-              meta: drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : undefined,
+              meta: {
+                ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
+                ...(drag.filePath ? { filePath: drag.filePath } : {}),
+                ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
+              },
             })
             ;(drag as any)._onMain = true
           } else if (!outside && onMain) {
@@ -2832,8 +2895,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
     const handler = (e: Event) => {
-      const { chatId, text } = (e as CustomEvent).detail
-      if (chatId && chatId !== shape.id) return // skip if targeted to a different chat; accept broadcasts (no chatId)
+      const { chatId, text, owner } = (e as CustomEvent).detail
+      if (chatId && chatId !== shape.id) return
+      if (owner && !sendTargetsRef.current.includes(owner)) return
       const ta = inputRef.current as HTMLTextAreaElement | null
       if (!ta) return
       const pos = ta.selectionStart ?? ta.value.length
@@ -2841,7 +2905,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const after = ta.value.slice(pos)
       const insert = (before && !before.endsWith('\n') ? '\n' : '') + text + (after && !after.startsWith('\n') ? '\n' : '')
       ta.value = before + insert + after
-      // field-sizing: content handles auto-resize
       ta.focus()
     }
     const filterHandler = (e: Event) => {
@@ -2860,12 +2923,12 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Auto-focus textarea + start voice when a bullet tap targets this chat
   useEffect(() => {
-    if (!activeBullet) return
+    if (activeBullets.length === 0) return
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta || ta.getBoundingClientRect().width === 0) return
     ta.focus()
     if (!isRecording()) toggleRecording()
-  }, [activeBullet])
+  }, [activeBullets])
 
   return (
     <HTMLContainer
@@ -3098,27 +3161,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               </button>
             )}
-            {activeBullet && (
-              <div
-                onClick={() => consumeBulletContext()}
-                style={{
-                  fontSize: '10px',
-                  lineHeight: '16px',
-                  color: '#7c3aed',
-                  background: 'rgba(124, 58, 237, 0.08)',
-                  borderRadius: '4px',
-                  padding: '1px 6px',
-                  marginBottom: '2px',
-                  cursor: 'pointer',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-                title="Click to dismiss"
-              >
-                {'• ' + activeBullet.text}
-              </div>
-            )}
             <textarea
               ref={inputRef as any}
               placeholder=""
@@ -3207,9 +3249,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
                     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                    const bulletCtx = consumeBulletContext()
-                    if (bulletCtx && context) {
-                      ;(context as any).bullet = bulletCtx
+                    const bullets = consumeBulletContexts()
+                    if (bullets.length > 0 && context) {
+                      ;(context as any).bullets = bullets
                     }
 
                     // Plan mode verbal approval: detect approval/rejection phrases and
@@ -3338,9 +3380,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   // Same optimistic send path as Enter key — one send path for everything
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  const bulletCtx = consumeBulletContext()
-                  if (bulletCtx && context) {
-                    ;(context as any).bullet = bulletCtx
+                  const bullets = consumeBulletContexts()
+                  if (bullets.length > 0 && context) {
+                    ;(context as any).bullets = bullets
                   }
                   const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
                   injectOptimisticEvent({
@@ -3380,9 +3422,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  const bulletCtx = consumeBulletContext()
-                  if (bulletCtx && context) {
-                    ;(context as any).bullet = bulletCtx
+                  const bullets = consumeBulletContexts()
+                  if (bullets.length > 0 && context) {
+                    ;(context as any).bullets = bullets
                   }
                   const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
                   injectOptimisticEvent({
