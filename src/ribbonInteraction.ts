@@ -347,14 +347,15 @@ export async function initRibbonBackground(
     const xOk = Math.abs(existing.x - MARGIN_X) <= 0.5
     const yOk = Math.abs(existing.y - docTop) <= 0.5
     const hOk = Math.abs(props.h - docHeight) <= 0.5
-    if (!xOk || !yOk || !hOk) {
+    const wOk = props.w === BAR_WIDTH
+    if (!xOk || !yOk || !hOk || !wOk) {
       editor.updateShape({
         id: bgId,
         type: 'understanding-line' as any,
         x: MARGIN_X,
         y: docTop,
         isLocked: false,
-        props: { ...props, h: docHeight },
+        props: { ...props, w: BAR_WIDTH, h: docHeight },
       })
     }
   } else {
