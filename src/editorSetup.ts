@@ -660,15 +660,16 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
 
         const tryProcess = () => {
           if (done) return
-          if (editor.inputs.isPointing) {
+          const toolPath = editor.root.getPath()
+          if (toolPath.includes('.drawing')) {
             setTimeout(tryProcess, 100)
             return
           }
           processShape()
         }
 
-        // Wait 200ms (shape geometry settles), then poll until pen is lifted
-        setTimeout(tryProcess, 200)
+        // Wait 300ms (shape geometry settles), then poll until stroke completes
+        setTimeout(tryProcess, 300)
         // Safety fallback: process after 5s regardless
         setTimeout(() => { if (!done) processShape() }, 5000)
       }

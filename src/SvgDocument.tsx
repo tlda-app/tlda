@@ -52,6 +52,7 @@ import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
 import { RibbonEraserTool } from './tools/RibbonEraserTool'
 import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
+import { RibbonLane } from './shapes/RibbonLane'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -812,7 +813,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
     }),
     [document, roomId]
   )
