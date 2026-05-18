@@ -30,6 +30,7 @@ import {
   startEditingShapeWithRichText,
 } from 'tldraw'
 import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
+import { getOnSourceClick } from '../../stores'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
@@ -43,7 +44,8 @@ function _updateHoveredShapeId(editor: Editor) {
     margin: editor.options.hitTestMargin / editor.getZoomLevel(),
     renderingOnly: true,
   })
-  if (!hitShape) return editor.setHoveredShape(null)
+  // Document pages are locked and non-interactive — don't show hover indicator
+  if (!hitShape || (hitShape.type as string) === 'svg-page') return editor.setHoveredShape(null)
   let shapeToHover: TLShape | undefined = undefined
   const outermostShape = editor.getOutermostSelectableShape(hitShape)
   if (outermostShape === hitShape) {
@@ -310,6 +312,16 @@ export class BrowseIdle extends StateNode {
           // In the main canvas, keep passing through to DOM.
           if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
             this.parent.transition('pointing_canvas', info)
+            return
+          }
+          // Cmd-click on svg-page: open source in editor
+          if ((hitShape.type as string) === 'svg-page' && info.accelKey) {
+            const onSourceClick = getOnSourceClick()
+            if (onSourceClick) {
+              const pagePoint = this.editor.inputs.getCurrentPagePoint()
+              const yFraction = (pagePoint.y - hitShape.y) / (hitShape as any).props.h
+              onSourceClick(hitShape.id, yFraction)
+            }
             return
           }
           this.editor.selectNone()

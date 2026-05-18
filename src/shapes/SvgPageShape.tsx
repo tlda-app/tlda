@@ -10,7 +10,7 @@ import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
 import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
-import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { anchorIndex, getNavigateToAnchor } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 
@@ -344,24 +344,11 @@ function SvgPageComponent({ shape }: { shape: any }) {
     applyTinting(textYCacheRef.current, highlights)
   }, [isNearViewport, svgText])
 
-  // Pointer/click handlers — stable, don't depend on SVG content
+  // Anchor navigation (links inside the SVG) — click events do reach via link targets.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
-    // Cmd-click: open source in editor.
-    // Must use pointerdown — TLDraw swallows click events before they reach inner divs.
-    const onPointerDown = (e: PointerEvent) => {
-      if (!e.metaKey) return
-      const onSourceClick = getOnSourceClick()
-      if (!onSourceClick) return
-      e.preventDefault()
-      const rect = el.getBoundingClientRect()
-      const clickY = (e.clientY - rect.top) / rect.height
-      onSourceClick(shape.id, clickY)
-    }
-
-    // Anchor navigation (links inside the SVG) — click events do reach via link targets.
     const onClick = (e: MouseEvent) => {
       if (e.metaKey) return
       const target = (e.target as Element).closest('a')
@@ -376,10 +363,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
       }
     }
 
-    el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('click', onClick)
     return () => {
-      el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('click', onClick)
     }
   }, [shape.id])
