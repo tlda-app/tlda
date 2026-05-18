@@ -12,20 +12,25 @@ import {
   stopEventPropagation,
   useEditor,
   useValue,
+  createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useRef, useMemo, useLayoutEffect } from 'react'
-import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetEvents, useFleetTasks } from '../fleet-data-adapter'
+import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
+import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
+// @ts-ignore — vanilla JS module
+import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
-import { useLayoutMode } from './HudLayoutMode'
+import { useIsInViewport } from './useIsInViewport'
+import { dropPillOnTarget } from './FleetPillShape'
+import { dragCoordinator } from './dragCoordinator'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -47,13 +52,14 @@ function searchRenderMarkdown(escapedHtml: string): string {
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   text = text.replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '')
   const macros = getActiveMacros()
+  // throwOnError: true → catch fires on bad LaTeX, fall back to raw text
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex: string) => {
-    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: false, macros }) }
-    catch { return `<div class="math-display">${esc(tex)}</div>` }
+    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: true, strict: false, macros }) }
+    catch { return `<div class="math-display">$$${esc(tex)}$$</div>` }
   })
   text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex: string) => {
-    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: false, macros }) }
-    catch { return `<span class="math-inline">${esc(tex)}</span>` }
+    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: true, strict: false, macros }) }
+    catch { return `<span class="math-inline">$${esc(tex)}$</span>` }
   })
   let result = md.render(text)
   const trimmed = result.trim()
@@ -70,6 +76,64 @@ const nickHex = ['#7a9ec8','#9370db','#c8956a','#6aafb0','#b87a95','#c8b060']
 const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
+
+
+const DRAG_THRESHOLD = 4
+interface DragState {
+  pillId: string | null; pillType: 'agent'
+  value: string; displayName: string; color: string
+  startX: number; startY: number; started: boolean
+}
+
+function usePillDrag() {
+  const editor = useEditor()
+  const dragRef = useRef<DragState | null>(null)
+  const startDrag = useCallback((e: React.PointerEvent, value: string, displayName: string, color: string) => {
+    stopEventPropagation(e)
+    e.preventDefault()
+    dragRef.current = { pillId: null, pillType: 'agent', value, displayName, color, startX: e.clientX, startY: e.clientY, started: false }
+    dragCoordinator.claim(
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        if (!drag) return
+        const dx = ev.clientX - drag.startX, dy = ev.clientY - drag.startY
+        if (!drag.started) {
+          if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+          drag.started = true
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const measureEl = document.createElement('span')
+          measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
+          measureEl.textContent = drag.displayName
+          document.body.appendChild(measureEl)
+          const pw = measureEl.offsetWidth, ph = measureEl.offsetHeight
+          document.body.removeChild(measureEl)
+          const pillId = createShapeId()
+          editor.run(() => {
+            editor.createShape({ id: pillId, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2, props: { w: pw, h: ph, pillType: 'agent', value: drag.value, displayName: drag.displayName, color: drag.color } })
+          }, { history: 'ignore' })
+          drag.pillId = pillId as unknown as string
+          editor.cancel()
+          return
+        }
+        if (drag.pillId) {
+          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pillShape = editor.getShape(drag.pillId as any) as any
+          const pw = pillShape?.props?.w || 70, ph = pillShape?.props?.h || 18
+          editor.run(() => { editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2 }) }, { history: 'ignore' })
+        }
+      },
+      (ev: PointerEvent) => {
+        const drag = dragRef.current
+        dragRef.current = null
+        if (!drag || !drag.started || !drag.pillId) return
+        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+        editor.run(() => { try { editor.deleteShapes([drag.pillId as any]) } catch {} }, { history: 'ignore' })
+      }
+    )
+  }, [editor])
+  return { startDrag }
+}
 
 function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
@@ -104,95 +168,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
   }
 }
 
-// --- Embedded chat view for search results ---
-function EmbeddedChatView({ agentFilter, scrollToTs, onBack }: {
-  agentFilter: [string, string][][]
-  scrollToTs?: string
-  onBack: () => void
-}) {
-  const agents = useFleetAgents()
-  const tasks = useFleetTasks()
-  const events = useFleetEvents(agentFilter)
-  const chatLogRef = useRef<HTMLDivElement>(null)
-  const scrolledRef = useRef(false)
-
-  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
-
-  const chatMessages = useMemo(() => {
-    return events
-      .filter((m: any) => {
-        const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity'
-      })
-      .filter((m: any) => !m._timer)
-      .sort((a: any, b: any) => {
-        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
-        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
-        return ta - tb
-      })
-  }, [events])
-
-  const renderedHtml = useMemo(() => {
-    const parts: string[] = []
-    let activityGroup: any[] = []
-    function flushActivity() {
-      if (activityGroup.length === 0) return
-      parts.push(`<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, ctx)}</div>`)
-      activityGroup = []
-    }
-    for (const m of chatMessages) {
-      if (m._activity) {
-        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
-        activityGroup.push(m)
-      } else {
-        flushActivity()
-        const line = renderChatLine(m, ctx)
-        if (line) parts.push(line)
-      }
-    }
-    flushActivity()
-    return parts.join('')
-  }, [chatMessages, ctx])
-
-  // Scroll to target timestamp after render
-  useLayoutEffect(() => {
-    if (!scrollToTs || !chatLogRef.current || scrolledRef.current) return
-    const targetTs = new Date(scrollToTs).getTime()
-    // Find the chat-line closest to this timestamp
-    const lines = chatLogRef.current.querySelectorAll('[data-msg-ts]')
-    let closest: Element | null = null
-    let closestDiff = Infinity
-    for (const line of lines) {
-      const ts = new Date((line as HTMLElement).dataset.msgTs || '').getTime()
-      const diff = Math.abs(ts - targetTs)
-      if (diff < closestDiff) { closestDiff = diff; closest = line }
-    }
-    if (closest) {
-      closest.scrollIntoView({ block: 'center' })
-      closest.classList.add('chat-line-highlight')
-      setTimeout(() => closest!.classList.remove('chat-line-highlight'), 3000)
-      scrolledRef.current = true
-    }
-  }, [renderedHtml, scrollToTs])
-
-  return (
-    <div className="fleet-search-embedded-chat">
-      <div
-        className="fleet-search-chat-back"
-        onPointerDown={(e) => e.stopPropagation()}
-        onPointerUp={(e) => { e.stopPropagation(); onBack() }}
-      >
-        ← back to results
-      </div>
-      <div
-        ref={chatLogRef}
-        className="fleet-chat-log"
-        dangerouslySetInnerHTML={{ __html: renderedHtml }}
-        style={{ flex: 1, overflowY: 'auto', fontSize: 10 }}
-      />
-    </div>
-  )
-}
+const CHAT_HEADER_H = 30
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-search' as const
@@ -219,24 +195,8 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-function formatTime(ts: string | number): string {
-  if (!ts) return ''
-  const d = new Date(ts)
-  const now = new Date()
-  const sameDay = d.toDateString() === now.toDateString()
-  if (sameDay) {
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
-    ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
 
-function truncate(text: string, max: number): string {
-  if (!text) return ''
-  const plain = text.replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
-  if (plain.length <= max) return plain
-  return plain.slice(0, max) + '…'
-}
+
 
 // Parse inline keyword filters from query string
 // Returns { query, filters } where query is the remaining FTS text
@@ -292,19 +252,51 @@ function resolveTimeFilter(val: string): string | null {
   return null
 }
 
-function FleetSearchComponent({ shape }: { shape: any }) {
+function FleetSearchInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+
+  // Capture-phase pointerdown: fires before tldraw's tl-container listener
+  // can intercept. Marks clicks as handled so tldraw skips setPointerCapture.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
+
   const agents = useFleetAgents()
+  const tasks = useFleetTasks()
+  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+  const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
-  // When a result is clicked, show the real chat view for that agent
-  const [chatView, setChatView] = useState<{ agentFilter: [string, string][][]; scrollToTs: string } | null>(null)
+  // When ↗ is clicked, a real fleet-chat shape is created on top of us
+  const [chatShapeId, setChatShapeId] = useState<string | null>(null)
+
+  // If the chat shape was deleted externally, clear our state
+  const chatShapeExists = useValue('chatShapeExists', () => {
+    if (!chatShapeId) return false
+    return !!editor.getShape(chatShapeId as any)
+  }, [editor, chatShapeId])
+  useEffect(() => {
+    if (chatShapeId && !chatShapeExists) setChatShapeId(null)
+  }, [chatShapeId, chatShapeExists])
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -326,12 +318,19 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     return map
   }, [agents])
 
+  const closeChat = useCallback(() => {
+    if (chatShapeId) {
+      try { editor.run(() => { editor.deleteShapes([chatShapeId as any]) }, { history: 'ignore' }) } catch {}
+    }
+    setChatShapeId(null)
+  }, [editor, chatShapeId])
+
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults([])
       setDocResults([])
       setSearched(false)
-      setChatView(null)
+      closeChat()
       return
     }
 
@@ -347,7 +346,7 @@ function FleetSearchComponent({ shape }: { shape: any }) {
 
     setLoading(true)
     setSearched(true)
-    setChatView(null)
+    closeChat()
 
     // Build search — pass FTS query to API, filter results client-side
     const searchQuery = ftsQuery || '*'
@@ -403,15 +402,31 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     }
 
     setLoading(false)
-  }, [agentIdByName, agentName])
+  }, [agentIdByName, agentName, closeChat])
 
-  // Build a DNF filter for the agent involved in a search result
+  // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
   const openChatForResult = useCallback((result: any) => {
-    // Build filter: [[["name", agentFriendlyName]]]
-    const name = agentName(result.from)
+    const name = agentName(result.from || result.agentId || '')
     const filter: [string, string][][] = [[['name', name]]]
-    setChatView({ agentFilter: filter, scrollToTs: result.timestamp })
-  }, [agentName])
+    const rec = editor.getShape(shape.id) as any
+    if (!rec) return
+    const newId = createShapeId()
+    editor.run(() => {
+      editor.createShape({
+        id: newId,
+        type: 'fleet-chat',
+        x: rec.x,
+        y: rec.y + CHAT_HEADER_H,
+        props: {
+          w: rec.props.w,
+          h: rec.props.h - CHAT_HEADER_H,
+          filter,
+        }
+      })
+      editor.bringToFront([newId])
+    }, { history: 'ignore' })
+    setChatShapeId(newId as unknown as string)
+  }, [agentName, editor, shape.id])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value
@@ -430,13 +445,13 @@ function FleetSearchComponent({ shape }: { shape: any }) {
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      if (chatView) {
-        setChatView(null)
+      if (chatShapeId) {
+        closeChat()
       } else {
         editor.setEditingShape(null)
       }
     }
-  }, [doSearch, query, editor, chatView])
+  }, [doSearch, query, editor, chatShapeId, closeChat])
 
   // Parse current filters for display
   const { filters: activeFilters } = useMemo(() => parseSearchQuery(query), [query])
@@ -446,11 +461,12 @@ function FleetSearchComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: layoutMode ? 'none' : 'all',
+        pointerEvents: 'all',
         overflow: 'visible',
       }}
     >
       <div
+        ref={containerRef}
         className="fleet-shape fleet-search-shape"
         style={{
           width: '100%',
@@ -467,6 +483,27 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           color: 'var(--text, #8888a0)',
         }}
       >
+        {/* Chat-open mode: show only the back button bar — fleet-chat shape sits below */}
+        {chatShapeId ? (
+          <div
+            style={{
+              height: CHAT_HEADER_H,
+              display: 'flex',
+              alignItems: 'center',
+              borderBottom: '1px solid rgba(128, 128, 128, 0.12)',
+              flexShrink: 0,
+            }}
+            onPointerDown={(e) => stopEventPropagation(e)}
+          >
+            <button
+              className="fleet-search-chat-back"
+              onPointerUp={(e) => { stopEventPropagation(e); closeChat() }}
+            >
+              ← back to results
+            </button>
+          </div>
+        ) : <>
+
         {/* Close + layout buttons */}
         <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
           <button
@@ -532,16 +569,10 @@ function FleetSearchComponent({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Results or embedded chat */}
-        {chatView ? (
-          <EmbeddedChatView
-            agentFilter={chatView.agentFilter}
-            scrollToTs={chatView.scrollToTs}
-            onBack={() => setChatView(null)}
-          />
-        ) : (
+        {/* Results */}
+        {(
         <div
-          className="fleet-search-results"
+          className="fleet-search-results fleet-chat-shape"
           style={{
             flex: 1,
             overflowY: 'auto',
@@ -593,55 +624,41 @@ function FleetSearchComponent({ shape }: { shape: any }) {
               type to search fleet history
             </div>
           )}
-          {results.map((r: any, i: number) => (
-            <div
-              key={i}
-              className="fleet-search-result"
-              onPointerDown={(e) => { stopEventPropagation(e) }}
-              onPointerUp={(e) => {
-                e.stopPropagation()
-                openChatForResult(r)
-              }}
-            >
-              {/* Timestamp + sender */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                marginBottom: 1,
-              }}>
-                <span style={{ fontSize: 9, opacity: 0.5 }}>
-                  {formatTime(r.timestamp)}
-                </span>
-                <span style={{
-                  fontSize: 10,
-                  fontWeight: 500,
-                  opacity: 0.7,
-                }}>
-                  {agentName(r.from)}
-                </span>
-                {r.to && (
-                  <>
-                    <span style={{ fontSize: 8, opacity: 0.25 }}>→</span>
-                    <span style={{ fontSize: 10, opacity: 0.5 }}>
-                      {agentName(r.to)}
-                    </span>
-                  </>
-                )}
+          {results.map((r: any, i: number) => {
+            // text comes from new server; fall back to snippet for old server
+            const text = r.text ?? r.snippet ?? ''
+            // Build a proper event object for renderChatLine
+            const rawEvent = r.source === 'session'
+              ? { type: r.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: r.agentId, to: null, text, timestamp: r.timestamp, id: r.id }
+              : { ...r, text, id: r.id }
+            const msgObj = convertChatEvent(rawEvent)
+            const lineHtml = renderChatLine(msgObj, ctx)
+            if (!lineHtml) return null
+            return (
+              <div
+                key={i}
+                className="fleet-search-result"
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  // Delegate nick drags to startDrag
+                  const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
+                  if (nick) {
+                    const agentId = nick.dataset.agentId || ''
+                    const name = agentName(agentId)
+                    const color = ctx.getAgentColor(agentId)
+                    startDrag(e, name, name, color)
+                  }
+                }}
+              >
+                <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+                <span
+                  className="search-result-open"
+                  onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
+                  title="Open in chat"
+                >↗</span>
               </div>
-              {/* Message preview */}
-              <div style={{
-                fontSize: 10,
-                opacity: 0.7,
-                lineHeight: 1.3,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {truncate(r.snippet || r.text || r.message || r.body || '', 120)}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
         )}
 
@@ -658,7 +675,18 @@ function FleetSearchComponent({ shape }: { shape: any }) {
         }}>
           {searched ? `${results.length + docResults.length} result${results.length + docResults.length !== 1 ? 's' : ''}${docResults.length > 0 ? ` · ${docResults.length} doc${docResults.length !== 1 ? 's' : ''}` : ''}` : ''}
         </div>
+
+        </>}
       </div>
     </HTMLContainer>
   )
 }
+
+const FleetSearchComponent = memo(function FleetSearchComponent({ shape }: { shape: any }) {
+  const { w, h } = shape.props as { w: number; h: number }
+  const isInViewport = useIsInViewport(shape.id)
+  if (!isInViewport) {
+    return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
+  }
+  return <FleetSearchInner shape={shape} />
+}, (prev, next) => prev.shape.props === next.shape.props)

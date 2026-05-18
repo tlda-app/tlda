@@ -25,6 +25,9 @@ interface Props {
 export function HistoryPanel({ docName, entry, totalPages, pageHeight, editor, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [visiblePage, setVisiblePage] = useState(1)
+  const [side, setSide] = useState<'left' | 'right'>(() =>
+    (localStorage.getItem('tlda-history-side') as 'left' | 'right') || 'right'
+  )
 
   // Sync scroll with main editor camera (reactive, fires only on camera changes)
   useEffect(() => {
@@ -60,11 +63,20 @@ export function HistoryPanel({ docName, entry, totalPages, pageHeight, editor, o
 
   const label = entry.type === 'git'
     ? entry.commitMessage?.slice(0, 40) || entry.id
-    : new Date(entry.timestamp).toLocaleTimeString()
+    : new Date(entry.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 
   return (
-    <div className="history-panel">
+    <div className={`history-panel history-panel--${side}`}>
       <div className="history-panel-header">
+        <button
+          className="history-panel-side-toggle"
+          onClick={() => {
+            const next = side === 'right' ? 'left' : 'right'
+            setSide(next)
+            localStorage.setItem('tlda-history-side', next)
+          }}
+          title={`Move to ${side === 'right' ? 'left' : 'right'} side`}
+        >{side === 'right' ? '◁' : '▷'}</button>
         <span className="history-panel-label">{label}</span>
         <button className="history-panel-close" onClick={onClose}>×</button>
       </div>

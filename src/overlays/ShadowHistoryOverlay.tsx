@@ -1,16 +1,26 @@
 /**
  * ShadowHistoryOverlay — floating scrubber for navigating shadow repo history.
  *
- * Shows as a slim bar at the bottom of the canvas. When the user scrubs to a
- * historical position, old SVG pages appear to the left of the current pages.
+ * Shows as a slim bar at the bottom of the canvas. The slider is a TIME AXIS
+ * spanning from the oldest build to now. Dragging to a position queries the
+ * server for the nearest real build at that timestamp. Step buttons move to
+ * the actual adjacent build (one save at a time), so any historical version
+ * is reachable even in projects with hundreds of thousands of builds.
  *
- * Activates via a "History" button in the document panel, or by calling
- * toggleShadowOverlay() from the parent.
+ * When changelog data is provided, a 2D space-time scatter panel appears
+ * above the scrubber: X = time (shared axis with slider), Y = page position.
+ * Each dot marks which document pages changed at each build.
+ *
+ * Pointer events are handled by BrowseIdle.markEventAsHandled, which prevents
+ * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
  */
 
-import { useCallback } from 'react'
-import type { ShadowVersion } from '../historyStore'
+import { useCallback, useRef, useState, useMemo } from 'react'
+import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
+import type { ChangelogCommit } from './SpaceTimeDots'
 import './ShadowHistoryOverlay.css'
+
+const SLIDER_STEPS = 1000  // resolution of the time-axis slider
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
@@ -26,43 +36,75 @@ function formatTime(ts: number): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-interface Props {
-  versions: ShadowVersion[]
-  /** Index into versions (0 = newest). -1 means current. */
-  activeIdx: number
-  loading: boolean
-  onScrub: (idx: number) => void
-  onClose: () => void
+// Map slider integer position (0=oldest, SLIDER_STEPS=current) to a timestamp
+function sliderPosToTimestamp(pos: number, bounds: ShadowTimeBounds): number {
+  if (pos >= SLIDER_STEPS) return Date.now()
+  const t = pos / SLIDER_STEPS  // 0=oldest, 1≈newest
+  return Math.round(bounds.oldest.timestamp + t * (bounds.newest.timestamp - bounds.oldest.timestamp))
 }
 
-export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, onClose }: Props) {
-  if (versions.length < 2) return null
+// Map an active version's timestamp back to a slider position
+function timestampToSliderPos(ts: number, bounds: ShadowTimeBounds): number {
+  const span = bounds.newest.timestamp - bounds.oldest.timestamp
+  if (span === 0) return 0
+  const t = (ts - bounds.oldest.timestamp) / span
+  return Math.round(Math.max(0, Math.min(SLIDER_STEPS - 1, t * SLIDER_STEPS)))
+}
 
-  // Scrubber: left = oldest, right = newest/current
-  // We map slider position to versions like this:
-  //   slider 0         = current (activeIdx -1)
-  //   slider 1         = versions[0] (newest snapshot)
-  //   slider 2         = versions[1]
-  //   ...
-  //   slider versions.length = versions[versions.length-1] (oldest)
-  // So slider max = versions.length, slider value = activeIdx + 1 (or 0 for current)
+interface Props {
+  timeBounds: ShadowTimeBounds
+  /** Currently displayed version. null = current (no shadow column). */
+  activeVersion: ShadowVersion | null
+  loading: boolean
+  onScrubTime: (timestamp: number) => void
+  onStep: (dir: 'older' | 'newer') => void
+  onClose: () => void
+  onRealign?: () => void
+  /** Changelog data for space-time dots overlay */
+  changelog?: { commits: ChangelogCommit[]; totalPages: number }
+}
 
-  const sliderMax = versions.length  // 0 = current, 1..N = snapshot N-1
-  const sliderVal = activeIdx < 0 ? 0 : activeIdx + 1
+export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScrubTime, onStep, onClose, onRealign, changelog }: Props) {
+  const resolvedSliderVal = activeVersion
+    ? timestampToSliderPos(activeVersion.timestamp, timeBounds)
+    : SLIDER_STEPS  // rightmost = current
 
+  // Optimistic local position: tracks the drag position immediately so the
+  // slider doesn't snap back while waiting for the server to resolve a version.
+  // Reset to null when activeVersion changes (server resolved).
+  const [localPos, setLocalPos] = useState<number | null>(null)
+  const sliderVal = localPos ?? resolvedSliderVal
+
+  // When the server resolves a new version, clear the local optimistic position
+  const prevHashRef = useRef<string | null>(null)
+  const activeHash = activeVersion?.hash ?? null
+  if (activeHash !== prevHashRef.current) {
+    prevHashRef.current = activeHash
+    if (localPos !== null) setLocalPos(null)
+  }
+
+  const lastScrubRef = useRef<number>(0)
   const handleRange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseInt(e.target.value, 10)
-    onScrub(v <= 0 ? -1 : v - 1)
-  }, [onScrub])
+    const pos = parseInt(e.target.value, 10)
+    const now = Date.now()
+    // Update local position immediately for smooth dragging
+    setLocalPos(Math.min(pos, SLIDER_STEPS - 1))
+    if (now - lastScrubRef.current < 50) return  // 50ms throttle for server calls
+    lastScrubRef.current = now
+    const clamped = Math.min(pos, SLIDER_STEPS - 1)
+    onScrubTime(sliderPosToTimestamp(clamped, timeBounds))
+  }, [onScrubTime, timeBounds])
 
-  const step = useCallback((dir: number) => {
-    // dir=-1 = newer (toward current), dir=+1 = older (away from current)
-    const newSlider = Math.max(0, Math.min(sliderMax, sliderVal + dir))
-    onScrub(newSlider <= 0 ? -1 : newSlider - 1)
-  }, [sliderVal, sliderMax, onScrub])
+  // Hover state for space-time dots
+  const [hoveredDot, setHoveredDot] = useState<{
+    x: number; y: number; commit: ChangelogCommit; page: number
+  } | null>(null)
 
-  const isCurrent = activeIdx < 0
-  const activeVersion = activeIdx >= 0 && activeIdx < versions.length ? versions[activeIdx] : null
+  const isCurrent = activeVersion === null
+  const isAtOldest = activeVersion?.hash === timeBounds.oldest.hash
+
+  // All hooks above — hide via CSS instead of returning null (keeps hooks stable)
+  const isHidden = isCurrent
 
   let labelText: React.ReactNode
   if (loading) {
@@ -71,7 +113,6 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     labelText = <span className="shadow-current-badge">Current</span>
   } else if (activeVersion) {
     const time = formatTime(activeVersion.timestamp)
-    // Show short hash alongside relative time — commit messages are always "Build at <ISO>"
     const shortHash = activeVersion.hash.slice(0, 7)
     labelText = (
       <>
@@ -81,46 +122,155 @@ export function ShadowHistoryOverlay({ versions, activeIdx, loading, onScrub, on
     )
   }
 
-  const pos = isCurrent ? 'now' : `${activeIdx + 1}/${versions.length}`
+  // Compute space-time dots
+  const { dots, yLabels } = useMemo(() => {
+    if (!changelog || changelog.commits.length === 0 || changelog.totalPages === 0) {
+      return { dots: [], yLabels: [] }
+    }
+    const { commits, totalPages } = changelog
+    // Use the changelog's own time range so dots spread across the full panel,
+    // not the global shadow bounds which may span months of sparse history.
+    const commitTs = commits.map(c => c.timestamp)
+    const tMin = Math.min(...commitTs)
+    const tMax = Math.max(...commitTs)
+    const tSpan = Math.max(tMax - tMin, 1)
+
+    const dotData: Array<{
+      xPct: number; yPct: number
+      commit: ChangelogCommit; page: number; isMulti: boolean
+    }> = []
+
+    for (const commit of commits) {
+      const xPct = ((commit.timestamp - tMin) / tSpan) * 100
+      for (const page of commit.changedPages) {
+        const yPct = totalPages === 1 ? 50 : ((page - 1) / (totalPages - 1)) * 100
+        dotData.push({
+          xPct: Math.max(0, Math.min(100, xPct)),
+          yPct: Math.max(0, Math.min(100, yPct)),
+          commit, page,
+          isMulti: commit.changedPages.length > 1,
+        })
+      }
+    }
+
+    // Y axis labels — evenly spaced page numbers
+    const labels: Array<{ page: number; yPct: number }> = []
+    if (totalPages <= 1) {
+      labels.push({ page: 1, yPct: 50 })
+    } else {
+      const step = Math.max(1, Math.ceil(totalPages / 5))
+      for (let p = 1; p <= totalPages; p += step) {
+        labels.push({ page: p, yPct: ((p - 1) / (totalPages - 1)) * 100 })
+      }
+      if (labels[labels.length - 1].page !== totalPages) {
+        labels.push({ page: totalPages, yPct: 100 })
+      }
+    }
+
+    return { dots: dotData, yLabels: labels }
+  }, [changelog, timeBounds])
+
+  const handleDotClick = useCallback((commit: ChangelogCommit) => {
+    onScrubTime(commit.timestamp)
+  }, [onScrubTime])
 
   return (
     <div
-      className="shadow-scrubber"
-      onPointerDown={e => e.stopPropagation()}
-      onPointerUp={e => e.stopPropagation()}
+      className={`shadow-scrubber-container${!isCurrent ? ' active' : ''}`}
+      style={isHidden ? { display: 'none' } : undefined}
     >
-      {/* Older */}
-      <button
-        className="shadow-scrubber-step"
-        disabled={sliderVal >= sliderMax}
-        onClick={() => step(1)}
-        title="Older"
-      >‹</button>
+      {/* Space-time dots panel — above the scrubber bar */}
+      {dots.length > 0 && (
+        <div className="spacetime-panel">
+          <div className="spacetime-y-axis">
+            {yLabels.map(l => (
+              <span
+                key={l.page}
+                className="spacetime-y-label"
+                style={{ top: `${l.yPct}%` }}
+              >
+                {l.page}
+              </span>
+            ))}
+          </div>
+          <div className="spacetime-field">
+            {dots.map((d, i) => (
+              <span
+                key={i}
+                className={`spacetime-dot${d.isMulti ? ' multi' : ''}`}
+                style={{ left: `${d.xPct}%`, top: `${d.yPct}%` }}
+                onPointerEnter={(e) => {
+                  const rect = (e.target as HTMLElement).getBoundingClientRect()
+                  setHoveredDot({
+                    x: rect.left + rect.width / 2,
+                    y: rect.top,
+                    commit: d.commit, page: d.page,
+                  })
+                }}
+                onPointerLeave={() => setHoveredDot(null)}
+                onClick={() => handleDotClick(d.commit)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
-      <input
-        type="range"
-        className="shadow-scrubber-range"
-        min={0}
-        max={sliderMax}
-        value={sliderVal}
-        onChange={handleRange}
-        title="Drag to scrub history"
-      />
+      {/* Scrubber bar */}
+      <div className="shadow-scrubber-bar">
+        <button
+          className="shadow-scrubber-step"
+          disabled={isAtOldest}
+          onClick={() => onStep('older')}
+          title="Older (one build)"
+        >‹</button>
 
-      {/* Newer */}
-      <button
-        className="shadow-scrubber-step"
-        disabled={sliderVal <= 0}
-        onClick={() => step(-1)}
-        title="Newer"
-      >›</button>
+        <input
+          type="range"
+          className="shadow-scrubber-range"
+          min={0}
+          max={SLIDER_STEPS}
+          value={sliderVal}
+          onChange={handleRange}
+          title="Drag to scrub history by time — right = current, left = older"
+        />
 
-      <span className="shadow-scrubber-pos">{pos}</span>
-      <span className="shadow-scrubber-label">{labelText}</span>
+        <button
+          className="shadow-scrubber-step"
+          disabled={isCurrent}
+          onClick={() => onStep('newer')}
+          title="Newer (one build)"
+        >›</button>
 
-      <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
-        ×
-      </button>
+        <span className="shadow-scrubber-label">{labelText}</span>
+
+        {onRealign && !isCurrent && (
+          <button
+            className="shadow-scrubber-realign"
+            onClick={onRealign}
+            title="Re-align columns to viewport center"
+          >⊙</button>
+        )}
+
+        <button className="shadow-scrubber-close" onClick={onClose} title="Close history">
+          ×
+        </button>
+      </div>
+
+      {/* Hover tooltip — positioned via fixed coordinates */}
+      {hoveredDot && (
+        <div
+          className="spacetime-tooltip"
+          style={{ left: hoveredDot.x, top: hoveredDot.y - 8 }}
+        >
+          <span className="spacetime-tooltip-page">p.{hoveredDot.page}</span>
+          <span className="spacetime-tooltip-time">{formatTime(hoveredDot.commit.timestamp)}</span>
+          {hoveredDot.commit.changedPages.length > 1 && (
+            <span className="spacetime-tooltip-multi">
+              +{hoveredDot.commit.changedPages.length - 1} pg
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

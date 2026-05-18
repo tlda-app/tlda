@@ -13,13 +13,23 @@ import {
   getAgents,
   getTasks,
   getUnreadCountsForHuman,
+  getHumanId,
+  getHumanName,
+  needsIdentity as _needsIdentity,
+  login as _login,
+  registerHuman as _registerHuman,
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
   matchesFilter,
   respawnAgent as _respawnAgent,
+  killSession as _killSession,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
+  injectOptimisticEvent as _injectOptimisticEvent,
+  updateOptimisticEvent as _updateOptimisticEvent,
+  reconcileOptimistic as _reconcileOptimistic,
+  fleetWS as _fleetWS,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
@@ -28,6 +38,13 @@ import {
   getPlaybackChatEvents,
   getPlaybackAgents,
 } from './playback-context'
+import { loadPrefs } from './preferences'
+
+// Load prefs whenever the user's fleet identity is established
+subscribe('identity', null, (ev: any) => {
+  const userId = ev.id || getHumanId()
+  if (userId) loadPrefs(userId)
+})
 
 // --- Lazy initialization ---
 
@@ -38,6 +55,54 @@ function ensureInit(): Promise<void> {
     initPromise = init()
   }
   return initPromise!
+}
+
+// --- Page Visibility gating ---
+//
+// When a browser tab is hidden, fleet SSE events still arrive and React state
+// setters fire, causing re-renders in all mounted shapes even though nothing
+// is visible. This wastes CPU, especially when playwright has a second tab
+// open to the same doc.
+//
+// Strategy: skip state updates while hidden. On tab restore, all registered
+// refresh functions run once to bring hooks back to current state.
+
+let _tabVisible = typeof document !== 'undefined' ? !document.hidden : true
+const _refreshRegistry = new Set<() => void>()
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    _tabVisible = !document.hidden
+    if (_tabVisible) {
+      for (const fn of _refreshRegistry) fn()
+    }
+  })
+}
+
+/**
+ * Wraps a state-setter so it only fires when the tab is visible.
+ * Pass `refresh` — a function that re-reads current state — to be called
+ * on tab restore. The returned cleanup removes the refresh registration.
+ */
+function visibilityGate(update: () => void, refresh: () => void): [() => void, () => void] {
+  _refreshRegistry.add(refresh)
+  const gated = () => { if (_tabVisible) update() }
+  const cleanup = () => _refreshRegistry.delete(refresh)
+  return [gated, cleanup]
+}
+
+/**
+ * Returns a debounced version of `fn` that waits 16ms (one frame) before
+ * calling. Multiple calls within the window coalesce into one.
+ * Returns a cleanup that cancels any pending timer.
+ */
+function debounce16(fn: () => void): [() => void, () => void] {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const debounced = () => {
+    if (!timer) timer = setTimeout(() => { timer = null; fn() }, 16)
+  }
+  const cancel = () => { if (timer !== null) { clearTimeout(timer); timer = null } }
+  return [debounced, cancel]
 }
 
 // --- Hooks ---
@@ -56,9 +121,11 @@ export function useFleetAgents(frameId?: string): any[] {
       ensureInit().then(() => {
         if (cancelled || isPlaybackMode) return
         setAgents([...getAgents()])
-        liveUnsub = subscribe('agents', null, () => {
-          setAgents([...getAgents()])
-        })
+        const refresh = () => { if (!cancelled) setAgents([...getAgents()]) }
+        const [debounced, cancelDebounce] = debounce16(refresh)
+        const [gated, cleanupGate] = visibilityGate(debounced, refresh)
+        const rawUnsub = subscribe('agents', null, gated)
+        liveUnsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
       })
     }
 
@@ -95,7 +162,7 @@ export function useFleetAgents(frameId?: string): any[] {
 }
 
 
-const INBOX_API = 'http://localhost:5199'
+const INBOX_API = 'http://localhost:5176'
 
 export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
   const [items, setItems] = useState<any[]>([])
@@ -145,9 +212,11 @@ export function useFleetTasks(frameId?: string): any[] {
     ensureInit().then(() => {
       if (cancelled) return
       setTasks([...getTasks()])
-      unsub = subscribe('tasks', null, () => {
-        setTasks([...getTasks()])
-      })
+      const refresh = () => { if (!cancelled) setTasks([...getTasks()]) }
+      const [debounced, cancelDebounce] = debounce16(refresh)
+      const [gated, cleanupGate] = visibilityGate(debounced, refresh)
+      const rawUnsub = subscribe('tasks', null, gated)
+      unsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
     })
 
     return () => {
@@ -192,20 +261,50 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           : [...all]
         setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
-        liveUnsub = subscribe('messages', filter, (event: any) => {
-          if (!event) {
+        const refreshEvents = () => {
+          if (!cancelled) {
             const all = getEvents()
-            const filtered = filter
-              ? all.filter((e: any) => matchesFilter(filter, e))
-              : [...all]
+            const filtered = filter ? all.filter((e: any) => matchesFilter(filter, e)) : [...all]
             setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
+          }
+        }
+        const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+
+        // Batch incoming events within a 16ms window (one animation frame).
+        // WS messages arrive as separate macrotasks, so without batching each
+        // message triggers its own React render. This coalesces bursts into one.
+        let pendingBatch: any[] = []
+        let batchTimer: ReturnType<typeof setTimeout> | null = null
+        const flushBatch = () => {
+          batchTimer = null
+          if (pendingBatch.length === 0) return
+          const batch = pendingBatch.splice(0)
+          setEvents(prev => {
+            const next = [...prev, ...batch]
+            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
+          })
+        }
+
+        const rawUnsub = subscribe('messages', filter, (event: any) => {
+          if (!_tabVisible) return  // skip render; refreshEvents will run on tab restore
+          if (!event) {
+            // Full refresh from _events — clear pending batch since refreshEvents
+            // already includes everything. Without this, flushBatch appends events
+            // that refreshEvents already loaded, causing duplicates.
+            pendingBatch.length = 0
+            if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
+            refreshEvents()
           } else {
-            setEvents(prev => {
-              const next = [...prev, event]
-              return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
-            })
+            pendingBatch.push(event)
+            if (!batchTimer) batchTimer = setTimeout(flushBatch, 16)
           }
         })
+        liveUnsub = () => {
+          rawUnsub()
+          cleanupGate()
+          if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
+          if (pendingBatch.length > 0) flushBatch()
+        }
       })
     }
 
@@ -279,9 +378,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
-      if (cancelled || !filter) return
+      if (cancelled) return
 
+      // null filter = all agents; non-null = only agents matching the current chat filter
       function inFilter(agentId: string): boolean {
+        if (!filter) return true
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
@@ -448,16 +549,59 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
+/**
+ * Subscribe to context-percent events for agents matching the filter.
+ * Returns a Map of agentId → percent remaining (0–100).
+ */
+export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | null, frameId?: string): Map<string, number> {
+  const [context, setContext] = useState<Map<string, number>>(new Map())
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+
+  useEffect(() => {
+    if (frameId && getPlaybackData(frameId)) return
+
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
+
+    ensureInit().then(() => {
+      if (cancelled) return
+
+      function inFilter(agentId: string): boolean {
+        if (!filter) return true
+        return matchesFilter(filter, { agent: agentId, from: agentId })
+      }
+
+      unsub = subscribe('context', null, (data: any) => {
+        if (!inFilter(data.agent)) return
+        setContext(prev => {
+          const next = new Map(prev)
+          next.set(data.agent, data.percent)
+          return next
+        })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+      setContext(new Map())
+    }
+  }, [filterKey])
+
+  return context
+}
+
 // --- Search API ---
 
-const DASHBOARD_URL = 'http://localhost:5199'
+const DASHBOARD_URL = 'http://localhost:5176'
 
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
-  const res = await fetch(`${DASHBOARD_URL}/api/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return data.results || data || []
+  try {
+    const data = await _fleetWS('fleet-search', { query, limit })
+    return data?.results || []
+  } catch { return [] }
 }
 
 export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: string; path: string; agent: string; agent_name: string; shared_at: string }>> {
@@ -483,9 +627,9 @@ export function useFleetUnreadCounts(): Record<string, number> {
 
     ensureInit().then(() => {
       if (cancelled) return
-      setCounts(getUnreadCountsForHuman())
+      setCounts(getUnreadCountsForHuman() as Record<string, number>)
       unsub = subscribe('messages', null, () => {
-        setCounts(getUnreadCountsForHuman())
+        setCounts(getUnreadCountsForHuman() as Record<string, number>)
       })
     })
 
@@ -524,9 +668,40 @@ export function useFleetConnection(): boolean {
   return connected
 }
 
+// --- Identity hook ---
+
+export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string) => Promise<any> } {
+  const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      setIdentity({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+      unsub = subscribe('identity', null, (ev: any) => {
+        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), needsIdentity: !!ev.needsIdentity })
+      })
+    })
+
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [])
+
+  return { ...identity, login: _login, register: _registerHuman }
+}
+
 // --- Write API (re-exported) ---
 
 export const sendMessage = _sendMessage
 export const respawnAgent = _respawnAgent
+export const killSession = _killSession
 export const spawnAgent = _spawnAgent
+export const injectOptimisticEvent = _injectOptimisticEvent
+export const updateOptimisticEvent = _updateOptimisticEvent
+export const reconcileOptimistic = _reconcileOptimistic
+export const fleetWS = _fleetWS
 export { loadBefore, fetchHistory }

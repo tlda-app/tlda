@@ -3,35 +3,40 @@
  *
  * Runs the build pipeline as child processes:
  *   1. latexmk → DVI + synctex
- *   2. dvisvgm → SVG pages (priority pages first if specified)
+ *   2. Publish <texBase>.dvi to output/, clear stale SVGs, signal reload
  *   3. extract-preamble.js → macros.json
  *   4. extract-synctex-lookup.mjs → lookup.json
  *   5. compute-proof-pairing.mjs → proof-info.json
  *
+ * SVG pages are built on demand by buildCurrentPage() (shadow-repo.mjs) when
+ * the client requests them. The build never runs dvisvgm — ensure does.
  * Each step writes output to server/projects/{name}/output/.
- * Signals reload via @tldraw/sync custom messages after SVG conversion.
  */
 
-import { exec as execCb } from 'child_process'
+import { exec as execCb, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
 const _execAsync = promisify(execCb)
-// Ensure TeX binaries are available (launchd doesn't inherit full shell PATH)
-const texbin = '/Library/TeX/texbin'
-if (!process.env.PATH?.includes(texbin)) {
-  process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}`
+// Ensure TeX binaries are available (launchd doesn't inherit full shell PATH).
+// Check common TeX locations across platforms.
+for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64-linux', '/usr/local/texlive/2025/bin/x86_64-linux']) {
+  if (!process.env.PATH?.includes(texbin)) {
+    try { if (statSync(texbin).isDirectory()) process.env.PATH = `${texbin}:${process.env.PATH || '/usr/bin:/bin'}` }
+    catch {}
+  }
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
-import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync } from 'fs'
+import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape } from './sync-rooms.mjs'
-import { snapshotBeforeBuild } from './history-store.mjs'
-import { commitSnapshot, cacheSvgSnapshot } from './shadow-repo.mjs'
+import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
+import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
+import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
+import { clearSynctexCache } from './synctex-query.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
@@ -76,14 +81,8 @@ function generateStubPdfs(buildDir, addLog) {
   const svgFiles = findSvgFigures(buildDir)
   for (const svgPath of svgFiles) {
     const pdfPath = svgPath.replace(/\.svg$/, '.pdf')
-    // Skip if PDF already exists and is newer
-    if (existsSync(pdfPath)) {
-      try {
-        const svgStat = statSync(svgPath)
-        const pdfStat = statSync(pdfPath)
-        if (pdfStat.mtimeMs >= svgStat.mtimeMs) continue
-      } catch {}
-    }
+    // Always generate stub from SVG dimensions — never trust existing PDFs.
+    // Real figure PDFs may have wrong/unreadable MediaBox (e.g. corrupted cairo output).
     // Parse SVG dimensions
     const head = readFileSync(svgPath, 'utf8').slice(0, 500)
     let w, h
@@ -97,21 +96,29 @@ function generateStubPdfs(buildDir, addLog) {
       if (wm && hm) { w = parseFloat(wm[1]); h = parseFloat(hm[1]) }
     }
     if (!w || !h) continue
-    // Write minimal PDF — just enough for LaTeX to read the MediaBox
-    const pdf = `%PDF-1.0
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj
-xref
-0 4
-0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>
-startxref
-190
-%%EOF`
+    // Write minimal PDF with correct xref byte offsets so pdflatex can read the MediaBox.
+    // Hardcoded offsets break when w/h vary in length — compute them dynamically.
+    const obj1 = '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
+    const obj2 = '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n'
+    const obj3 = `3 0 obj<</Type/Page/MediaBox[0 0 ${w} ${h}]/Parent 2 0 R>>endobj\n`
+    const hdr = '%PDF-1.0\n'
+    const off1 = hdr.length
+    const off2 = off1 + obj1.length
+    const off3 = off2 + obj2.length
+    const xrefOffset = off3 + obj3.length
+    const pad = (n) => String(n).padStart(10, '0')
+    const pdf = hdr + obj1 + obj2 + obj3 +
+      `xref\n0 4\n0000000000 65535 f \n${pad(off1)} 00000 n \n${pad(off2)} 00000 n \n${pad(off3)} 00000 n \n` +
+      `trailer<</Size 4/Root 1 0 R>>\nstartxref\n${xrefOffset}\n%%EOF`
     writeFileSync(pdfPath, pdf)
+    // Write .bb file for graphicx in DVI mode — latex cannot read PDF MediaBox,
+    // so without this it falls back to a square placeholder (width × width).
+    const bbPath = svgPath.replace(/\.svg$/, '.bb')
+    const bb = `%%BoundingBox: 0 0 ${Math.ceil(w)} ${Math.ceil(h)}\n%%HiResBoundingBox: 0.0 0.0 ${w} ${h}\n`
+    writeFileSync(bbPath, bb)
     count++
   }
-  if (count > 0) addLog(`Generated ${count} stub PDF(s) from SVG figures`)
+  if (count > 0) addLog(`Generated ${count} stub PDF(s) + .bb files from SVG figures`)
 }
 
 /** Recursively find .svg files in a directory (skipping node_modules, hidden dirs). */
@@ -148,6 +155,10 @@ function loadPageHashes(outDir) {
 
 // Active builds tracked in memory
 const activeBuilds = new Map()
+
+// Monotonic version counter per doc. Incremented when a build starts.
+// The mirror callback captures its version and skips if superseded.
+const buildVersion = new Map()
 
 export function getBuildStatus(name) {
   return activeBuilds.get(name) || null
@@ -223,7 +234,10 @@ export function killAllBuilds() {
 // Pretex commands injected before \documentclass.
 // draft mode for graphicx (placeholder boxes instead of images),
 // hypertex driver for hyperref, and ensure hyperref loads.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+// DeclareGraphicsRule tells dvips driver (used by pdflatex --output-format=dvi)
+// to read bounding box for .pdf files from the .bb companion file we generate.
+// Without this, dvips falls back to width×width square placeholders.
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{begindocument}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
@@ -339,16 +353,20 @@ async function compileLaTeX(ctx) {
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
 
-  // Build the pdflatex command — cwd is srcDir, output goes to buildDir
+  // Build the pdflatex command — cwd is srcDir, output goes to buildDir.
+  // -recorder emits <jobname>.fls listing every file read (INPUT) and
+  // written (OUTPUT); we parse it after a successful build to populate
+  // the project's relevant-files set, which the server uses to filter
+  // source-change events.
   let cmd
   if (fmtBase) {
-    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+    cmd = `pdflatex --output-format=dvi -synctex=1 -recorder -interaction=nonstopmode ` +
       `-output-directory="${buildDir}" -fmt="${fmtBase}" "${texBase}.tex"`
   } else {
     addLog('No format available — using pretex wrapper')
     const wrapperContent = PRETEX + '\n\\input{' + texBase + '.tex}\n'
     writeFileSync(join(buildDir, `${texBase}-wrapped.tex`), wrapperContent)
-    cmd = `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+    cmd = `pdflatex --output-format=dvi -synctex=1 -recorder -interaction=nonstopmode ` +
       `-output-directory="${buildDir}" -jobname="${texBase}" "${texBase}-wrapped.tex"`
   }
 
@@ -372,24 +390,75 @@ async function compileLaTeX(ctx) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
         ? `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
-        : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${join(buildDir, texBase)}"`
+        : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${texBase}"`
       const bibTool = useBiblatex ? 'biber' : 'bibtex'
       // Remove stale .bbl — if we're here, citations are broken anyway.
       // Prevents format-switch corruption (biblatex↔bibtex cached .bbl).
       if (existsSync(bblPath)) unlinkSync(bblPath)
       addLog(`Running ${bibTool} for citations...`)
       signalBuildProgress(name, 'compiling', bibTool)
+      let bibFailed = false
       try {
         await run(bibCmd, { cwd: buildDir, timeout: 60000 })
         addLog(`${bibTool} done — recompiling`)
       } catch (e) {
-        addLog(`${bibTool} failed (non-fatal): ${e.message.split('\n')[0]}`)
+        const errMsg = e.message || ''
+        addLog(`${bibTool} failed: ${errMsg.split('\n')[0]}`)
+        bibFailed = true
+
+        // Detect biber corruption — clean state files + PAR cache and retry
+        if (useBiblatex) {
+          // Biber fails silently with exit code 2 when its PAR cache is corrupt
+          // (Unicode::UCD error). Also fails with XML/malformed errors on bad .bcf.
+          const isCorrupt = true // Always retry on biber failure — cleaning is safe
+          if (isCorrupt) {
+            addLog('Biber failed — cleaning state files and PAR cache, retrying')
+            const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+            for (const ext of cleanExts) {
+              const f = join(buildDir, `${texBase}${ext}`)
+              if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+              // Also clean from build cache so corruption doesn't persist
+              const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+              if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+            }
+            // Clean biber's PAR cache — delete only the corrupt unicore/ dir
+            try {
+              const tmpDir = process.env.TMPDIR || '/tmp'
+              for (const d of readdirSync(tmpDir)) {
+                if (!d.startsWith('par-')) continue
+                const parDir = join(tmpDir, d)
+                for (const sub of readdirSync(parDir)) {
+                  if (!sub.startsWith('cache-')) continue
+                  const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+                  if (existsSync(unicorePath)) {
+                    try {
+                      for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                      addLog('Cleaned corrupt biber unicore cache')
+                    } catch {}
+                  }
+                }
+              }
+            } catch {}
+            // Retry biber
+            try {
+              await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+              addLog('Biber retry succeeded')
+              bibFailed = false
+            } catch (e2) {
+              addLog(`Biber retry also failed: ${e2.message?.split('\n')[0]}`)
+            }
+          }
+        }
       }
       // Recompile with bibliography — pdflatex may exit non-zero on warnings, that's fine
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch (e) {
         addLog(`pdflatex exited with warnings after ${bibTool} (continuing): ${e.message.split('\n')[0]}`)
+      }
+      // If biber still failed, check the output for raw cite keys and warn
+      if (bibFailed) {
+        addLog('⚠ Citations may show as raw keys — biber could not process the bibliography')
       }
     }
   }
@@ -402,6 +471,55 @@ async function compileLaTeX(ctx) {
       try {
         await run(cmd, { cwd: texDir, timeout: 120000, env })
       } catch {}
+    }
+
+    // After second pass, re-read log. If MANY citations are undefined (>5),
+    // it's likely biber corruption, not just a few missing keys.
+    // Run one more pass first, then nuclear clean only on mass failure.
+    const postSecondLog = readFileSync(logPath, 'utf8')
+    const undefinedCites = (postSecondLog.match(/Citation .* undefined/g) || []).length
+    if (undefinedCites > 5) {
+      addLog(`${undefinedCites} undefined citations — running third pass`)
+      try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch {}
+      const finalLog = readFileSync(logPath, 'utf8')
+      const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
+      if (stillUndefined > 5 && existsSync(bcfPath)) {
+        addLog(`${stillUndefined} citations still undefined — cleaning biber state and retrying`)
+        const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
+        for (const ext of cleanExts) {
+          const f = join(buildDir, `${texBase}${ext}`)
+          if (existsSync(f)) { try { unlinkSync(f) } catch {} }
+          const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
+          if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
+        }
+        // Clean biber PAR cache — delete the specific unicore/ dir that corrupts
+        try {
+          const tmpDir = process.env.TMPDIR || '/tmp'
+          for (const d of readdirSync(tmpDir)) {
+            if (!d.startsWith('par-')) continue
+            const parDir = join(tmpDir, d)
+            for (const sub of readdirSync(parDir)) {
+              if (!sub.startsWith('cache-')) continue
+              const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
+              if (existsSync(unicorePath)) {
+                // Only delete the corrupted unicore dir, not the whole cache
+                try {
+                  for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
+                  addLog('Cleaned corrupt biber unicore cache')
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+        const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        try {
+          await run(bibCmd2, { cwd: buildDir, timeout: 60000 })
+          await run(cmd, { cwd: texDir, timeout: 120000, env })
+          addLog('Citation recovery succeeded')
+        } catch (e) {
+          addLog(`Citation recovery failed: ${e.message?.split('\n')[0]}`)
+        }
+      }
     }
   }
 
@@ -426,9 +544,19 @@ async function compileLaTeX(ctx) {
   if (!existsSync(dviFile)) throw new Error('DVI file not created')
 
   // Parse expected page count from log for later verification against dvisvgm output
+  // TeX wraps long lines at 79 chars — join continuations before matching.
   let expectedPages = null
   if (existsSync(logPath)) {
-    const m = readFileSync(logPath, 'utf8').match(/Output written on .+\((\d+) pages?/)
+    const raw = readFileSync(logPath, 'utf8')
+    const joined = raw.split('\n').reduce((acc, line) => {
+      if (acc.length > 0 && acc[acc.length - 1].length === 79) {
+        acc[acc.length - 1] += line
+      } else {
+        acc.push(line)
+      }
+      return acc
+    }, []).join('\n')
+    const m = joined.match(/Output written on .+\((\d+) pages?/)
     if (m) expectedPages = parseInt(m[1])
   }
   return { expectedPages }
@@ -558,14 +686,14 @@ async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
 
 /** Phase 3: Extract macros from preamble. */
 async function extractMacros(ctx) {
-  const { texPath, buildDir, outDir, addLog, run } = ctx
+  const { texPath, buildDir, outDir, texBase, addLog, run } = ctx
   addLog('Extracting preamble macros...')
   try {
     await run(
       `node "${join(SCRIPTS_DIR, 'extract-preamble.js')}" "${texPath}" "${join(buildDir, 'macros.json')}"`,
       { cwd: PROJECT_ROOT },
     )
-    publishFile(join(buildDir, 'macros.json'), join(outDir, 'macros.json'))
+    publishFile(join(buildDir, 'macros.json'), join(outDir, `${texBase}-macros.json`))
   } catch (e) {
     addLog(`Macro extraction failed (non-fatal): ${e.message}`)
   }
@@ -592,7 +720,9 @@ async function extractSynctex(ctx) {
       `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${join(srcDir, mainFile)}" "${join(buildDir, 'lookup.json')}"`,
       { cwd: PROJECT_ROOT, timeout: 600000 },
     )
-    publishFile(join(buildDir, 'lookup.json'), join(outDir, 'lookup.json'))
+    publishFile(join(buildDir, 'lookup.json'), join(outDir, `${texBase}-lookup.json`))
+    // Also publish the synctex.gz so ensure recipes find <texBase>.synctex.gz alongside the dvi.
+    publishFile(synctexFile, join(outDir, `${texBase}.synctex.gz`))
     addLog(`Synctex done in ${((Date.now() - synctexStart) / 1000).toFixed(1)}s`)
     return true
   } catch (e) {
@@ -603,7 +733,7 @@ async function extractSynctex(ctx) {
 
 /** Phase 5: Compute proof pairing (depends on lookup.json). */
 async function computeProofPairing(ctx) {
-  const { texPath, buildDir, outDir, addLog, run } = ctx
+  const { texPath, buildDir, outDir, texBase, addLog, run } = ctx
   addLog('Computing proof pairing...')
   try {
     await run(
@@ -611,10 +741,310 @@ async function computeProofPairing(ctx) {
       `"${join(buildDir, 'lookup.json')}" "${join(buildDir, 'proof-info.json')}"`,
       { cwd: PROJECT_ROOT, timeout: 120000 },
     )
-    publishFile(join(buildDir, 'proof-info.json'), join(outDir, 'proof-info.json'))
+    publishFile(join(buildDir, 'proof-info.json'), join(outDir, `${texBase}-proof-info.json`))
   } catch (e) {
     addLog(`Proof pairing failed (non-fatal): ${e.message}`)
   }
+}
+
+/** Phase 7: Generate source-map.json — unified client index.
+ * Combines synctex positions + label data into one file:
+ * - labels: all \label{} items with page, position, type, number
+ * - pages: per-page line index (y → file:line) for forward/reverse lookup
+ */
+async function generateSourceMap(ctx) {
+  const { name, texBase, buildDir, outDir, srcDir, addLog } = ctx
+  const { loadSynctex } = await import('./synctex-query.mjs')
+
+  try {
+    const synctex = await loadSynctex(name, texBase)
+    if (!synctex) { addLog('Source map: no synctex data'); return }
+
+    // Build per-page line index: sorted list of { y, file, line }
+    // Deduplicate by file:line (keep the first y for each source location).
+    // Hoist realpathSync out of the loop — was being called per-record (350+ records on
+    // bregman), blocking the event loop ~750ms. Now resolved once per build.
+    let realSrcDir = null
+    try { realSrcDir = realpathSync(sourceDir(name)) } catch {}
+    const pageIndex = {}
+    const seen = new Set()
+    for (const r of synctex.records) {
+      const filePath = synctex.inputMap.get(r.inputId)
+      if (!filePath || !filePath.endsWith('.tex')) continue
+      // Derive relative file name
+      let relFile = filePath
+      if (realSrcDir && filePath.startsWith(realSrcDir)) {
+        relFile = filePath.slice(realSrcDir.length + 1)
+      }
+      const key = `${r.page}:${relFile}:${r.line}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (!pageIndex[r.page]) pageIndex[r.page] = []
+      pageIndex[r.page].push({ y: Math.round(r.y * 10) / 10, file: relFile, line: r.line })
+    }
+    // Sort each page's entries by y
+    for (const page of Object.keys(pageIndex)) {
+      pageIndex[page].sort((a, b) => a.y - b.y)
+    }
+
+    // Parse labels directly from .aux file
+    const auxFile = join(buildDir, `${texBase}.aux`)
+    let labels = []
+    if (existsSync(auxFile)) {
+      const auxText = readFileSync(auxFile, 'utf8')
+      const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
+      let m
+      while ((m = re.exec(auxText)) !== null) {
+        const [, label, number, page, title] = m
+        const pageNum = parseInt(page, 10)
+        if (isNaN(pageNum)) continue
+        const type = label.includes(':') ? label.split(':')[0] : 'label'
+        labels.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
+      }
+    }
+
+    const sourceMap = { labels, pages: pageIndex }
+    const outPath = join(outDir, `${texBase}-source-map.json`)
+    writeFileSync(outPath, JSON.stringify(sourceMap))
+    const sizeKB = Math.round(statSync(outPath).size / 1024)
+    addLog(`Source map: ${labels.length} labels, ${Object.keys(pageIndex).length} pages (${sizeKB} KB)`)
+  } catch (e) {
+    addLog(`Source map generation failed: ${e.message}`)
+  }
+}
+
+/** Summarize a git diff into a structural change outline.
+ *  Groups changes by section/subsection and identifies formal results (theorems, lemmas, etc.)
+ *  and their proofs. Returns a markdown-formatted summary or null if no meaningful changes.
+ */
+function summarizeDiff(diffText, projectName) {
+  const projDir = projectDir(projectName)
+  const outDir = outputDir(projectName)
+
+  // 1. Parse diff hunks: extract file, old/new line ranges, and +/- counts
+  const hunks = parseDiffHunks(diffText)
+  if (hunks.length === 0) return null
+
+  // 2. Build section tree from tex source in shadow repo
+  const shadowDir = join(projDir, 'shadow-repo')
+  const project = readProject(projectName)
+  const mainFile = project?.mainFile || ''
+  const texPath = join(shadowDir, mainFile)
+  let texLines = []
+  try { texLines = readFileSync(texPath, 'utf8').split('\n') } catch { return null }
+  const sections = buildSectionTree(texLines)
+
+  // Diff summary is keyed off the primary target's metadata.
+  const primaryTexBase = basename(mainFile, '.tex')
+
+  // 3. Load <primary>-proof-info.json for result/proof line ranges
+  let proofPairs = []
+  try {
+    const pi = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-proof-info.json`), 'utf8'))
+    proofPairs = pi.pairs || pi
+  } catch {}
+
+  // 4. Load <primary>-source-map.json labels for numbering
+  const labelNumbers = new Map()
+  try {
+    const sm = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-source-map.json`), 'utf8'))
+    for (const l of sm.labels || []) {
+      labelNumbers.set(l.label, l.number)
+    }
+  } catch {}
+
+  // 5. Parse result titles from tex source (the [...] optional argument)
+  const resultTitles = new Map()
+  for (const pair of proofPairs) {
+    const startLine = pair.statementLines?.[0]
+    if (startLine && startLine <= texLines.length) {
+      const line = texLines[startLine - 1]
+      const titleMatch = line.match(/\\begin\{(?:theorem|lemma|proposition|corollary|definition)\}\[([^\]]*)\]/)
+      if (titleMatch) {
+        // Strip \cite/\citep/\citet commands to get clean title
+        let title = titleMatch[1].replace(/\\(?:cite[pt]?)\{[^}]*\}/g, '').replace(/[{}]/g, '').trim()
+        // Check if it's a borrowed result (had a citation)
+        const isBorrowed = /\\(?:cite[pt]?)\{/.test(titleMatch[1])
+        resultTitles.set(pair.id, { title, isBorrowed })
+      }
+    }
+  }
+
+  // 6. Classify each hunk
+  const changes = []
+  for (const hunk of hunks) {
+    // Find containing section/subsection
+    const section = findContainingSection(sections, hunk.newStart)
+
+    // Check if hunk overlaps any formal result statement or proof
+    let resultHit = null
+    for (const pair of proofPairs) {
+      const [stmtStart, stmtEnd] = pair.statementLines || [0, 0]
+      const [proofStart, proofEnd] = pair.proofLines || [0, 0]
+
+      if (hunkOverlaps(hunk, stmtStart, stmtEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'statement', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+      if (hunkOverlaps(hunk, proofStart, proofEnd)) {
+        const num = labelNumbers.get(pair.id) || ''
+        const titleInfo = resultTitles.get(pair.id)
+        const typeName = pair.type.charAt(0).toUpperCase() + pair.type.slice(1)
+        resultHit = { type: 'proof', resultType: typeName, id: pair.id, number: num, title: titleInfo?.title || '' }
+        break
+      }
+    }
+
+    changes.push({ section, result: resultHit, added: hunk.added, deleted: hunk.deleted, file: hunk.file })
+  }
+
+  // 7. Aggregate by section, then by result
+  return formatChangeSummary(changes, labelNumbers)
+}
+
+function parseDiffHunks(diffText) {
+  const hunks = []
+  let currentFile = null
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const m = line.match(/^diff --git a\/(.+?) b\//)
+      if (m) currentFile = m[1]
+      continue
+    }
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+    if (hunkMatch) {
+      hunks.push({
+        file: currentFile,
+        oldStart: parseInt(hunkMatch[1]),
+        oldCount: parseInt(hunkMatch[2] || '1'),
+        newStart: parseInt(hunkMatch[3]),
+        newCount: parseInt(hunkMatch[4] || '1'),
+        added: 0,
+        deleted: 0,
+      })
+      continue
+    }
+    if (hunks.length > 0) {
+      if (line.startsWith('+') && !line.startsWith('+++')) hunks[hunks.length - 1].added++
+      if (line.startsWith('-') && !line.startsWith('---')) hunks[hunks.length - 1].deleted++
+    }
+  }
+  return hunks
+}
+
+function buildSectionTree(texLines) {
+  const sections = []
+  for (let i = 0; i < texLines.length; i++) {
+    const m = texLines[i].match(/\\(section|subsection|subsubsection)\{(.+?)\}/)
+    if (m) {
+      const title = m[2].replace(/\\[a-zA-Z]+\{[^}]*\}/g, '').replace(/[{}\\]/g, '').trim()
+      // Check next few lines for \label{sec:...} (may not be immediately after)
+      let label = null
+      for (let k = 1; k <= 3 && i + k < texLines.length; k++) {
+        const labelMatch = texLines[i + k].match(/\\label\{(sec:[^}]+)\}/)
+        if (labelMatch) { label = labelMatch[1]; break }
+        // Stop if we hit another sectioning command or begin/end
+        if (texLines[i + k].match(/\\(?:section|subsection|begin|end)\{/)) break
+      }
+      sections.push({ level: m[1], title, line: i + 1, label })
+    }
+  }
+  // Assign end lines (each section ends where the next same-or-higher level section begins)
+  for (let i = 0; i < sections.length; i++) {
+    const levelRank = { section: 0, subsection: 1, subsubsection: 2 }
+    const myRank = levelRank[sections[i].level] ?? 0
+    let endLine = texLines.length
+    for (let j = i + 1; j < sections.length; j++) {
+      const nextRank = levelRank[sections[j].level] ?? 0
+      if (nextRank <= myRank) { endLine = sections[j].line - 1; break }
+    }
+    sections[i].endLine = endLine
+  }
+  return sections
+}
+
+function findContainingSection(sections, line) {
+  // Find the deepest (most specific) section containing this line
+  let best = null
+  for (const s of sections) {
+    if (line >= s.line && line <= s.endLine) {
+      if (!best || ({ section: 0, subsection: 1, subsubsection: 2 }[s.level] ?? 0) > ({ section: 0, subsection: 1, subsubsection: 2 }[best.level] ?? 0)) {
+        best = s
+      }
+    }
+  }
+  return best
+}
+
+function hunkOverlaps(hunk, startLine, endLine) {
+  if (!startLine || !endLine) return false
+  const hunkEnd = hunk.newStart + hunk.newCount - 1
+  return hunk.newStart <= endLine && hunkEnd >= startLine
+}
+
+function formatChangeSummary(changes, labelNumbers) {
+  // Group by section title, then by result
+  const groups = new Map()
+  for (const c of changes) {
+    const secKey = c.section ? (c.section.label || c.section.title) : '(preamble)'
+    if (!groups.has(secKey)) groups.set(secKey, { section: c.section, items: [] })
+    groups.get(secKey).items.push(c)
+  }
+
+  const lines = []
+  for (const [secKey, group] of groups) {
+    let sectionLabel
+    if (!group.section) {
+      sectionLabel = '**Preamble**'
+    } else {
+      const num = group.section.label ? labelNumbers?.get(group.section.label) : null
+      const prefix = num ? `§${num}` : '§'
+      sectionLabel = `**${prefix} "${group.section.title}"**`
+    }
+    lines.push(sectionLabel)
+
+    // Sub-group by result
+    const resultItems = new Map()
+    const textItems = []
+    for (const item of group.items) {
+      if (item.result) {
+        const rKey = `${item.result.id}:${item.result.type}`
+        if (!resultItems.has(rKey)) resultItems.set(rKey, { result: item.result, added: 0, deleted: 0 })
+        const r = resultItems.get(rKey)
+        r.added += item.added
+        r.deleted += item.deleted
+      } else {
+        textItems.push(item)
+      }
+    }
+
+    for (const [, r] of resultItems) {
+      const { result, added, deleted } = r
+      const numStr = result.number ? ` ${result.number}` : ''
+      const titleStr = result.title ? ` (${result.title})` : ''
+      const locStr = result.type === 'proof' ? 'proof' : 'statement'
+      const countStr = formatCounts(added, deleted)
+      lines.push(`  - ${result.resultType}${numStr}${titleStr} ${locStr}: ${countStr}`)
+    }
+
+    if (textItems.length > 0) {
+      const totalAdded = textItems.reduce((s, i) => s + i.added, 0)
+      const totalDeleted = textItems.reduce((s, i) => s + i.deleted, 0)
+      lines.push(`  - text: ${formatCounts(totalAdded, totalDeleted)}`)
+    }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null
+}
+
+function formatCounts(added, deleted) {
+  const parts = []
+  if (added > 0) parts.push(`+${added}`)
+  if (deleted > 0) parts.push(`-${deleted}`)
+  return parts.join(' / ') || 'modified'
 }
 
 /** Phase 6: Generate theorem-map.json from .aux file. */
@@ -626,19 +1056,19 @@ async function generateTheoremMap(ctx) {
     return
   }
 
-  const PREFIXES = ['thm:', 'lem:', 'prop:', 'cor:', 'def:', 'ass:']
   const auxText = readFileSync(auxFile, 'utf8')
 
   // Parse \newlabel{LABEL}{{NUMBER}{PAGE}{TITLE}{...}} — skip @cref variants
+  // Include ALL labels (theorems, equations, sections, figures, etc.)
   const re = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
   const entries = []
   let m
   while ((m = re.exec(auxText)) !== null) {
     const [, label, number, page, title] = m
-    if (!PREFIXES.some(p => label.startsWith(p))) continue
     const pageNum = parseInt(page, 10)
     if (isNaN(pageNum)) continue
-    entries.push({ label, type: label.split(':')[0], number: number.trim(), page: pageNum, title: title.trim() })
+    const type = label.includes(':') ? label.split(':')[0] : 'label'
+    entries.push({ label, type, number: number.trim(), page: pageNum, title: title.trim() })
   }
 
   if (entries.length === 0) {
@@ -675,7 +1105,8 @@ async function generateTheoremMap(ctx) {
 
   const tmpPath = join(buildDir, 'theorem-map.json')
   writeFileSync(tmpPath, JSON.stringify(map, null, 2))
-  publishFile(tmpPath, join(outDir, 'theorem-map.json'))
+  publishFile(tmpPath, join(outDir, `${texBase}-theorem-map.json`))
+
   addLog(`Theorem map: ${entries.length} entries`)
 }
 
@@ -692,6 +1123,293 @@ function saveBuildCache(ctx) {
   } catch (e) {
     addLog(`Cache save failed (non-fatal): ${e.message}`)
   }
+}
+
+// Parse the .fls file pdflatex -recorder produced and write a
+// relevant-files.json listing every INPUT path that lives inside the
+// project's sourceDir (the authoring directory, not the per-project
+// mirror under server/projects). The server uses this set to filter
+// source-change pushes from the daemon — changes to files outside the
+// set don't trigger rebuilds.
+function writeRelevantFiles(ctx) {
+  const { name, buildDir, texBase, srcDir, outDir, project, addLog } = ctx
+  const flsPath = join(buildDir, `${texBase}.fls`)
+  if (!existsSync(flsPath)) {
+    addLog(`Relevant files: .fls not found at ${flsPath} (skipping)`)
+    return
+  }
+  // The authoring source dir lives at project.sourceDir (daemon-watched).
+  // srcDir is the per-project mirror under server/projects/<name>/source/;
+  // pdflatex compiled from srcDir, so INPUT lines reference srcDir paths.
+  // We translate them to authoring-dir paths so the set matches what the
+  // daemon actually pushes from.
+  const authorDir = project?.sourceDir
+  const relevant = new Set()
+  let lineCount = 0
+  try {
+    const fls = readFileSync(flsPath, 'utf8')
+    for (const line of fls.split('\n')) {
+      if (!line.startsWith('INPUT ')) continue
+      lineCount++
+      let p = line.slice(6).trim()
+      if (!p) continue
+      // Absolute paths from texlive / system libs: skip.
+      if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
+      // Relative paths: resolve against srcDir (cwd of pdflatex).
+      if (!p.startsWith('/')) p = join(srcDir, p)
+      // Normalize — collapse any .. / . segments.
+      try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
+      // Only keep paths inside srcDir (the mirror) — translate to authorDir.
+      if (p.startsWith(srcDir + '/')) {
+        const rel = p.slice(srcDir.length + 1)
+        if (authorDir) relevant.add(join(authorDir, rel))
+        relevant.add(p)  // also keep mirror path for safety
+      } else if (authorDir && p.startsWith(authorDir + '/')) {
+        relevant.add(p)
+      }
+    }
+  } catch (e) {
+    addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
+    return
+  }
+  // Augment with bibtex inputs (.bib, .bst) — pdflatex doesn't read these
+  // but bibtex does. Parse \bibdata and \bibstyle from the .aux file.
+  const auxPath = join(buildDir, `${texBase}.aux`)
+  if (existsSync(auxPath)) {
+    try {
+      const aux = readFileSync(auxPath, 'utf8')
+      const bibdataMatch = aux.match(/\\bibdata\{([^}]+)\}/)
+      if (bibdataMatch) {
+        for (const stem of bibdataMatch[1].split(',')) {
+          addRelevantPath(relevant, stem.trim() + '.bib', srcDir, authorDir)
+        }
+      }
+      const bibstyleMatch = aux.match(/\\bibstyle\{([^}]+)\}/)
+      if (bibstyleMatch) {
+        addRelevantPath(relevant, bibstyleMatch[1].trim() + '.bst', srcDir, authorDir)
+      }
+    } catch {}
+  }
+  // Augment with SVG siblings of included PDF figures — tlda's patch pipeline
+  // renders SVGs, not the PDFs that pdflatex reads.
+  for (const p of [...relevant]) {
+    if (!p.endsWith('.pdf')) continue
+    const svgPath = p.replace(/\.pdf$/, '.svg')
+    if (existsSync(svgPath)) relevant.add(svgPath)
+  }
+  // Augment with xr / xr-hyper externally-referenced documents. When main
+  // does \externaldocument{X}, xr writes \@input{X.aux} into main's .aux —
+  // that's the marker. Treat X as a paper file: include X.tex + (if
+  // present) the inputs reachable from X via its own .fls.
+  if (existsSync(auxPath)) {
+    try {
+      const aux = readFileSync(auxPath, 'utf8')
+      for (const m of aux.matchAll(/\\@input\{([^}]+)\.aux\}/g)) {
+        const stem = m[1]
+        addRelevantPath(relevant, stem + '.tex', srcDir, authorDir)
+        // If pdflatex has been run on the xr target separately, its .fls is
+        // available — pull its INPUT lines into the paper scope too.
+        const xrFls = join(srcDir, stem + '.fls')
+        if (existsSync(xrFls)) {
+          try {
+            for (const line of readFileSync(xrFls, 'utf8').split('\n')) {
+              if (!line.startsWith('INPUT ')) continue
+              let p = line.slice(6).trim()
+              if (!p) continue
+              if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
+              if (!p.startsWith('/')) p = join(srcDir, p)
+              try { p = realpathSync(p) } catch {}
+              if (p.startsWith(srcDir + '/')) {
+                const rel = p.slice(srcDir.length + 1)
+                if (authorDir) relevant.add(join(authorDir, rel))
+                relevant.add(p)
+              } else if (authorDir && p.startsWith(authorDir + '/')) {
+                relevant.add(p)
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+  const outPath = join(outDir, `${texBase}-relevant-files.json`)
+  try {
+    writeFileSync(outPath, JSON.stringify({
+      generated_at: new Date().toISOString(),
+      source_dir: authorDir || srcDir,
+      files: [...relevant].sort(),
+    }, null, 2))
+    addLog(`Relevant files: ${relevant.size} entries from ${lineCount} INPUT lines`)
+  } catch (e) {
+    addLog(`Relevant files: write failed (non-fatal): ${e.message}`)
+  }
+}
+
+/** Add a relative path to the relevant set, resolving against srcDir and authorDir. */
+function addRelevantPath(relevant, relPath, srcDir, authorDir) {
+  const mirrorPath = join(srcDir, relPath)
+  if (existsSync(mirrorPath)) {
+    try { relevant.add(realpathSync(mirrorPath)) } catch { relevant.add(mirrorPath) }
+  }
+  if (authorDir) {
+    const authorPath = join(authorDir, relPath)
+    if (existsSync(authorPath)) {
+      try { relevant.add(realpathSync(authorPath)) } catch { relevant.add(authorPath) }
+    }
+  }
+}
+
+// Detect xr-referenced sibling .tex files in the project's primary main.
+// Scans main's .tex source (top-level only; doesn't follow \input chains —
+// most papers put \externaldocument near \usepackage{xr}, not nested).
+// Returns relative .tex filenames that exist next to main.
+//
+// Used when project.json doesn't explicitly declare mainFiles[], so the
+// user can flip arxiv-mode by editing source — toggling \arxivtrue (which
+// controls whether xr loads) implicitly adds/removes secondary targets.
+function detectXrSiblings(srcDir, mainFile) {
+  const mainPath = join(srcDir, mainFile)
+  if (!existsSync(mainPath)) return []
+  let source
+  try { source = readFileSync(mainPath, 'utf8') } catch { return [] }
+  // Strip comments so commented-out \externaldocument lines don't trigger.
+  // (Inline % comments only — not full-line escape handling.)
+  const stripped = source.replace(/(^|[^\\])%[^\n]*/g, '$1')
+  const out = []
+  for (const m of stripped.matchAll(/\\externaldocument(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
+    const stem = m[1].trim()
+    const rel = stem.endsWith('.tex') ? stem : stem + '.tex'
+    if (rel === mainFile) continue
+    if (existsSync(join(srcDir, rel))) out.push(rel)
+  }
+  return out
+}
+
+// Topologically sort mainFiles so xr-dependents come AFTER their targets.
+// "Dependent": main with \externaldocument{X} reads X.aux at compile time, so
+// X must be built first. We scan main's .tex source (and inputs reachable
+// from it) for \externaldocument{...} references. Any referenced X that's
+// also a mainFile in the project gets ordered before main. Falls back to
+// the declared order on parse failure or unresolvable cycles.
+function orderTargetsByXrDeps(mainFiles, srcDir) {
+  if (mainFiles.length <= 1) return { ordered: [...mainFiles], hasCycle: false, hasXrDeps: false }
+  const stems = new Set(mainFiles.map(f => basename(f, '.tex')))
+  // Map texBase → set of texBases it depends on (xr-references).
+  const deps = new Map()
+  let hasXrDeps = false
+  for (const mf of mainFiles) {
+    const stem = basename(mf, '.tex')
+    deps.set(stem, new Set())
+    const path = join(srcDir, mf)
+    if (!existsSync(path)) continue
+    let source
+    try { source = readFileSync(path, 'utf8') } catch { continue }
+    // Match \externaldocument[prefix]{X} — prefix optional.
+    for (const m of source.matchAll(/\\externaldocument(?:\[[^\]]*\])?\{([^}]+)\}/g)) {
+      const target = m[1].trim()
+      if (stems.has(target)) {
+        deps.get(stem).add(target)
+        hasXrDeps = true
+      }
+    }
+  }
+  // Topo sort: emit nodes whose deps are all already emitted.
+  const remaining = new Set(mainFiles.map(f => basename(f, '.tex')))
+  const ordered = []
+  let hasCycle = false
+  while (remaining.size > 0) {
+    let progress = false
+    for (const stem of remaining) {
+      const ds = deps.get(stem) || new Set()
+      const unmet = [...ds].some(d => remaining.has(d))
+      if (!unmet) {
+        ordered.push(stem)
+        remaining.delete(stem)
+        progress = true
+        break
+      }
+    }
+    if (!progress) {
+      // Cycle — fall back to declared order for the rest.
+      hasCycle = true
+      for (const stem of remaining) ordered.push(stem)
+      break
+    }
+  }
+  // Map back to mainFile names in the resolved order.
+  const byStem = new Map(mainFiles.map(f => [basename(f, '.tex'), f]))
+  const orderedFiles = ordered.map(s => byStem.get(s)).filter(Boolean)
+  return { ordered: orderedFiles, hasCycle, hasXrDeps }
+}
+
+// If the project's working copy is a git repo and the shadow is still
+// empty (or has only the initial init commit), seed the shadow by filtering
+// the working-copy git history to paper-scope. Skip if the shadow already
+// has real commits — bootstrap runs once, then commitSnapshot takes over.
+async function maybeBootstrapShadowFromProjectRepo(name) {
+  const project = readProject(name)
+  if (!project?.sourceDir) return
+  const sourceDir = project.sourceDir
+  if (!existsSync(join(sourceDir, '.git'))) return
+
+  const shadowDir = join(projectDir(name), 'shadow-repo')
+  // Already has real history? Skip (defined as: at least 2 commits, since the
+  // blank initShadowRepo seeds an "init" commit with .gitignore).
+  if (existsSync(join(shadowDir, '.git'))) {
+    try {
+      const cnt = execSync('git rev-list --count HEAD 2>/dev/null', {
+        cwd: shadowDir, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, encoding: 'utf8',
+      }).trim()
+      if (parseInt(cnt, 10) > 1) return
+    } catch { /* missing HEAD or empty repo — proceed with bootstrap */ }
+  }
+
+  // Need a paper-scope to filter — written by writeRelevantFiles just above.
+  const relPath = join(outputDir(name), 'relevant-files.json')
+  if (!existsSync(relPath)) return
+  let parsed
+  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return }
+  const files = Array.isArray(parsed?.files) ? parsed.files : []
+  const scope = files
+    .filter(p => typeof p === 'string' && p.startsWith(sourceDir + '/'))
+    .map(p => p.slice(sourceDir.length + 1))
+  if (scope.length === 0) return
+
+  // Move existing blank shadow out of the way so initShadowFromProjectRepo
+  // can clone fresh. The blank shadow is just an init commit + .gitignore;
+  // safe to discard.
+  if (existsSync(shadowDir)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    renameSync(shadowDir, shadowDir + '-pre-init-' + ts)
+  }
+  await initShadowFromProjectRepo(name, sourceDir, scope)
+  // The re-init created a new git history. Clean up stale shadow/* tags from the
+  // working copy — they pointed at the old history and would cause `git fetch --tags`
+  // to fail on the next build (git refuses to overwrite tags without --force).
+  try {
+    const stale = execSync(`git tag -l "shadow/*"`, { cwd: sourceDir, encoding: 'utf8', timeout: 5000 }).trim()
+    if (stale) {
+      const tagList = stale.split('\n').filter(Boolean)
+      execSync(`git tag -d ${tagList.map(t => `"${t}"`).join(' ')}`, { cwd: sourceDir, stdio: 'pipe', timeout: 5000 })
+      console.log(`[build:${name}] cleared ${tagList.length} stale shadow/* tags from working copy after bootstrap`)
+    }
+  } catch (e) {
+    console.warn(`[build:${name}] failed to clear stale shadow tags: ${e.message}`)
+  }
+}
+
+// ─── Exported helpers ────────────────────────────────────────────────────────
+
+export function emitDocArrived(name) {
+  try {
+    const updated = readProject(name)
+    if (updated?.buildStatus === 'success') {
+      emitGlobalEvent('doc-arrived', {
+        name, title: updated.title || name,
+        format: updated.format, pages: updated.pages || 0,
+      })
+    }
+  } catch {}
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
@@ -722,6 +1440,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     existing.phase = 'cancelled'
   }
 
+  // Increment version so any in-flight mirror callbacks from previous builds
+  // can detect they've been superseded and skip.
+  const myVersion = (buildVersion.get(name) || 0) + 1
+  buildVersion.set(name, myVersion)
+
   // Set buildStatus early — before any validation that might throw.
   try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch {}
 
@@ -732,15 +1455,21 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
-  const mainFile = project.mainFile || 'main.tex'
-  const texBase = basename(mainFile, '.tex')
-  const texPath = join(srcDir, mainFile)
-  // If mainFile has a directory prefix (e.g. "revision/manuscript.tex"),
-  // the compilation cwd must be that subdirectory so pdflatex finds the file.
-  const texDir = join(srcDir, dirname(mainFile))
+  // Targets are derived purely from the source: the primary mainFile plus
+  // any sibling X.tex pulled in by `\externaldocument{X}` (xr / xr-hyper).
+  // Single-target projects simply have a one-element list. There is no
+  // declaration in project.json — the document itself is the source of
+  // truth. Output naming uses each target's texBase as a flat prefix, so
+  // single-target and multi-target follow the same code path.
+  const primary = project.mainFile || 'main.tex'
+  const xrSiblings = detectXrSiblings(srcDir, primary)
+  const mainFiles = [primary, ...xrSiblings]
 
-  if (!existsSync(texPath)) {
-    throw new Error(`Main file "${mainFile}" not found in source`)
+  // Validate all targets exist before starting any work.
+  for (const mf of mainFiles) {
+    if (!existsSync(join(srcDir, mf))) {
+      throw new Error(`Main file "${mf}" not found in source`)
+    }
   }
 
   const buildId = `${name}-${++buildIdCounter}`
@@ -754,13 +1483,11 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   }
   activeBuilds.set(name, status)
 
-  const buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
-  mkdirSync(buildDir, { recursive: true })
-
+  // Project-level ctx shared across targets — per-target fields (texBase,
+  // texPath, texDir, mainFile, buildDir, outDir) are filled in per iteration.
   const ctx = {
     name, project, buildId,
-    srcDir, outDir, projDir, buildDir,
-    texBase, texPath, texDir, mainFile,
+    srcDir, outDir, projDir,
     run: (cmd, opts = {}) => trackedExec(buildId, cmd, opts),
     addLog: (msg) => {
       const line = `[${new Date().toISOString()}] ${msg}`
@@ -768,6 +1495,16 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       console.log(`[build:${name}] ${msg}`)
     },
   }
+  // Backward-compat: keep top-level ctx.texBase etc. set to the *primary*
+  // target so legacy single-target ctx callers still see what they expect.
+  ctx.mainFile = mainFiles[0]
+  ctx.texBase = basename(ctx.mainFile, '.tex')
+  ctx.texPath = join(srcDir, ctx.mainFile)
+  ctx.texDir = join(srcDir, dirname(ctx.mainFile))
+  ctx.buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
+  mkdirSync(ctx.buildDir, { recursive: true })
+  // Output dir may not exist (e.g. after a wipe). All targets publish here.
+  mkdirSync(outDir, { recursive: true })
 
   try {
     // Snapshot current output in background — don't block the build
@@ -783,40 +1520,149 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const buildStart = Date.now()
     const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
-    // Phase 1: LaTeX compilation
-    status.phase = 'compiling'
-    signalBuildProgress(name, 'compiling', null)
-    const { expectedPages } = await compileLaTeX(ctx)
+    // Per-target phases (compile, publish DVI, extract macros / synctex /
+    // proof-pairing / theorem-map / source-map / relevant-files). All
+    // outputs land flat in outDir, prefixed by texBase:
+    //   outDir/<texBase>.dvi
+    //   outDir/<texBase>-page-N.svg              (built lazily, by ensure)
+    //   outDir/<texBase>-{lookup,macros,proof-info,source-map,theorem-map,relevant-files}.json
+    let totalPages = 0
+    const targetMeta = []   // [{ texBase, mainFile, expectedPages }]
 
-    // Phase 2+3: SVG conversion and macro extraction run in parallel
-    status.phase = 'converting'
-    signalBuildProgress(name, 'converting', `compiled in ${elapsed()}s`)
-    const oldHashes = loadPageHashes(outDir)
-    const [svgResult] = await Promise.all([
-      convertSvgs(ctx, priorityPages, oldHashes, expectedPages),
-      extractMacros(ctx),
-    ])
+    // Order targets by xr dependency: documents pulled in by
+    // \externaldocument{X} must be built BEFORE the documents that
+    // reference them, since each pdflatex run reads X.aux at compile-time.
+    // Mutual cross-refs (cycle) preserve declared order and converge with a
+    // second pass.
+    const { ordered: orderedMainFiles, hasCycle, hasXrDeps } =
+      orderTargetsByXrDeps(mainFiles, srcDir)
+    if (orderedMainFiles.join(',') !== mainFiles.join(',')) {
+      ctx.addLog(`Targets reordered for xr deps: ${orderedMainFiles.join(' → ')}`)
+    }
+    const passCount = hasXrDeps ? 2 : 1
+    if (passCount > 1) ctx.addLog(`xr cross-refs detected — running ${passCount} passes`)
 
-    // Phase 4+5: Synctex → proof pairing (sequential, post-reload)
-    status.phase = 'extracting'
-    const hasSynctex = await extractSynctex(ctx)
-    if (hasSynctex) await computeProofPairing(ctx)
+    for (let pass = 0; pass < passCount; pass++) {
+    const isFinalPass = pass === passCount - 1
+    for (const mf of orderedMainFiles) {
+      const tBase = basename(mf, '.tex')
+      const tPath = join(srcDir, mf)
+      const tDir = join(srcDir, dirname(mf))
+      // Each target gets its own scratch buildDir; outDir is shared and
+      // collisions are avoided via texBase-prefixed filenames.
+      const tBuildDir = join(tmpdir(), `tlda-build-${name}-${tBase}-${Date.now()}`)
+      mkdirSync(tBuildDir, { recursive: true })
 
-    // Phase 6: Theorem map
-    await generateTheoremMap(ctx)
+      const tCtx = {
+        ...ctx,
+        mainFile: mf,
+        texBase: tBase,
+        texPath: tPath,
+        texDir: tDir,
+        buildDir: tBuildDir,
+      }
 
-    // Finalize
+      // Phase 1: LaTeX compilation
+      status.phase = 'compiling'
+      signalBuildProgress(name, mainFiles.length > 1 ? `compiling ${tBase}` : 'compiling', null)
+      const { expectedPages } = await compileLaTeX(tCtx)
+
+      // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
+      // SVGs are built lazily when pages are first requested.
+      status.phase = 'converting'
+      const dviFile = join(tBuildDir, `${tBase}.dvi`)
+      publishFile(dviFile, join(outDir, `${tBase}.dvi`))
+      // Drop stale SVGs for THIS target only. Other targets' SVGs (different
+      // texBase prefix) are untouched.
+      const stalePagePrefix = `${tBase}-page-`
+      for (const f of readdirSync(outDir)) {
+        if (f.startsWith(stalePagePrefix) && /^.+-page-\d+\.svg$/.test(f)) {
+          try { unlinkSync(join(outDir, f)) } catch {}
+        }
+      }
+      tCtx.addLog(`DVI published (${tBase}) — signaling reload`)
+
+      // Phases 3-8: extract macros, synctex, proof pairing, theorem map,
+      // source map, relevant files (per-target, written under texBase prefix).
+      await extractMacros(tCtx)
+      status.phase = 'extracting'
+      const hasSynctex = await extractSynctex(tCtx)
+      if (hasSynctex) await computeProofPairing(tCtx)
+      await generateTheoremMap(tCtx)
+      await generateSourceMap(tCtx)
+      writeRelevantFiles(tCtx)
+
+      if (isFinalPass) {
+        targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0 })
+        totalPages += expectedPages ?? 0
+      }
+
+      // Clean up this target's scratch build dir before the next iteration.
+      try { rmSync(tBuildDir, { recursive: true, force: true }) } catch {}
+    }
+    } // end pass loop
+
+    // Reorder targetMeta back into declared (reading) order — the loop
+    // iterates in topo / build order which puts xr-deps first. We want the
+    // primary first, dependents after.
+    targetMeta.sort((a, b) => mainFiles.indexOf(a.mainFile) - mainFiles.indexOf(b.mainFile))
+
+    // Project-level relevant-files union — daemon's source-change filter
+    // uses this to decide whether to rebuild. Combines every target's set.
+    {
+      const union = new Set()
+      for (const t of targetMeta) {
+        const p = join(outDir, `${t.texBase}-relevant-files.json`)
+        if (existsSync(p)) {
+          try {
+            const j = JSON.parse(readFileSync(p, 'utf8'))
+            for (const f of j.files || []) union.add(f)
+          } catch {}
+        }
+      }
+      writeFileSync(
+        join(outDir, 'relevant-files.json'),
+        JSON.stringify({
+          generated_at: new Date().toISOString(),
+          source_dir: project?.sourceDir || srcDir,
+          targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
+          files: [...union].sort(),
+        }, null, 2),
+      )
+    }
+
+    // Send the reload signal once, after all targets finish.
+    const svgsReadyAt = Date.now()
+    signalReload(name, null)
+
+    // Total pages across all targets — what the viewer reports as project.pages.
+    const expectedPages = totalPages
+
+    // Finalize. `targets` always reflects the current target set so the
+    // viewer doesn't have to special-case single-target — it just renders
+    // a one-element list.
     updateProject(name, {
-      pages: svgResult.pageCount,
+      pages: expectedPages,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
+      targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     })
     saveBuildCache(ctx)
+    clearSynctexCache(name)
+
+    // Touch build.stamp — staleness counterpart to source.stamp. Replaces
+    // the previous role of `output/main.dvi` mtime (which broke once we
+    // had multiple per-target DVIs).
+    try {
+      writeFileSync(join(outDir, 'build.stamp'), new Date().toISOString())
+    } catch (e) {
+      ctx.addLog(`build.stamp write failed (non-fatal): ${e.message}`)
+    }
 
     // Append changelog entry with TeX diff
     try {
-      const clEntry = appendBuildEntry(name, svgResult.changedPages, Object.values(svgResult.newHashes).join(''))
-      if (clEntry) ctx.addLog(`Changelog: ${svgResult.changedPages.length} page(s), diff ${clEntry.texDiff.length} chars`)
+      const clEntry = appendBuildEntry(name, [], null)
+      if (clEntry) ctx.addLog(`Changelog: diff ${clEntry.texDiff.length} chars`)
     } catch (e) {
       ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
     }
@@ -824,19 +1670,155 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const totalElapsed = elapsed()
     ctx.addLog(`Build complete in ${totalElapsed}s`)
     signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: svgResult.pageCount, errors: [] })
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
-    // Update doc-version sentinel shape with source git commit hash (non-blocking)
-    updateDocVersionSentinel(name, ctx.srcDir).catch(e => {
-      ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+    // Bootstrap: if the project's working copy is a git repo AND the shadow
+    // doesn't have real history yet, seed the shadow by filtering the
+    // working-copy git to paper-scope. Folds into the normal back-and-forth
+    // bootstrap — first build computes scope; if there's an extant project
+    // git, that scope filters the project's existing history into the shadow.
+    // Idempotent: skipped on subsequent builds (shadow already has commits).
+    await maybeBootstrapShadowFromProjectRepo(name).catch(e => {
+      ctx.addLog(`shadow bootstrap from project repo skipped (non-fatal): ${e.message}`)
     })
 
-    // Commit source snapshot to shadow repo and cache SVGs (non-blocking)
-    commitSnapshot(name).then(result => {
+    // Commit source snapshot to shadow repo (non-blocking)
+    const snapshotVersion = myVersion
+    commitSnapshot(name).then(async result => {
       if (result) {
-        cacheSvgSnapshot(name, result.hash).catch(e => {
-          ctx.addLog(`shadow-repo SVG cache failed (non-fatal): ${e.message}`)
+        // Update doc-version sentinel with shadow hash (the build's version identity)
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt).catch(e => {
+          ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
+        recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
+        emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+        // Mirror: shadow repo records the build, working copy receives it via
+        // its tlda-shadow remote. No filter on the working-copy side — the
+        // shadow already contains paper-scope only (commitSnapshot enforces
+        // that). We update the working copy's master ref + index to match
+        // shadow's HEAD without touching the working tree, so any uncommitted
+        // edits survive and show as "modified" relative to the new master.
+        // Skip mirror if a newer build has already started — its callback will mirror.
+        if (buildVersion.get(name) !== snapshotVersion) return
+        try {
+          const project = readProject(name)
+          if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
+            const cwd = project.sourceDir
+            const shadowDir = join(projDir, 'shadow-repo')
+            // Tag the shadow commit so shadow/<hash> resolves to it.
+            const tag = `shadow/${result.hash.slice(0, 7)}`
+            execSync(`git tag -f "${tag}"`, { cwd: shadowDir, stdio: 'pipe', timeout: 5000 })
+            // Ensure the working copy has the shadow as a remote.
+            try {
+              execSync(`git remote get-url tlda-shadow`, { cwd, stdio: 'pipe', timeout: 5000 })
+            } catch {
+              execSync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, stdio: 'pipe', timeout: 5000 })
+            }
+            // Fetch shadow's history into the working copy, then move the
+            // working copy's current branch to shadow's HEAD. --mixed updates
+            // the index but leaves the working tree untouched (preserves any
+            // uncommitted edits). Uses result.hash directly (not FETCH_HEAD) so
+            // the reset targets the exact commit we just committed.
+            try {
+              execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+            } catch (fetchErr) {
+              // Stale remote ref lock (concurrent builds or prior failed fetch).
+              // Prune and retry once; if it fails again, rethrow.
+              if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
+                execSync(`git remote prune tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+                execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+              } else {
+                throw fetchErr
+              }
+            }
+            execSync(`git reset --mixed ${result.hash}`, { cwd, stdio: 'pipe', timeout: 10000 })
+            updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
+          }
+        } catch (mirrorErr) {
+          ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+          // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
+          // window to edits that happened after the last clean mirror.
+          const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
+          // Include build file list so the handler matches edits to actual build files.
+          let buildFiles = null
+          try {
+            const relPath = join(projDir, 'output', 'relevant-files.json')
+            buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
+          } catch {}
+          emitGlobalEvent('build-card', {
+            name,
+            hash: result.hash.slice(0, 7),
+            summary: null,
+            lintFindings: [],
+            mirrorFailed: mirrorErr.message,
+            lastMirrorSuccess,
+            buildFiles,
+          })
+        }
+        // Build change summary: diff against previous shadow commit
+        try {
+          const shadowDir = join(projDir, 'shadow-repo')
+          const diffOutput = execSync(
+            `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
+            { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
+          )
+          if (diffOutput.trim()) {
+            const summary = summarizeDiff(diffOutput, name)
+            console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+            // Broadcast viewer signal regardless of lint
+            if (summary) {
+              broadcastSignal(`doc-${name}`, 'signal:build-summary', {
+                hash: result.hash.slice(0, 7),
+                summary,
+                timestamp: Date.now(),
+              })
+            }
+            // BYOL linters: collect all findings, then emit ONE build-card event.
+            const lintFindings = []
+            try {
+              const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
+              if (existsSync(lintersDir)) {
+                const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
+                for (const script of scripts) {
+                  const scriptPath = join(lintersDir, script)
+                  try {
+                    const output = await new Promise((resolve, reject) => {
+                      const child = spawn(process.execPath, [scriptPath], {
+                        env: { ...process.env, TLDA_SRCDIR: shadowDir },
+                        stdio: ['pipe', 'pipe', 'inherit'],
+                      })
+                      const chunks = []
+                      child.stdout.on('data', d => chunks.push(d))
+                      child.stdin.write(diffOutput)
+                      child.stdin.end()
+                      child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
+                      child.on('error', reject)
+                    })
+                    if (output) {
+                      lintFindings.push({ source: script, text: output })
+                      console.log(`[build:${name}] Lint (${script}): ${output.split('\n')[0]}`)
+                    }
+                  } catch (scriptErr) {
+                    console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
+                  }
+                }
+              }
+            } catch (lintErr) {
+              console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
+            }
+            // Emit single build-card event (aggregates summary + all lint findings)
+            if (summary || lintFindings.length > 0) {
+              emitGlobalEvent('build-card', {
+                name,
+                hash: result.hash.slice(0, 7),
+                summary: summary || null,
+                lintFindings,
+              })
+            }
+          } else {
+            console.log(`[build:${name}] No tex diff between shadow commits`)
+          }
+        } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
       }
     }).catch(e => {
       ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
@@ -916,16 +1898,8 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, srcDir) {
-  let commitHash = 'unknown'
-  if (srcDir && existsSync(srcDir)) {
-    try {
-      const { stdout } = await execAsync('git rev-parse HEAD', { cwd: srcDir, timeout: 5000 })
-      commitHash = stdout.trim()
-    } catch {
-      // Not a git repo, or no commits yet — leave as 'unknown'
-    }
-  }
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
+  const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
   const sentinel = {
@@ -945,6 +1919,7 @@ async function updateDocVersionSentinel(name, srcDir) {
       h: 1,
       commitHash,
       timestamp: Date.now(),
+      buildReadyAt: buildReadyAt || Date.now(),
     },
   }
 

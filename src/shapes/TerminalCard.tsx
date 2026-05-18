@@ -18,15 +18,18 @@ import './TerminalCard.css'
 // WebSocket for terminal — goes through Vite proxy in dev
 const FLEET_WS_HOST = typeof window !== 'undefined'
   ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-  : 'ws://localhost:5199'
+  : 'ws://localhost:5176'
 
 interface TerminalCardProps {
   agentId: string
   agentName: string
+  pinned?: boolean
   onDismiss?: () => void
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
 }
 
-export function TerminalCard({ agentId, agentName, onDismiss }: TerminalCardProps) {
+export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnter, onMouseLeave }: TerminalCardProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -245,9 +248,11 @@ export function TerminalCard({ agentId, agentName, onDismiss }: TerminalCardProp
 
   return (
     <div
-      className={`terminal-card ${inputFocused ? 'terminal-card-input-active' : ''}`}
+      className={`terminal-card ${inputFocused ? 'terminal-card-input-active' : ''} ${pinned ? 'terminal-card-pinned' : ''}`}
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
       {/* Header */}
       <div className="terminal-card-header">
@@ -257,10 +262,11 @@ export function TerminalCard({ agentId, agentName, onDismiss }: TerminalCardProp
         <span className="terminal-card-title">
           {isConnected ? agentName : status === 'connecting' ? 'connecting…' : agentName}
         </span>
+        {pinned && <span className="terminal-card-pin-label" title="Pinned — click card to unpin">📌</span>}
         {onDismiss && (
           <button
             className="terminal-card-dismiss"
-            title="Dismiss (freeze as snapshot)"
+            title="Dismiss"
             onPointerDown={(e) => {
               stopEventPropagation(e as any)
               handleFreeze()

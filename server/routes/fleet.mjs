@@ -5,7 +5,7 @@
  * Mounted at / (routes are already prefixed with /api/).
  *
  * createFleetRouter(deps) — factory that returns an Express router.
- * deps: { fleetStore, broadcastEvent, broadcastState, preambleStore }
+ * deps: { fleetStore, broadcastEvent, broadcastState, clearEphemeralState, ... }
  */
 
 import { Router } from 'express'
@@ -13,9 +13,11 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-const HUMAN_FLEET_ID = 'fleet:skip'
-const HUMAN_NAME = 'skip'
-const HUMAN_HOST = os.hostname()
+// Server owner — the human running this server process. Browser users
+// log in via the WS 'login' message or register via 'register'.
+const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
+const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
+const SERVER_OWNER_HOST = os.hostname()
 
 // All inline tmux operations were removed — they now route through the
 // fleet-daemon WS RPC layer (`sendRpc(machineId, op, params)` injected
@@ -23,6 +25,40 @@ const HUMAN_HOST = os.hostname()
 // machine, the handler returns 503.
 
 const UPLOAD_DIR = '/tmp/fleet-uploads'
+
+// Minimal multipart/form-data parser for the single-file case used by browser
+// drag-and-drop. Returns { filename, contentType, content } for the first
+// part that has a filename, or null if none. Body is the raw request buffer.
+function extractFirstFilePart(body, boundary) {
+  const dashBoundary = Buffer.from(`--${boundary}`)
+  const crlfCrlf = Buffer.from('\r\n\r\n')
+  let pos = body.indexOf(dashBoundary)
+  while (pos !== -1) {
+    const headerStart = pos + dashBoundary.length + 2 // skip \r\n after boundary
+    const headerEnd = body.indexOf(crlfCrlf, headerStart)
+    if (headerEnd === -1) return null
+    const headers = body.slice(headerStart, headerEnd).toString('utf8')
+    const cd = headers.match(/Content-Disposition:.*?filename="([^"]*)"/i)
+    if (cd) {
+      const ct = headers.match(/Content-Type:\s*([^\r\n]+)/i)
+      const contentStart = headerEnd + crlfCrlf.length
+      const nextBoundary = body.indexOf(dashBoundary, contentStart)
+      if (nextBoundary === -1) return null
+      // The part ends with \r\n before the next boundary marker.
+      const contentEnd = nextBoundary - 2
+      return {
+        filename: cd[1],
+        contentType: ct ? ct[1].trim() : 'application/octet-stream',
+        content: body.slice(contentStart, contentEnd),
+      }
+    }
+    // Skip to next boundary if this part had no filename.
+    const next = body.indexOf(dashBoundary, headerEnd + crlfCrlf.length)
+    if (next === -1) return null
+    pos = next
+  }
+  return null
+}
 
 function copyAttachment(srcPath) {
   try {
@@ -34,7 +70,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, preambleStore, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -67,20 +103,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
-    if (fleetStore) fleetStore.updateHeartbeat(HUMAN_FLEET_ID)
+    if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
     const agents = fleetStore ? fleetStore.getAllAgents() : []
     const tasks = fleetStore ? fleetStore.getActiveTasks() : []
     res.json({ agents, tasks })
   })
 
   // --- GET /api/human ---
+  // Returns the server owner's identity. Used by MCP agents and CLI tools
+  // to know who the "local human" is. Browser users log in via WS 'login'.
   router.get('/api/human', (req, res) => {
-    res.json({ id: HUMAN_FLEET_ID, host: HUMAN_HOST, name: HUMAN_NAME })
-  })
-
-  // --- GET /api/preamble ---
-  router.get('/api/preamble', (req, res) => {
-    res.json(preambleStore)
+    res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
   })
 
   // --- GET /api/store/events ---
@@ -88,40 +121,67 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const afterId = parseInt(req.query.after || '0')
     const beforeId = req.query.before ? parseInt(req.query.before) : null
-    const limit = Math.min(parseInt(req.query.limit || '100'), 500)
+    const limit = Math.min(parseInt(req.query.limit || '200'), 5000)
+    const since = req.query.since || null   // ISO timestamp lower bound
+    const until = req.query.until || null   // ISO timestamp upper bound
     const type = req.query.type || null
     const agent = req.query.agent || null
     try {
       let events
+      let total = null
+      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
+        // Build WHERE clause with optional time filters
+        let where = '(from_id = ? OR to_id = ?)'
+        const baseParams = [agent, agent]
+        if (since) { where += ' AND timestamp >= ?'; baseParams.push(since) }
+        if (until) { where += ' AND timestamp <= ?'; baseParams.push(until) }
+
+        // Total count within the filtered window
+        total = fleetStore.db.prepare(
+          `SELECT COUNT(*) as n FROM events WHERE ${where}`
+        ).get(...baseParams)?.n ?? null
+
         const q = afterId
-          ? 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) AND id > ? ORDER BY id ASC LIMIT ?'
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
           : beforeId
-          ? 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) AND id < ? ORDER BY id DESC LIMIT ?'
-          : 'SELECT * FROM events WHERE (from_id = ? OR to_id = ?) ORDER BY id DESC LIMIT ?'
+          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
+          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
         events = afterId
-          ? fleetStore.db.prepare(q).all(agent, agent, afterId, limit)
+          ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
           : beforeId
-          ? fleetStore.db.prepare(q).all(agent, agent, beforeId, limit)
-          : fleetStore.db.prepare(q).all(agent, agent, limit)
-        if (!afterId) events.reverse()
+          ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
+          : fleetStore.db.prepare(q).all(...baseParams, limit)
+        if (beforeId) events.reverse()
       } else if (type) {
         events = fleetStore.db.prepare(
-          'SELECT * FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?'
+          `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
         ).all(type, afterId, limit)
       } else if (beforeId) {
         events = fleetStore.db.prepare(
-          'SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT ?'
+          `SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`
         ).all(beforeId, limit)
         events.reverse()
       } else {
         events = fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = fleetStore.getLastEventId()
-      res.json({ events, lastId })
+      res.json({ events, lastId, total })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
+  })
+
+  // --- POST /api/agents/:id/mark-dead ---
+  // Called by the daemon when it detects an agent's process is gone.
+  router.post('/api/agents/:id/mark-dead', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    try {
+      fleetStore.markDead(req.params.id)
+      clearEphemeralState?.(req.params.id)
+      broadcastState()
+      res.json({ ok: true })
+    } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
   // --- GET /api/store/agents ---
@@ -176,7 +236,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const allAgents = fleetStore ? fleetStore.getAllAgents() : []
       const agentMap = {}
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
-      agentMap['web'] = agentMap[HUMAN_FLEET_ID] || HUMAN_NAME
+      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
       if (fleetStore) {
         try {
@@ -244,9 +304,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           const set = tmuxByMachine.get(a.machine_id)
           tmuxUp = set ? set.has(a.tmux_session) : null
         }
-        let status = 'dead'
-        if (heartbeat && tmuxUp !== false) status = 'alive'
+        // `dead` is a deliberate terminal state, only set by explicit kills.
+        // A non-running, non-dead agent is hibernating — computed, not stored.
+        let status
+        if (a.dead) status = 'dead'
+        else if (heartbeat && tmuxUp !== false) status = 'alive'
         else if (heartbeat || tmuxUp) status = 'stale'
+        else status = 'hibernating'
         return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
       const missing = roster.filter(r => !registryIds.has(r.fleet_id))
@@ -266,13 +330,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/read-file ---
   router.get('/api/read-file', (req, res) => {
-    const filePath = req.query.path
+    let filePath = req.query.path
     if (!filePath) { res.status(400).send('Missing path parameter'); return }
     try {
       const content = fs.readFileSync(filePath, 'utf8')
       res.type('text/plain').send(content)
     } catch (e) {
-      res.status(404).send(`Could not read file: ${e.message}`)
+      res.status(404).send(`Could not read file: ${filePath}\n${e.message}`)
     }
   })
 
@@ -282,77 +346,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!filePath) { res.status(400).send('Missing path'); return }
     try { res.sendFile(filePath) }
     catch (e) { res.status(404).send(e.message) }
-  })
-
-  // --- POST /api/chat ---
-  router.post('/api/chat', (req, res) => {
-    const { message, to, from, cc, attachments, inline_attachments } = req.body || {}
-    if (!message && (!attachments || !attachments.length)) { res.status(400).send('missing message'); return }
-    if (!to || to === 'undefined' || to === 'null') { res.status(400).send('missing "to"'); return }
-    const resolve = (id) => { const a = fleetStore?.findAgent(id); return a ? a.id : null }
-    const sender = from ? (resolve(from) || from) : HUMAN_FLEET_ID
-    const recipient = resolve(to)
-    if (!recipient) { res.status(404).send(`Recipient not found: "${to}"`); return }
-    let ccResolved = cc && cc.length ? cc.map(resolve).filter(Boolean) : null
-    if (ccResolved && ccResolved.length === 0) ccResolved = null
-    if (recipient === HUMAN_FLEET_ID && sender !== HUMAN_FLEET_ID && fleetStore) {
-      const watchers = fleetStore.getAllAgents()
-        .filter(a => a.labels?.includes('qa') && a.id !== sender && a.id !== recipient)
-        .map(a => a.id)
-      if (watchers.length) {
-        ccResolved = ccResolved ? [...new Set([...ccResolved, ...watchers])] : watchers
-      }
-    }
-    let processedAttachments = attachments
-    if (attachments && attachments.length) {
-      processedAttachments = attachments.map(a => {
-        if (a.path && fs.existsSync(a.path)) {
-          const copied = copyAttachment(a.path)
-          if (copied) return { ...a, path: copied, originalPath: a.path }
-        }
-        return a
-      })
-    }
-    let text = message || ''
-    if (fleetStore) fleetStore.updateHeartbeat(HUMAN_FLEET_ID)
-    // Resolve wiretaps
-    let wiretapRecipients = []
-    if (fleetStore) {
-      const taps = fleetStore.getWiretaps()
-      for (const tap of taps) {
-        if (!tap.filter) continue
-        let matches = false
-        try {
-          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-          const fromMatch = !f.from || f.from.some(grp => grp.every(t => [sender, ...(fleetStore.findAgent(sender)?.labels || [])].includes(t)))
-          const toMatch = !f.to || f.to.some(grp => grp.every(t => [recipient, ...(fleetStore.findAgent(recipient)?.labels || [])].includes(t)))
-          matches = fromMatch && toMatch
-        } catch {}
-        if (matches && tap.agent_id !== sender && tap.agent_id !== recipient) {
-          wiretapRecipients.push(tap.agent_id)
-        }
-      }
-    }
-    const allRecipients = [...new Set([recipient, ...(ccResolved || []), ...wiretapRecipients])]
-    if (fleetStore) {
-      const event = fleetStore.share({
-        type: 'chat',
-        from: sender,
-        to: recipient,
-        text,
-        metadata: JSON.stringify({
-          cc: ccResolved || undefined,
-          attachments: processedAttachments || undefined,
-          inline_attachments: inline_attachments || undefined,
-          wiretap_cc: wiretapRecipients.length ? wiretapRecipients : undefined,
-        }),
-      })
-      // share() handles unread tracking internally
-      broadcastEvent('fleet-event', { type: 'chat', from: sender, to: recipient, id: event?.id, text, event_id: event?.id })
-      res.json({ ok: true, event_id: event?.id })
-    } else {
-      res.json({ ok: true })
-    }
   })
 
   // --- POST /api/tasks/delegate ---
@@ -420,13 +413,38 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, task_id })
   })
 
-  // --- POST /api/spawn — REMOVED ---
-  // The previous inline implementation referenced a non-existent path
-  // (`'../../../fleet/index.mjs'`) and was unreachable from any caller.
-  // The real spawn path is the Python script `bin/fleet-spawn`, which the
-  // fleet MCP shells out to directly. When per-machine spawn lands in
-  // Phase 5+, it will be a daemon RPC keyed by machine_id, not an
-  // agent-scoped HTTP route.
+  // --- POST /api/spawn ---
+  // Spawn or respawn an agent via the fleet daemon RPC.
+  // Body: { model?, doc?, name?, agent?, respawn? }
+  // doc: project name — daemon resolves to sourceDir for the cwd
+  // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
+  router.post('/api/spawn', async (req, res) => {
+    const { name, model, doc, agent, respawn } = req.body || {}
+    // For respawn, resolve agent to a name
+    let spawnName = name
+    if (respawn && agent) {
+      const a = fleetStore?.findAgent(agent)
+      spawnName = a?.friendly_name || agent
+    }
+    // Find a daemon to route to — use the local machine
+    const machineIds = [...daemonConnections.keys()]
+    if (machineIds.length === 0) {
+      res.status(503).json({ error: 'No fleet daemon connected — cannot spawn agents' })
+      return
+    }
+    try {
+      const result = await sendRpc(machineIds[0], 'spawn', {
+        name: spawnName || undefined,
+        model: model || undefined,
+        doc: doc || undefined,
+        respawn: !!respawn,
+      })
+      broadcastState()
+      res.json(result)
+    } catch (e) {
+      res.status(502).json({ error: e.message })
+    }
+  })
 
   // --- POST /api/kick ---
   // Kick = touch a signal file inside the agent's machine's ~/.fleet/signals.
@@ -438,8 +456,27 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
     if (result === null) return // rpcAgent already wrote the response
-    broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: HUMAN_FLEET_ID, text: 'manual kick' })
+    broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
     res.json(result)
+  })
+
+  // --- POST /api/kill-session ---
+  // Kill the agent's tmux session outright. Marks agent dead.
+  router.post('/api/kill-session', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
+    const result = await rpcAgent(res, agent, 'kill-session', {
+      agent_id: agent.id, tmux_session: agent.tmux_session,
+    })
+    if (result === null) return
+    fleetStore?.markDead(agent.id)
+    const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+    fleetStore?.share(killEvent)
+    broadcastEvent('fleet-event', killEvent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   })
 
   // --- POST /api/interrupt ---
@@ -464,14 +501,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
-      const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const usedNames = new Set(['skip', ...allAgents.filter(a => a.id !== agent.id).map(a => a.friendly_name).filter(Boolean)])
-      if (usedNames.has(newName)) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
+      const conflict = fleetStore?.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      if (conflict || newName === SERVER_OWNER_NAME) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
     }
-    agent.friendly_name = newName || undefined
-    if (fleetStore) fleetStore.upsertAgent(agent)
+    // Use direct SQL so clearing a name (newName = "") actually sets NULL
+    // rather than being COALESCE'd back to the old value in upsertAgent.
+    fleetStore?.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
     broadcastState()
-    res.json({ ok: true, agent: agent.id, name: newName })
+    res.json({ ok: true, agent: agent.id, name: newName || null })
   })
 
   // --- POST /api/label ---
@@ -481,13 +518,27 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-    const usedNames = new Set(['skip', ...allAgents.map(a => a.friendly_name).filter(Boolean)])
+    const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.map(a => a.friendly_name).filter(Boolean)])
     const conflicts = labels.filter(l => usedNames.has(l) && l !== agent.friendly_name)
     if (conflicts.length) { res.status(400).json({ error: `Label(s) conflict with agent name(s): ${conflicts.join(', ')}` }); return }
     agent.labels = labels
     if (fleetStore) fleetStore.upsertAgent(agent)
     broadcastState()
     res.json({ ok: true, agent: agent.id, labels })
+  })
+
+  // --- POST /api/set-metadata ---
+  // Merge key/value pairs into an agent's metadata JSON.
+  router.post('/api/set-metadata', (req, res) => {
+    const { agent: agentQuery, ...fields } = req.body || {}
+    if (!agentQuery) { res.status(400).json({ error: 'agent required' }); return }
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    const meta = { ...(agent.metadata || {}), ...fields }
+    agent.metadata = meta
+    if (fleetStore) fleetStore.upsertAgent(agent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.id, metadata: meta })
   })
 
   // --- POST /api/send-key ---
@@ -536,43 +587,224 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (result !== null) res.json(result)
   })
 
+  // --- POST /api/restart-my-mcp ---
+  // Developer tool: restart an agent's own fleet MCP (e.g. after updating fleet.mjs).
+  // Returns 202 immediately; daemon triggers the restart ~1.5s later.
+  // body: { agent: <id|name> }
+  router.post('/api/restart-my-mcp', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    res.status(202).json({ ok: true, message: 'restart scheduled' })
+    await new Promise(r => setTimeout(r, 1500))
+    const route = resolveRpc('restart-mcp', agent)
+    if (route.via === 'none') {
+      console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
+      return
+    }
+    try {
+      await sendRpc(route.machine_id, 'restart-mcp', {
+        tmux_session: agent.tmux_session,
+        skipPreflight: true,
+      })
+    } catch (e) {
+      console.error(`restart-my-mcp daemon call failed: ${e.message}`)
+    }
+  })
+
+  // --- POST /api/plan-mode-respond ---
+  // Responds to a plan-mode approval prompt for an agent.
+  // body: { agent: <id|name>, response: 'approve' | 'reject' }
+  // 'approve' sends key '1' + Enter (Yes, auto-accept edits)
+  // 'reject' sends Escape (dismiss / let user decide later)
+  router.post('/api/plan-mode-respond', async (req, res) => {
+    const { agent: agentQuery, response } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+    if (response !== 'approve' && response !== 'reject') {
+      res.status(400).json({ error: 'response must be approve or reject' }); return
+    }
+    // For approve: send '1' then Enter (selects "Yes, auto-accept edits")
+    // For reject: send Escape (dismiss the prompt)
+    if (response === 'approve') {
+      const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
+      if (r1 !== null) {
+        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+        broadcastState()
+        res.json(r1)
+      }
+    } else {
+      const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+      if (r1 !== null) {
+        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+        broadcastState()
+        res.json(r1)
+      }
+    }
+  })
+
+  // --- POST /api/plan-mode-toggle ---
+  // Enters plan mode by reading the current mode then sending the right number
+  // of Shift+Tab (BTab) presses to land on plan mode.
+  // Cycle: default → accept-edits → plan → default
+  // body: { agent: <id|name> }
+  router.post('/api/plan-mode-toggle', async (req, res) => {
+    const { agent: agentQuery } = req.body || {}
+    const agent = fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
+
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { res.status(503).json({ ok: false, error: route.error }); return }
+
+    const parseCCMode = (pane) => {
+      if (/plan mode on/i.test(pane)) return 'plan'
+      if (/accept edits on/i.test(pane)) return 'acceptEdits'
+      if (/auto.approve/i.test(pane) || /bypass/i.test(pane)) return 'auto'
+      return 'default'
+    }
+
+    try {
+      // Capture current mode
+      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const currentMode = parseCCMode(cap1?.content || '')
+
+      // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
+      // Cycle: default → acceptEdits → plan → default
+      const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
+
+      for (let i = 0; i < btabs; i++) {
+        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
+      }
+
+      // Confirm final mode
+      if (btabs > 0) await new Promise(r => setTimeout(r, 300))
+      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const finalMode = parseCCMode(cap2?.content || '')
+
+      // Store permission mode in agent metadata so UI can show persistent badge
+      fleetStore?.updateAgentMeta(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      broadcastState()
+
+      res.json({ ok: true, mode: finalMode, was: currentMode })
+    } catch (e) {
+      res.status(502).json({ ok: false, error: e.message })
+    }
+  })
+
   // --- POST /api/upload ---
+  // Accepts two payload shapes:
+  //   1. Raw binary body with x-filename header (used by MCP screenshot
+  //      uploads that go through node-fetch directly).
+  //   2. multipart/form-data with a single `file` field (used by browser
+  //      drag-and-drop into chat). Parsed inline — we don't pull in multer
+  //      just to extract one part.
   router.post('/api/upload', (req, res) => {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true })
     const chunks = []
     req.on('data', chunk => chunks.push(chunk))
     req.on('end', () => {
       try {
-        const buf = Buffer.concat(chunks)
-        const origName = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : null
+        let body = Buffer.concat(chunks)
+        let origName = req.headers['x-filename']
+          ? decodeURIComponent(req.headers['x-filename'])
+          : null
+
+        // Multipart path: extract the first file part's filename + content.
+        const ct = req.headers['content-type'] || ''
+        if (ct.startsWith('multipart/form-data')) {
+          const m = ct.match(/boundary="?([^";]+)"?/)
+          if (!m) { res.status(400).json({ error: 'multipart boundary missing' }); return }
+          const part = extractFirstFilePart(body, m[1])
+          if (!part) { res.status(400).json({ error: 'no file part in multipart body' }); return }
+          body = part.content
+          if (!origName && part.filename) origName = part.filename
+        }
+
         let name
         if (origName) {
           name = `${Date.now()}-${origName}`
         } else {
           let ext = 'png'
-          if (buf[0] === 0xFF && buf[1] === 0xD8) ext = 'jpg'
-          else if (buf[0] === 0x47 && buf[1] === 0x49) ext = 'gif'
-          else if (buf[0] === 0x52 && buf[1] === 0x49) ext = 'webp'
-          else if (buf[0] === 0x3C) {
-            const head = buf.slice(0, 256).toString('utf8')
+          if (body[0] === 0xFF && body[1] === 0xD8) ext = 'jpg'
+          else if (body[0] === 0x47 && body[1] === 0x49) ext = 'gif'
+          else if (body[0] === 0x52 && body[1] === 0x49) ext = 'webp'
+          else if (body[0] === 0x3C) {
+            const head = body.slice(0, 256).toString('utf8')
             if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) ext = 'svg'
           }
           name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
         }
         const filePath = path.join(UPLOAD_DIR, name)
-        fs.writeFileSync(filePath, buf)
-        res.json({ path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` })
+        fs.writeFileSync(filePath, body)
+        res.json({ name, path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` })
       } catch (e) { res.status(500).json({ error: e.message }) }
     })
+  })
+
+  // --- POST /api/unquote-file ---
+  // Tier 2 unquote: runs the text through the same path-detection + upload pipeline as chat(),
+  // patches the stored event, and re-broadcasts so all clients update in-place.
+  // Body: { eventId, path, agentId }
+  router.post('/api/unquote-file', async (req, res) => {
+    const { eventId, path: rawText, agentId } = req.body || {}
+    if (!eventId || !rawText || !agentId) {
+      return res.status(400).json({ error: 'eventId, path, and agentId required' })
+    }
+    const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
+    if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
+
+    const route = resolveRpc('rechat', agent)
+    if (route.via === 'none') return res.status(503).json({ ok: false, error: route.error })
+
+    let result
+    try {
+      result = await sendRpc(route.machine_id, 'rechat', {
+        text: rawText,
+        cwd: agent.cwd,
+        server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
+      })
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message })
+    }
+
+    const { resolvedMessage, inlineAttachments } = result
+
+    // Patch the stored event: replace `rawText` (with or without backticks) in the text,
+    // and merge new inline_attachments into the event's metadata.
+    const evId = parseInt(eventId, 10)
+    const event = fleetStore.getEventById?.(evId)
+    if (event && event.text) {
+      const backtickForms = [`\`${rawText}\``, rawText]
+      let newText = event.text
+      for (const form of backtickForms) {
+        if (newText.includes(form)) {
+          newText = newText.replace(form, resolvedMessage)
+          break
+        }
+      }
+      if (newText !== event.text || inlineAttachments?.length) {
+        // Merge new attachments into existing metadata
+        const existingMeta = event.metadata || {}
+        const existingAtts = existingMeta.inline_attachments || []
+        const mergedAtts = [...existingAtts, ...(inlineAttachments || [])]
+        const newMeta = { ...existingMeta, inline_attachments: mergedAtts }
+        fleetStore.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
+          .run(newText, JSON.stringify(newMeta), evId)
+        broadcastEvent('event-update', { id: evId, text: newText, inline_attachments: mergedAtts })
+      }
+    }
+
+    res.json({ ok: true, resolvedMessage, inlineAttachments: inlineAttachments || [] })
   })
 
   // --- POST /api/fleet-event ---
   router.post('/api/fleet-event', (req, res) => {
     const event = req.body
     if (event && event.type) {
-      if (event.type === 'preamble' && event.macros) {
-        preambleStore[event.target || 'default'] = event.macros
-      }
       broadcastEvent('fleet-event', event)
     }
     res.json({ ok: true })
@@ -623,65 +855,76 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true })
   })
 
-  // --- POST /api/cleanup ---
-  // Same logic as roll-call: aggregate tmux session lists from every
-  // connected daemon, then mark agents dead if they're stale on both
-  // heartbeat AND tmux. An agent whose machine has no daemon connected
-  // is treated as having unknown tmux state — we don't kill it just
-  // because we can't see it.
-  router.post('/api/cleanup', async (req, res) => {
-    try {
-      const agents = fleetStore ? fleetStore.getAllAgents() : []
-      const tasks = fleetStore ? fleetStore.getActiveTasks() : []
-      const ALIVE_MS = 10 * 60 * 1000
-      const now = Date.now()
+  // --- POST /api/mark-event-read ---
+  // Mark a single event read for a recipient. Used by terminal-card
+  // dismissal so the dismissed card doesn't auto-pop again on reload.
+  // Body: { event_id, agent }
+  router.post('/api/mark-event-read', (req, res) => {
+    const { event_id, agent: rawAgent } = req.body || {}
+    if (!event_id || !rawAgent) { res.status(400).json({ error: 'event_id and agent required' }); return }
+    const agent = fleetStore?.findAgent(rawAgent)
+    const agentId = agent?.id || rawAgent
+    const changed = fleetStore?.markEventRead?.(parseInt(event_id, 10), agentId)
+    if (changed) {
+      broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
+    }
+    res.json({ ok: true, changed: !!changed })
+  })
 
-      const tmuxByMachine = new Map()
-      const probes = []
-      for (const [mid] of daemonConnections) {
-        probes.push(
-          sendRpc(mid, 'list-sessions', {}).then(r => {
-            tmuxByMachine.set(mid, new Set((r?.sessions || []).filter(s => s.startsWith('fleet-'))))
-          }).catch(() => { tmuxByMachine.set(mid, null) })
-        )
-      }
-      await Promise.all(probes)
-
-      const removed = [], orphaned = [], deadAgentIds = new Set()
-      for (const a of agents) {
-        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
-        const heartbeatAlive = lastSeenMs < ALIVE_MS
-        let tmuxAlive = false
-        if (a.tmux_session && a.machine_id) {
-          const set = tmuxByMachine.get(a.machine_id)
-          // Unknown (set === null or undefined) → treat as alive to be safe.
-          tmuxAlive = set ? set.has(a.tmux_session) : true
-        }
-        if (!heartbeatAlive && !tmuxAlive && !a.human) {
-          deadAgentIds.add(a.id)
-          removed.push({ id: a.id, name: a.friendly_name || a.name })
-        }
-      }
-      for (const id of deadAgentIds) { if (fleetStore) fleetStore.markDead?.(id) }
-      for (const t of tasks) {
-        if (t.status !== 'done' && !t.synthetic && deadAgentIds.has(t.agent)) {
-          t.status = 'done'; t.completed_at = new Date().toISOString()
-          if (fleetStore) fleetStore.upsertTask(t)
-          orphaned.push({ id: t.id, agent: t.agent, description: t.description })
-        }
-      }
-      broadcastState()
-      res.json({ ok: true, removed_agents: removed, abandoned_tasks: orphaned, remaining_agents: agents.length - removed.length })
-    } catch (e) { res.status(500).json({ error: e.message }) }
+  // --- POST /api/terminal-card ---
+  // Voluntary terminal-card request: an agent asks Skip to look at their
+  // terminal — e.g., "I'm stuck on a permission prompt" or "please paste
+  // this command into my session". The browser-side fleet chat listens for
+  // `terminal_card` events and pops a TerminalCard for `from`.
+  //
+  // The involuntary equivalent is `terminal_attention`, fired by the
+  // attention scanner when the watcher detects a stuck agent without the
+  // agent's involvement. They render the same UI; only the trigger differs.
+  router.post('/api/terminal-card', (req, res) => {
+    const { from: rawFrom, reason } = req.body || {}
+    if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
+    const agent = fleetStore?.findAgent(rawFrom)
+    if (!agent) { res.status(404).json({ error: `Agent not found: "${rawFrom}"` }); return }
+    if (!agent.tmux_session) {
+      res.status(400).json({ error: 'agent has no tmux_session — cannot attach terminal' })
+      return
+    }
+    if (!agent.machine_id) {
+      res.status(400).json({ error: 'agent has no machine_id — fleet daemon not registered' })
+      return
+    }
+    const label = agent.friendly_name || agent.id.slice(0, 12)
+    const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
+    const event = fleetStore?.share({
+      type: 'terminal_card',
+      from: agent.id,
+      to: SERVER_OWNER_ID,
+      text,
+      metadata: JSON.stringify({
+        reason: reason || null,
+        agentId: agent.id,
+        agentLabel: label,
+      }),
+    })
+    broadcastEvent('fleet-event', {
+      type: 'terminal_card',
+      from: agent.id,
+      to: SERVER_OWNER_ID,
+      id: event?.id,
+      event_id: event?.id,
+      text,
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+    })
+    res.json({ ok: true, event_id: event?.id })
   })
 
   // --- POST /api/wiretap ---
   router.post('/api/wiretap', (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
-    const { agent, filter } = req.body || {}
+    const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter)
+    const tap = fleetStore.addWiretap(agent, filter, types)
     res.json(tap)
   })
 

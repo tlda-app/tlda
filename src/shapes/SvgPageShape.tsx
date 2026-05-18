@@ -8,9 +8,11 @@ import {
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { injectSvgFonts } from '../svgFonts'
 import { injectWordSpaces } from '../svgWordSpaces'
-import { subscribeSvgText, getSvgText } from '../stores/svgTextStore'
+import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
-import { getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { anchorIndex, getNavigateToAnchor, getOnSourceClick } from '../stores/anchorIndex'
+import { svgViewBoxStore } from '../stores/svgViewBoxStore'
+import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -25,6 +27,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: 800, h: 1035, pageIndex: 0 }
   }
 
+  override canSelect = () => false
   override canEdit = () => false
   override canResize = () => false
   override isAspectRatioLocked = () => true
@@ -48,6 +51,45 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 const VIEWPORT_BUFFER_PAGES = IS_PHONE ? 4 : 2
 
+// Cache processed SVG HTML (post-fonts + word spaces + link processing) keyed by shape ID.
+// Avoids re-running the expensive injectWordSpaces on scroll-back re-injection.
+const processedSvgCache = new Map<string, { svgText: string; html: string }>()
+
+// Queue injectWordSpaces work one page per idle frame to avoid main-thread freeze on load.
+type WordSpaceJob = () => void
+const wordSpaceQueue: WordSpaceJob[] = []
+let wordSpaceScheduled = false
+
+function enqueueWordSpaces(job: WordSpaceJob) {
+  wordSpaceQueue.push(job)
+  if (!wordSpaceScheduled) {
+    wordSpaceScheduled = true
+    scheduleNextWordSpace()
+  }
+}
+
+function scheduleNextWordSpace() {
+  if (typeof requestIdleCallback !== 'undefined') {
+    requestIdleCallback(drainWordSpaceQueue, { timeout: 1500 })
+  } else {
+    setTimeout(drainWordSpaceQueue, 0)
+  }
+}
+
+function drainWordSpaceQueue() {
+  const job = wordSpaceQueue.shift()
+  if (job) {
+    job()
+    if (wordSpaceQueue.length > 0) {
+      scheduleNextWordSpace()
+    } else {
+      wordSpaceScheduled = false
+    }
+  } else {
+    wordSpaceScheduled = false
+  }
+}
+
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
@@ -59,21 +101,118 @@ function SvgPageComponent({ shape }: { shape: any }) {
     () => getSvgText(shape.id),
   )
 
+  // Auto-fetch SVG for compare pages: compare shapes sync via Yjs but
+  // the SVG text lives in a local JS Map that doesn't sync. Each browser
+  // must independently fetch the SVGs. Detect compare pages by shape ID
+  // and fetch from the shadow cache URL.
+  useEffect(() => {
+    if (svgText) return  // already have it
+    const idStr = shape.id as string
+    if (!idStr.includes('compare-page-')) return  // not a compare page
+    // Extract hash from Yjs signal (stored when compare was triggered)
+    // For now, try fetching from all available shadow caches
+    // The shape's pageIndex tells us which page to fetch (0-based → page-N.svg is 1-based)
+    const pageIdx = shape.props.pageIndex
+    // Read the compare ref from the signal cache
+    const fetchCompare = async () => {
+      try {
+        // Get doc name from URL query param
+        const docName = new URLSearchParams(window.location.search).get('doc') || 'bregman'
+        const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
+        if (!sigRes.ok) return
+        const sig = await sigRes.json()
+        const ref = sig?.data?.ref
+        if (!ref) return
+        const hash7 = ref.slice(0, 7)
+        const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
+        const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
+        const res = await fetch(url)
+        if (!res.ok) return
+        const text = await res.text()
+        setSvgText(shape.id as string, text)
+      } catch {}
+    }
+    fetchCompare()
+  }, [shape.id, shape.props.pageIndex, svgText])
+
   // Track what's currently injected so we skip redundant DOM work
   const injectedRef = useRef<string | null>(null)
   // Cached text element Y-positions for fast tinting (rebuilt on SVG injection)
   const textYCacheRef = useRef<{ el: SVGTextElement; y: number }[]>([])
 
 
-  // Track whether this page is near the viewport (±2 pages buffer)
+  // Track whether this page is near the viewport (±2 pages buffer).
+  // Check both axes — compare columns live at a different X position
+  // and would never render with a vertical-only check.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
-    const margin = shape.props.h * VIEWPORT_BUFFER_PAGES
-    // Simple vertical check — pages are stacked vertically
-    const shapeTop = shape.y
-    const shapeBottom = shape.y + shape.props.h
-    return shapeBottom > viewport.minY - margin && shapeTop < viewport.maxY + margin
-  }, [editor, shape.id, shape.y, shape.props.h])
+    const b = editor.getShapePageBounds(shape.id)
+    if (!b) return false
+    const marginY = b.h * VIEWPORT_BUFFER_PAGES
+    const marginX = b.w * 2
+    return b.x + b.w > viewport.minX - marginX && b.x < viewport.maxX + marginX &&
+           b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
+  }, [editor, shape.id])
+
+  // Fetch SVG when page enters the viewport — handles both initial load and re-entry.
+  // On first entry (no svgText): fetch the SVG.
+  // On re-entry (svgText exists): re-fetch to pick up any builds that happened while off-screen.
+  // Abort in-flight fetches when the page leaves the viewport (prevents backlog on fast scroll).
+  // Skip compare pages — they have their own fetch logic above.
+  const prevIsNearViewportRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    const wasNear = prevIsNearViewportRef.current
+    prevIsNearViewportRef.current = isNearViewport
+
+    // Page left viewport — cancel any in-flight fetch
+    if (!isNearViewport) {
+      if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
+      return
+    }
+
+    // Only act on false→true transitions
+    if (wasNear) return
+
+    const idStr = shape.id as string
+    if (idStr.includes('col-') || idStr.includes('compare-page-')) return
+
+    const docName = new URLSearchParams(window.location.search).get('doc')
+    if (!docName) return
+
+    // Abort previous fetch if still in flight
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const url = getPageUrl(shape.props.pageIndex)
+    if (!url) return
+    fetch(url, { signal: controller.signal }).then(async res => {
+      if (!res.ok) return
+      const newText = await res.text()
+      if (newText !== svgText) setSvgText(shape.id as string, newText)
+      // Populate anchorIndex and viewBox store from <view> elements.
+      // Enables ref-click navigation for pages that haven't been through a reload cycle.
+      const parser = new DOMParser()
+      const svgDoc = parser.parseFromString(newText, 'image/svg+xml')
+      const svgEl = svgDoc.querySelector('svg')
+      if (svgEl) {
+        const vb = svgEl.getAttribute('viewBox')
+        if (vb) {
+          const parts = vb.split(/\s+/).map(Number)
+          if (parts.length === 4) {
+            svgViewBoxStore.set(shape.id as string, { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] })
+          }
+        }
+      }
+      for (const view of svgDoc.querySelectorAll('view')) {
+        const id = view.getAttribute('id')
+        if (id) {
+          anchorIndex.set(id, { pageShapeId: shape.id as string, viewBox: view.getAttribute('viewBox') || undefined })
+        }
+      }
+    }).catch(() => {}) // AbortError is expected when scrolling fast
+  }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
   // Subscribe to change store for THIS shape's highlights only (not all shapes)
   const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])
@@ -102,6 +241,26 @@ function SvgPageComponent({ shape }: { shape: any }) {
     // Already injected this exact content — skip
     if (injectedRef.current === svgText) return
 
+    // Check for cached processed HTML (avoids re-running expensive injectWordSpaces on scroll-back)
+    const cacheEntry = processedSvgCache.get(shape.id)
+    if (cacheEntry && cacheEntry.svgText === svgText) {
+      el.innerHTML = cacheEntry.html
+      injectedRef.current = svgText
+      const svgEl = el.querySelector('svg')
+      if (svgEl) {
+        const textEls = svgEl.querySelectorAll('text')
+        const tCache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
+        for (let i = 0; i < textEls.length; i++) {
+          tCache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
+        }
+        textYCacheRef.current = tCache
+      } else {
+        textYCacheRef.current = []
+      }
+      applyTinting(textYCacheRef.current, highlights)
+      return
+    }
+
     el.innerHTML = svgText
     injectedRef.current = svgText
 
@@ -115,18 +274,27 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     // Inject space characters between positioned SVG text fragments so native
     // browser text selection produces readable text (with word breaks).
-    // Must wait for fonts to load before measuring text widths.
+    // Must wait for fonts to load; queue one page per idle frame to avoid
+    // blocking the main thread when multiple pages load simultaneously.
     if (svgEl) {
       injectSvgFonts(svgEl)
-      document.fonts.ready.then(() => injectWordSpaces(svgEl))
+      const capturedSvgText = svgText
+      document.fonts.ready.then(() => {
+        enqueueWordSpaces(() => {
+          if (!containerRef.current || injectedRef.current !== capturedSvgText) return
+          injectWordSpaces(svgEl)
+          // Cache the fully-processed HTML so scroll-back re-injection is instant
+          processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
+        })
+      })
 
       // Build Y-position cache for fast tinting (avoids querySelectorAll + parseFloat on every highlight change)
       const textEls = svgEl.querySelectorAll('text')
-      const cache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
+      const tCache: { el: SVGTextElement; y: number }[] = new Array(textEls.length)
       for (let i = 0; i < textEls.length; i++) {
-        cache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
+        tCache[i] = { el: textEls[i], y: parseFloat(textEls[i].getAttribute('y') || '0') }
       }
-      textYCacheRef.current = cache
+      textYCacheRef.current = tCache
     } else {
       textYCacheRef.current = []
     }
@@ -148,29 +316,54 @@ function SvgPageComponent({ shape }: { shape: any }) {
       link.removeAttribute('xlink:href')
       link.removeAttribute('href')
       link.style.cursor = 'pointer'
+
+      // Expand hit area: inject a transparent rect with padding so that clicks
+      // near the link text (e.g. on surrounding brackets or whitespace) still fire.
+      // SVG <text> elements have no padding — without this, the clickable area is
+      // exactly the glyph bounding box, making precise clicking necessary.
+      const svgElForLink = link.closest('svg')
+      if (svgElForLink && link.childElementCount > 0) {
+        try {
+          const bbox = (link as unknown as SVGAElement).getBBox()
+          if (bbox.width > 0 && bbox.height > 0) {
+            const pad = 4
+            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+            rect.setAttribute('x', String(bbox.x - pad))
+            rect.setAttribute('y', String(bbox.y - pad))
+            rect.setAttribute('width', String(bbox.width + pad * 2))
+            rect.setAttribute('height', String(bbox.height + pad * 2))
+            rect.setAttribute('fill', 'transparent')
+            rect.setAttribute('pointer-events', 'all')
+            link.insertBefore(rect, link.firstChild)
+          }
+        } catch { /* getBBox may fail for off-screen elements */ }
+      }
     }
 
     // Apply any pending tint highlights
     applyTinting(textYCacheRef.current, highlights)
   }, [isNearViewport, svgText])
 
-  // Click handler — stable, doesn't depend on SVG content
+  // Pointer/click handlers — stable, don't depend on SVG content
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
-    const onClick = (e: MouseEvent) => {
-      // Cmd-click: open source in editor
+    // Cmd-click: open source in editor.
+    // Must use pointerdown — TLDraw swallows click events before they reach inner divs.
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.metaKey) return
       const onSourceClick = getOnSourceClick()
-      if (e.metaKey && onSourceClick) {
-        e.preventDefault()
-        e.stopPropagation()
-        const rect = el.getBoundingClientRect()
-        const clickY = (e.clientY - rect.top) / rect.height
-        onSourceClick(shape.id, clickY)
-        return
-      }
+      if (!onSourceClick) return
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const clickY = (e.clientY - rect.top) / rect.height
+      onSourceClick(shape.id, clickY)
+    }
 
+    // Anchor navigation (links inside the SVG) — click events do reach via link targets.
+    const onClick = (e: MouseEvent) => {
+      if (e.metaKey) return
       const target = (e.target as Element).closest('a')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
@@ -182,8 +375,13 @@ function SvgPageComponent({ shape }: { shape: any }) {
         navigateToAnchor(anchorId, title)
       }
     }
+
+    el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('click', onClick)
-    return () => { el.removeEventListener('click', onClick) }
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('click', onClick)
+    }
   }, [shape.id])
 
   // Apply text tinting when highlights change (and SVG is injected)
@@ -199,7 +397,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           style={{
             width: shape.props.w,
             height: shape.props.h,
-            overflow: 'visible',
+            overflow: 'hidden',
             pointerEvents: 'all',
           }}
         >

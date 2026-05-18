@@ -4,8 +4,10 @@ import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDo
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
+import { IdentityPicker } from './IdentityPicker'
 import type { BookMember } from './BookContext'
 import './App.css'
+import './themes.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
@@ -52,6 +54,8 @@ interface DocConfig {
   sourceDoc?: string
   members?: string[]
   buildStatus?: string
+  autoSync?: boolean
+  targets?: { texBase: string; mainFile: string; pages: number }[]
 }
 
 type SvgDoc = Awaited<ReturnType<typeof loadSvgDocument>>
@@ -308,8 +312,15 @@ function App() {
         const urls = Array.from({ length: pageCount }, (_, i) => makeUrl(i + 1))
         document = await loadImageDocument(config.name, urls, fullBasePath)
       } else {
-        // SVG: create layout immediately, pages fetched async after editor mounts
-        document = createSvgDocumentLayout(docName, config.pages, fullBasePath)
+        // SVG: create layout immediately, pages fetched async after editor mounts.
+        // targets[] always present from API; map to TargetInfo for the layout.
+        const targets = config.targets?.map(t => ({
+          name: t.texBase,
+          title: t.texBase.replace(/_/g, ' '),
+          pages: t.pages,
+          basePath: fullBasePath,
+        }))
+        document = createSvgDocumentLayout(docName, config.pages, fullBasePath, targets)
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
@@ -374,7 +385,7 @@ function App() {
   }
 
   if (!state) {
-    return <div className="App loading">Loading...</div>
+    return <><IdentityPicker /><div className="App loading">Loading...</div></>
   }
 
   switch (state.phase) {
@@ -406,6 +417,7 @@ function App() {
     case 'picker':
       return (
         <div className="App">
+          <IdentityPicker />
           <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
             const newUrl = new URL(window.location.href)
             newUrl.searchParams.set('doc', key)
@@ -427,6 +439,7 @@ function App() {
     case 'svg':
       return (
         <div className="App">
+          <IdentityPicker />
           <ErrorBoundary>
             <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>
@@ -523,6 +536,23 @@ function DocumentPicker({ manifest, onSelect }: {
   const sortIndicator = (key: SortKey) =>
     sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''
 
+  const toggleAutoSync = (key: string, current: boolean, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newVal = !current
+    // Optimistic update
+    if (manifest[key]) manifest[key].autoSync = newVal
+    setSearch(s => s) // force re-render
+    fetch(`${ASSET_BASE}/api/projects/${key}/auto-sync`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoSync: newVal }),
+    }).catch(() => {
+      // Revert on failure
+      if (manifest[key]) manifest[key].autoSync = current
+      setSearch(s => s)
+    })
+  }
+
   const archiveProject = (key: string, e: React.MouseEvent) => {
     e.stopPropagation()
     setHiddenKeys(prev => new Set(prev).add(key))
@@ -562,6 +592,7 @@ function DocumentPicker({ manifest, onSelect }: {
             <th onClick={() => toggleSort('name')}>Document{sortIndicator('name')}</th>
             <th onClick={() => toggleSort('lastBuild')}>Last build{sortIndicator('lastBuild')}</th>
             <th onClick={() => toggleSort('lastAnnotated')}>Last annotated{sortIndicator('lastAnnotated')}</th>
+            <th className="picker-sync-header" title="Git mirror sync">Sync</th>
             <th></th>
           </tr>
         </thead>
@@ -578,6 +609,15 @@ function DocumentPicker({ manifest, onSelect }: {
                 </td>
                 <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
                 <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
+                <td className="picker-sync" onClick={e => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={config.autoSync !== false}
+                    onChange={() => {}}
+                    onClick={(e) => toggleAutoSync(key, config.autoSync !== false, e as unknown as React.MouseEvent)}
+                    title="Git mirror sync"
+                  />
+                </td>
                 <td className="picker-archive">
                   <button
                     className="archive-btn"

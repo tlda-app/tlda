@@ -1,0 +1,20 @@
+{
+  "targets": {
+    "default": {
+      "sync": "wss://tldraw-sync-skip.fly.dev",
+      "repo": null,
+      "fly": true
+    },
+    "live": {
+      "sync": "wss://davids-macbook-air-2.tail2d0951.ts.net",
+      "repo": "git@github.com:qtm285/tlda-live.git",
+      "fly": false,
+      "basePath": "/tlda-live/",
+      "url": "https://qtm285.github.io/tlda-live/"
+    }
+  },
+  "published": "spinoff3,qtm285,swissrollera,markdown-demo,bregman,imagined-rand",
+  "tokenRead": "15fc7709df6bf2f804c7e3d75ab8b34a",
+  "tokenRw": "c5e4726ab77972fc7312f3a703f9cf1c",
+  "token": "c5e4726ab77972fc7312f3a703f9cf1c"
+}

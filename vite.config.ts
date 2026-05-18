@@ -43,40 +43,41 @@ export default defineConfig({
       ignored: ['**/fleet/dashboard/**'],
     },
     proxy: {
-      // Fleet WebSocket endpoints
+      // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
-        target: 'ws://localhost:5199',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
       '/ws/terminal': {
-        target: 'ws://localhost:5199',
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
       },
-      // tlda-specific API routes → tlda server
-      '/api/projects': 'http://localhost:5176',
-      '/api/auth': 'http://localhost:5176',
-      '/api/recognize': 'http://localhost:5176',
-      '/api/local-image': 'http://localhost:5176',
-      // Remaining /api/* → fleet server (state, chat, activity, etc.)
-      '/api': 'http://localhost:5199',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      // Yjs sync WebSocket
+      '/sync': {
+        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        ws: true,
+      },
+      // All API routes → unified server
+      '/api': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/docs': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/health': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
     },
   },
   preview: {
     host: true,
     port: 5179,
     proxy: {
-      '/ws/fleet': { target: 'ws://localhost:5199', ws: true },
-      '/ws/terminal': { target: 'ws://localhost:5199', ws: true },
-      '/api/projects': 'http://localhost:5176',
-      '/api/auth': 'http://localhost:5176',
-      '/api/recognize': 'http://localhost:5176',
-      '/api/local-image': 'http://localhost:5176',
-      '/api': 'http://localhost:5199',
+      '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
+      '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
+      '/sync': { target: 'ws://localhost:5176', ws: true },
+      '/api': 'http://localhost:5176',
       '/docs': 'http://localhost:5176',
       '/health': 'http://localhost:5176',
     },
+  },
+  define: {
+    USE_SERVER: false,
+    SYNCTEX_SERVER: JSON.stringify(''),
   },
   optimizeDeps: {
     exclude: ['pdfjs-dist'],

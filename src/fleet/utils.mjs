@@ -1,4 +1,7 @@
-import { getAgents, getAgent, getPreambleMacros } from './fleet-data.mjs'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
+import { getAgents, getAgent } from './fleet-data.mjs'
+import { getActiveMacros } from '../katexMacros'
 import { myTldaUrl, isTldaUrl } from './tldaUrl.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
@@ -123,6 +126,8 @@ export function renderAgentPill(agentId, opts = {}) {
 export function agentMatchesDnf(dnf, agent) {
   if (!dnf || dnf.length === 0) return true
   const labels = [...(agent.labels || [])]
+  if (agent.status === 'awake') labels.push('awake')
+  else if (agent.status === 'hibernating') labels.push('hibernating')
   if (agent.friendly_name) labels.push(agent.friendly_name)
   if (agent.id) labels.push(agent.id)
   // Terms are [role, label] tuples or plain strings
@@ -271,7 +276,7 @@ export function renderMarkdownLine(line) {
 }
 
 // --- Full markdown renderer (marked + DOMPurify with fleet extensions) ---
-export function renderMarkdown(html) {
+export function renderMarkdown(html, extraMacros) {
   // Input arrives esc()'d — unescape back to raw markdown for marked
   let text = html
     .replace(/&amp;/g, '&')
@@ -302,7 +307,7 @@ export function renderMarkdown(html) {
     const highlighted = (!shouldFold && lang) ? highlightSyntax(code, lang) : esc(code)
     const langLabel = (lang || langHint)
 
-    const header = `<div class="code-block-header" draggable="true">`
+    const header = `<div class="code-block-header"><span class="drag-handle" title="Drag"></span>`
       + (langLabel ? `<span class="code-block-lang">${esc(langLabel)}</span>` : '')
       + (shouldFold ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code'),t=e;if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');t.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');t.textContent='${lineCount} lines — show all'}})(this)">${lineCount} lines — show all</span>` : '')
       + `<span class="code-block-copy" title="Copy">⎘</span>`
@@ -312,15 +317,20 @@ export function renderMarkdown(html) {
     return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX preamble macros — set by agents via set_preamble(), delivered via SSE
-  const preambleMacros = getPreambleMacros()
-  const katexOpts = (displayMode) => ({ displayMode, throwOnError: false, strict: false, macros: { ...preambleMacros } })
+  // KaTeX macros — always start from getActiveMacros() (which includes defaultMacros),
+  // then merge project-specific extraMacros on top so they can override but defaults
+  // (like \griesz) are always available regardless of which doc is loaded.
+  const preambleMacros = { ...getActiveMacros(), ...(extraMacros || {}) }
+  // throwOnError: true so unparseable LaTeX falls through to the catch and
+  // renders as raw escaped text. With throwOnError: false KaTeX returns its
+  // own giant error-HTML structure, which we don't want dumped into chat.
+  const katexOpts = (displayMode) => ({ displayMode, throwOnError: true, strict: false, macros: { ...preambleMacros } })
 
   // Display math: $$...$$
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
     let rendered
     try {
-      if (typeof katex !== 'undefined') rendered = katex.renderToString(tex.trim(), katexOpts(true))
+      rendered = katex.renderToString(tex.trim(), katexOpts(true))
     } catch {}
     return ph(rendered || `<div class="math-display">${esc(tex)}</div>`, true)
   })
@@ -329,7 +339,7 @@ export function renderMarkdown(html) {
   text = text.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex) => {
     let rendered
     try {
-      if (typeof katex !== 'undefined') rendered = katex.renderToString(tex.trim(), katexOpts(false))
+      rendered = katex.renderToString(tex.trim(), katexOpts(false))
     } catch {}
     return ph(rendered || `<span class="math-inline">${esc(tex)}</span>`)
   })
@@ -432,20 +442,17 @@ export function renderMarkdown(html) {
   result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
 
   // File paths: shorten absolute paths + render relative .md paths as scratch cards
-  // First pass: replace <code>relative/path.md</code> with scratch card
-  result = result.replace(/<code>([^<]*?(?:scratch\/|[\w/._-]+\.md))<\/code>/g, (full, path) => {
-    if (/^[\w/._-]+\.md$/.test(path)) {
-      const name = path.split('/').pop()
-      const isScratch = /scratch\//.test(path)
-      const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-      const drag = isScratch ? ' draggable="true"' : ''
-      return `<span class="${cls}" data-path="${path}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-    }
-    return full
-  })
-  // Second pass: absolute and relative paths in text (skip inside HTML tags)
+  // Backtick-quoted content (<code> spans) is verbatim — never chipify it.
+  // Prose paths (unquoted text) are handled: absolute paths shortened, relative .md paths chipped.
+  // Second pass: absolute and relative paths in text (skip inside HTML tags and code/pre)
+  let _inCode2 = 0
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) return segment
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) _inCode2++
+      else if (/^<\/(code|pre)>/i.test(segment)) _inCode2 = Math.max(0, _inCode2 - 1)
+      return segment
+    }
+    if (_inCode2 > 0) return segment
     // Absolute paths
     segment = segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
       if (fullPath.endsWith('.md')) {
@@ -500,10 +507,7 @@ export function renderMarkdown(html) {
   })
 
   // Linkify bare URLs not already inside <a> tags
-  // Also convert <code>URL</code> into clickable links
-  result = result.replace(/<code>(https?:\/\/[^<]+)<\/code>/g, (_, url) => {
-    return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
-  })
+  // Backtick-quoted URLs (<code>https://...</code>) are intentionally left as code spans.
   // Bare URLs in text (not inside tags, not already linked)
   let _inTag = false
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {

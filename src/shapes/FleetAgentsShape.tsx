@@ -12,13 +12,14 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  useValue,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, searchFleet, respawnAgent, spawnAgent } from '../fleet-data-adapter'
-import { dropPillOnTarget, computeDropSlot, dropGhostState, dropGhostBus } from './FleetPillShape'
+import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, killSession, spawnAgent } from '../fleet-data-adapter'
+import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
-import { toggleLayoutMode, useLayoutMode } from './HudLayoutMode'
+import { useIsInViewport } from './useIsInViewport'
 
 
 const DEFAULT_W = 340
@@ -47,49 +48,21 @@ function labelColor(name: string): string {
   return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
 }
 
-// --- Service health polling ---
-interface ServiceHealth {
-  tlda: { ok: boolean; uptime?: number }
-  fleet: { ok: boolean; error?: string | null; uptime?: number }
-  sync: { ok: boolean }
+type SortKey = 'active' | 'name' | 'status'
+
+function agentCategory(agent: any): 'awake' | 'hibernating' {
+  return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
-function useServiceHealth(): ServiceHealth | null {
-  const [health, setHealth] = useState<ServiceHealth | null>(null)
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval>
-    let mounted = true
-
-    async function check() {
-      try {
-        const r = await fetch('/health/services', { signal: AbortSignal.timeout(3000) })
-        if (r.ok && mounted) setHealth(await r.json())
-        else if (mounted) setHealth({ tlda: { ok: true }, fleet: { ok: false, error: 'HTTP ' + r.status }, sync: { ok: true } })
-      } catch {
-        // If we can't reach /health/services, the tlda server itself is down
-        if (mounted) setHealth({ tlda: { ok: false }, fleet: { ok: false, error: 'unreachable' }, sync: { ok: false } })
-      }
-    }
-
-    check()
-    timer = setInterval(check, 15_000) // poll every 15s
-    return () => { mounted = false; clearInterval(timer) }
-  }, [])
-
-  return health
+function formatModel(model: string | null | undefined): string {
+  if (!model) return ''
+  const m = model.match(/claude-(\w+)-(\d+)-(\d+)/)
+  if (!m) return model.replace('claude-', '')
+  return `${m[1]}${m[2]}${m[3]}`
 }
 
-type SortKey = 'seen' | 'name' | 'status'
-
-const STALE_THRESHOLD = 600_000  // 10 minutes
-
-function agentCategory(agent: any): 'alive' | 'stale' | 'dead' {
-  if (agent.dead) return 'dead'
-  if (agent.human) return 'dead'
-  const ts = agent.last_seen ? new Date(agent.last_seen).getTime() : 0
-  if (Date.now() - ts > STALE_THRESHOLD) return 'stale'
-  return 'alive'
+function formatEffort(effort: string): string {
+  return `${effort} effort`
 }
 
 
@@ -217,20 +190,6 @@ function usePillDrag() {
               y: pagePos.y - ph / 2,
             })
           }, { history: 'ignore' })
-          const mainEditor = (window as any).__tldraw_editor__
-          const targetEditor = mainEditor || editor
-          const slot = computeDropSlot(targetEditor, null, pagePos.x, pagePos.y)
-          dropGhostState.slot = slot
-          // Pre-compute screen coords using the HUD editor's camera so
-          // FleetDropGhost doesn't use the main editor's camera (wrong viewport).
-          if (slot) {
-            const tl = editor.pageToScreen({ x: slot.x, y: slot.y })
-            const br = editor.pageToScreen({ x: slot.x + slot.w, y: slot.y + slot.h })
-            dropGhostState.screenRect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
-          } else {
-            dropGhostState.screenRect = null
-          }
-          dropGhostBus.dispatchEvent(new CustomEvent('change'))
         }
       },
       // onUp
@@ -238,10 +197,6 @@ function usePillDrag() {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
-
-        dropGhostState.slot = null
-        dropGhostState.screenRect = null
-        dropGhostBus.dispatchEvent(new CustomEvent('change'))
 
         const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
@@ -262,6 +217,8 @@ const lastMessageCache = new Map<string, { text: string; ts: number; fetched: nu
 async function fetchLastMessage(agentName: string): Promise<{ text: string; ts: number } | null> {
   const cached = lastMessageCache.get(agentName)
   if (cached && Date.now() - cached.fetched < 30_000) return cached
+  // /api/logs/search doesn't exist on the unified server yet — skip to avoid 404 spam
+  return null
   try {
     // Search for the agent name — the API does FTS, then we filter client-side
     const results = await searchFleet(agentName, 20)
@@ -304,17 +261,58 @@ function useLastMessages(agents: any[]): Record<string, string> {
   return messages
 }
 
-function FleetAgentsComponent({ shape }: { shape: any }) {
+function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const layoutMode = useLayoutMode()
   const { w, h } = shape.props
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+
+  // Capture-phase pointerdown: fires before tldraw's tl-container listener
+  // can intercept. Marks non-drag clicks as handled so tldraw skips
+  // setPointerCapture (which would steal the event from shape content).
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      // If shape is selected for drag/resize, let tldraw handle everything
+      if (isSelectedRef.current) return
+      // Let pill-drag elements handle their own events (they call stopEventPropagation)
+      const isDraggable = target.closest('.fleet-agents-pill, .fleet-agents-label-chip')
+      if (isDraggable) return
+      // Mark handled on BOTH this editor and the main editor — each editor
+      // tracks handled events independently, and the main editor's capture
+      // listener fires before the overlay editor's (higher in DOM tree).
+      editor.markEventAsHandled(e)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
+
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('seen')
+  const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
+
+  // Spawn: project selector. Default to current doc, dropdown shows all projects.
+  const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
+  const [spawnDoc, setSpawnDoc] = useState(currentDoc)
+  const [projectList, setProjectList] = useState<string[]>([])
+  const [showSpawnPicker, setShowSpawnPicker] = useState(false)
+  useEffect(() => {
+    if (!showSpawnPicker) return
+    fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
+      const projects = Array.isArray(data) ? data : (data.projects || [])
+      setProjectList(projects.map((p: any) => p.name).sort())
+    }).catch(() => {})
+  }, [showSpawnPicker])
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -332,43 +330,36 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
-  // Categorize and sort agents — stale agents are inline, not collapsed
-  const { activeAgents, deadAgents } = useMemo(() => {
-    const active: any[] = []
-    const dead: any[] = []
+  // Flat sorted agent list — all non-human, non-dead agents
+  const sortedAgents = useMemo(() => {
+    const list: any[] = []
     for (const a of agents) {
-      if (a.human) continue
-      const ts = a.last_seen ? new Date(a.last_seen).getTime() : 0
-      const enriched = { ...a, _ts: ts }
-      const cat = agentCategory(a)
-      if (cat === 'dead') dead.push(enriched)
-      else active.push(enriched) // alive + stale together
+      if (a.human || a.dead) continue
+      const ts = a.last_active ? new Date(a.last_active).getTime() : 0
+      list.push({ ...a, _ts: ts })
     }
     const dir = sortAsc ? 1 : -1
-    const sortFn = (a: any, b: any) => {
+    list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
-        const order = { alive: 0, stale: 1, dead: 2 }
-        const ca = order[agentCategory(a) as keyof typeof order] ?? 1
-        const cb = order[agentCategory(b) as keyof typeof order] ?? 1
+        const order = { awake: 0, hibernating: 1 }
+        const ca = order[agentCategory(a)] ?? 1
+        const cb = order[agentCategory(b)] ?? 1
         return dir * (ca - cb) || b._ts - a._ts
       }
-      return dir * (b._ts - a._ts) // 'seen' — most recent first (default desc)
-    }
-    active.sort(sortFn)
-    dead.sort((a: any, b: any) => b._ts - a._ts)
-    return { activeAgents: active, deadAgents: dead }
+      return dir * (a._ts - b._ts)
+    })
+    return list
   }, [agents, sortKey, sortAsc])
 
-  const staleCount = useMemo(() => activeAgents.filter(a => agentCategory(a) === 'stale').length, [activeAgents])
-  const aliveCount = activeAgents.length - staleCount
+  const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
+  const awakeCount = sortedAgents.length - hibernatingCount
 
   // Fetch last messages for visible agents
-  const lastMessages = useLastMessages(activeAgents)
+  const lastMessages = useLastMessages(sortedAgents)
 
-  const [showDead, setShowDead] = useState(false)
   const unreadCounts = useFleetUnreadCounts()
-  const serviceHealth = useServiceHealth()
+  const contextPercent = useFleetContext(null, frameId)
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -386,11 +377,12 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: layoutMode ? 'none' : 'all',
+        pointerEvents: 'all',
         overflow: 'hidden',
       }}
     >
       <div
+        ref={containerRef}
         className="fleet-shape fleet-agents-shape"
         style={{
           width: '100%',
@@ -416,12 +408,13 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
             ×
           </button>
           <button
-            className={`fleet-layout-btn${layoutMode ? ' active' : ''}`}
+            className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
-              toggleLayoutMode(editor)
+              editor.setCurrentTool('select')
+              editor.select(shape.id)
             }}
-            title={layoutMode ? 'Exit layout mode' : 'Enter layout mode'}
+            title="Resize / move"
           >
             ⊞
           </button>
@@ -433,14 +426,16 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           onPointerDown={(e) => stopEventPropagation(e)}
         >
           <span className="fleet-agents-unread-dot" />
+          <span style={{ width: 18, flexShrink: 0 }} />
           <span className="fleet-agents-col-name fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'name') setSortAsc(p => !p); else { setSortKey('name'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
           >Agent {sortKey === 'name' ? (sortAsc ? '▴' : '▾') : ''}</span>
           <span className="fleet-agents-col-seen fleet-agents-sort-header"
-            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'seen') setSortAsc(p => !p); else { setSortKey('seen'); setSortAsc(false) } }}
+            onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'active') setSortAsc(p => !p); else { setSortKey('active'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
-          >Seen {sortKey === 'seen' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          >Active {sortKey === 'active' ? (sortAsc ? '▴' : '▾') : ''}</span>
+          <span className="fleet-agents-col-ctx">Ctx</span>
           <span className="fleet-agents-col-task fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'status') setSortAsc(p => !p); else { setSortKey('status'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -448,91 +443,76 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
           <span className="fleet-agents-col-labels">Labels</span>
         </div>
 
-        {/* Agent rows — scrollable. Alive + stale inline, only dead collapses */}
+        {/* Agent rows — scrollable flat list */}
         <div className="fleet-agents-body">
-          {activeAgents.length === 0 && deadAgents.length === 0 ? (
+          {sortedAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
-          ) : (
-            <>
-              {activeAgents.map((agent: any) => {
-                const isStale = agentCategory(agent) === 'stale'
-                return (
-                  <AgentRow
-                    key={agent.id}
-                    agent={agent}
-                    tasks={getTasksForAgent(agent.id)}
-                    unreadCount={unreadCounts[agent.id] || 0}
-                    dimmed={isStale}
-                    canRespawn={isStale}
-                    expanded={expandedId === agent.id}
-                    lastMessage={lastMessages[agentDisplayName(agent)] || ''}
-                    onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
-                    onStartDrag={startDrag}
-                  />
-                )
-              })}
-
-              {deadAgents.length > 0 && (
-                <>
-                  <div
-                    className="fleet-agents-section-header"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => {
-                      e.stopPropagation()
-                      setShowDead(!showDead)
-                    }}
-                  >
-                    <span className="fleet-agents-section-toggle">
-                      {showDead ? '▾' : '▸'}
-                    </span>
-                    <span>dead</span>
-                    <span className="fleet-agents-section-count">({deadAgents.length})</span>
-                  </div>
-                  {showDead && deadAgents.map((agent: any) => (
-                    <AgentRow
-                      key={agent.id}
-                      agent={agent}
-                      tasks={getTasksForAgent(agent.id)}
-                      unreadCount={unreadCounts[agent.id] || 0}
-                      dimmed
-                      canRespawn
-                      expanded={expandedId === agent.id}
-                      lastMessage=""
-                      onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
-                      onStartDrag={startDrag}
-                    />
-                  ))}
-                </>
-              )}
-            </>
-          )}
+          ) : sortedAgents.map((agent: any) => (
+            <AgentRow
+              key={agent.id}
+              agent={agent}
+              tasks={getTasksForAgent(agent.id)}
+              unreadCount={unreadCounts[agent.id] || 0}
+              contextPct={contextPercent.get(agent.id)}
+              dimmed={agentCategory(agent) === 'hibernating'}
+              expanded={expandedId === agent.id}
+              lastMessage={lastMessages[agentDisplayName(agent)] || ''}
+              onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
+              onStartDrag={startDrag}
+            />
+          ))}
         </div>
-
-        {/* Service health dots */}
-        {serviceHealth && (
-          <div className="fleet-agents-health">
-            <HealthDot ok={serviceHealth.tlda.ok} label="tlda" />
-            <HealthDot ok={serviceHealth.fleet.ok} label="fleet" detail={serviceHealth.fleet.error} />
-            <HealthDot ok={serviceHealth.sync.ok} label="sync" />
-          </div>
-        )}
 
         {/* Footer */}
         <div className="fleet-agents-footer">
           <span>
-            {aliveCount} online
-            {staleCount > 0 && <span style={{ marginLeft: 6 }}>· {staleCount} stale</span>}
+            <span
+              style={{ cursor: 'grab' }}
+              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', labelColor('awake')) }}
+            >{awakeCount} awake</span>
+            {hibernatingCount > 0 && (
+              <span style={{ marginLeft: 6 }}>·{' '}
+                <span
+                  style={{ cursor: 'grab' }}
+                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'hibernating', 'hibernating', labelColor('hibernating')) }}
+                >{hibernatingCount} hibernating</span>
+              </span>
+            )}
           </span>
           <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
+            {showSpawnPicker && (
+              <span className="fleet-agents-spawn-search-wrap">
+                <input
+                  className="fleet-agents-spawn-search"
+                  value={spawnDoc}
+                  onChange={(e) => setSpawnDoc(e.target.value)}
+                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setShowSpawnPicker(false) }}
+                  placeholder="project"
+                  autoFocus
+                  list="spawn-projects"
+                />
+                <datalist id="spawn-projects">
+                  {projectList.map(p =>
+                    <option key={p} value={p} />
+                  )}
+                </datalist>
+              </span>
+            )}
             <button
               className="fleet-agents-spawn-btn"
-              title="Spawn Sonnet agent"
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6') }}
+              title={showSpawnPicker ? 'Hide project picker' : `Spawning in: ${spawnDoc || '(none)'}`}
+              onPointerUp={(e) => { e.stopPropagation(); setShowSpawnPicker(v => !v) }}
+              style={{ opacity: showSpawnPicker ? 0.8 : undefined }}
+            >📂</button>
+            <button
+              className="fleet-agents-spawn-btn"
+              title={`Spawn Sonnet in ${spawnDoc || 'default dir'}`}
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-sonnet-4-6', spawnDoc || undefined) }}
             >+S</button>
             <button
               className="fleet-agents-spawn-btn"
-              title="Spawn Opus agent"
-              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6') }}
+              title={`Spawn Opus in ${spawnDoc || 'default dir'}`}
+              onPointerUp={(e) => { e.stopPropagation(); spawnAgent('claude-opus-4-6', spawnDoc || undefined) }}
             >+O</button>
           </span>
         </div>
@@ -541,21 +521,21 @@ function FleetAgentsComponent({ shape }: { shape: any }) {
   )
 }
 
-function HealthDot({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
-  return (
-    <span className="fleet-health-dot-item" title={ok ? `${label}: ok` : `${label}: ${detail || 'down'}`}>
-      <span className={`fleet-health-indicator ${ok ? 'ok' : 'down'}`} />
-      <span className="fleet-health-label">{label}</span>
-    </span>
-  )
-}
+const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { shape: any }) {
+  const { w, h } = shape.props as { w: number; h: number }
+  const isInViewport = useIsInViewport(shape.id)
+  if (!isInViewport) {
+    return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
+  }
+  return <FleetAgentsInner shape={shape} />
+}, (prev, next) => prev.shape.props === next.shape.props)
 
 function AgentRow({
   agent,
   tasks,
   dimmed,
-  canRespawn,
   unreadCount,
+  contextPct,
   expanded,
   lastMessage,
   onToggleExpand,
@@ -564,8 +544,8 @@ function AgentRow({
   agent: any
   tasks: any[]
   dimmed?: boolean
-  canRespawn?: boolean
   unreadCount: number
+  contextPct?: number
   expanded: boolean
   lastMessage: string
   onToggleExpand: () => void
@@ -577,13 +557,16 @@ function AgentRow({
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)
+  const meta = agent.metadata || {}
+  const modelStr = formatModel(meta.model)
+  const effortStr = meta.effort ? formatEffort(meta.effort) : ''
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const nameOpacity = agent.dead ? 0.4 : secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
+  const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
 
   return (
     <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
-      {/* Line 1: compact row. Click anywhere to expand (name + labels are draggable, respawn is its own action) */}
+      {/* Line 1: compact row */}
       <div
         className="fleet-agents-row-main"
         onPointerDown={(e) => stopEventPropagation(e)}
@@ -594,9 +577,19 @@ function AgentRow({
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
-        {/* Agent name — draggable (drag to create pill filter). Stops row click via onStartDrag's stopEventPropagation */}
+        {/* Kill button — shown on hover */}
         <span
-          className={`fleet-agents-col-name fleet-agents-pill`}
+          className="fleet-agents-kill-btn"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => { e.stopPropagation(); killSession(agent.id) }}
+          title="Kill agent session"
+        >
+          ×
+        </span>
+
+        {/* Agent name — draggable */}
+        <span
+          className="fleet-agents-col-name fleet-agents-pill"
           style={{ color, opacity: nameOpacity }}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
         >
@@ -605,21 +598,16 @@ function AgentRow({
 
         <span className="fleet-agents-col-seen">{ago}</span>
 
+        <span
+          className="fleet-agents-col-ctx"
+          style={contextPct != null ? { color: contextPct <= 15 ? '#e57373' : contextPct <= 30 ? '#ffb74d' : '#81c784' } : undefined}
+        >
+          {contextPct != null ? `${contextPct}%` : ''}
+        </span>
+
         <span className="fleet-agents-col-task" title={taskDesc}>
           {taskDesc ? taskDesc.substring(0, 50) : ''}
         </span>
-
-        {/* Respawn button — its own action, not expand */}
-        {canRespawn && (
-          <span
-            className="fleet-agents-respawn-btn"
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerUp={(e) => { e.stopPropagation(); respawnAgent(agent.id) }}
-            title="Respawn agent"
-          >
-            ⟳
-          </span>
-        )}
 
         {/* Labels — draggable chips */}
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
@@ -636,12 +624,19 @@ function AgentRow({
         </span>
       </div>
 
-      {/* Expanded detail: all tasks + last message */}
+      {/* Expanded detail: first task inline with model/effort, remaining tasks, last message */}
       {expanded && (
         <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
-          {tasks.length === 0 ? (
-            <div className="fleet-agents-detail-task">(no task)</div>
-          ) : tasks.map((t: any, i: number) => (
+          <div className="fleet-agents-detail-task fleet-agents-detail-firstrow">
+            {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
+            {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
+            <span>
+              {tasks.length === 0
+                ? '(no task)'
+                : tasks[0].title || tasks[0].description || '(untitled task)'}
+            </span>
+          </div>
+          {tasks.slice(1).map((t: any, i: number) => (
             <div key={t.id || i} className="fleet-agents-detail-task">
               {t.title || t.description || '(untitled task)'}
             </div>

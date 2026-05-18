@@ -4,15 +4,16 @@ import { useEditor, useValue } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
-import { DocContext, PanelContext, type PanelContextValue } from '../PanelContext'
+import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
+import { THEME_FAMILY } from '../hooks/useFleetTheme'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { createFleetLayout } from '../shapes/fleet-utils'
+import { createFleetLayout, forceDeleteShapes } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -56,10 +57,10 @@ export function TocTab() {
     return best
   }, [book])
 
-  // Re-fetch TOC when reload signal arrives
+  // Re-fetch TOC when reload signal arrives (partial or full — lookup.json is always regenerated)
   useEffect(() => {
-    return onReloadSignal((signal) => {
-      if (signal.type === 'full' && doc) {
+    return onReloadSignal((_signal) => {
+      if (doc) {
         clearLookupCache(doc.docName)
         setReloadCount(c => c + 1)
       }
@@ -78,32 +79,83 @@ export function TocTab() {
         .catch(() => {})
       return
     }
-    loadLookup(doc.docName).then(data => {
-      if (data) {
-        const h = parseHeadings(data.lines, data.meta)
-        setHeadings(h)
-        // Fold all headings that have children by default
-        setCollapsed(computeDefaultFolded(h))
-      } else {
-        // Fallback: try HTML TOC
-        loadHtmlToc(doc!.docName).then(toc => {
-          if (toc) {
-            setHtmlToc(toc)
-            setCollapsed(computeDefaultFolded(toc))
+    const targets = doc.targets
+    if (targets && targets.length > 1) {
+      // Multi-target: load each target's lookup, merge with dividers
+      let pageOffset = 0
+      Promise.all(targets.map(async (t) => {
+        const resp = await fetch(`/docs/${doc.docName}/${t.name}-lookup.json`).catch(() => null)
+        if (!resp?.ok) return { target: t, headings: [] as TocEntry[], pageOffset }
+        const data = await resp.json()
+        const h = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })
+        // Offset page numbers by pages from previous targets
+        for (const entry of h) {
+          entry.entry = { ...entry.entry, page: entry.entry.page + pageOffset }
+        }
+        const result = { target: t, headings: h, pageOffset }
+        pageOffset += t.pages
+        return result
+      })).then(results => {
+        const merged: TocEntry[] = []
+        for (const r of results) {
+          if (r.headings.length > 0 || results.indexOf(r) > 0) {
+            // Add target divider (skip for first target if it has no special label)
+            const isFirst = results.indexOf(r) === 0
+            if (!isFirst) {
+              const firstEntry = r.headings[0]?.entry || { page: r.pageOffset + 1, x: 0, y: 0, content: '' }
+              merged.push({
+                level: 'divider',
+                title: r.target.title || r.target.name,
+                line: -1,
+                entry: firstEntry,
+              })
+            }
           }
-        })
-      }
-    })
-  }, [doc?.docName, doc?.format, reloadCount])
+          merged.push(...r.headings)
+        }
+        setHeadings(merged)
+        setCollapsed(computeDefaultFolded(merged))
+      })
+    } else {
+      loadLookup(doc.docName).then(data => {
+        if (data) {
+          const h = parseHeadings(data.lines, data.meta)
+          setHeadings(h)
+          setCollapsed(computeDefaultFolded(h))
+        } else {
+          loadHtmlToc(doc!.docName).then(toc => {
+            if (toc) {
+              setHtmlToc(toc)
+              setCollapsed(computeDefaultFolded(toc))
+            }
+          })
+        }
+      })
+    }
+  }, [doc?.docName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
     const pos = pdfToCanvas(entry.page, entry.x, entry.y, doc.pages)
     if (!pos) return
-    const pageIndex = entry.page - 1
-    const page = doc.pages[pageIndex]
-    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
-    navigateTo(editor, pos.x, pos.y, pageCenterX)
+    // Preserve horizontal position — only move vertically
+    const vp = editor.getViewportPageBounds()
+    editor.centerOnPoint({ x: vp.x + vp.w / 2, y: pos.y }, { animation: { duration: 300 } })
+  }, [editor, doc])
+
+  const handleCenterHorizontally = useCallback(() => {
+    if (!doc || doc.pages.length === 0) return
+    const vp = editor.getViewportPageBounds()
+    const vpCenterY = vp.y + vp.h / 2
+    // Find which page the viewport center is in
+    let pageCenterX = doc.pages[0].bounds.x + doc.pages[0].bounds.width / 2
+    for (const page of doc.pages) {
+      if (vpCenterY >= page.bounds.y && vpCenterY <= page.bounds.y + page.bounds.height) {
+        pageCenterX = page.bounds.x + page.bounds.width / 2
+        break
+      }
+    }
+    editor.centerOnPoint({ x: pageCenterX, y: vpCenterY }, { animation: { duration: 300 } })
   }, [editor, doc])
 
   const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string) => {
@@ -224,7 +276,7 @@ export function TocTab() {
       setTocAdding(fileName)
 
       try {
-        const shareRes = await fetch('http://localhost:5199/api/tlda/share', {
+        const shareRes = await fetch('http://localhost:5176/api/tlda/share', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: item.path }),
@@ -379,10 +431,8 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
-        <HideDefsToggle ctx={ctx} />
+        {/* HideDefsToggle removed */}
       </div>
     )
   }
@@ -407,10 +457,8 @@ export function TocTab() {
           </div>
         )}
         <SemanticHighlightToggle />
-        <DarkModeToggle />
-        <VimModeToggle />
         <CameraLinkToggle />
-        <HideDefsToggle ctx={ctx} />
+        {/* HideDefsToggle removed */}
       </div>
     )
   }
@@ -522,6 +570,13 @@ export function TocTab() {
         </a>
       )}
       {items.map((h, i) => {
+        if (h.level === 'divider') {
+          return (
+            <div key={i} className="toc-item toc-divider" onClick={h.nav}>
+              <span className="toc-divider-label">{h.title}</span>
+            </div>
+          )
+        }
         if (h.level === 'part') {
           currentPartIdx = i
           currentChapterIdx = -1
@@ -567,11 +622,11 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      <FleetToggle />
-      <DarkModeToggle />
-      <VimModeToggle />
+      <div className="toc-diff-hint" onClick={handleCenterHorizontally}>
+        <span className="toc-toggle-icon">{'\u2299'}</span> Center
+      </div>
       <CameraLinkToggle />
-      <HideDefsToggle ctx={ctx} />
+      {/* HideDefsToggle removed */}
     </div>
     </>
   )
@@ -586,14 +641,7 @@ export function CameraLinkToggle() {
   )
 }
 
-export function HideDefsToggle({ ctx }: { ctx: PanelContextValue | null }) {
-  if (!ctx?.onTogglePanelsLocal) return null
-  return (
-    <div className="toc-diff-hint toc-toggle-indented" onClick={() => ctx.onTogglePanelsLocal?.()}>
-      {ctx.panelsLocal ? 'Hide defs' : 'Show defs'}
-    </div>
-  )
-}
+// HideDefsToggle removed — vestigial
 
 export function VimModeToggle() {
   const enabled = useSyncExternalStore(subscribeVimMode, getVimMode)
@@ -613,40 +661,54 @@ export function SemanticHighlightToggle() {
   )
 }
 
+type ThemeStep = {
+  theme: 'warm' | 'fog-dark' | 'fog-light' | null
+  scheme: 'system' | 'dark' | 'light'
+  label: string
+  icon: string
+  bodyClass?: string
+}
+
+const THEME_STEPS: ThemeStep[] = [
+  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
+  { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
+  { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
+  { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
+  { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
+  { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
+]
+
+const BODY_CLASSES = THEME_STEPS.map(s => s.bodyClass).filter(Boolean) as string[]
+
 export function DarkModeToggle() {
   const editor = useEditor()
   const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [warm, setWarm] = useState(() => {
-    const saved = localStorage.getItem('tlda-warm-mode') === 'true'
-    if (saved) document.body.classList.add('warm-mode')
-    return saved || document.body.classList.contains('warm-mode')
+  const [theme, setTheme] = useState<'warm' | 'fog-dark' | 'fog-light' | null>(() => {
+    const stored = localStorage.getItem('tlda-theme')
+    if (stored === 'warm' || stored === 'fog-dark' || stored === 'fog-light') return stored
+    if (localStorage.getItem('tlda-warm-mode') === 'true') return 'warm'
+    return null
   })
 
-  const label = warm ? 'Warm' : scheme === 'system' ? 'System' : scheme === 'dark' ? 'Dark' : 'Light'
-  const icon = warm ? '\u2600\uFE0E' : scheme === 'dark' ? '\u263E' : scheme === 'light' ? '\u2600' : '\u25D1'
+  const cur = THEME_STEPS.findIndex(s => s.theme === theme && s.scheme === scheme)
+  const step = cur >= 0 ? THEME_STEPS[cur] : THEME_STEPS[0]
+
+  const applyStep = useCallback((s: ThemeStep) => {
+    for (const cls of BODY_CLASSES) document.body.classList.remove(cls)
+    if (s.bodyClass) document.body.classList.add(s.bodyClass)
+    localStorage.setItem('tlda-theme', s.theme || '')
+    localStorage.setItem('tlda-warm-mode', s.theme === 'warm' ? 'true' : 'false')
+    setTheme(s.theme)
+    editor.user.updateUserPreferences({ colorScheme: s.scheme })
+  }, [editor])
 
   const cycle = useCallback(() => {
-    if (warm) {
-      // Warm → System (exit warm mode)
-      document.body.classList.remove('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'false')
-      setWarm(false)
-      editor.user.updateUserPreferences({ colorScheme: 'system' })
-    } else if (scheme === 'system') {
-      editor.user.updateUserPreferences({ colorScheme: 'dark' })
-    } else if (scheme === 'dark') {
-      editor.user.updateUserPreferences({ colorScheme: 'light' })
-    } else {
-      // Light → Warm
-      document.body.classList.add('warm-mode')
-      localStorage.setItem('tlda-warm-mode', 'true')
-      setWarm(true)
-    }
-  }, [editor, scheme, warm])
+    applyStep(THEME_STEPS[(cur + 1) % THEME_STEPS.length])
+  }, [cur, applyStep])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>
-      <span className="toc-toggle-icon">{icon}</span> {label}
+      <span className="toc-toggle-icon">{step.icon}</span> {step.label}
     </div>
   )
 }
@@ -691,17 +753,57 @@ export function ZoneWidthSlider() {
   )
 }
 
+const FLEET_STATES = ['off', '3col', '2col'] as const
+type FleetState = typeof FLEET_STATES[number]
+const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+function detectFleetState(editor: any): FleetState {
+  const fleet = editor.getCurrentPageShapes().filter((s: any) =>
+    FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
+  if (fleet.length === 0) return 'off'
+  return (localStorage.getItem('fleet-layout') as FleetState) || '3col'
+}
+
 export function FleetToggle() {
   const editor = useEditor()
   const allAgents = useFleetAgents()
+  const [state, setState] = useState<FleetState>(() => detectFleetState(editor))
 
   const handleClick = useCallback(() => {
-    createFleetLayout(editor, allAgents)
+    const current = detectFleetState(editor)
+    const idx = FLEET_STATES.indexOf(current)
+    const next = FLEET_STATES[(idx + 1) % FLEET_STATES.length]
+    setState(next)
+    localStorage.setItem('fleet-layout', next)
+    if (next === 'off') {
+      const fleet = editor.getCurrentPageShapes().filter((s: any) =>
+        FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
+      if (fleet.length > 0) forceDeleteShapes(editor, fleet.map((s: any) => s.id))
+      localStorage.setItem('fleet-hud-expanded', '0')
+      window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+    } else {
+      localStorage.setItem('fleet-hud-expanded', '1')
+      createFleetLayout(editor, allAgents, next === '3col' ? '3col' : '2col')
+    }
   }, [editor, allAgents])
+
+  // Button shows the NEXT state
+  const nextIdx = (FLEET_STATES.indexOf(state) + 1) % FLEET_STATES.length
+  const nextState = FLEET_STATES[nextIdx]
+
+  let label: React.ReactNode
+  if (nextState === '3col') {
+    label = <>Fleet|</>
+  } else if (nextState === '2col') {
+    label = <>Flee|t</>
+  } else {
+    // Next: off → strikethrough
+    label = <span style={{ textDecoration: 'line-through' }}>Fleet</span>
+  }
 
   return (
     <div className="toc-diff-hint" onClick={handleClick}>
-      <span className="toc-toggle-icon">{'\u2693'}</span> Fleet
+      <img src="/basestar.svg" alt="" style={{ width: 10, height: 10, verticalAlign: 'middle', marginRight: 4, opacity: 0.6, position: 'relative' as const, top: 2 }} /> {label}
     </div>
   )
 }

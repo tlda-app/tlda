@@ -5,14 +5,15 @@ import {
   sortByIndex,
 } from 'tldraw'
 import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
-import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges } from './stores'
+import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
-import { snapHighlighterToText, restoreHighlightsFromShapes, showGlow } from './highlighterSnap'
+import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
+import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor } from './ribbonInteraction'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -68,7 +69,9 @@ export async function remapAnnotations(
 
   const updates: TLShapePartial[] = []
 
-  // Solo shapes (math notes): resolve anchor, position directly
+  // Solo shapes (math notes): resolve anchor, update Y only.
+  // Synctex x varies between builds (nearby-line fallback, display-math offsets), causing
+  // horizontal drift that is confusing and not meaningful for note placement.
   for (const shape of solo) {
     const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
     try {
@@ -77,15 +80,13 @@ export async function remapAnnotations(
       const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
       if (!canvasPos) continue
 
-      const newX = canvasPos.x - 100
       const newY = canvasPos.y - 100
-      const dx = Math.abs(shape.x - newX)
       const dy = Math.abs(shape.y - newY)
-      if (dx > 1 || dy > 1) {
+      if (dy > 1) {
         updates.push({
           id: shape.id,
           type: shape.type,
-          x: newX,
+          x: shape.x,
           y: newY,
         })
       }
@@ -191,13 +192,15 @@ async function fetchPage(
   basePath: string,
   index: number,
 ): Promise<{ index: number; svgDoc: Document } | null> {
-  const url = `${basePath}page-${index + 1}.svg`
+  const pageBasePath = page.targetBasePath || basePath
+  const pageNum = page.pageInTarget || (index + 1)
+  const url = `${pageBasePath}page-${pageNum}.svg`
   try {
     let resp = await fetch(url)
     if (!resp.ok) {
       // Retry once after 1s — page may still be building
       await new Promise(r => setTimeout(r, 1000))
-      resp = await fetch(`${basePath}page-${index + 1}.svg?t=${Date.now()}`)
+      resp = await fetch(`${pageBasePath}page-${pageNum}.svg?t=${Date.now()}`)
       if (!resp.ok) return null
     }
     const svgText = await resp.text()
@@ -222,8 +225,7 @@ export async function fetchSvgPagesAsync(
   const pages = document.pages
 
   // Determine which pages are visible in the initial viewport.
-  // Camera starts fit-x at the top (origin y=0), so estimate visible height
-  // from the viewport bounds. Pad by 1 page to prefetch just beyond the fold.
+  // Fetch those first for fast first-paint, then the rest in parallel.
   const vp = editor.getViewportScreenBounds()
   const cam = editor.getCamera()
   const viewHeight = vp.h / cam.z
@@ -275,7 +277,6 @@ export async function fetchSvgPagesAsync(
   // only for text selection overlay. Process in page order.
   svgDocs.sort((a, b) => a.index - b.index)
   for (const { index, svgDoc } of svgDocs) {
-    // Yield to the main thread between pages so interactions stays responsive
     await new Promise(r => requestAnimationFrame(r))
     pages[index].textData = await extractTextFromSvgAsync(svgDoc)
   }
@@ -302,9 +303,24 @@ export async function reloadPages(
 
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
-  const indices = pageNumbers
-    ? pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
-    : pages.map((_, i) => i)
+  let indices: number[]
+  if (pageNumbers) {
+    indices = pageNumbers.map(n => n - 1).filter(i => i >= 0 && i < pages.length)
+  } else {
+    // Full reload — only fetch pages in/near the viewport
+    const vp = editor.getViewportScreenBounds()
+    const cam = editor.getCamera()
+    const viewTop = -cam.y
+    const viewBottom = viewTop + vp.h / cam.z
+    const bufferH = pages[0]?.bounds.height ?? 1035
+    indices = []
+    for (let i = 0; i < pages.length; i++) {
+      const b = pages[i].bounds
+      if (b.y + b.height > viewTop - bufferH * 2 && b.y < viewBottom + bufferH * 2) {
+        indices.push(i)
+      }
+    }
+  }
 
   if (indices.length === 0) return { failedPages: [] }
 
@@ -315,7 +331,11 @@ export async function reloadPages(
   // Fetch SVGs in parallel with cache-bust
   const results = await Promise.all(
     indices.map(async (i) => {
-      const url = `${basePath}page-${i + 1}.svg?t=${timestamp}`
+      const page = pages[i]
+      const storedUrl = getPageUrl(i)
+      const pageBasePath = page.targetBasePath || basePath
+      const pageNum = page.pageInTarget || (i + 1)
+      const url = storedUrl ? `${storedUrl}?t=${timestamp}` : `${pageBasePath}page-${pageNum}.svg?t=${timestamp}`
       try {
         const resp = await fetch(url)
         if (!resp.ok) {
@@ -529,6 +549,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   }, { scope: 'document' })
 
+  // Eraser resets understanding-line shapes to 'unchecked' instead of deleting them
+  registerEraserInterceptor(editor)
+
   // Make sure the shapes are below any of the other shapes
   function makeSureShapesAreAtBottom() {
     const shapes = [...shapeIdSet]
@@ -596,28 +619,41 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
       if (shape.type === 'highlight') {
-        let attempts = 0
-        const checkSnap = () => {
-          attempts++
-          if (attempts > 30) return // give up after 6s
+        // Wait for pen lift by polling editor.inputs.isPointing.
+        // editor.on('event', pointer_up) doesn't fire during highlight.drawing state
+        // because TLDraw's state machine consumes the event first.
+        // isPointing is TLDraw's own reactive state — no event interception needed.
+        let done = false
+
+        const processShape = () => {
+          if (done) return
+          done = true
           const s = editor.getShape(shape.id as any)
           if (!s) return
-          // Check if user is still drawing (highlight tool is active and pointing)
-          const currentTool = editor.getCurrentToolId()
-          if (currentTool === 'highlight' && editor.inputs.isPointing) {
-            setTimeout(checkSnap, 200)
-            return
-          }
           const bounds = editor.getShapePageBounds(shape.id as any)
-          if (!bounds || bounds.width < 5) {
-            setTimeout(checkSnap, 200)
+          if (!bounds || (bounds.width < 5 && bounds.height < 10)) return
+          // Ribbon zone: highlight drawn in left margin → update understanding lines
+          if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
+            processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
-          snapHighlighterToText(editor, shape.id)
-          // Process highlight for feedback integration (understanding-line updates + signal)
+          snapHighlighterToText(editor, shape.id, document.name, document.targets)
           processHighlightFeedback(editor, shape.id, document.name)
         }
-        setTimeout(checkSnap, 300)
+
+        const tryProcess = () => {
+          if (done) return
+          if (editor.inputs.isPointing) {
+            setTimeout(tryProcess, 100)
+            return
+          }
+          processShape()
+        }
+
+        // Wait 200ms (shape geometry settles), then poll until pen is lifted
+        setTimeout(tryProcess, 200)
+        // Safety fallback: process after 5s regardless
+        setTimeout(() => { if (!done) processShape() }, 5000)
       }
     }
   })
@@ -712,7 +748,17 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     const isMobileNow = editor.getViewportScreenBounds().width < 840
     if (isMobileNow === isMobile) return
     isMobile = isMobileNow
-    applyCameraBounds()
+    // Update constraints only — don't reset camera position (that would jump the user)
+    editor.setCameraOptions({
+      constraints: {
+        bounds: targetBounds,
+        padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
+        origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+        initialZoom: isSlides ? 'default' : 'fit-x-100',
+        baseZoom: 'default',
+        behavior: 'free',
+      },
+    })
   })
 
   applyCameraBounds()
@@ -828,17 +874,48 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   {
     let glowCleanup: (() => void) | null = null
     let glowShapeId: string | null = null
+    let cleanupTimer: ReturnType<typeof setTimeout> | null = null
     editor.store.listen(() => {
       try {
         const hoveredId = editor.getHoveredShapeId()
         const id = hoveredId ?? null
         if (id === glowShapeId) return
+        // Bridge zone: delay cleanup so cursor can move to the card
+        if (!id && glowCleanup) {
+          glowShapeId = null // prevent subsequent fires from resetting the timer
+          if (cleanupTimer) clearTimeout(cleanupTimer)
+          cleanupTimer = setTimeout(() => {
+            // Check if cursor is over the card (use globalThis.document — `document` is the SvgDocument parameter)
+            const card = globalThis.document.querySelector('.hl-source-card:hover')
+            if (card) {
+              // Card is hovered — keep it alive, listen for card mouseleave
+              const onLeave = () => {
+                card.removeEventListener('mouseleave', onLeave)
+                if (glowCleanup) { glowCleanup(); glowCleanup = null }
+                glowShapeId = null
+              }
+              card.addEventListener('mouseleave', onLeave)
+              return
+            }
+            if (glowCleanup) { glowCleanup(); glowCleanup = null }
+            glowShapeId = null
+          }, 300)
+          return
+        }
+        if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null }
         if (glowCleanup) { glowCleanup(); glowCleanup = null }
         glowShapeId = id
         if (id) {
           const shape = editor.getShape(id)
-          if (shape?.type === 'highlight' && (shape.meta as any)?.glowRects) {
-            glowCleanup = showGlow(editor, id)
+          if (shape?.type === 'highlight') {
+            // Delay showing the source context card to avoid accidental triggers
+            const hoverTimer = setTimeout(() => {
+              // Re-check that we're still hovering this shape
+              if (editor.getHoveredShapeId() !== id) return
+              const cardOff = showSourceContextCardForShape(editor, id)
+              glowCleanup = () => { cardOff?.() }
+            }, 500)
+            glowCleanup = () => { clearTimeout(hoverTimer) }
           }
           // Show transcription toast on hover for recognized draw shapes
           if (shape?.type === 'draw' && (shape.meta as any)?.transcription) {

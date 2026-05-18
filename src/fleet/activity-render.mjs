@@ -41,6 +41,174 @@ export const CHAT_TOOLS = new Set([
   'chat', 'delegate', 'mcp__fleet__chat', 'mcp__fleet__delegate',
 ])
 
+// --- Pretty-print tool results ---
+
+function renderPrettyResult(toolName, text, ctx, input) {
+  const tool = (toolName || '').toLowerCase()
+  if (tool.includes('get_thread') || tool.includes('thread')) {
+    return renderThreadResult(text, ctx)
+  }
+  if (tool.includes('search')) {
+    return renderSearchResult(text, ctx)
+  }
+  if (tool.includes('screenshot')) {
+    return renderScreenshotResult(text)
+  }
+  if (tool === 'schedulewakeup') {
+    return renderScheduleResult(text, input)
+  }
+  // Fallback: render as markdown
+  const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
+  return `<div class="tool-pretty-result">${md}</div>`
+}
+
+function renderScheduleResult(text, input) {
+  const timeMatch = text.match(/scheduled for ([\d:]+)\s*\(in (\d+)s\)/)
+  const fireTime = timeMatch ? timeMatch[1] : ''
+  const delaySec = timeMatch ? parseInt(timeMatch[2], 10) : 0
+  let relativeStr = ''
+  if (delaySec > 0) {
+    const min = Math.floor(delaySec / 60)
+    const sec = delaySec % 60
+    relativeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+  }
+  const timeLabel = relativeStr ? `in ${relativeStr}` : (fireTime || 'scheduled')
+  const reason = input?.reason || ''
+  return `<div class="tool-pretty-result tool-pretty-schedule">
+    <span class="schedule-icon">⏱</span>
+    <span class="schedule-time">${esc(timeLabel)}</span>
+    ${fireTime ? `<span class="schedule-at">@ ${esc(fireTime)}</span>` : ''}
+    ${reason ? `<span class="schedule-reason">— ${esc(reason)}</span>` : ''}
+  </div>`
+}
+
+function renderScreenshotResult(text) {
+  // Extract saved image path (injected by daemon as "image:/tmp/tlda-ss-*.png")
+  const pathMatch = text.match(/image:(\/tmp\/[^\s\n]+\.png)/i)
+  if (pathMatch) {
+    const imgPath = pathMatch[1]
+    const src = `/api/file?path=${encodeURIComponent(imgPath)}`
+    const label = text.split('\n')[0].trim() || 'Screenshot'
+    return `<div class="tool-pretty-result tool-pretty-screenshot">
+      <div class="pretty-result-header">${esc(label)}</div>
+      <img class="chat-image" src="${esc(src)}" alt="${esc(label)}" onerror="this.style.display='none'">
+    </div>`
+  }
+  // Screenshot failed or no image data
+  const label = text.trim() || 'screenshot failed'
+  return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
+}
+
+function renderThreadResult(text, ctx) {
+  // Format: "[timestamp] from → to\nmessage\n\n---\n\n[timestamp] from → to\n..."
+  // Split on --- separators
+  const msgs = text.split(/\n\n---\n\n/)
+  if (msgs.length <= 1) {
+    return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)}</div>`
+  }
+  const THREAD_FRONT = 3
+  const THREAD_TAIL = 5
+  const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
+  const hasMoreMsgs = msgs.length > THREAD_PREVIEW
+  const renderMsg = (msg) => {
+    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
+    if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
+    const [, ts, from, to, body] = headerMatch
+    const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
+    const toCls = ctx.getNickClass ? ctx.getNickClass(to) : 'chat-nick'
+    let shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
+    // Extract shadow version hash if present (format: "time @hash")
+    let verHtml = ''
+    const verMatch = shortTs.match(/\s*@([a-f0-9]{7})$/)
+    if (verMatch) {
+      shortTs = shortTs.replace(/\s*@[a-f0-9]{7}$/, '')
+      verHtml = ` <span class="pretty-ver">@${verMatch[1]}</span>`
+    }
+    const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(esc(body.trim())) : esc(body.trim())
+    const isFromUser = from === 'skip' || from === 'Skip'
+    const userClass = isFromUser ? ' from-user' : ''
+    return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
+      <span class="chat-ts">${esc(shortTs)}${verHtml}</span>
+      <span class="chat-nick ${fromCls}">${esc(from)}</span>
+      <span class="chat-arrow">→</span>
+      <span class="chat-nick ${toCls}">${esc(to)}</span>
+      <div class="pretty-msg-body">${bodyHtml}</div>
+    </div>`
+  }
+  // Show first FRONT + gap marker + last TAIL, so both ends are visible.
+  // This lets Skip see the time range of what was actually read.
+  // The gap marker doubles as the expand button — clicking it reveals the hidden middle rows in place.
+  let rows = ''
+  const moreHtml = ''
+  if (hasMoreMsgs) {
+    const frontMsgs = msgs.slice(0, THREAD_FRONT)
+    const tailMsgs = msgs.slice(-THREAD_TAIL)
+    const hiddenCount = msgs.length - THREAD_PREVIEW
+    const hiddenRows = msgs.slice(THREAD_FRONT, msgs.length - THREAD_TAIL).map(renderMsg).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
+      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = frontMsgs.map(renderMsg).join('') + gapMarker + tailMsgs.map(renderMsg).join('')
+  } else {
+    rows = msgs.map(renderMsg).join('')
+  }
+  // Parse header (message count + pagination warning)
+  const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)
+  const header = headerLine ? `<div class="pretty-result-header">${esc(headerLine[0].trim())}</div>` : ''
+  return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
+}
+
+function renderSearchResult(text, ctx) {
+  // Format: "N results (X session, Y chat) — index: ...\n\nresult1\n\nresult2\n\n..."
+  // Each result: "timestamp | [source] [role] agent | snippet"
+  const parts = text.split('\n\n')
+  if (parts.length <= 1) {
+    return `<div class="tool-pretty-result">${esc(text)}</div>`
+  }
+  const header = parts[0]
+  const results = parts.slice(1)
+  const SEARCH_FRONT = 3
+  const SEARCH_TAIL = 3
+  const renderRow = (r, globalIdx) => {
+    const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
+    const stripe = globalIdx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
+    if (pipeMatch) {
+      const ts = pipeMatch[1].trim()
+      const source = pipeMatch[2].trim()
+      const snippet = pipeMatch[3].trim()
+      const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+      const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')  // strip date, keep time
+      return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
+        <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
+        <span class="pretty-search-source">${esc(source)}</span>
+        <span class="pretty-search-snippet">${highlightedSnippet}</span>
+      </div>`
+    }
+    const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+    return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
+  }
+  // Show first FRONT + gap marker + last TAIL so both ends are visible.
+  // Lets Skip see the timestamp the agent ended at — if the agent stopped early,
+  // the tail timestamps reveal the gap vs. the actual latest message.
+  const hasMore = results.length > SEARCH_FRONT + SEARCH_TAIL
+  let rows = ''
+  if (hasMore) {
+    const hiddenCount = results.length - SEARCH_FRONT - SEARCH_TAIL
+    const tailStart = results.length - SEARCH_TAIL
+    const hiddenRows = results.slice(SEARCH_FRONT, tailStart).map((r, i) => renderRow(r, i + SEARCH_FRONT)).join('')
+    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} more …</div>`
+      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+    rows = results.slice(0, SEARCH_FRONT).map((r, i) => renderRow(r, i)).join('')
+      + gapMarker
+      + results.slice(-SEARCH_TAIL).map((r, i) => renderRow(r, tailStart + i)).join('')
+  } else {
+    rows = results.map((r, i) => renderRow(r, i)).join('')
+  }
+  return `<div class="tool-pretty-result tool-pretty-search">
+    <div class="pretty-result-header">${esc(header)}</div>
+    ${rows}
+  </div>`
+}
+
 // --- Tool helpers ---
 
 export function humanizeToolName(name) {
@@ -150,6 +318,39 @@ export function toolContentDetail(name, input) {
 
 // --- Rendering helpers (need ctx for highlightSyntax, langFromFilePath, preambleMacros) ---
 
+// Render a block of .tex content with inline KaTeX. Handles:
+//   - Blank lines → <br>
+//   - Comment lines → shown as-is (dimmed)
+//   - Structural commands (\begin, \end, \section, etc.) → <code>
+//   - Display math $$...$$ or \[...\] → KaTeX display mode
+//   - Other lines → inline $...$ segments rendered, rest as escaped text
+function renderTexLines(content, macros) {
+  return content.split('\n').map(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return '<br>'
+    if (trimmed.startsWith('%')) return `<span class="tex-comment">${esc(line)}</span>`
+    if (/^\\(begin|end|documentclass|usepackage|chapter|section|subsection|paragraph|label|item|caption)\b/.test(trimmed)) {
+      return `<code class="tex-struct">${esc(line)}</code>`
+    }
+    // Display math: $$...$$ or \[...\]
+    const dispMatch = trimmed.match(/^\$\$([\s\S]*)\$\$$/) || trimmed.match(/^\\\[([\s\S]*)\\\]$/)
+    if (dispMatch) {
+      try { return katex.renderToString(dispMatch[1], { displayMode: true, throwOnError: false, macros }) }
+      catch { return `<code>${esc(line)}</code>` }
+    }
+    // Inline math: split on $...$ segments, render each
+    const parts = line.split(/(\$[^$\n]+\$)/)
+    if (parts.length === 1) return esc(line) // no math
+    return parts.map(p => {
+      if (p.length > 2 && p.startsWith('$') && p.endsWith('$')) {
+        try { return katex.renderToString(p.slice(1, -1), { displayMode: false, throwOnError: false, macros }) }
+        catch { return esc(p) }
+      }
+      return esc(p)
+    }).join('')
+  }).join('<br>')
+}
+
 export function renderEditDiff(input, ctx) {
   if (!input?.old_string || !input?.new_string) return ''
   const { langFromFilePath, highlightSyntax } = ctx
@@ -161,19 +362,7 @@ export function renderEditDiff(input, ctx) {
       const escaped = esc(str)
       return `<pre><code>${lang ? highlightSyntax(escaped, lang) : escaped}</code></pre>`
     }
-    const rendered = str.split('\n').map(line => {
-      const trimmed = line.trim()
-      if (/^\\(begin|end|label|item|section|subsection|usepackage|documentclass)\b/.test(trimmed)) return `<code>${esc(line)}</code>`
-      if (/\\[a-zA-Z]/.test(trimmed) && !/^%/.test(trimmed)) {
-        try {
-          return katex.renderToString(trimmed, { displayMode: true, throwOnError: true, macros: ctx.preambleMacros || {} })
-        } catch {
-          return `<span class="diff-tex-raw">${esc(line)}</span>`
-        }
-      }
-      return esc(line) || '&nbsp;'
-    }).join('<br>')
-    return `<div class="diff-tex">${rendered}</div>`
+    return `<div class="diff-tex">${renderTexLines(str, ctx.preambleMacros || {})}</div>`
   }
   return `<div class="edit-diff${isTeX ? ' tex-diff' : ''}" id="${uid}">
     <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
@@ -207,12 +396,42 @@ export function renderCodeCard(toolName, input, ctx) {
     const content = input.content
     const lines = content.split('\n')
     if (lines.length < 2) return ''
-    const lang = langFromFilePath(input.file_path)
+    const filePath = input.file_path || ''
+    const isMd = /\.md$/i.test(filePath)
+    const isTex = /\.tex$/i.test(filePath)
+    const lang = langFromFilePath(filePath)
     const escaped = esc(content)
+    if (isTex) {
+      const shouldFold = lines.length > 15
+      const name = filePath.split('/').pop() || 'file.tex'
+      const uid = 'tex-write-' + Math.random().toString(36).slice(2, 8)
+      const toggleHtml = shouldFold
+        ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.diff-tex');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse'}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+        : ''
+      const rendered = renderTexLines(content, ctx.preambleMacros || {})
+      return `<div class="code-block-wrap code-card" id="${uid}">
+        <div class="code-block-header"><span class="code-block-lang">tex</span><span class="tex-filename">${esc(name)}</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
+        <div class="diff-tex${shouldFold ? ' code-collapsed' : ''}">${rendered}</div>
+      </div>`
+    }
+    if (isMd) {
+      // Markdown files: never fold (collapse resets on re-render), draggable chip.
+      // Render content with markdown+KaTeX so LaTeX in scratch files is readable.
+      const isScratch = /\/scratch\//.test(filePath)
+      const name = filePath.split('/').pop() || 'file.md'
+      const chipClass = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
+      const body = ctx.renderMarkdown
+        ? `<div class="pretty-msg-body md-write-body">${ctx.renderMarkdown(esc(content))}</div>`
+        : `<pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>`
+      return `<div class="code-block-wrap code-card">
+      <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span><span class="code-block-copy" title="Copy">⎘</span></div>
+      ${body}
+    </div>`
+    }
     const shouldFold = lines.length > 10
     const highlighted = (!shouldFold && lang) ? highlightSyntax(escaped, lang) : escaped
     const foldClass = shouldFold ? ' code-collapsed' : ''
-    const langLabel = lang || input.file_path?.split('.').pop() || ''
+    const langLabel = lang || filePath.split('.').pop() || ''
     const toggleHtml = shouldFold
       ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''
@@ -249,6 +468,8 @@ export function dedupTools(toolItems) {
     }
     if (prev && prev._key === key) {
       prev._count++
+      // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
+      if (!prev._prettyResult && t._prettyResult) prev._prettyResult = t._prettyResult
     } else {
       result.push({ ...t, _key: key, _count: 1 })
     }
@@ -329,7 +550,11 @@ export function renderActivityGroup(group, ctx) {
       const cmdAttr = cmd ? ` data-cmd="${esc(cmd)}"` : ''
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
-      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}">`
+      const prettyHtml = t._prettyResult
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
+        : ''
+      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
+        + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`
         + `<span class="tool-name">${esc(t._toolName || '')}</span>`
@@ -339,14 +564,16 @@ export function renderActivityGroup(group, ctx) {
         + `</div>`
         + diffHtml
         + codeCardHtml
+        + prettyHtml
     }).join('')
     const cardId = 'tr-' + Math.random().toString(36).slice(2, 8)
-    return `<div class="tool-run-card" draggable="true" data-card-id="${cardId}">
+    return `<div class="tool-run-card" data-card-id="${cardId}">
       <div class="tool-run-body">${toolLines}</div>
     </div>`
   }).join('')
 
-  return `<div class="chat-activity-card will-fold" draggable="true" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}">
+  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}" data-msg-id="${esc(String(m._dbId || ''))}">
+    <div class="drag-handle" title="Drag"></div>
     <div class="activity-header">
       <span class="activity-agent ${fromCls}">${esc(nick)}</span>
       <span class="activity-last-tool">${headerSummary}</span>

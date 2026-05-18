@@ -40,6 +40,61 @@ body {
   pointer-events: none;
 }
 
+.version-stamp {
+  position: fixed;
+  top: 6px;
+  left: 6px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 0px;
+  pointer-events: all;
+  user-select: none;
+}
+.version-stamp-entry {
+  font-size: 9px;
+  font-family: 'SF Mono', Menlo, monospace;
+  color: rgba(0, 0, 0, 0.85);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1.4;
+  transition: opacity 0.2s, color 0.2s;
+}
+.version-stamp-entry:hover {
+  opacity: 0.8 !important;
+  color: rgba(60, 60, 180, 0.9);
+}
+.version-stamp-entry.active {
+  font-weight: 600;
+}
+html[data-theme="dark"] .version-stamp-entry {
+  color: rgba(255, 255, 255, 0.85);
+}
+html[data-theme="dark"] .version-stamp-entry:hover {
+  color: rgba(140, 140, 255, 0.9);
+}
+.sync-offline-badge {
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, monospace;
+  color: rgba(200, 80, 80, 0.7);
+  pointer-events: all;
+  user-select: none;
+  white-space: nowrap;
+  animation: pulse-offline 2s ease-in-out infinite;
+}
+@keyframes pulse-offline {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.version-stamp-hash {
+  font-size: 8px;
+  opacity: 0.5;
+  letter-spacing: 0.05em;
+}
+
 .view-pin-badge {
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, monospace;
@@ -67,36 +122,43 @@ html.hires .tlui-layout {
   overflow: visible;
   contain: layout style;
 }
-html.hires .tlui-main-toolbar {
-  zoom: var(--hires-scale);
+/* All zoom-based scaling removed — Skip's call. Chrome renders at native CSS
+   size on retina/high-res displays. If specific elements look too small,
+   add per-property bumps under .hires (font-size, width, height, padding)
+   for those elements only — never zoom. */
+
+/* Shape hover opacity: go fully opaque on hover/editing so content is readable over the document.
+   Default opacity is whatever TLDraw's shape prop sets (leave it alone).
+   !important needed to override TLDraw's inline style="opacity:X" on .tl-shape.
+   :hover covers real browser; tl-shape__is-hovered is TLDraw's class-based fallback.
+   html.is-scrolling is set by SvgDocument while wheel events are active (all input types:
+   mouse wheel, Magic Mouse, trackpad). During scroll the fade-out is frozen with a huge delay
+   so a shape that was opaque stays opaque for the duration of the scroll gesture. */
+.tl-shape[data-shape-type="math-note"],
+.tl-shape[data-shape-type="terminal"],
+.tl-shape[data-shape-type="fleet-chat"] {
+  transition: opacity 0.3s 0.4s;
 }
-html.hires [data-radix-popper-content-wrapper]:not(:has(.tlui-tooltip)) {
-  zoom: var(--hires-scale);
+html.is-scrolling .tl-shape[data-shape-type="math-note"],
+html.is-scrolling .tl-shape[data-shape-type="terminal"],
+html.is-scrolling .tl-shape[data-shape-type="fleet-chat"],
+body.tlda-pan-mode .tl-shape[data-shape-type="math-note"],
+body.tlda-pan-mode .tl-shape[data-shape-type="terminal"],
+body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
+  transition: opacity 0.3s 9999s;
 }
-html.hires .build-pills-row {
-  zoom: var(--hires-scale);
+.tl-shape[data-shape-type="math-note"]:hover,
+.tl-shape[data-shape-type="terminal"]:hover,
+.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-hovered[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
+.tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
+.tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
+  transition: opacity 0.15s;
+  opacity: 1 !important;
 }
-html.hires .fleet-pill-container {
-  zoom: var(--hires-scale);
-}
-html.hires .fleet-hud-controls {
-  zoom: var(--hires-scale);
-}
-html.hires .doc-panel {
-  zoom: var(--hires-scale);
-}
-html.hires .phone-hl-btn {
-  zoom: var(--hires-scale);
-}
-html.hires .voice-note-btn {
-  zoom: var(--hires-scale);
-}
-html.hires .phone-hl-slider {
-  zoom: var(--hires-scale);
-}
-html.hires .agent-indicator {
-  zoom: var(--hires-scale);
-}
-html.hires .ping-button-standalone {
-  zoom: var(--hires-scale);
+/* Terminal popover only — go opaque when hovering the popover, not the whole chat shape */
+.tl-shape[data-shape-type="fleet-chat"]:has(.fleet-terminal-hover-pane:hover) {
+  transition: opacity 0.15s;
+  opacity: 1 !important;
 }

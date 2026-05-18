@@ -11,29 +11,44 @@ import type { SvgDocument } from './types'
  * Also handles diff documents (SVG + old page overlay).
  */
 export function createSvgShapes(editor: Editor, document: SvgDocument): boolean {
+  // Remove stale svg-page shapes not in the current document layout
+  // (handles single-target → multi-target transitions where shape IDs change)
+  const expectedIds = new Set(document.pages.map(p => p.shapeId))
+  const stalePages = editor.getCurrentPageShapes()
+    .filter(s => (s.type as string) === 'svg-page' && !expectedIds.has(s.id))
+  if (stalePages.length > 0) {
+    editor.deleteShapes(stalePages.map(s => s.id))
+  }
+
   // Find which pages are missing (snapshot may have partial set)
   const missingPages = document.pages.filter((page) => !editor.getShape(page.shapeId))
-  if (missingPages.length === 0) return true
+  if (missingPages.length > 0) {
+    editor.createShapes(
+      missingPages.map((page) => {
+        const i = document.pages.indexOf(page)
+        return {
+          id: page.shapeId,
+          type: 'svg-page' as any,
+          x: page.bounds.x,
+          y: page.bounds.y,
+          isLocked: true,
+          opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
+          props: {
+            w: page.bounds.w,
+            h: page.bounds.h,
+            pageIndex: i,
+          },
+        }
+      })
+    )
+  }
 
-  editor.createShapes(
-    missingPages.map((page) => {
-      const i = document.pages.indexOf(page)
-      return {
-        id: page.shapeId,
-        type: 'svg-page' as any,
-        x: page.bounds.x,
-        y: page.bounds.y,
-        isLocked: true,
-        opacity: document.diffLayout?.oldPageIndices.has(i) ? 0.5 : 1,
-        props: {
-          w: page.bounds.w,
-          h: page.bounds.h,
-          pageIndex: i,
-        },
-      }
-    })
-  )
-  return false
+  // Pages must always render below annotation shapes — send to back every time
+  // so notes/highlights placed after initial load stay on top.
+  const allPageIds = document.pages.map(p => p.shapeId).filter(id => editor.getShape(id))
+  if (allPageIds.length > 0) editor.sendToBack(allPageIds)
+
+  return missingPages.length === 0
 }
 
 /**

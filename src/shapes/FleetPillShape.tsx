@@ -9,6 +9,8 @@ import {
   HTMLContainer,
   T,
   createShapeId,
+  useEditor,
+  useValue,
 } from 'tldraw'
 import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
@@ -16,6 +18,21 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
+const CHAT_W = 400
+const CHAT_H = 600
+
+const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+
+// Module-level snap state — written by drag handler, read by the component.
+// The component re-renders on every translate frame, so it picks up changes.
+const _snapState = {
+  deltaX: 0,
+  deltaY: 0,
+  lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
+  active: false, // true during drag
+  expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
+  prevSnapMode: undefined as boolean | undefined,
+}
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
@@ -39,69 +56,6 @@ export const filterDropPreview = {
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
 }
 
-const FLEET_SHAPE_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
-
-/** Ghost slot state — updated by drag handlers, read by FleetDropGhost.
- *  screenRect is set by the HUD editor (has its own camera transform) so
- *  FleetDropGhost can position the ghost in the HUD's screen space rather
- *  than converting through the main editor's camera, which would be wrong. */
-export const dropGhostState: {
-  slot: { x: number; y: number; w: number; h: number } | null
-  screenRect: { x: number; y: number; w: number; h: number } | null
-} = { slot: null, screenRect: null }
-export const dropGhostBus = new EventTarget()
-
-/**
- * Compute the empty grid slot at (dropX, dropY) defined by surrounding fleet shapes.
- * Returns { x, y, w, h } to fill, or null if no meaningful slot is found.
- *
- * Treats all left/right/top/bottom edges of other fleet shapes as grid lines, then
- * returns the cell those lines define around the drop point — provided it's empty.
- */
-export function computeDropSlot(
-  editor: Editor,
-  excludeId: TLShapeId | null,
-  dropX: number,
-  dropY: number,
-): { x: number; y: number; w: number; h: number } | null {
-  const others = editor.getCurrentPageShapes()
-    .filter(s => FLEET_SHAPE_TYPES.has((s as any).type) && s.id !== excludeId)
-  if (others.length === 0) return null
-
-  const bounds = others
-    .map(s => editor.getShapePageBounds(s.id))
-    .filter(Boolean) as { x: number; y: number; w: number; h: number }[]
-  if (bounds.length === 0) return null
-
-  // Build grid lines from all fleet shape edges
-  const xs = [...new Set(bounds.flatMap(b => [b.x, b.x + b.w]))].sort((a, b) => a - b)
-  const ys = [...new Set(bounds.flatMap(b => [b.y, b.y + b.h]))].sort((a, b) => a - b)
-
-  const minX = xs[0], maxX = xs[xs.length - 1]
-  const minY = ys[0], maxY = ys[ys.length - 1]
-
-  // Drop point must be inside the existing fleet bounding box
-  if (dropX <= minX || dropX >= maxX || dropY <= minY || dropY >= maxY) return null
-
-  const slotLeft = [...xs].reverse().find(x => x <= dropX) ?? minX
-  const slotRight = xs.find(x => x >= dropX) ?? maxX
-  const slotTop = [...ys].reverse().find(y => y <= dropY) ?? minY
-  const slotBottom = ys.find(y => y >= dropY) ?? maxY
-
-  const w = slotRight - slotLeft
-  const h = slotBottom - slotTop
-  if (w < 50 || h < 50) return null
-
-  // Reject if the slot is significantly occupied by another fleet shape
-  const PAD = 8
-  const occupied = bounds.some(b =>
-    b.x + PAD < slotRight && b.x + b.w - PAD > slotLeft &&
-    b.y + PAD < slotBottom && b.y + b.h - PAD > slotTop
-  )
-  if (occupied) return null
-
-  return { x: slotLeft, y: slotTop, w, h }
-}
 
 /**
  * Drop a pill value on whatever is under the given page position.
@@ -120,12 +74,20 @@ export function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
+  // pagePoint was already translated to main-editor page space by
+  // onTranslateEnd (it does panel→screen→main when the pill is dragged in
+  // a CanvasClipPanel). So hit-test in MAIN coords too. Using `editor`
+  // (which may be the panel editor) here would silently miss because
+  // the panel's page bounds and main's page bounds aren't always identical
+  // (the panel's clip-panel camera + constraint can shift the effective
+  // page coordinate that getShapePageBounds returns).
+  const hitEditor = mainEditor || editor
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
-  const allChats = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
+  const allChats = hitEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
   let hitShape: any
   for (const chat of allChats) {
-    const bounds = editor.getShapePageBounds(chat.id)
+    const bounds = hitEditor.getShapePageBounds(chat.id)
     if (bounds &&
       pagePoint.x >= bounds.x && pagePoint.x <= bounds.x + bounds.w &&
       pagePoint.y >= bounds.y && pagePoint.y <= bounds.y + bounds.h) {
@@ -147,11 +109,13 @@ export function dropPillOnTarget(
       const pill = editor.getShape(pillId) as any
       const displayName = pill?.props?.displayName || value
       const pillType = pill?.props?.pillType || 'ref'
-      // Use the source shape ID as the uid when available — embeds the tldraw shape ID
-      // in the token so chips can be resolved live via editor.getShape() after reload.
-      const sourceShapeId: string | undefined = pill?.props?.value && typeof pill.props.value === 'string' && pill.props.value.startsWith('shape:')
-        ? pill.props.value : undefined
-      const uid = sourceShapeId || Date.now().toString(36) + Math.random().toString(36).slice(2, 5)
+      // Embed structured data in the token's # suffix so agents can resolve it.
+      // For shape-backed pills, use the shape ID. For all others, use the pill's
+      // value field (e.g. "msg:fleet:release:2026-04-18T06:22:33.000Z").
+      const pillValue = pill?.props?.value || ''
+      const sourceShapeId: string | undefined = typeof pillValue === 'string' && pillValue.startsWith('shape:')
+        ? pillValue : undefined
+      const uid = sourceShapeId || pillValue || (Date.now().toString(36) + Math.random().toString(36).slice(2, 5))
       const token = `«${pillType}:${displayName}#${uid}»`
       if (content) chipContentStore.set(token, content)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
@@ -244,29 +208,8 @@ export function dropPillOnTarget(
     const displayName = pill?.props?.displayName || 'file'
 
     if (docValue.startsWith('tlda:')) {
-      // tlda-card URL is /?doc=name — use SPA URL directly in the inline-doc iframe
-      const fullUrl = docValue.slice(5)
-      let docName = displayName
-      let embedUrl = fullUrl
-      try {
-        const u = new URL(fullUrl)
-        docName = u.searchParams.get('doc') || displayName
-        if (!u.searchParams.has('embed')) u.searchParams.set('embed', '1')
-        embedUrl = u.toString()
-      } catch {}
-      createEditor.createShape({
-        id: createShapeId(),
-        type: 'inline-doc' as any,
-        x: pagePoint.x - 400,
-        y: pagePoint.y - 500,
-        isLocked: false,
-        props: {
-          w: 800,
-          h: 1000,
-          url: embedUrl,
-          title: docName,
-        },
-      })
+      // tlda links: no-op on canvas drop (inline-doc iframes are broken)
+      console.log('[fleet] tlda link drop ignored:', docValue)
     } else if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
@@ -308,21 +251,8 @@ export function dropPillOnTarget(
         }
       })()
     } else {
-      // doc: prefix — create inline-doc shape (renders the tlda document)
-      const docName = docValue.startsWith('doc:') ? docValue.slice(4) : docValue
-      createEditor.createShape({
-        id: createShapeId(),
-        type: 'inline-doc' as any,
-        x: pagePoint.x - 400,
-        y: pagePoint.y - 500,
-        isLocked: false,
-        props: {
-          w: 800,
-          h: 1000,
-          url: `${myTldaUrl()}/?doc=${encodeURIComponent(docName)}&embed=1`,
-          title: displayName || docName,
-        },
-      })
+      // doc: prefix — no-op on canvas drop (inline-doc iframes are broken)
+      console.log('[fleet] doc link drop ignored:', docValue)
     }
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'annotation') {
@@ -352,19 +282,16 @@ export function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat, always unlocked.
-    // If the drop lands inside an existing grid layout's empty slot, fill it.
-    const newId = createShapeId()
-    const slot = computeDropSlot(createEditor, null, pagePoint.x, pagePoint.y)
+    // Drop on empty canvas → create new fleet-chat at the drop point.
     createEditor.createShape({
-      id: newId,
+      id: createShapeId(),
       type: 'fleet-chat' as any,
-      x: slot ? slot.x : pagePoint.x,
-      y: slot ? slot.y : pagePoint.y,
+      x: pagePoint.x,
+      y: pagePoint.y,
       isLocked: false,
       props: {
-        w: slot ? slot.w : 400,
-        h: slot ? slot.h : 600,
+        w: 400,
+        h: 600,
         filter: [[['to', value]], [['from', value]]],
       },
     })
@@ -396,7 +323,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => false
   override canBind = () => false
-  override canSnap = () => false
+  override canSnap = (shape: any) => shape.props?.pillType === 'agent' || shape.props?.pillType === 'label'
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
@@ -406,6 +333,62 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     // Clear any pending auto-delete since the user is actively dragging
     const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
     if (timerId) clearTimeout(timerId)
+    _snapState.active = true
+    _snapState.expanded = false
+
+    // Enable snap mode during pill drag so TLDraw shows native snap guides.
+    // Save previous state to restore on translate end.
+    const pill = shape as any
+    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
+      _snapState.prevSnapMode = this.editor.user.getIsSnapMode()
+      this.editor.user.updateUserPreferences({ isSnapMode: true })
+    }
+  }
+
+  // During drag: expand pill to chat dimensions when over empty canvas,
+  // collapse back when over a fleet shape. TLDraw's native snap handles
+  // the expanded pill like any other shape.
+  override onTranslate = (_initial: TLShape, current: TLShape) => {
+    const pill = current as any
+    if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
+
+    const editor = this.editor
+    const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+    const hitEditor = mainEditor || editor
+
+    // Check if pill center is over an existing fleet shape
+    const bounds = editor.getShapePageBounds(pill.id)
+    const cx = bounds ? bounds.x + bounds.w / 2 : pill.x + (pill.props.w || PILL_W) / 2
+    const cy = bounds ? bounds.y + bounds.h / 2 : pill.y + (pill.props.h || PILL_H) / 2
+
+    let overFleet = false
+    const allFleet = hitEditor.getCurrentPageShapes()
+      .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
+    for (const s of allFleet) {
+      const sb = hitEditor.getShapePageBounds(s.id)
+      if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
+        overFleet = true
+        break
+      }
+    }
+
+    // Expand to chat dimensions when over empty canvas, collapse when over fleet shape
+    const shouldExpand = !overFleet
+    if (shouldExpand && !_snapState.expanded) {
+      _snapState.expanded = true
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: CHAT_W, h: CHAT_H },
+      })
+    } else if (!shouldExpand && _snapState.expanded) {
+      _snapState.expanded = false
+      editor.updateShape({
+        id: pill.id,
+        type: pill.type,
+        props: { w: PILL_W, h: PILL_H },
+      })
+    }
   }
 
   onCreate = (shape: TLShape) => {
@@ -440,6 +423,23 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint = mainEditor.screenToPage(screenPoint)
     }
 
+    // When expanded (pill was 400×600), the drop point is already the
+    // pill's center which = the chat's center. Adjust to top-left.
+    if (_snapState.expanded) {
+      dropPoint.x -= CHAT_W / 2
+      dropPoint.y -= CHAT_H / 2
+    }
+    // Restore snap mode
+    if (_snapState.prevSnapMode !== undefined) {
+      this.editor.user.updateUserPreferences({ isSnapMode: _snapState.prevSnapMode })
+    }
+    _snapState.active = false
+    _snapState.expanded = false
+    _snapState.prevSnapMode = undefined
+    _snapState.deltaX = 0
+    _snapState.deltaY = 0
+    _snapState.lines = []
+
     dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
 
     // Ephemeral: delete after drop
@@ -447,9 +447,25 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   component(shape: any) {
+    const editor = useEditor()
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
+    const isAgentPill = pillType === 'agent' || pillType === 'label'
+
+    // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
+    const overFleetShape = useValue('pill-over-fleet', () => {
+      if (!isAgentPill) return false
+      const bounds = editor.getShapePageBounds(shape.id)
+      if (!bounds) return false
+      const cx = bounds.x + bounds.w / 2
+      const cy = bounds.y + bounds.h / 2
+      return editor.getCurrentPageShapes().some(s => {
+        if (s.id === shape.id || !FLEET_TYPES.includes(s.type as string)) return false
+        const sb = editor.getShapePageBounds(s.id)
+        return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
+      })
+    }, [editor, shape.id, isAgentPill])
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
@@ -506,6 +522,46 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
             {isContent ? `📎 ${displayName}` : displayName}
           </span>
         </div>
+        {/* Ghost: show where a new chat will be created.
+            When expanded (pill is 400×600), the ghost fills the pill bounds.
+            When collapsed (pill is 70×18), ghost is offset from pill center.
+            Hidden when over an existing fleet shape. */}
+        {isAgentPill && !overFleetShape && (
+          <div
+            className="fleet-chat-shape"
+            style={{
+              position: 'absolute',
+              // When expanded, ghost fills the pill's own bounds (0,0).
+              // When collapsed, offset to pill center.
+              top: _snapState.expanded ? 0 : PILL_H / 2,
+              left: _snapState.expanded ? 0 : PILL_W / 2,
+              width: CHAT_W,
+              height: CHAT_H,
+              opacity: 0.5,
+              pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <div style={{
+              padding: '4px 8px',
+              fontSize: 10,
+              borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
+              color: 'var(--text-dim)',
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+            }}>
+              → {displayName}
+            </div>
+            <div style={{ flex: 1 }} />
+            <div style={{
+              height: 28,
+              borderTop: '1px solid rgba(128, 128, 128, 0.1)',
+              margin: '0 4px 4px',
+              borderRadius: 4,
+              background: 'rgba(128, 128, 128, 0.05)',
+            }} />
+          </div>
+        )}
       </HTMLContainer>
     )
   }

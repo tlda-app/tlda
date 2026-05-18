@@ -42,6 +42,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 import { chatInsertBus } from './FleetPillShape'
+import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -53,70 +54,55 @@ import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 
 // Render markdown + KaTeX math
-// Splits on math delimiters, renders non-math as markdown, math as KaTeX
+// Extracts math, replaces with placeholder tokens, renders the whole text as
+// markdown ONCE (so paragraph structure is correct), then swaps the rendered
+// KaTeX HTML back in. Rendering text segments individually causes markdown-it
+// to wrap each one in its own <p>, which produces spurious line breaks around
+// every inline $...$.
 function renderMarkdownMath(text: string, showErrors = false): string {
   const katexOptions = { macros: getActiveMacros(), throwOnError: true }
+  const placeholders: string[] = []
 
-  // Split text into math and non-math segments
-  // Preserve $$...$$ and $...$ as-is, render everything else as markdown
-  const segments: Array<{ type: 'text' | 'display' | 'inline'; content: string }> = []
-  let remaining = text
-
-  while (remaining.length > 0) {
-    // Look for display math first ($$...$$)
-    const displayMatch = remaining.match(/\$\$([\s\S]+?)\$\$/)
-    // Look for inline math ($...$)
-    const inlineMatch = remaining.match(/\$([^$\n]+)\$/)
-
-    const displayIdx = displayMatch?.index ?? Infinity
-    const inlineIdx = inlineMatch?.index ?? Infinity
-
-    if (displayIdx === Infinity && inlineIdx === Infinity) {
-      // No more math
-      segments.push({ type: 'text', content: remaining })
-      break
-    }
-
-    const nextMathIdx = Math.min(displayIdx, inlineIdx)
-    const isDisplay = displayIdx <= inlineIdx
-
-    // Text before math
-    if (nextMathIdx > 0) {
-      segments.push({ type: 'text', content: remaining.slice(0, nextMathIdx) })
-    }
-
-    if (isDisplay && displayMatch) {
-      segments.push({ type: 'display', content: displayMatch[1] })
-      remaining = remaining.slice(nextMathIdx + displayMatch[0].length)
-    } else if (inlineMatch) {
-      segments.push({ type: 'inline', content: inlineMatch[1] })
-      remaining = remaining.slice(nextMathIdx + inlineMatch[0].length)
+  const renderMath = (content: string, displayMode: boolean): string => {
+    try {
+      return katex.renderToString(content.trim(), { ...katexOptions, displayMode })
+    } catch (e: any) {
+      if (!showErrors) return ''
+      const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
+      return displayMode
+        ? `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
+        : `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
     }
   }
 
-  // Render each segment
-  return segments.map(seg => {
-    if (seg.type === 'display') {
-      try {
-        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: true })
-      } catch (e: any) {
-        if (!showErrors) return ''
-        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-        return `<div style="color:#b91c1c;font-size:11px;margin:4px 0">${msg}</div>`
-      }
-    }
-    if (seg.type === 'inline') {
-      try {
-        return katex.renderToString(seg.content.trim(), { ...katexOptions, displayMode: false })
-      } catch (e: any) {
-        if (!showErrors) return ''
-        const msg = String(e.message || e || 'parse error').replace(/</g, '&lt;')
-        return `<span style="color:#b91c1c;font-size:11px">${msg}</span>`
-      }
-    }
-    // Markdown rendering for text segments
-    return md.render(seg.content)
-  }).join('')
+  const makeToken = (html: string): string => {
+    const idx = placeholders.length
+    placeholders.push(html)
+    // Alphanumeric token survives markdown-it untouched. Padded with letters
+    // so markdown-it doesn't see digits-only and treat as a list/ordinal.
+    return `MATHPLACEHOLDERZZZ${idx}ZZZ`
+  }
+
+  // Replace display math first ($$...$$), then inline ($...$). Surround
+  // display tokens with blank lines so markdown-it treats them as their own
+  // paragraph rather than wrapping them inside an existing block.
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content) => {
+    return `\n\n${makeToken(renderMath(content, true))}\n\n`
+  })
+  processed = processed.replace(/\$([^$\n]+)\$/g, (_m, content) => {
+    return makeToken(renderMath(content, false))
+  })
+
+  // Render the whole thing as markdown in one pass so paragraph/inline
+  // structure is correct.
+  let html = md.render(processed)
+
+  // Swap placeholders back. Display-math placeholders end up in their own
+  // <p>...</p>; unwrap those so the KaTeX block isn't nested in a paragraph.
+  html = html.replace(/<p>\s*(MATHPLACEHOLDERZZZ\d+ZZZ)\s*<\/p>/g, '$1')
+  html = html.replace(/MATHPLACEHOLDERZZZ(\d+)ZZZ/g, (_m, idx) => placeholders[Number(idx)] || '')
+
+  return html
 }
 
 // Legacy alias for KaTeX-only rendering (used in edit preview)
@@ -205,8 +191,11 @@ const cmTheme = EditorView.theme({
  * In pen mode, finger touches should pass through to TLDraw (for palm rejection).
  * Only stop propagation for pen/mouse events or when not in pen mode.
  */
-function stopIfNotPenTouch(editor: any) {
+// Stop event propagation only when the note is being edited.
+// When not editing, let TLDraw handle pointer events so the shape is draggable.
+function stopIfNotPenTouch(editor: any, isEditing: boolean) {
   return (e: React.PointerEvent) => {
+    if (!isEditing) return // let TLDraw handle drag
     if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
     stopEventPropagation(e)
   }
@@ -226,12 +215,15 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     collapsed: T.optional(T.boolean),
     docName: T.optional(T.string),
     docView: T.optional(T.boolean),
+    backingFile: T.optional(T.string),
   }
 
   getDefaultProps() {
+    // Match the MCP `md` size preset (450×200) so canvas-created notes have
+    // room for paragraph + math content without immediate resizing.
     return {
-      w: 200,
-      h: 50,
+      w: 450,
+      h: 200,
       text: '',
       color: 'light-blue',
       autoSize: true,
@@ -321,6 +313,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const lastSentTextRef = useRef(shape.props.text || '')
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
+    const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
 
     const docName = shape.props.docName as string | undefined
@@ -411,6 +404,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const interval = setInterval(poll, 3000)
       return () => clearInterval(interval)
     }, [docName, shape.id, editor])
+
+    // Backing file: write to file when exiting editing
+    const backingFile = shape.props.backingFile as string | undefined
+    useEffect(() => {
+      if (isEditing || !backingFile) return
+      const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+      fetch('/api/backing-file-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: backingFile, content }),
+      }).catch(() => {})
+    }, [isEditing])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtml = useMemo(
@@ -556,6 +561,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         editor.setEditingShape(null)
       }
 
+      // Voice accumulator state — declared here so the updateListener can
+      // reference them by closure even though they're mutated later.
+      let voiceAnchorPos: number | null = null
+      let lastVoiceLen = 0
+      let voiceFilling = false  // true while onVoiceUpdate is dispatching
+
       const startState = EditorState.create({
         doc: shape.props.text || '',
         extensions: [
@@ -588,6 +599,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 type: 'math-note' as any,
                 props: { text },
               })
+            }
+            // Cursor moved or text typed by the user (not voice) — interrupt the
+            // current speech session so the next one starts from the new position.
+            // Mirrors the textarea onEdit → enterEdit() path in voice.mjs.
+            if (!voiceFilling && (update.selectionSet || update.docChanged)) {
+              voiceAnchorPos = null
+              lastVoiceLen = 0
+              notifyAccumulatorCursorMoved()
             }
             // Track cursor position for preview scroll
             if (update.selectionSet || update.docChanged) {
@@ -655,6 +674,49 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       // Focus the editor
       view.focus()
+      // Move cursor to end of content so the user can continue typing after existing text.
+      // On double-click edit of a note, CodeMirror's own click handler repositions the cursor
+      // to the clicked location — this just sets the initial position sensibly.
+      view.dispatch({
+        selection: { anchor: view.state.doc.length },
+        scrollIntoView: true,
+      })
+
+      // Wire voice accumulator: Right Shift → dictate into this note.
+      // voiceAnchorPos/lastVoiceLen/voiceFilling are declared above (before EditorState.create)
+      // so the updateListener closure can reference them.
+      const onVoiceUpdate = (text: string) => {
+        const v = cmViewRef.current
+        if (!v) return
+        if (voiceAnchorPos === null) {
+          // First update of this recording session: snapshot cursor position
+          voiceAnchorPos = v.state.selection.main.head
+          lastVoiceLen = 0
+        }
+        const from = voiceAnchorPos
+        const to = voiceAnchorPos + lastVoiceLen
+        voiceFilling = true
+        v.dispatch({
+          changes: { from, to, insert: text },
+          selection: { anchor: from + text.length },
+        })
+        voiceFilling = false
+        lastVoiceLen = text.length
+        // EditorView.updateListener fires and saves to shape props
+      }
+      const onVoiceStop = () => {
+        // Recording stopped — next session starts a fresh anchor
+        voiceAnchorPos = null
+        lastVoiceLen = 0
+      }
+      setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+
+      // Re-register accumulator whenever CodeMirror regains focus.
+      // If the chat shape called setVoiceTarget (which calls hardResetVoice and clears
+      // _accumulator), we need to reclaim it when the note is focused again — the
+      // isEditing effect won't re-fire since the note stays in edit mode throughout.
+      const onCmFocus = () => setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+      view.dom.addEventListener('focus', onCmFocus, true)
 
       // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
       if (useVim && pendingEntryMode && cm) {
@@ -668,7 +730,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
 
       return () => {
+        view.dom.removeEventListener('focus', onCmFocus, true)
         container.removeEventListener('keydown', captureTab, true)
+        clearVoiceAccumulator(onVoiceUpdate)
         view.destroy()
         cmViewRef.current = null
         setIsVimInsert(false)
@@ -745,7 +809,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             flexDirection: 'column',
           }}
           onKeyDown={handleKeyDown}
-          onPointerDown={stopIfNotPenTouch(editor)}
+          onPointerDown={stopIfNotPenTouch(editor, isEditing)}
         >
           {/* Reply context — read-only view of the tab being replied to */}
           {replyContextHtml && (
@@ -991,18 +1055,25 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           id={shape.id}
           style={{
             overflow: 'visible',
-            pointerEvents: 'all',
+            pointerEvents: 'none',
             position: 'relative',
           }}
         >
           <div
-            onMouseEnter={() => setDotHovered(true)}
-            onMouseLeave={() => setDotHovered(false)}
-            style={{ position: 'relative' }}
+            onMouseEnter={() => {
+              if (dotHoverTimerRef.current) clearTimeout(dotHoverTimerRef.current)
+              dotHoverTimerRef.current = setTimeout(() => setDotHovered(true), 600)
+            }}
+            onMouseLeave={() => {
+              if (dotHoverTimerRef.current) clearTimeout(dotHoverTimerRef.current)
+              dotHoverTimerRef.current = null
+              setDotHovered(false)
+            }}
+            style={{ position: 'relative', pointerEvents: 'auto' }}
           >
-            {/* The dot */}
+            {/* The dot — double-click to expand, single click passes through to TLDraw for select/drag */}
             <div
-              onClick={(e) => {
+              onDoubleClick={(e) => {
                 e.stopPropagation()
                 editor.updateShape({
                   id: shape.id,

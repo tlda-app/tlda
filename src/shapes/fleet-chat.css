@@ -35,6 +35,20 @@
   color: var(--text);
   border: 1px solid rgba(128, 128, 128, 0.1);
 }
+
+
+/* Fleet HUD sits above all canvas content (notes, doc pages, etc.) */
+[data-shape-type="fleet-docview"] {
+  z-index: 8200 !important;
+}
+[data-shape-type="fleet-agents"],
+[data-shape-type="fleet-search"] {
+  z-index: 8201 !important;
+}
+[data-shape-type="fleet-chat"] {
+  z-index: 8210 !important;
+  isolation: isolate;
+}
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
   opacity: 0.6;
@@ -330,6 +344,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-log {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-gutter: stable;
 }
 
 /* --- Draggable elements in chat --- */
@@ -337,13 +352,84 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
    Nick spans and message text are selectable/copyable. */
 .fleet-chat-shape .chat-ts,
 .fleet-chat-shape .chat-activity-card,
+/* Large draggable items now only drag from their .drag-handle */
 .fleet-chat-shape .code-block-header,
 .fleet-chat-shape .tool-ref,
 .fleet-chat-shape .md-file-card,
 .fleet-chat-shape .tlda-card {
-  cursor: grab;
+  cursor: default;
   touch-action: none;
   user-select: none;
+}
+
+/* Drag handle — thin left strip on activity cards, code block headers, tool lines.
+   Same show/hide behavior as .fleet-btn-group: invisible by default, fades in on
+   mouse movement + hover. No background — just barely-visible '::' colons on a
+   transparent surface, like a very slightly textured area. */
+.fleet-chat-shape .drag-handle {
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 2s;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  letter-spacing: -1px;
+  color: currentColor;
+  user-select: none !important;
+}
+.fleet-chat-shape .drag-handle::before {
+  content: '::';
+}
+html.mousemove .fleet-chat-shape .chat-activity-card:hover > .drag-handle,
+html.mousemove .fleet-chat-shape .code-block-header:hover > .drag-handle,
+html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+.fleet-chat-shape .drag-handle:hover {
+  opacity: 0.5 !important;
+  transition: none;
+}
+
+/* Inside code-block-header (flex row): fixed-size flex child */
+.fleet-chat-shape .code-block-header > .drag-handle {
+  width: 12px;
+  height: 14px;
+}
+/* Inside activity card (not flex): absolute on left edge, full height */
+.fleet-chat-shape .chat-activity-card > .drag-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 1;
+}
+/* Inside lifecycle card: absolute on left edge, full height (same as activity card) */
+.fleet-chat-shape .lifecycle-card > .drag-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 1;
+}
+html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+/* Inside tool-line (flex row): fixed-size flex child */
+.fleet-chat-shape .tool-line > .drag-handle {
+  width: 10px;
+}
+
+.fleet-chat-shape .chat-activity-card {
+  cursor: text;
+}
+.fleet-chat-shape .code-block-header {
+  cursor: text;
 }
 
 /* --- Chat line base --- */
@@ -356,6 +442,13 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   user-select: text !important;
   cursor: text;
 }
+/* tldraw sets user-select:none on .tl-container * which applies to child elements
+   even when .chat-line has user-select:text !important (inheritance loses to any
+   explicit rule). Override ALL children of .chat-line to be selectable. */
+.fleet-chat-shape .chat-line * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
 
 .fleet-chat-shape .chat-line.from-user {
   background: rgba(100, 140, 255, 0.04);
@@ -366,12 +459,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   color: var(--text-dim);
   font-size: 11px;
   margin-right: 4px;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 /* --- Nick --- */
 .fleet-chat-shape .chat-nick {
   font-weight: 500;
   margin-right: 4px;
+}
+
+/* --- Agent nicks are draggable --- */
+.fleet-chat-shape .agent-nick {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
 
 /* --- Nick colors --- */
@@ -420,7 +522,14 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   padding: 6px 8px;
   border-radius: 4px;
   margin: 4px 0;
+  /* overflow-x: auto with overflow-y: clip — Skip noticed wheel scroll
+     getting eaten by these inner pre blocks ("scroll within scroll").
+     overflow-x:auto alone implicitly forces overflow-y to auto, creating
+     a vertical scroll container that captures wheel events. overflow-y:
+     clip keeps horizontal scroll for long code lines without making the
+     element a vertical scroll container. */
   overflow-x: auto;
+  overflow-y: clip;
   font-size: 12px;
   font-family: 'SF Mono','Menlo',monospace;
 }
@@ -430,6 +539,11 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   border-radius: 3px;
   font-size: 12px;
   font-family: 'SF Mono','Menlo',monospace;
+}
+.fleet-chat-shape .chat-line code.code-unquote-pending {
+  background: color-mix(in srgb, var(--blue) 25%, transparent);
+  outline: 1px solid var(--blue);
+  cursor: pointer;
 }
 .fleet-chat-shape .chat-line pre code { background: none; padding: 0; }
 
@@ -461,12 +575,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   margin-right: 2px;
 }
 
+/* --- Terminal lifecycle card — hover to peek, click to pin --- */
+.fleet-chat-shape .lc-terminal-card {
+  cursor: pointer;
+}
+.fleet-chat-shape .lc-terminal-card:hover {
+  border-color: rgba(86, 156, 214, 0.4);
+}
+
 /* --- Lifecycle cards --- */
 .fleet-chat-shape .lifecycle-card {
   display: inline-block;
+  position: relative;
   border: 1px solid var(--glass-5);
   border-radius: 4px;
-  padding: 4px 10px;
+  padding: 4px 10px 4px 16px;
   margin: 2px 0;
   font-size: 12px;
   max-width: 90%;
@@ -500,6 +623,10 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .lifecycle-card .lc-arrow {
   color: var(--text-dim);
   font-size: 10px;
+}
+.fleet-chat-shape .lifecycle-card .lc-message {
+  margin-top: 4px;
+  font-size: 11px;
 }
 .fleet-chat-shape .lifecycle-card .lc-criteria {
   margin-top: 3px;
@@ -554,6 +681,33 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   gap: 3px;
   align-items: center;
   flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .lifecycle-card .lc-approve-btn,
+.fleet-chat-shape .lifecycle-card .lc-deny-btn {
+  border: none;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-approve-btn {
+  background: rgba(0, 200, 100, 0.15);
+  color: #00c864;
+}
+.fleet-chat-shape .lifecycle-card .lc-deny-btn {
+  background: rgba(255, 60, 60, 0.15);
+  color: #ff3c3c;
 }
 
 /* --- Timer messages --- */
@@ -656,9 +810,17 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 /* --- Chat images --- */
+/* Catch ALL images in chat (markdown-rendered imgs don't get .chat-image class) */
+.fleet-chat-shape .fleet-chat-log img {
+  max-width: 75%;
+  border-radius: 4px;
+  margin: 8px auto;
+  display: block;
+  cursor: pointer;
+}
 .fleet-chat-shape .chat-image {
-  max-width: 80%;
-  max-height: 300px;
+  width: 75%;
+  max-width: 75%;
   border-radius: 4px;
   margin: 8px auto;
   display: block;
@@ -667,6 +829,25 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .chat-image-shared-doc {
   width: 75%;
   max-width: 75%;
+}
+
+/* Lightbox overlay for full-size image viewing (appended to body) */
+.chat-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  background: rgba(0,0,0,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+.chat-lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 4px 30px rgba(0,0,0,0.5);
 }
 
 /* --- Long messages --- */
@@ -812,6 +993,7 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   display: flex;
   gap: 4px;
   font-size: 10px;
+  position: relative;
 }
 .fleet-chat-shape .tool-linenum {
   color: var(--text-dim);
@@ -825,6 +1007,148 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
 .fleet-chat-shape .tool-copy { display: none; }
 .fleet-chat-shape .tool-detail { color: var(--text-dim); opacity: 0.5; font-size: 9px; }
+.fleet-chat-shape .tool-pretty-result {
+  margin: 6px 0 6px 0;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+}
+.fleet-chat-shape .pretty-result-header {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  padding: 0 4px 3px;
+  border-bottom: 1px solid var(--glass-3);
+}
+/* Screenshot placeholder — reserves space for CanvasClipPanel overlay */
+.fleet-chat-shape .screenshot-placeholder {
+  width: 100%;
+  height: 200px;
+  border-radius: 6px;
+  background: rgba(100, 100, 200, 0.06);
+  border: 1px solid rgba(100, 100, 200, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0;
+  position: relative;
+}
+.fleet-chat-shape .screenshot-placeholder-label {
+  color: rgba(150, 150, 200, 0.4);
+  font-size: 12px;
+}
+/* Screenshot tool result with inline image */
+.fleet-chat-shape .tool-pretty-screenshot .chat-image {
+  margin: 4px 0;
+  max-width: 100%;
+  cursor: zoom-in;
+}
+/* Thread messages — rendered like live chat lines inside a subtle frame */
+.fleet-chat-shape .tool-pretty-thread {
+  border-left: 2px solid var(--accent, #7a9ec8);
+  border-radius: 4px;
+  background: rgba(100, 140, 200, 0.02);
+  padding: 2px 0;
+}
+.fleet-chat-shape .tool-pretty-thread .chat-line {
+  /* Thread messages inherit normal chat-line styling */
+}
+.fleet-chat-shape .pretty-msg-body {
+  font-size: 11px;
+  margin-top: 1px;
+}
+.fleet-chat-shape .pretty-ver {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--accent, #7a9ec8);
+  opacity: 0.6;
+  margin-left: 2px;
+}
+/* Search results — alternating stripes with clear separation */
+.fleet-chat-shape .tool-pretty-search {
+  border-left: 2px solid var(--yellow, #c8b060);
+  padding-left: 2px;
+}
+.fleet-chat-shape .pretty-search-row {
+  padding: 4px 6px;
+  font-size: 10px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.fleet-chat-shape .pretty-row-even {
+  background: transparent;
+}
+.fleet-chat-shape .pretty-row-odd {
+  background: rgba(128, 128, 128, 0.07);
+}
+.fleet-chat-shape .pretty-search-ts {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 9px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  min-width: 55px;
+}
+.fleet-chat-shape .pretty-search-source {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 9px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-chat-shape .pretty-search-snippet {
+  word-break: break-word;
+}
+.fleet-chat-shape .pretty-search-row mark {
+  background: rgba(255, 220, 80, 0.3);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.fleet-chat-shape .pretty-expand-btn {
+  text-align: center;
+  font-size: 9px;
+  color: var(--accent, #7a9ec8);
+  padding: 4px 0;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+/* Schedule / timer cards */
+.fleet-chat-shape .tool-pretty-schedule {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(120, 180, 120, 0.5);
+  background: rgba(120, 180, 120, 0.04);
+  border-radius: 3px;
+  flex-wrap: wrap;
+}
+.fleet-chat-shape .schedule-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .schedule-time {
+  font-weight: 600;
+  font-size: 11px;
+  color: rgba(140, 200, 140, 0.9);
+}
+.fleet-chat-shape .schedule-at {
+  font-size: 9px;
+  color: var(--text-dim);
+}
+.fleet-chat-shape .schedule-reason {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
 
 /* --- Activity cards --- */
 .fleet-chat-shape .chat-activity-inline-wrap {
@@ -842,8 +1166,24 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   border: 1px solid rgba(128, 128, 128, 0.1);
   border-radius: 4px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: text;
   transition: background 0.1s;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+/* All descendants of activity cards are selectable too (same problem as .chat-line:
+   .tl-container * sets user-select:none on every element explicitly) */
+.fleet-chat-shape .chat-activity-card * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+/* Drag handles inside cards must stay non-selectable — higher specificity (0,3,0)
+   overrides the .chat-activity-card * rule above */
+.fleet-chat-shape .chat-activity-card > .drag-handle,
+.fleet-chat-shape .code-block-header > .drag-handle,
+.fleet-chat-shape .tool-line > .drag-handle {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 .fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
 .fleet-chat-shape .chat-activity-card .activity-header {
@@ -930,7 +1270,9 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 .fleet-chat-shape .diff-side {
   flex: 1;
+  /* See note on .chat-line pre above re: overflow-y: clip. */
   overflow-x: auto;
+  overflow-y: clip;
   padding: 2px 4px;
   border-radius: 3px;
 }
@@ -963,7 +1305,9 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .code-block-wrap pre {
   margin: 0;
   padding: 4px 8px;
+  /* See .chat-line pre above re: overflow-y: clip. */
   overflow-x: auto;
+  overflow-y: clip;
   font-size: 10px;
 }
 .fleet-chat-shape .code-block-wrap pre.code-collapsed {
@@ -1164,6 +1508,25 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.fleet-agents-shape .fleet-agents-detail-firstrow {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.fleet-agents-shape .fleet-agents-detail-model {
+  flex-shrink: 0;
+  opacity: 0.7;
+  background: rgba(122, 158, 200, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+.fleet-agents-shape .fleet-agents-detail-effort {
+  flex-shrink: 0;
+  opacity: 0.55;
+  background: rgba(147, 112, 219, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 
 /* --- Column widths --- */
 
@@ -1198,12 +1561,22 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
-  width: 42px;
+  width: 50px;
   flex-shrink: 0;
   text-align: right;
   font-size: 9px;
   opacity: 0.4;
   margin-right: 8px;
+  white-space: nowrap;
+}
+
+.fleet-agents-shape .fleet-agents-col-ctx {
+  width: 30px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  opacity: 0.7;
+  margin-right: 6px;
 }
 
 /* --- Draggable pills in table --- */
@@ -1253,21 +1626,6 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 
 /* --- Respawn button --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  background: none;
-  border: 1px solid rgba(128,128,128,0.2);
-  border-radius: 3px;
-  color: rgba(128,128,128,0.5);
-  font-size: 10px;
-  padding: 0 4px;
-  cursor: pointer;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-.fleet-agents-shape .fleet-agents-respawn-btn:hover {
-  border-color: rgba(128,128,128,0.4);
-  color: rgba(128,128,128,0.7);
-}
 
 /* --- Unread dot --- */
 
@@ -1284,21 +1642,40 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   background: #7a9ec8;
 }
 
-/* --- Respawn button in row --- */
+/* --- Kill/respawn button (left of agent name, on hover) --- */
 
-.fleet-agents-shape .fleet-agents-respawn-btn {
-  margin-left: 4px;
+.fleet-agents-shape .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(128, 128, 128, 0.7);
 }
-.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn {
-  opacity: 0.6;
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
+  opacity: 0.5;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn {
+.fleet-agents-shape .fleet-agents-kill-btn:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+.fleet-agents-shape .fleet-agents-respawn-btn:hover {
+  opacity: 1 !important;
+}
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
   opacity: 0;
 }
-.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn {
-  opacity: 0.5;
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
+  opacity: 0.4;
 }
 
 /* --- Spawn buttons --- */
@@ -1322,6 +1699,20 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
+}
+.fleet-agents-shape .fleet-agents-spawn-search {
+  background: rgba(30,30,40,0.9);
+  color: #ccc;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  font-size: 8px;
+  padding: 2px 4px;
+  width: 80px;
+  font-family: inherit;
+  outline: none;
+}
+.fleet-agents-shape .fleet-agents-spawn-search:focus {
+  border-color: rgba(128,128,128,0.5);
 }
 
 /* --- Search shape enhancements --- */
@@ -1360,13 +1751,36 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 }
 
 .fleet-search-result {
-  padding: 4px 10px;
+  position: relative;
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
-  cursor: pointer;
   transition: background 0.1s;
 }
 .fleet-search-result:hover {
   background: rgba(128, 128, 128, 0.06);
+}
+.fleet-search-result .chat-line {
+  padding-right: 20px;
+}
+.fleet-search-result mark {
+  background: rgba(255, 220, 80, 0.25);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.search-result-open {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 9px;
+  opacity: 0;
+  cursor: pointer;
+  line-height: 1;
+  transition: opacity 0.15s;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.fleet-search-result:hover .search-result-open {
+  opacity: 0.6;
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);
@@ -1398,27 +1812,19 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 
 /* --- Embedded chat view in search --- */
 
-.fleet-search-embedded-chat {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
 .fleet-search-chat-back {
+  background: none;
+  border: none;
   padding: 4px 10px;
   font-size: 9px;
+  font-family: inherit;
+  color: inherit;
   opacity: 0.5;
   cursor: pointer;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
-  flex-shrink: 0;
   transition: opacity 0.15s;
 }
 .fleet-search-chat-back:hover {
-  opacity: 0.8;
-}
-.fleet-search-embedded-chat .fleet-chat-log {
-  font-size: 10px;
-  padding: 4px 0;
+  opacity: 0.9;
 }
 
 /* Highlight a chat line when scrolled to from search */
@@ -1453,6 +1859,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   background: rgba(147, 112, 219, 0.25);
   border-color: rgba(147, 112, 219, 0.4);
 }
+/* Chip hover popover — shows referenced chat content */
+.chip-hover-popover {
+  background: rgba(15, 15, 26, 0.95);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #a8a8c0;
+  max-height: 200px;
+  overflow-y: auto;
+}
 .fleet-chat-shape .ref-chip .ref-chip-preview {
   display: none;
   position: absolute;
@@ -1480,6 +1901,11 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   display: block;
 }
 
+/* Suppress CSS tooltip when JS popover handles hover (msg/activity/tool chips with data-token) */
+.fleet-chat-shape .ref-chip[data-token] .ref-chip-preview,
+.fleet-chat-shape .ref-chip[data-token]:hover .ref-chip-preview {
+  display: none !important;
+}
 /* Annotation chips use AnnotationViewer — suppress CSS tooltip */
 .fleet-chat-shape .ref-chip-annotation .ref-chip-preview,
 .fleet-chat-shape .ref-chip-annotation:hover .ref-chip-preview {
@@ -1501,6 +1927,22 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
 .fleet-chat-shape .ref-chip-doc-icon {
   font-size: 10px;
   line-height: 1;
+}
+.fleet-chat-shape .ref-chip-broken {
+  background: rgba(200, 100, 60, 0.12);
+  border-color: rgba(200, 100, 60, 0.3);
+  color: rgba(220, 130, 80, 0.85);
+  cursor: default;
+  gap: 3px;
+}
+.fleet-chat-shape .ref-chip-broken:hover {
+  background: rgba(200, 100, 60, 0.2);
+  border-color: rgba(200, 100, 60, 0.5);
+}
+.fleet-chat-shape .att-upload-failed {
+  color: rgba(220, 130, 80, 0.9);
+  font-size: 9px;
+  font-style: italic;
 }
 .fleet-chat-shape .ref-chip-annotation {
   cursor: pointer;
@@ -1596,7 +2038,9 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   background: rgba(0,0,0,0.3);
   padding: 4px 6px;
   border-radius: 3px;
+  /* See .chat-line pre re: overflow-y: clip. */
   overflow-x: auto;
+  overflow-y: clip;
   font-size: 9px;
 }
 .fleet-chat-shape .md-expand-body code {
@@ -1677,6 +2121,21 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   font-size: 10px;
 }
 
+/* Queued messages — sent to a thinking agent, awaiting their next read.
+   Render under the thinking line so it's visually obvious that these
+   are pending, not delivered. Cleared automatically when the agent
+   stops thinking. */
+.chat-queued {
+  font-size: 11px;
+  opacity: 0.55;
+  font-style: italic;
+  pointer-events: none;
+  padding-left: 8px;
+}
+.chat-queued .chat-queued-text {
+  color: var(--text-dim, #888);
+}
+
 /* =============================================================================
    Pointer-events architecture
    HTMLContainer: always pointer-events: all (content always interactive).
@@ -1691,13 +2150,15 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
    explicit pointer-events:all (chips, buttons, etc.) would otherwise intercept
    the click and start their own drag handlers instead of letting tldraw move
    the whole shape. */
-.fleet-drag-mode .tl-html-container {
+.fleet-drag-mode .tl-html-container,
+.fleet-drag-mode .tl-html-container * {
   pointer-events: none !important;
 }
 
 /* Button group — always interactive even in drag mode */
-.fleet-shape .fleet-btn-group {
-  pointer-events: auto;
+.fleet-drag-mode .fleet-btn-group,
+.fleet-drag-mode .fleet-btn-group * {
+  pointer-events: auto !important;
 }
 
 /* --- ClusterShape --- */
@@ -1948,3 +2409,616 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   opacity: 1 !important;
   color: #9370db;
 }
+
+/* Hard-lock scroll toggle — magnet icon, left of textarea */
+.fleet-chat-shape .fleet-hardlock-toggle {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-hardlock-toggle:hover {
+  opacity: 0.55;
+}
+
+/* Terminal peek icon — same family as magnet, positioned just right of it */
+.fleet-chat-shape .fleet-terminal-icon {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-terminal-icon:hover {
+  opacity: 0.55;
+}
+
+/* Terminal hover pane — read-only terminal peek, floats below input area */
+.fleet-chat-shape .fleet-terminal-hover-pane {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  /* height is set via inline style from React state */
+  background: rgb(13, 13, 20);
+  border: 1px solid rgba(80, 80, 110, 0.35);
+  border-radius: 0 0 4px 4px;
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 50;
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  background: rgb(20, 20, 30);
+  border-bottom: 1px solid rgba(80, 80, 110, 0.2);
+  flex-shrink: 0;
+  min-height: 18px;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-title {
+  flex: 1;
+  color: rgba(168, 168, 192, 0.6);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status {
+  color: rgba(168, 168, 192, 0.4);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-status.error {
+  color: rgba(228, 85, 85, 0.7);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin,
+.fleet-chat-shape .fleet-terminal-hover-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 1px 3px;
+  cursor: pointer;
+  color: rgba(168, 168, 192, 0.4);
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin:hover,
+.fleet-chat-shape .fleet-terminal-hover-close:hover {
+  color: rgba(168, 168, 192, 0.8);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-pin.active {
+  color: rgba(120, 160, 240, 0.8);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body {
+  flex: 1;
+  min-height: 0;
+  padding: 2px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-body .xterm {
+  height: 100%;
+}
+
+/* Peek mode: no scroll. Pinned mode: allow scroll. */
+.fleet-chat-shape .fleet-terminal-hover-pane:not(.fleet-terminal-hover-pane-pinned) .fleet-terminal-hover-body .xterm-viewport {
+  overflow-y: hidden !important;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: rgba(20, 20, 30, 0.9);
+  border-top: 1px solid rgba(80, 80, 110, 0.2);
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-prompt {
+  color: rgba(100, 200, 120, 0.7);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: rgba(200, 200, 220, 0.9);
+  font-family: inherit;
+  font-size: 9px;
+  padding: 0;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-input::placeholder {
+  color: rgba(168, 168, 192, 0.25);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  cursor: pointer;
+  color: rgba(168, 168, 192, 0.35);
+  font-family: inherit;
+  font-size: 8px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c:hover {
+  color: rgba(228, 85, 85, 0.7);
+}
+
+.fleet-chat-shape .fleet-terminal-hover-resize-handle {
+  height: 4px;
+  cursor: ns-resize;
+  background: rgba(80, 80, 110, 0.15);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.fleet-chat-shape .fleet-terminal-hover-resize-handle:hover {
+  background: rgba(120, 160, 240, 0.3);
+}
+
+/* --- Fleet DocView shape --- */
+/* Suppress tldraw hover/selection indicators on ALL shapes in the HUD */
+.fleet-hud .clip-panel-canvas .tl-shape-indicator { display: none !important; }
+.fleet-hud .clip-panel-canvas .tl-overlays__item { pointer-events: none !important; }
+.fleet-docview {
+  overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+}
+/* Top-right horizontal sibling of .fleet-btn-group — back/forward/go buttons.
+   Same styling as the vertical right-edge group, but laid out horizontally
+   and anchored to the top-right corner so the chrome isn't one heavy blob. */
+.fleet-shape .fleet-btn-group.fleet-btn-group-topright {
+  top: 2px;
+  right: 2px;
+  transform: none;
+  flex-direction: row;
+}
+.fleet-docview-body {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.fleet-docview .clip-panel {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+.fleet-docview .clip-panel-canvas {
+  height: 100% !important;
+}
+.fleet-docview .fleet-btn-group,
+.fleet-docview .fleet-btn-group.fleet-btn-group-topright {
+  z-index: 100;
+}
+.fleet-docview-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 9px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  background: var(--glass-bg, rgba(30,30,30,0.7));
+}
+.fleet-docview:hover .fleet-docview-nav { opacity: 0.8; }
+.docview-nav-btn {
+  background: none;
+  border: none;
+  color: var(--color-text, #ddd);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 3px;
+  opacity: 0.6;
+}
+.docview-nav-btn:hover { opacity: 1; }
+.docview-nav-btn:disabled { opacity: 0.2; cursor: default; }
+.docview-nav-title {
+  flex: 1;
+  text-align: center;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docview-goto { margin-left: auto; }
+
+/* DocView sources overlay */
+.docview-sources-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  padding: 8px;
+  gap: 4px;
+}
+.tl-theme__dark .docview-sources-overlay {
+  background: rgba(30, 30, 46, 0.95);
+}
+.docview-sources-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  margin-bottom: 2px;
+}
+.tl-theme__dark .docview-sources-header {
+  color: var(--text-dim);
+  border-bottom-color: rgba(255,255,255,0.08);
+}
+.docview-sources-back {
+  font-size: 11px;
+  background: none;
+  border: none;
+  color: var(--accent, #7aa2f7);
+  cursor: pointer;
+  padding: 0 4px;
+}
+.docview-sources-back:hover { opacity: 0.8; }
+.docview-source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.docview-source-row:hover { background: rgba(0,0,0,0.05); }
+.tl-theme__dark .docview-source-row:hover { background: rgba(255,255,255,0.05); }
+.docview-source-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.docview-source-label {
+  flex: 1;
+  color: #333;
+}
+.tl-theme__dark .docview-source-label {
+  color: var(--text, #cdd6f4);
+}
+.docview-source-desc {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* DocView error header bar */
+.docview-error-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  background: rgba(243, 139, 139, 0.12);
+  border-bottom: 1px solid rgba(243, 139, 139, 0.25);
+  font-size: 10px;
+  min-height: 18px;
+}
+.docview-error-icon {
+  color: #f38bab;
+  flex-shrink: 0;
+}
+.docview-error-msg {
+  flex: 1;
+  color: #f38bab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docview-error-count {
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* --- Plan approval cards --- */
+.fleet-chat-shape .plan-card {
+  border: 1px solid rgba(147, 112, 219, 0.35);
+  border-radius: 4px;
+  background: rgba(147, 112, 219, 0.06);
+  margin: 4px 0;
+  overflow: hidden;
+  max-width: 95%;
+}
+.fleet-chat-shape .plan-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: rgba(147, 112, 219, 0.1);
+  border-bottom: 1px solid rgba(147, 112, 219, 0.2);
+  font-size: 11px;
+}
+.fleet-chat-shape .plan-card-icon {
+  flex-shrink: 0;
+}
+.fleet-chat-shape .plan-card-title {
+  font-size: 11px;
+  color: var(--text-bright);
+}
+.fleet-chat-shape .plan-card-body {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.fleet-chat-shape .plan-card-actions {
+  display: flex;
+  gap: 6px;
+  padding: 5px 8px;
+  border-top: 1px solid rgba(147, 112, 219, 0.15);
+}
+.fleet-chat-shape .plan-approve-btn,
+.fleet-chat-shape .plan-reject-btn {
+  flex: 1;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.fleet-chat-shape .plan-approve-btn {
+  background: rgba(122, 184, 160, 0.2);
+  color: var(--green);
+  border: 1px solid rgba(122, 184, 160, 0.3);
+}
+.fleet-chat-shape .plan-approve-btn:hover {
+  background: rgba(122, 184, 160, 0.35);
+}
+.fleet-chat-shape .plan-reject-btn {
+  background: rgba(229, 85, 85, 0.15);
+  color: var(--red);
+  border: 1px solid rgba(229, 85, 85, 0.25);
+}
+.fleet-chat-shape .plan-reject-btn:hover {
+  background: rgba(229, 85, 85, 0.28);
+}
+.fleet-chat-shape .plan-card-approved .plan-card-actions,
+.fleet-chat-shape .plan-card-rejected .plan-card-actions {
+  pointer-events: none;
+  opacity: 0.5;
+}
+.fleet-chat-shape .plan-card-approved {
+  border-color: rgba(122, 184, 160, 0.4);
+  background: rgba(122, 184, 160, 0.04);
+}
+.fleet-chat-shape .plan-card-approved .plan-card-header {
+  background: rgba(122, 184, 160, 0.08);
+  border-bottom-color: rgba(122, 184, 160, 0.2);
+}
+.fleet-chat-shape .plan-card-rejected {
+  border-color: rgba(229, 85, 85, 0.3);
+  background: rgba(229, 85, 85, 0.03);
+}
+.fleet-chat-shape .plan-card-rejected .plan-card-header {
+  background: rgba(229, 85, 85, 0.07);
+  border-bottom-color: rgba(229, 85, 85, 0.2);
+}
+
+/* --- Kill-session card --- */
+.fleet-chat-shape .kill-session-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(229, 85, 85, 0.25);
+  border-radius: 4px;
+  background: rgba(229, 85, 85, 0.05);
+  margin: 3px 0;
+  max-width: 95%;
+  font-size: 11px;
+  color: rgba(229, 85, 85, 0.85);
+}
+.fleet-chat-shape .kill-session-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.fleet-chat-shape .kill-session-text {
+  color: rgba(200, 200, 200, 0.7);
+}
+.fleet-chat-shape .kill-session-text strong {
+  color: rgba(229, 85, 85, 0.85);
+  font-weight: 500;
+}
+
+/* --- Build result card (compact, collapsible) --- */
+.fleet-chat-shape .build-result-card {
+  border: 1px solid rgba(100, 160, 220, 0.25);
+  border-radius: 4px;
+  background: rgba(100, 160, 220, 0.04);
+  margin: 3px 0;
+  max-width: 95%;
+  overflow: hidden;
+}
+.fleet-chat-shape .build-result-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.fleet-chat-shape .build-result-header:hover {
+  background: rgba(100, 160, 220, 0.07);
+}
+.fleet-chat-shape .build-result-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.fleet-chat-shape .build-result-title {
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-chat-shape .build-result-lint-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 9px;
+  background: rgba(220, 160, 60, 0.2);
+  color: var(--yellow, #dca03c);
+  border: 1px solid rgba(220, 160, 60, 0.3);
+}
+.fleet-chat-shape .build-result-toggle {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+.fleet-chat-shape .build-result-expanded .build-result-toggle {
+  transform: rotate(180deg);
+}
+.fleet-chat-shape .build-result-body {
+  display: none;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--text);
+  border-top: 1px solid rgba(100, 160, 220, 0.12);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.fleet-chat-shape .build-result-expanded .build-result-body {
+  display: block;
+}
+
+/* Plan mode badge on agent nick */
+.fleet-chat-shape .plan-mode-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: rgba(122, 184, 160, 0.25);
+  color: rgb(122, 184, 160);
+  border: 1px solid rgba(122, 184, 160, 0.4);
+  margin: 0 2px;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+
+/* --- Doc Clip Shape --- */
+
+.doc-clip-shape {
+  overflow: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 2px;
+}
+
+.doc-clip-bar {
+  height: 8px;
+  background: rgba(128, 128, 128, 0.08);
+  cursor: grab;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.doc-clip-bar:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.doc-clip-close {
+  position: absolute;
+  right: 2px;
+  top: -1px;
+  font-size: 10px;
+  line-height: 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  padding: 0 2px;
+}
+
+.doc-clip-shape:hover .doc-clip-close {
+  opacity: 0.5;
+}
+
+.doc-clip-close:hover {
+  opacity: 1 !important;
+  color: #e88;
+}
+
+.doc-clip-shape .clip-panel {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.doc-clip-shape .clip-panel-canvas {
+  height: 100% !important;
+}
+
+.doc-clip-body {
+  overflow: hidden;
+}
+

@@ -9,6 +9,7 @@ export interface DocContextValue {
   docName: string
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
+  targets?: Array<{ name: string; title: string; pages: number }>
 }
 
 /** Volatile panel state — toggles, loading flags, history slider, etc. */
@@ -51,7 +52,9 @@ export interface PanelContextValue {
   // Shadow history scrubber
   shadowHistoryVisible?: boolean
   onToggleShadowHistory?: () => void
-  shadowHistoryVersionCount?: number
+  // Currently displayed shadow version (null = showing current document).
+  // Used to stamp outgoing chats with the doc version the user is viewing.
+  shadowActiveVersion?: { hash: string; timestamp: number } | null
 }
 
 export const DocContext = createContext<DocContextValue | null>(null)

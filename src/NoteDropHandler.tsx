@@ -32,8 +32,9 @@ export function NoteDropHandler() {
 
     function handleDragOver(e: DragEvent) {
       if (!isNoteDrag(e)) return
-      // Don't intercept dragover on the document panel
+      // Don't intercept dragover on the document panel or fleet HUD
       if (isOverOpenPanel(e)) return
+      if (isOverHud(e)) return
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
@@ -46,9 +47,19 @@ export function NoteDropHandler() {
       return null
     }
 
+    function isOverHud(e: DragEvent): boolean {
+      // With the full-viewport overlay, check if the cursor is over an actual
+      // fleet shape element — not the HUD bounding rect (which is the whole screen).
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (!target) return false
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+    }
+
     function handleDrop(e: DragEvent) {
       // Don't intercept drops on the document panel (TOC drop-to-book)
       if (isOverOpenPanel(e)) return
+      // Don't create math notes on the fleet HUD
+      if (isOverHud(e)) return
 
       // Fleet scratch card drop — full content as MathNote
       const tldaDrop = e.dataTransfer?.getData('application/x-tlda-drop')
@@ -66,11 +77,13 @@ export function NoteDropHandler() {
               type: 'math-note',
               x: point.x,
               y: point.y,
+              opacity: 1,
               props: {
                 text: dropData.content,
                 color: 'violet',
                 w: 300,
                 h,
+                collapsed: false,
               },
               meta: {
                 createdAt: Date.now(),
@@ -97,7 +110,7 @@ export function NoteDropHandler() {
           const isDoc = item.type === 'shared-doc'
           if (isDoc && e.shiftKey && item.path) {
             // Open as a full tlda document via fleet's share endpoint
-            fetch(`http://localhost:5199/api/tlda/share`, {
+            fetch(`http://localhost:5176/api/tlda/share`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: item.path })
@@ -116,11 +129,13 @@ export function NoteDropHandler() {
             type: 'math-note',
             x: point.x,
             y: point.y,
+            opacity: 1,
             props: {
               text,
               color: isDoc ? 'violet' : 'blue',
               w,
               h,
+              collapsed: false,
             },
             meta: {
               createdAt: Date.now(),
@@ -170,11 +185,13 @@ export function NoteDropHandler() {
         type: 'math-note',
         x: point.x,
         y: point.y,
+        opacity: 1,
         props: {
           text,
           color: data.color || 'orange',
           w: 200,
           h: 150,
+          collapsed: false,
         },
         meta: {
           createdAt: Date.now(),

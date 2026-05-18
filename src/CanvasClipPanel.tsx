@@ -10,10 +10,9 @@
  * buttons and title.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, stopEventPropagation, useValue } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
-import { HUD_PROXY_SHAPE_ID } from './overlays/FleetHUD'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -49,6 +48,13 @@ interface CanvasClipPanelProps {
    *  and a running 250ms animation lags the target, making content visibly
    *  grow as the user resizes the HUD smaller. */
   liveEdit?: boolean
+  /** Direct camera control — bypasses bounds-based camera computation.
+   *  When set, the camera is set to this value directly. Used by the
+   *  full-viewport fleet overlay where FleetHUD computes the camera. */
+  cameraOverride?: { x: number; y: number; z: number }
+  /** When true, the panel renders full-viewport with transparent background
+   *  and pointer-events: none on the container. Fleet shapes get pointer-events: auto. */
+  fullViewport?: boolean
   children?: React.ReactNode
 }
 
@@ -67,11 +73,15 @@ export function CanvasClipPanel({
   emphasizeShapeIds,
   readOnly = false,
   liveEdit = false,
+  cameraOverride,
+  fullViewport = false,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
   const emphasizedIdsRef = useRef<Set<string>>(new Set())
   const lockedIdsRef = useRef<Set<string>>(new Set())
+  const boundsRef = useRef<ClipBounds | null>(bounds)
+  boundsRef.current = bounds
 
   // Expose editor to parent
   useEffect(() => {
@@ -87,24 +97,168 @@ export function CanvasClipPanel({
   // background. Mirroring non-fleet shapes (especially html-page shapes
   // containing iframes) into the HUD breaks hit testing for fleet shapes
   // because iframes capture pointer events and intercept clicks.
+
+  // Location-based filtering: only sync shapes that overlap the visible region.
+  // The visible region starts as the clip bounds (so the store is lightweight on
+  // mount) and expands as the user pans/zooms in the panel. Skipped for HUD mode
+  // which already filters to fleet shapes only.
+  const BOUNDS_PADDING = 1500
+  // Shapes farther than this from the current bounds get evicted when bounds jumps.
+  // 3× BOUNDS_PADDING gives a comfortable buffer before eviction to avoid thrashing.
+  const EVICT_PADDING = BOUNDS_PADDING * 3
+  const visibleRegionRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null)
+
+  // Initialize/reset visible region from clip bounds
+  const prevBoundsRef = useRef<ClipBounds | null>(null)
+  if (bounds && (bounds !== prevBoundsRef.current)) {
+    prevBoundsRef.current = bounds
+    visibleRegionRef.current = {
+      minX: bounds.x - BOUNDS_PADDING,
+      minY: bounds.y - BOUNDS_PADDING,
+      maxX: bounds.x + bounds.w + BOUNDS_PADDING,
+      maxY: bounds.y + bounds.h + BOUNDS_PADDING,
+    }
+  }
+
+  const shapeOverlapsVisibleRegion = (shapeId: string): boolean => {
+    const vr = visibleRegionRef.current
+    if (!vr || lockCamera) return true
+    const pb = mainEditor.getShapePageBounds(shapeId as any)
+    if (!pb) return true
+    return pb.x + pb.w > vr.minX && pb.x < vr.maxX &&
+      pb.y + pb.h > vr.minY && pb.y < vr.maxY
+  }
+
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
-    // Never mirror the transient HUD layout-mode proxy shape into the HUD editor.
-    if (r.typeName === 'shape' && (r as any).id === HUD_PROXY_SHAPE_ID) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
+    if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
   }
 
   // Create copy store from main editor's document records
+  // Known shape types for this panel — shapes with unknown types are skipped during sync
+  const knownTypes = useMemo(() => new Set(shapeUtils.map((u: any) => u.type).filter(Boolean)), [shapeUtils])
+
+  const isKnownShape = (r: TLRecord) =>
+    r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0
+
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
-    const docRecords = allRecords.filter(shouldSyncToCopy)
+    const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
       .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Dynamic viewport expansion: when the user pans/zooms in the panel,
+  // expand the visible region and pull in newly-visible shapes from main.
+  // Also handles bounds prop changes (e.g. switching to a different theorem).
+  useEffect(() => {
+    if (!editor || lockCamera) return
+
+    const expandAndSync = () => {
+      const cam = editor.getCamera()
+      const container = editor.getContainer()
+      const vw = container.clientWidth / cam.z
+      const vh = container.clientHeight / cam.z
+      const viewportMinX = -cam.x - BOUNDS_PADDING
+      const viewportMinY = -cam.y - BOUNDS_PADDING
+      const viewportMaxX = -cam.x + vw + BOUNDS_PADDING
+      const viewportMaxY = -cam.y + vh + BOUNDS_PADDING
+
+      const vr = visibleRegionRef.current
+      if (!vr) {
+        visibleRegionRef.current = { minX: viewportMinX, minY: viewportMinY, maxX: viewportMaxX, maxY: viewportMaxY }
+      } else {
+        // Only expand, never shrink — old shapes stay in the store
+        const expanded = viewportMinX < vr.minX || viewportMinY < vr.minY ||
+          viewportMaxX > vr.maxX || viewportMaxY > vr.maxY
+        if (!expanded) return
+        vr.minX = Math.min(vr.minX, viewportMinX)
+        vr.minY = Math.min(vr.minY, viewportMinY)
+        vr.maxX = Math.max(vr.maxX, viewportMaxX)
+        vr.maxY = Math.max(vr.maxY, viewportMaxY)
+      }
+
+      // Pull in newly-visible shapes
+      const toAdd: TLRecord[] = []
+      for (const r of mainEditor.store.allRecords()) {
+        if (!shouldSyncToCopy(r) || !isKnownShape(r)) continue
+        if (store.has(r.id)) continue
+        if (readOnly && r.typeName === 'shape') {
+          toAdd.push({ ...r, isLocked: true } as TLRecord)
+          lockedIdsRef.current.add(r.id)
+        } else {
+          toAdd.push(r)
+        }
+      }
+      if (toAdd.length > 0) {
+        store.mergeRemoteChanges(() => { store.put(toAdd) })
+      }
+    }
+
+    // Check on mount and whenever camera changes
+    expandAndSync()
+    const unsub = store.listen(({ changes }) => {
+      for (const [, to] of Object.values(changes.updated)) {
+        if ((to as any).typeName === 'camera') {
+          expandAndSync()
+          return
+        }
+      }
+    }, { scope: 'session', source: 'all' })
+
+    return unsub
+  }, [editor, mainEditor.store, store, lockCamera, readOnly])
+
+  // Sliding-window eviction: when bounds jumps significantly (e.g. clicking a ref on a
+  // different page), evict shapes from the copy store that are far outside the new target.
+  // This keeps the store bounded to ~3–6 pages instead of accumulating all 88 over time.
+  // Only applies to readOnly (docview) panels — HUD and main canvas keep everything.
+  const lastEvictBoundsRef = useRef<ClipBounds | null>(null)
+  useEffect(() => {
+    if (lockCamera || !bounds) return
+
+    const prev = lastEvictBoundsRef.current
+    // Only evict when bounds has moved significantly (more than one padding unit away)
+    const jumped = !prev ||
+      Math.abs(bounds.y - prev.y) > BOUNDS_PADDING ||
+      Math.abs(bounds.x - prev.x) > BOUNDS_PADDING
+    if (!jumped) return
+    lastEvictBoundsRef.current = bounds
+
+    // Evict shapes outside the evict window around the new bounds
+    const minX = bounds.x - EVICT_PADDING
+    const maxX = bounds.x + bounds.w + EVICT_PADDING
+    const minY = bounds.y - EVICT_PADDING
+    const maxY = bounds.y + bounds.h + EVICT_PADDING
+
+    const toRemove: TLRecord['id'][] = []
+    for (const r of store.allRecords()) {
+      if (r.typeName !== 'shape') continue
+      const pb = mainEditor.getShapePageBounds((r as any).id)
+      if (!pb) continue
+      if (pb.x + pb.w < minX || pb.x > maxX || pb.y + pb.h < minY || pb.y > maxY) {
+        toRemove.push(r.id)
+      }
+    }
+    if (toRemove.length > 0) {
+      store.mergeRemoteChanges(() => { store.remove(toRemove) })
+      // Clean up locked-ids tracking for evicted shapes
+      for (const id of toRemove) lockedIdsRef.current.delete(id)
+      // Reset visible region to the new bounds so expandAndSync re-fills from here
+      visibleRegionRef.current = {
+        minX: bounds.x - BOUNDS_PADDING,
+        minY: bounds.y - BOUNDS_PADDING,
+        maxX: bounds.x + bounds.w + BOUNDS_PADDING,
+        maxY: bounds.y + bounds.h + BOUNDS_PADDING,
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bounds?.x, bounds?.y, bounds?.w, bounds?.h, lockCamera, store, mainEditor])
 
   // Bidirectional sync: main store ↔ copy store (document records only)
   useEffect(() => {
@@ -115,7 +269,7 @@ export function CanvasClipPanel({
     const unsubMain = mainEditor.store.listen(({ changes }) => {
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
-          if (isPill(record)) continue
+          if (isPill(record) || !isKnownShape(record)) continue
           if (shouldSyncToCopy(record)) {
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
@@ -126,7 +280,7 @@ export function CanvasClipPanel({
           }
         }
         for (const [, to] of Object.values(changes.updated)) {
-          if (isPill(to)) continue
+          if (isPill(to) || !isKnownShape(to)) continue
           if (shouldSyncToCopy(to)) {
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
@@ -183,15 +337,14 @@ export function CanvasClipPanel({
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
 
-  // Mirror main editor's active tool to the HUD editor so the single tldraw toolbar
-  // controls both. When the user picks eraser/select in the main toolbar, the HUD
-  // editor switches to the same tool — enabling deletion of fleet shapes (and any
-  // stuck non-fleet shapes) without needing a separate HUD toolbar.
-  const mainToolId = useValue('mainToolId', () => mainEditor.getCurrentToolId(), [mainEditor])
+  // HUD always stays in browse mode — it's a viewport overlay, not an editing surface.
+  // Mirroring the main tool caused placement tools (voice-note, math-note, etc.) to
+  // fire onEnter in the HUD editor and create ghost shapes in the HUD's copy store.
+  // Fleet shapes are deletable via select+X without needing eraser mirroring.
   useEffect(() => {
     if (!editor || !lockCamera) return
-    try { editor.setCurrentTool(mainToolId) } catch { /* tool may not exist in HUD */ }
-  }, [editor, mainToolId, lockCamera])
+    try { editor.setCurrentTool('browse') } catch { /* ignore */ }
+  }, [editor, lockCamera])
 
   // In HUD (lockCamera) mode: override tldraw's default file-drop handler so that
   // files dropped over a fleet-chat shape are routed to that chat's input instead
@@ -374,6 +527,29 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!editor || !bounds) return
 
+    // Direct camera control — skip all bounds-based computation.
+    // Set extremely wide constraints so nothing gets culled or clamped.
+    if (cameraOverride) {
+      cancelAnimationFrame(animFrameRef.current)
+      editor.setCameraOptions({
+        constraints: {
+          bounds: { x: -100000, y: -100000, w: 200000, h: 200000 },
+          behavior: 'inside',
+          origin: { x: 0.5, y: 0.5 },
+          padding: { x: 0, y: 0 },
+          initialZoom: 'default',
+          baseZoom: 'default',
+        },
+        // Lock zoom to exactly z=1 — the overlay must never zoom.
+        // TLDraw's internal wheel handler can still fire before our
+        // capture-phase handler, so constraining zoomSteps to [1, 1]
+        // prevents any zoom change from sticking.
+        zoomSteps: [cameraOverride.z, cameraOverride.z],
+      })
+      editor.setCamera(cameraOverride)
+      return
+    }
+
     // readOnly mode: free infinite canvas, just set initial camera position
     if (readOnly) {
       const zoom = panelWidth / bounds.w
@@ -484,7 +660,7 @@ export function CanvasClipPanel({
     initialBoundsRef.current = false
 
     return () => cancelAnimationFrame(animFrameRef.current)
-  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit])
+  }, [editor, bounds, panelWidth, lockCamera, readOnly, liveEdit, cameraOverride?.x, cameraOverride?.y, cameraOverride?.z])
 
   // Emphasize specific shapes by fading everything else (copy store only, no reverse sync)
   useEffect(() => {
@@ -513,6 +689,15 @@ export function CanvasClipPanel({
     const el = canvasRef.current
     if (!el || !editor) return
     const onWheel = (e: WheelEvent) => {
+      // Let fleet-docview shapes handle their own wheel events
+      const target = e.target as HTMLElement
+      if (lockCamera && target?.closest('.fleet-docview')) return
+      // In fullViewport mode, only handle wheel events over fleet shapes.
+      // Events over empty areas should pass through to the main canvas.
+      if (fullViewport) {
+        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+        if (!fleetShape) return // let event pass through
+      }
       e.preventDefault()
       e.stopPropagation()
       if (lockCamera) {
@@ -521,9 +706,11 @@ export function CanvasClipPanel({
         // returns null — use elementFromPoint instead.
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
           const target = document.elementFromPoint(e.clientX, e.clientY)
-          const chatLog = (target?.closest('[data-shape-id]')
-            ?.querySelector('.fleet-chat-log') ?? null) as HTMLElement | null
-          if (chatLog) chatLog.scrollTop += e.deltaY
+          const shapeEl = target?.closest('[data-shape-id]')
+          const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
+            shapeEl?.querySelector('.fleet-agents-body') ??
+            shapeEl?.querySelector('.fleet-search-results') ?? null) as HTMLElement | null
+          if (scrollable) scrollable.scrollTop += e.deltaY
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
         if (Math.abs(e.deltaX) > 0) {
@@ -532,8 +719,17 @@ export function CanvasClipPanel({
         }
       } else {
         const cam = editor.getCamera()
-        const dy = e.deltaY / cam.z
-        editor.setCamera({ x: cam.x, y: cam.y - dy, z: cam.z })
+        if (e.ctrlKey || e.metaKey) {
+          // Pinch-zoom (ctrl+wheel or trackpad pinch)
+          const zoomFactor = 1 - e.deltaY * 0.005
+          const newZ = Math.max(0.1, Math.min(10, cam.z * zoomFactor))
+          editor.setCamera({ x: cam.x, y: cam.y, z: newZ })
+        } else {
+          // Pan both axes
+          const dx = e.deltaX / cam.z
+          const dy = e.deltaY / cam.z
+          editor.setCamera({ x: cam.x - dx, y: cam.y - dy, z: cam.z })
+        }
       }
     }
     el.addEventListener('wheel', onWheel, { passive: false, capture: true })
@@ -584,7 +780,7 @@ export function CanvasClipPanel({
   const fleetSelectedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!editor) return
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
     function update() {
       const container = editor!.getContainer()
@@ -644,19 +840,8 @@ export function CanvasClipPanel({
 
   if (!bounds) return null
 
-  return (
-    <div
-      ref={panelRef}
-      className={`clip-panel ${className || ''}`}
-      style={{ width: panelWidth, height: canvasHeight + 20 }}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-    >
-      {children}
-      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
-        <Tldraw
+  const tldrawEl = (
+    <Tldraw
           store={store}
           shapeUtils={shapeUtils}
           tools={tools}
@@ -667,9 +852,10 @@ export function CanvasClipPanel({
           forceMobile
           onMount={(ed) => {
             setEditor(ed)
-            if (lockCamera) {
-              ed.user.updateUserPreferences({ isSnapMode: true })
-            }
+            // Note: snap-to-grid (isSnapMode) is a global user preference
+            // shared across all editor instances. Don't enable it here —
+            // it affects the main editor too, making highlights snap.
+            // Users can toggle snap manually with Ctrl+Shift+S when needed.
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
               // Lock all shapes so they can't be selected
@@ -688,12 +874,66 @@ export function CanvasClipPanel({
             }
           }}
         />
+  )
+
+  // In fullViewport mode, prevent the overlay's tldraw from capturing HTML5
+  // drag events when the cursor is not over a fleet shape. Without this,
+  // chips dragged onto the main canvas get swallowed by the overlay's tldraw.
+  useEffect(() => {
+    if (!fullViewport) return
+    const el = canvasRef.current
+    if (!el) return
+    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
+    const handler = (e: DragEvent) => {
+      const target = document.elementFromPoint(e.clientX, e.clientY)
+      if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it
+      // Not over a fleet shape — block the overlay's tldraw from seeing this
+      e.stopPropagation()
+    }
+    el.addEventListener('dragover', handler, { capture: true })
+    el.addEventListener('dragenter', handler, { capture: true })
+    el.addEventListener('drop', handler, { capture: true })
+    return () => {
+      el.removeEventListener('dragover', handler, { capture: true })
+      el.removeEventListener('dragenter', handler, { capture: true })
+      el.removeEventListener('drop', handler, { capture: true })
+    }
+  }, [fullViewport])
+
+  if (fullViewport) {
+    return (
+      <div
+        ref={panelRef}
+        className={`clip-panel clip-panel-fullvp ${className || ''}`}
+        style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', background: 'transparent', boxShadow: 'none', borderRadius: 0, overflow: 'visible' }}
+      >
+        {children}
+        <div ref={canvasRef} className="clip-panel-canvas clip-panel-canvas-fullvp" style={{ height: '100vh', width: '100vw', background: 'transparent', overflow: 'visible', clipPath: 'none' }}>
+          {tldrawEl}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      className={`clip-panel ${className || ''}`}
+      style={{ width: panelWidth, height: canvasHeight + 20 }}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+    >
+      {children}
+      <div ref={canvasRef} className="clip-panel-canvas" style={{ height: canvasHeight }}>
+        {tldrawEl}
       </div>
     </div>
   )
 }
 
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search'])
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 
 function isDocRecord(record: TLRecord): boolean {
   return record.typeName === 'shape' || record.typeName === 'asset' ||

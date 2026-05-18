@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
-import { setStopRecordingCallback, appendVoiceTranscript, clearVoiceTranscript, clearPendingPlacement, commitVoiceNote } from './tools/VoiceNoteTool'
+import { setStopRecordingCallback } from './tools/VoiceNoteTool'
+import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording } from './voice.mjs'
+import { log } from './logger'
 const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
@@ -11,8 +13,8 @@ import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
-import { HistoryTab } from './panels/HistoryTab'
 import { NotesTab } from './panels/NotesTab'
+import { PrefsTab } from './panels/PrefsTab'
 
 import './DocumentPanel.css'
 
@@ -38,28 +40,7 @@ export function PingButton() {
         viewport: { x: pt.x, y: pt.y },
       })
 
-      // Capture viewport screenshot and write to Yjs
-      try {
-        const viewportBounds = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1]) // strip data:...;base64, prefix
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-      } catch (e) {
-        console.warn('[Ping] Screenshot capture failed:', e)
-      }
+      // Screenshot capture handled by ScreenshotCapture component (via signal:screenshot-request)
 
       setState('success')
       setTimeout(() => setState('idle'), 1500)
@@ -99,7 +80,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'history' | 'toc' | 'notes' | 'fleet'
+type Tab = 'history' | 'toc' | 'notes' | 'fleet' | 'prefs'
 
 export function DocumentPanel() {
   const doc = useContext(DocContext)
@@ -179,18 +160,18 @@ export function DocumentPanel() {
         <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
           TOC
         </button>
-        {!isHtml && (
-          <button className={`doc-panel-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-            History
-          </button>
-        )}
+        {/* History tab removed — version wheel + bottom scrubber replaces it */}
         <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           Notes
         </button>
+        <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
+        </button>
       </div>
       {tab === 'toc' && <TocTab />}
-      {tab === 'history' && !isHtml && <HistoryTab />}
+      {/* HistoryTab removed */}
       {tab === 'notes' && <NotesTab />}
+      {tab === 'prefs' && <PrefsTab />}
       <ZoneWidthSlider />
     </div>
   )
@@ -366,13 +347,14 @@ function PhoneHighlighterButton() {
 
     if (currentMode === 'color') {
       // Use absolute cursor position relative to button left edge (= slider right edge)
-      const hiresScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1
       const btnRect = dragBtnRectRef.current
       if (!btnRect) return
       const distFromBtnLeft = btnRect.left - e.clientX // positive = cursor to left of button
-      const slotW = 29 * hiresScale // 27px slot + 2px gap, scaled
-      // 16.5 * hiresScale = padding(3) + halfSlot(13.5), scaled — distance from right edge to first slot center
-      const slotPos = Math.round((distFromBtnLeft - 16.5 * hiresScale) / slotW)
+      const slotW = 29 // 27px slot + 2px gap (native sizes, no zoom)
+      // 17.5 = padding(3) + halfSlot(13.5) + halfGap(1) — places snap boundary at
+      // each slot's right edge (the far edge of the inter-slot gap from the button),
+      // so cursor must visually enter the next slot to switch (no midway-in-gap snap).
+      const slotPos = Math.round((distFromBtnLeft - 17.5) / slotW)
       // Active slot is the button itself — filter it from the slider
       const activeOrigIdx = colorIdxRef.current
       const filteredIndices = HL_SLOTS.map((_, i) => i).filter(i => i !== activeOrigIdx)
@@ -448,20 +430,17 @@ function PhoneHighlighterButton() {
     ? (HL_SLOTS.find(s => s.id === activeColorName)?.color || '#1d1d1d')
     : (btnSlotDef?.color || HL_SLOTS[1].color)
   const isActive = mode !== 'hand'
-  // zoom: hiresScale on .phone-hl-slider means position values are scaled — divide to compensate
-  const hiresScale = typeof window !== 'undefined'
-    ? (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hires-scale')) || 1)
-    : 1
 
   return (
     <>
-      {/* Color slider popup — horizontal drag left */}
+      {/* Color slider popup — horizontal drag left.
+          Position uses raw viewport coords (no zoom to compensate for). */}
       {dragging && dragMode === 'color' && dragBtnRect && (
         <div
           className="phone-hl-slider"
           style={{
-            bottom: `${(window.innerHeight - dragBtnRect.bottom) / hiresScale}px`,
-            right: `${(window.innerWidth - dragBtnRect.left) / hiresScale}px`,
+            bottom: `${window.innerHeight - dragBtnRect.bottom}px`,
+            right: `${window.innerWidth - dragBtnRect.left}px`,
           }}
           onPointerDown={stopEventPropagation}
           onTouchStart={stopEventPropagation}
@@ -745,28 +724,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
         viewport: { x: pt.x, y: pt.y },
       })
 
-      // Capture viewport screenshot
-      try {
-        const viewportBounds = editor.getViewportPageBounds()
-        const { blob } = await editor.toImage([], {
-          bounds: viewportBounds,
-          background: true,
-          scale: 1,
-          pixelRatio: 1,
-        })
-        const buf = await blob.arrayBuffer()
-        const reader = new FileReader()
-        const base64 = await new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            resolve(result.split(',')[1])
-          }
-          reader.readAsDataURL(new Blob([buf], { type: 'image/png' }))
-        })
-        writeSignal('signal:screenshot', { data: base64, mimeType: 'image/png' })
-      } catch (e) {
-        console.warn('[Ping] Screenshot capture failed:', e)
-      }
+      // Screenshot capture handled by ScreenshotCapture component
 
       setTimeout(() => setPinging(false), 1500)
     } catch {
@@ -820,48 +778,45 @@ function VoiceNoteButtonInner() {
   const [recording, setRecording] = useState(false)
   const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
   useClickActions(editor, clicksEnabled)
-  const recRef = useRef<any>(null)
-  const transcriptRef = useRef('')
+  const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
 
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
 
   const cancelRecording = useCallback(() => {
-    if (recRef.current) { recRef.current.stop(); recRef.current = null }
-    transcriptRef.current = ''
-    clearVoiceTranscript()
-    clearPendingPlacement()
+    if (isRecording()) stopRecording()
+    if (hiddenTARef.current) {
+      clearVoiceTarget(hiddenTARef.current)
+      hiddenTARef.current.remove()
+      hiddenTARef.current = null
+    }
     setStopRecordingCallback(null)
     setRecording(false)
     editor.setCurrentTool('select')
   }, [editor])
 
   const startRecording = useCallback(() => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) return
-    transcriptRef.current = ''
-    clearVoiceTranscript()
-    const rec = new SR()
-    rec.continuous = true
-    rec.interimResults = false
-    rec.lang = 'en-US'
-    rec.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) appendVoiceTranscript(e.results[i][0].transcript + ' ')
-      }
-    }
-    rec.onend = () => {
-      commitVoiceNote()
-      if (recRef.current === rec) recRef.current = null
-    }
-    rec.start()
-    recRef.current = rec
-    // Register stop callback for the tool to call on placement
+    // Create a hidden textarea as the voice system's transcription target.
+    // voice.mjs handles all error recovery, restarts, and interim results.
+    const ta = document.createElement('textarea')
+    ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
+    document.body.appendChild(ta)
+    hiddenTARef.current = ta
+
+    setVoiceTarget(ta, [], {}, null, null)
+    if (!isRecording()) toggleRecording()
+    log.debug('voice', 'note recording started via voice system')
+
+    // The stop callback is called by VoiceNoteTool.onPointerUp (commit) or ESC.
+    // VoiceNoteTool reads getTranscript() before calling this, so we just stop and clean up.
     setStopRecordingCallback(() => {
-      if (recRef.current) { recRef.current.stop(); recRef.current = null }
+      log.debug('voice', 'note placement — stop callback fired')
+      if (isRecording()) stopRecording()
+      clearVoiceTarget(ta)
+      ta.remove()
+      hiddenTARef.current = null
       setRecording(false)
     })
     setRecording(true)
-    // Enter ghost/placement mode immediately
     editor.setCurrentTool('voice-note')
   }, [editor])
 

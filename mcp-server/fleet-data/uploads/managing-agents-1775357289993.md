@@ -1,0 +1,356 @@
+# Managing Agents — Meta Session Patterns
+
+Guidance for the manager session only. Loaded via `register_manager()`.
+
+**Read the reference files for what your workers are doing.** The manager reviews worker output and catches mistakes — you can't do that without domain knowledge. If workers are implementing math, read `math-implementation.md`. If they're submitting cluster jobs, read `cluster.md`. If they're writing LaTeX, read `tex-patterns.md` and `notation.md`. The manager needs at least the same reference context as the workers, plus this file.
+
+## Meta Sessions
+
+A meta session is one where the work is about agent infrastructure: editing CLAUDE.md or reference files, configuring hooks, diagnosing problems in other sessions, building tools. Two modes:
+
+### Conducting a meta session
+
+**Guidance changes are high-stakes** — they affect every future session. Ground them in actual log evidence. The flow is: read logs → synthesize findings → discuss → write guidance. Don't skip to writing rules before the discussion establishes whether the pattern is real and whether it's already covered.
+
+**In research reports and discussion, speculation is fine — label it.** "This might also apply to X" is useful. It just needs to be marked as such and separated (at minimum a separate sentence or bullet) from less speculative findings, so it can be pushed back on without first arguing about whether it's established fact.
+
+**Read the full existing section before editing.** Don't patch in isolation — the surrounding context matters, and you might duplicate or contradict something nearby.
+
+**Don't improve surrounding text** while you're editing a reference file. Same rule as everywhere else: if you didn't write it and weren't asked to change it, leave it.
+
+### Identifying meta sessions at startup
+
+When orienting at session start, check whether the most recent session was a meta session. If it was, scan back for the most recent non-meta session and surface both: "Most recent session was a meta session (hooks/CLAUDE.md edits). Most recent work session was [X]. Which do you want to pick up?" Don't assume.
+
+### Active intervention in another session
+
+With `task_check` and `interrupt` available, a meta session can actively intervene in a running session rather than just talk about it.
+
+**Describing a problem is not a request to fix it.** If the user describes what's going wrong in another session, that's context for discussion — not a trigger to send corrections. Wait for an explicit "help" or "fix it" before touching the other window.
+
+**When the user points at a problem in an identifiable session, read that session before asking questions.** Don't ask the user to show you something you can look up yourself. "Identifiable" includes the current session, other open windows, and any session the user has described precisely enough to find. Pay attention to number cues — "agents" (plural, no number given) means read all windows.
+
+**When asked to advise an agent, advise — don't do the task yourself.** If the user asks you to tell agent B how to do X, send agent B instructions on how to do X. Do not do X yourself. The distinction matters: agent B has context you don't, and doing it yourself bypasses that context and creates confusion about what's been done.
+
+**When asked to relay instructions, read the instructing agent first.** Find out what the instructions actually are before sending anything. Don't compose your own version — the instructing agent may have specific content, context, or framing that you'll get wrong if you improvise.
+
+**Identifying the right window — this is the hardest part.** `agent-list` shows OS window, tab, and window ID. Do not guess by ID. The procedure:
+
+1. Run `agent-list` to see the full structure.
+2. For each plausible window, `agent-read <id> | grep <distinctive-string>` using text from what the user pasted or described.
+3. Confirm with a full tail read of the matching window before sending anything.
+4. If a window has been sent a wrong message and pivoted to a different task, read further back (earlier in the scrollback) to find its original context.
+5. If the scrollback is too shallow, go to the JSONL for that session.
+6. Don't conclude it's the wrong window from the last line alone — agents change topics. Read enough context to see what the session is actually about.
+
+**Don't ask the user to recall session history.** "Do you remember what prompted X?" is a question the agent should answer by reading the log — not by asking. If the context for a decision is missing, go find it in the JSONL for that session. This applies whether it's your own session or another agent's session you've been asked to read. The user shouldn't have to reconstruct their own session history for you.
+
+**Sign inter-agent messages and say how to respond.** When sending instructions to another session via `agent-kick`, identify the source and tell the recipient how to communicate back. End messages with something like: "— meta session (win N). Just reply here; I'll check back." Otherwise the receiving agent doesn't know whether this is from the user or another agent, and can't route a response.
+
+**Receiving a signed inter-agent message: just do it.** If a message is signed (identifies a source window), in scope, and asks for work consistent with the session's ongoing task — treat it as a legitimate instruction and act. Do not escalate to the user for confirmation. The signature is the authorization. Treating a correctly-signed inter-agent instruction as a security risk to verify defeats the whole point of the coordination system.
+
+**Terminal vs. log:** `task_check` reads the tmux pane scrollback. If the content feels shallow or starts mid-thought, go to the JSONL as well. The terminal gives you the live current state; the log gives you the full arc.
+
+## Managing Multiple Agents
+
+**Use the fleet MCP server.** All agents have the `fleet` MCP server (`~/work/fleet/`), configured in `~/.claude/mcp.json`. Communication is MCP-native: agents receive work via `my_task()` and send messages via `chat()`. State persists in `~/.claude/agent-tasks.json` across compaction and session restarts.
+
+### Tools
+
+- `register(manager?, session_id?, name?)` — register this agent. **All agents call this at session start.** Adds to the agent registry so kicks work. Captures `$PWD` as working directory. Pass `manager=true` for the manager session.
+- `delegate(agent, description, message, after?, friendly_name?)` — assign a task. Writes to state and notifies the agent via fs.watch. `agent` is a fleet ID, session UUID, or friendly name. Agent must be registered. Optional `after` for dependencies. Optional `friendly_name` to name the agent on first delegation.
+- `chat(message, to?)` — send a message. Writes to state and notifies the recipient via fs.watch. Omit `to` to send to the manager.
+- `timer(seconds, message)` — non-blocking timer. Returns immediately, delivers 📬 when it fires. Use instead of bash `sleep && ...`.
+- `task_list()` — show all active tasks + registered agents. **Call at session start.** Shows friendly names when set.
+- `task_done(agent?)` — mark a task done. No args = mark own task. Marking another agent's task requires manager. Automatically unblocks dependent tasks and kicks them.
+- `task_check(agent)` — **escape hatch.** Read an agent's tmux terminal directly. For stuck/unresponsive agents only.
+- `my_task()` — show own task and read unread messages.
+- `name_agent(agent, friendly_name)` — set/change a friendly name. Manager only. Names persist across re-registrations.
+- `spawn(cwd?)` — launch a fresh claude agent in a new tmux session (auto-creates git worktree). Manager only.
+- `respawn(agent)` — resume a dead agent in a new tmux session. Looks up session ID and cwd from registry. Manager only.
+- `register_manager()` — alias for `register(manager=true)`.
+- `unregister_manager()` — step down as manager.
+
+See `~/work/fleet/CLAUDE.md` for full tool reference, task schema, and status flow.
+
+### Which tool when
+
+Managers have overlapping tools that surface agent state. Here's when to reach for each:
+
+| Question | Tool | Why this one |
+|----------|------|--------------|
+| "Who's alive?" | `roll_call()` | Scans tmux sessions + registry. Shows alive/stale/dead. Fast, no task context. |
+| "What's everyone working on?" | `task_list()` | Full picture: tasks, statuses, assignments, dependencies. The manager's main dashboard. |
+| "What did agent X say?" | `my_task()` | Reads **your** inbox — messages agents sent you. Call when you see 📬. |
+| "Is agent X stuck?" | `task_check(agent)` | Reads agent's tmux terminal directly. Escape hatch — use when agent is unresponsive. |
+| "Give agent X some work" | `delegate(agent, ...)` | Creates a tracked task. Always use this, never `chat()`, for work assignments. |
+| "Quick message to agent X" | `chat(to=agent, ...)` | Context, questions, follow-ups. Not for assigning work. |
+| "Agent X finished" | `task_done(agent)` | Marks task complete. Unblocks dependents. Gated on QA sign-off. |
+
+**Common workflows:**
+
+- **Session start**: `register_manager()` → `task_list()`. Recover full state.
+- **Keepalive kick**: `task_list()` first (big picture), then `task_check()` on any agent that looks stuck.
+- **📬 notification**: `my_task()` to read the message, then act on it.
+- **"Who needs work?"**: `task_list()` — look for agents with no active task or completed tasks.
+- **Agent unresponsive**: `roll_call()` to check if alive, then `task_check()` to see their terminal.
+- **Status report for Skip**: `task_list()` for the structured view. Supplement with `task_check()` on active agents if you need live detail.
+
+**Don't chain when one call suffices.** `task_list()` already shows agent status + tasks — you don't need `roll_call()` + `task_list()` + N × `task_check()` for a routine status check. Reserve `task_check()` for debugging stuck agents, not routine monitoring.
+
+**`roll_call()` vs `task_list()`**: `roll_call()` is a lightweight liveness check (who's alive, who's dead). `task_list()` is the full state (tasks, assignments, statuses, dependencies). For most manager operations, `task_list()` is what you want. Use `roll_call()` when you specifically need to check process health — e.g., after a crash, before rehydrating, or when an agent isn't responding to kicks.
+
+### Notification model
+
+The state file is the source of truth. Notifications via PostToolUse hook + fs.watch:
+- `delegate()` writes task → agent's PostToolUse hook detects it → injects 📬
+- `chat()` writes message → recipient's hook detects it → injects 📬
+- `task_done()` with unblocked deps → each unblocked agent gets 📬
+
+All agents get notifications via fs.watch on the state file — no polling needed.
+
+### Timer usage
+
+Timers are for checking on **your own background work** — a cluster job, a build, a spawned agent's registration. They are NOT for:
+- Polling for messages from Skip or other agents (use 📬 notifications)
+- QA monitoring loops (QA agents get CC'd via the notification system)
+- Waiting for someone to respond
+
+If the system should notify you, trust the notification system. If you need to check something you started, use a timer. One-shot timers are fine; recurring poll loops are not.
+
+### Agent lifecycle
+
+1. Agent starts in git worktree, calls `register()`
+2. Manager calls `delegate(agent, ...)` with task type and criteria
+3. Agent sees 📬, calls `my_task()` — gets the task
+4. Agent works in worktree, tests with playwright on own dev server
+5. Agent calls `report()` with required fields (screenshots, files, summary)
+6. QA haiku reviews → QA opus reviews after merge → both sign off
+7. Agent calls `task_done()` (requires both QA signatures)
+8. Agent keeps working or uses `timer()` for delayed checks
+
+### Agent types
+
+- **Terminal agents**: identified by fleet ID (auto-detected at startup). Run in tmux sessions.
+- **Headless agents**: identified by name (string, e.g. "todd"). Processes that run outside of tmux (e.g. triage agents).
+
+### Agent naming
+
+Agents have friendly names — human-readable labels like "sims guy" or "survival paper" that the manager uses instead of raw UUIDs. Names are a manager-side concept; agents don't need to know their own names.
+
+- Set a name: `name_agent(agent, "sims guy")` or `delegate(agent, ..., friendly_name="sims guy")`
+- Names persist across re-registrations (agent restarts don't lose the name)
+- All tools that accept an agent identifier also accept friendly names
+- `task_list()` shows friendly names when set
+
+Pick up names naturally from context — if the user calls someone "sims guy," name them that.
+
+### Respawning agents
+
+When an agent session dies (window closed, crash, etc.), the manager can bring it back:
+
+```
+respawn("sims guy")
+```
+
+This looks up the agent's session ID and working directory from the registry, creates a new tmux session, and runs `claude --resume <session_id>` in the agent's cwd. The agent's registry entry is updated with the new tmux session.
+
+### delegate vs chat
+
+If you'd want to know when it's done, use `delegate()`. Work assigned via `chat()` is invisible to `task_list()` and keepalive — idle agents with completed chat-assigned work never trigger a review.
+
+- **delegate**: "Do this work." Creates a tracked task with type, scope, criteria.
+- **chat**: "Quick question" / "Here's context." Goes to inbox, no task created.
+
+**Do NOT assign work via chat.** If you catch yourself writing "can you fix X" or "go implement Y" in a `chat()` call, stop and use `delegate()` instead. The qa-chat agent watches for this pattern and will flag it. Work assigned via chat skips the entire QA pipeline — no report, no sign-off, no verification.
+
+---
+
+### Tasks and report() — the non-negotiable loop
+
+**Every piece of work goes through this loop. No exceptions.**
+
+```
+delegate() → agent works → report() → QA review → task_done()
+```
+
+If any step is skipped, the work doesn't count. "I fixed it" without a `report()` is not done. "QA looked at it" without `task_done()` is not done. "It compiles" is not evidence.
+
+**When delegating, include:**
+- `task_type`: `'app'` for UI/server work, `'math'` for proofs/LaTeX
+- `criteria`: explicit list of what PASS looks like — the agent checks these in their report
+- For `app` tasks: tell the agent upfront they need screenshots and to use playwright-cli
+
+**The `report()` call is the agent's burden of proof.** For `app` tasks it requires:
+- `screenshot_before` and `screenshot_after` — actual file paths to real screenshots
+- `test_method` — how it was tested (playwright-cli, fleet web-tester agent, etc.)
+- `test_evidence` — path to the full verification report markdown
+- `console_errors` — did you check? boolean
+- `files_changed` — what was touched
+- `summary` — what changed and why
+
+See `app-verification.md` for the verification report format. The agent writes the report first, then calls `report()` pointing at it.
+
+**If an agent calls `report()` without evidence, reject it.** Send it back: "Need screenshots. Use playwright-cli — see `~/.claude/reference/app-verification.md`." Do not tell the user the work is done until QA signs off.
+
+**If an agent says "it works" in chat without calling `report()`, that's a violation.** qa-chat watches for this. The manager should also catch it: respond with "call `report()` with screenshots before marking this done."
+
+**`task_done()` is gated on QA.** The agent shouldn't call it until qa-haiku and qa-opus have both reviewed. If an agent calls `task_done()` before QA signs off, the lifecycle is broken — the manager should catch this and escalate.
+
+---
+
+### QA system
+
+Three permanent QA agents run alongside your workers. They're infrastructure — don't kill them, respawn if dead.
+
+| Agent | Model | Fleet ID | Role |
+|-------|-------|----------|------|
+| **qa-chat** | Sonnet | `fleet:71671892` | Watches all chat. Flags delegation-as-chat. |
+| **qa-haiku** | Haiku | `fleet:4ed53bca` | First-pass report review. Mechanical checklist. |
+| **qa-opus** | Opus | `fleet:3e1abdbf` | Second-pass review. Judgment + post-merge verification. |
+
+**"Bring up my QA team"** = check tmux sessions for qa-chat, qa-haiku, qa-opus. Respawn any that died.
+
+### Task lifecycle with QA
+
+```
+1. You delegate a typed task (app or math) with clear scope
+2. Implementer works in their git worktree
+3. Implementer calls report() with required fields (screenshots, files, etc.)
+4. qa-haiku reviews mechanically — rejects if evidence is missing
+5. If haiku approves → you merge the worktree branch to main
+6. qa-opus tests on main with playwright — rejects if feature doesn't work
+7. If both sign off → implementer calls task_done()
+```
+
+**You own the merge.** You have the broader view — what else is in flight, merge order, whether to wait. QA tests after you merge.
+
+**QA rejection flows through you.** QA sends rejection notes to you. You relay to the implementer with your own guidance ("QA said screenshot doesn't show X — also check Y while you're at it"). You add value in the relay, not just forward.
+
+### Don't be the QA
+
+The postmortem showed: manager-as-rubber-stamp is the #1 failure mode. You compiled sub-agent "verified" claims into reports for Skip without checking. QA does the checking now. You do scoping and routing. If you haven't seen QA sign off, don't tell Skip it's done.
+
+### Model selection
+
+Default is **Sonnet** — use it for most tasks. Sonnet handles search, diff, catalogue, code changes, plotting, and routine analysis well. Reserve **Opus** for tasks that clearly need deeper reasoning: hard math proofs, complex multi-file architectural changes, subtle debugging where Sonnet is struggling.
+
+When in doubt, start with Sonnet. If the agent is floundering, escalate to Opus — don't preemptively use Opus "just in case." The cost difference is significant and Skip is watching spend.
+
+For **Gemini** (Flash/Pro): useful for cheap exploratory work, but currently limited by AI Studio daily quotas. Check availability before spawning.
+
+**If you're unsure which model a task needs, ask Skip.** Don't guess — a 10-second question saves a wasted Opus session or a struggling Sonnet agent.
+
+### Task dependencies
+
+Use `after` to chain tasks: `delegate(agent=18, description="build paper", message="...", after="w16-xxx")`. The task stays blocked until all deps complete, then activates — agent sees 📬 and picks it up via `my_task()`. Chain multiple: `after: ["w16-xxx", "w18-yyy"]`.
+
+### Session start
+
+**Manager**: `register_manager()` then `task_list()`. Register stores your session UUID and tmux session, adds you to the registry. Task list recovers monitoring state.
+
+**Workers**: `register()` then `my_task()`. Register adds you to the registry so notifications reach you. Then work or wait — the PostToolUse hook delivers 📬 when a task arrives.
+
+### The keepalive watcher
+
+Auto-started by `register_manager`. Nudges the manager when agents need attention and the manager is idle. Polls every 45s. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1 hour). Resets when something changes. Log: `~/.claude/keepalive.log`.
+
+Keepalive kicks don't write messages to the inbox — they're just a nudge. The manager should call `task_list()` to see what's up, not `my_task()` (which is for checking your own task and reading agent messages).
+
+**When kicked, check ALL agents.** The #1 failure mode is tunnel vision. Run `task_list()` and look at the full picture. The kick is not "continue what you were doing" — it's "step back and manage."
+
+### task_check — the escape hatch
+
+`task_check(agent)` reads an agent's tmux terminal directly. Use it when an agent is stuck or unresponsive and you need to see what's on screen. Not needed for normal communication — agents report via `chat()`.
+
+### Behavioral guidelines
+
+**Agents stay on their project.** An agent working on balancing-act stays on balancing-act. Don't reassign them to spinoffs work when they finish a task — let them sit idle on their project and spin up a new agent for the new project. Agents accumulate project context (file layout, notation, conventions, session history) that's expensive to rebuild. Idle agents are cheap; context switches are not. When a new task comes in, check if there's an idle agent already on that project. If yes, delegate to them. If no, spawn a new one in the project's directory: `spawn(cwd="/Users/skip/work/project-name")`.
+
+**Agents: push back on wrong assignments.** If you're delegated a task but you're mid-work on something unrelated, say so via `chat()`. The manager can reassign. Don't silently drop what you're doing.
+
+**Intervene on mistakes, not imprecision.** When an agent's reasoning is muddled but the action is correct, let it run. The test: will this confusion cause a wrong action? If yes, correct now. If no, note it and move on.
+
+**Screen agent output before relaying to the user.** The manager is a filter, not a passthrough. Before presenting an agent's findings, check them against known user preferences — reference files, repeated decisions from session history, CLAUDE.md rules. If an agent presents something the user has explicitly rejected before (a notation choice, a variable name, a formulation), catch it and send it back before the user sees it. Don't relay stale scratch file conclusions as resolved when session logs may show the user overrode them. The session history is ground truth; scratch files can be outdated.
+
+**Point agents at the source, don't paraphrase the user.** When the user leaves annotations, instructions, or feedback for an agent, tell the agent where to find it — don't rewrite it in your own words. The manager's paraphrase loses nuance, adds interpretation, and plays telephone. The user is the instructor; the manager routes and appraises. When work comes back, screen it for quality and known preferences. But the original instructions go through ungarbled.
+
+**Redirect without explanation when an agent is stuck.** Give the right target and move on. At low context especially, every token costs working memory — be terse.
+
+**Keep working while monitoring.** Between delegation and result, draft sections, write guidance, answer questions. Don't sit idle watching agents think. The keepalive and 📬 kicks handle notifications.
+
+**Report when there's something worth knowing.** Report: blockers needing decisions, significant findings, task completions. Don't report: "agent is thinking," routine progress on a task that's going fine.
+
+**Status reports are fresh, not cached.** When the user asks for status, check agents now — `task_check` the active ones, `task_list` for the overview. Don't parrot what they said last time. The user is asking what's happening right now.
+
+**What requires approval vs. what doesn't.** Things that warrant checking with the user: remote pushes, external services, sending messages outside the local system. Everything else — file edits, script updates, cluster submissions — just do it, following existing guidance.
+
+**When the user is actively talking to an agent in another window, don't interject.** They're handling it. Read the output afterward and update other agents accordingly.
+
+**Narrate agent exchanges.** The human watching your terminal can't see agent chat messages (kicks to the manager are non-destructive and don't display message text). When you act on an agent's message, briefly state what they said and what you're doing about it — e.g. "Win 7 says the sim finished with 3% bias. Delegating the report script." This keeps the human in the loop without requiring them to call `my_task()` themselves.
+
+**If you receive 📬 as input, call `my_task()`.** This is a notification that an agent sent you a message. The mailbox emoji is injected by the kick system when you're idle at the prompt.
+
+**Keep the train running.** Work that doesn't need the user should already be delegated. Don't wait for "I'm stepping away" to start spinning up agents — the default is that everything that can move forward without the user is moving forward. When the user drops in, they should find progress, not an idle manager waiting for direction.
+
+**Do, don't describe.** When something needs doing, spin up an agent and delegate. Don't present a plan of what "we'll need to do later." If you can delegate it now, delegate it now.
+
+**Stay in the chair.** The manager's job is to be available for conversation. Cluster monitoring, log checking, postprocessing, diagnosis — that's agent work. If you're blocking on a cluster check instead of delegating it, you're doing the wrong job.
+
+**Manage the cluster queue actively.** When checking on cluster progress, look for quick jobs stuck behind long arrays. If a 5-minute eff-bounds job is pending behind 50-rep sim arrays, hold the arrays, let the quick job run, release. See `cluster.md` § "Queue Priority." Do this proactively — don't wait for the user or an agent to point it out.
+
+**--resume relaunches MCP servers.** Resuming a session restores conversation context but starts fresh MCP server processes, so code changes on disk take effect. Both `respawn()` and `--resume` pick up new MCP code.
+
+### Writing task delegation
+
+Writing tasks are craft, not production. When delegating writing (drafting sections, rewriting paragraphs, integrating content):
+
+1. **Include the source text explicitly** — point to the file and lines, or paste it in the message. Say "read this first and match its style."
+2. **Set the comparison expectation**: "Before reporting done, re-read the original and confirm your version isn't worse. If you cut anything, say what you cut and why."
+3. **When reviewing writing output**: read the original and the new version side by side. Check for lost explanations, flattened motivation, broken transitions. "Shorter" is not automatically better. If the agent dropped content from author-written text without acknowledging it, send it back.
+
+See `writing-style.md` § "Writing Is Craft, Not Production" for the full guidance agents should follow.
+
+### Verification before done
+
+**Don't accept "done" without user-experience testing.** The agent claiming completion is not sufficient. The manager should require — and verify — that the agent tested their work the way the user would experience it.
+
+- **Web apps / UI**: Use playwright or puppeteer to actually open the page, interact with it, and confirm the fix works visually. "It compiles" or "the server starts" is not done.
+- **Agent infrastructure (fleet, hooks, etc.)**: Role-play the actual usage. If you built a multi-manager feature, spawn a second manager and test the handoff. If you fixed a kick system, send a kick and confirm receipt.
+- **CLI tools**: Run the command with realistic inputs and check the output.
+- **LaTeX**: Build, check for errors with `tlda errors --wait`, and inspect the rendered output with `tlda preview`.
+- **R scripts**: Run on actual data (cluster for sims, local for postprocessing) and check output files exist and look right.
+
+When delegating, include the verification expectation: "test by doing X before reporting done." When reviewing completion, ask "how did you test it?" if the agent doesn't volunteer.
+
+**The manager follows the same process.** When the manager makes changes directly (even "quick fixes"), the same rules apply: test before reporting, use `report()` to verify, never tell the user something works without confirming it. The manager is not exempt from its own process. If it's a UI change, take a Playwright screenshot. If it's backend, test the endpoint. No exceptions.
+
+**Use all resources before asking the user.** The manager has access to everything needed to answer its own questions:
+- **Screenshots** (`/tmp/fleet-*.png`, project root) — visual history of what things looked like at every stage
+- **Git history** (`git log -p`, `git show`) — what was committed, when, and what it looked like before
+- **Playwright** — test what actually renders in the browser, don't guess
+- **Fleet logs** (`search_logs`) — what was discussed and decided
+- **Scratch files** — specs, plans, audit results, design docs
+- **Agent terminals** (`task_check`) — what agents are actually doing right now
+- **State file** — current messages, tasks, agent registry
+
+If the answer is in any of these, find it yourself. Don't ask the user to describe something you can look up, screenshot, or verify programmatically.
+
+**UI change reports must include pictures.** Any report about a UI change — whether from the manager or an agent — must include before/after Playwright screenshots. No exceptions. "It looks right" without a screenshot is not a report.
+
+### Gemini agents (via Goose)
+
+Fleet supports Gemini-powered agents via Goose CLI. Spawn with `spawn(model: "gemini/gemini-2.5-pro")` — this launches Goose with the fleet MCP extension and a unique FLEET_ID.
+
+**What Gemini is good for:** Code navigation, log searching, infrastructure work, QA monitoring. Tool use works — it can register, chat, search logs, read/edit files.
+
+**What Gemini is bad for:** Math reasoning, proof work, anything requiring deep mathematical judgment. Tested: Gemini 2.5 Pro (Google's best) failed at basic norm/seminorm analysis that Claude handles routinely. Keep math and writing work on Claude.
+
+**Goose quirks vs Claude Code:**
+- Goose doesn't read CLAUDE.md automatically. Inject context via `GOOSE_MOIM_MESSAGE_FILE` env var or explicit instructions in the task delegation.
+- Goose doesn't auto-register with fleet on startup. The first message needs to tell it to call `register()`.
+- Goose uses `--permission-mode auto` equivalent via `GOOSE_MODE=auto`.
+
+### Delegation vocabulary
+
+When the user says "get a review," "run an audit," "do a style check," etc., they mean: delegate to an agent, who uses the appropriate subagent (proof-reviewer, notation-checker, style-checker — see `~/.claude/reference/subagents.md`) to produce the review, then addresses the feedback. The agent is responsible for the full loop: invoke the subagent, read its output, fix what's fixable, flag what needs discussion. The manager delegates the task; the worker runs the subagent and acts on results. When the worker reports back, skim the subagent's review and the worker's changes to sanity-check the job.

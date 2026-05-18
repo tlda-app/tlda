@@ -1,4 +1,5 @@
-import { useMemo, useEffect, useRef, useState, useCallback, useContext, useSyncExternalStore } from 'react'
+import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore, Component } from 'react'
+import type { ReactNode, ErrorInfo } from 'react'
 import {
   Tldraw,
   react,
@@ -24,17 +25,18 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 // DotAnnotationShape removed — math-note dots replace it
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
+import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
+import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
-import { HudLayoutOverlay, registerLayoutSideEffects } from './shapes/HudLayoutMode'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
-import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, hasSvgText, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { PhoneHandTool } from './tools/PhoneHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
@@ -48,10 +50,10 @@ import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
 import { TaskInboxTool } from './tools/TaskInboxTool'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onViewPinSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, AgentPill, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -60,15 +62,18 @@ import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from 
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
-import { ProofStatementOverlay } from './overlays/ProofStatementOverlay'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { RefViewer } from './overlays/RefViewer'
-import { FleetHUD } from './overlays/FleetHUD'
-import { BuildErrorOverlay } from './overlays/BuildErrorOverlay'
+import { ScreenshotCapture } from './overlays/ScreenshotCapture'
+import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
+
+const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
+import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
 import { FollowingBadge } from './pills/FollowingBadge'
+import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
 import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
@@ -77,9 +82,9 @@ import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
-import { buildReverseIndex } from './synctexLookup'
 import { openInEditor } from './texsync'
-import { setupSvgEditor, fetchSvgPagesAsync, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -89,13 +94,15 @@ import { useProofToggle } from './hooks/useProofToggle'
 import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme } from './hooks/useFleetTheme'
+import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
+import { usePanMode } from './hooks/usePanMode'
 import { FootControlDebug } from './footControlDebug'
 import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
+import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
@@ -128,6 +135,75 @@ function AgentPillSlot() {
   return <>{content}</>
 }
 
+const VersionStampContext = createContext<React.ReactNode>(null)
+function VersionStampSlot() {
+  const content = useContext(VersionStampContext)
+  return <>{content}</>
+}
+
+
+// Error boundary for individual shape renders — catches throws in a shape's component()
+// and shows a small error placeholder instead of crashing the entire app.
+class ShapeErrorBoundary extends Component<
+  { shapeType: string; children: ReactNode },
+  { hasError: boolean; errorMsg: string }
+> {
+  constructor(props: { shapeType: string; children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false, errorMsg: '' }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, errorMsg: error.message }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`Shape render error [${this.props.shapeType}]:`, error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          width: '100%', height: '100%', minWidth: 40, minHeight: 24,
+          background: 'rgba(220, 38, 38, 0.15)', border: '1px solid rgba(220, 38, 38, 0.4)',
+          borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, color: '#dc2626', fontFamily: 'monospace', padding: '2px 6px',
+          pointerEvents: 'all',
+        }}>
+          {this.props.shapeType}: error
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// Wrap a ShapeUtil class so its component() renders inside a ShapeErrorBoundary.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function withShapeErrorBoundary<T extends new (...args: any[]) => any>(Util: T): T {
+  const originalComponent = Util.prototype.component
+  if (!originalComponent) return Util
+
+  // Create a subclass that overrides component() with an error-boundary wrapper
+  const Wrapped = class extends (Util as any) {
+    component(shape: any) {
+      const inner = originalComponent.call(this, shape)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const typeName = (this.constructor as any).type || 'unknown'
+      return <ShapeErrorBoundary shapeType={typeName}>{inner}</ShapeErrorBoundary>
+    }
+  } as unknown as T
+
+  // Preserve static fields (type, props, migrations, etc.)
+  Object.defineProperty(Wrapped, 'type', { value: (Util as any).type, configurable: true })
+  Object.defineProperty(Wrapped, 'props', { value: (Util as any).props, configurable: true })
+  if ((Util as any).migrations) {
+    Object.defineProperty(Wrapped, 'migrations', { value: (Util as any).migrations, configurable: true })
+  }
+
+  return Wrapped
+}
 
 // Sync server URL for @tldraw/sync shape CRDT (WebSocket) — same as SYNC_SERVER
 const SHAPE_SYNC_SERVER = SYNC_SERVER
@@ -198,6 +274,113 @@ function ViewPinBadge({ docName }: { docName: string }) {
   )
 }
 
+/**
+ * VersionStamp — shows a small stack of recent build timestamps with
+ * perspective-style opacity. The current (latest) version is most visible;
+ * older versions fade out. Click an older version → doc_view to that hash.
+ * Updates after each build.
+ */
+const MAX_VISIBLE_VERSIONS = 5
+
+function VersionStamp({ docName }: { docName: string }) {
+  const editor = useEditor()
+  const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
+  const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [hovering, setHovering] = useState(false)
+  const lastReloadAtRef = useRef<number>(0)
+  const prevHashRef = useRef<string | null>(null)
+
+  // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
+  // Yjs is convergent: reconnecting always delivers the latest state.
+  useEffect(() => {
+    if (!editor) return
+    const read = () => {
+      const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId)
+      const p = (s as any)?.props
+      if (!p?.commitHash || p.commitHash === 'unknown') return null
+      return { commitHash: p.commitHash as string, buildReadyAt: (p.buildReadyAt || p.timestamp || 0) as number }
+    }
+    const v = read()
+    if (v) {
+      setSentinel(v)
+      // Baseline: treat current build as already-reloaded on first mount
+      if (lastReloadAtRef.current === 0) lastReloadAtRef.current = v.buildReadyAt
+    }
+    return editor.store.listen(() => {
+      const v = read()
+      if (v) setSentinel(v)
+    }, { source: 'remote', scope: 'all' })
+  }, [editor])
+
+  // When the commit hash changes: fetch version history + check for missed reload.
+  useEffect(() => {
+    if (!sentinel?.commitHash || sentinel.commitHash === prevHashRef.current) return
+    prevHashRef.current = sentinel.commitHash
+
+    fetch(`/api/projects/${docName}/history/shadow`)
+      .then(r => r.ok ? r.json() : null)
+      .then(raw => {
+        const data: Array<{ hash: string; timestamp: number }> = raw?.versions || raw
+        if (data?.length > 0) { setHistory(data.slice(0, MAX_VISIBLE_VERSIONS)); setActiveIdx(0) }
+      }).catch(() => {})
+
+    // If SVGs were ready but we missed the reload signal, trigger a reload now.
+    if (lastReloadAtRef.current > 0 && sentinel.buildReadyAt > lastReloadAtRef.current + 5000) {
+      dispatchSignalDirect('signal:reload', { type: 'full', timestamp: Date.now() })
+    }
+  }, [sentinel?.commitHash, docName])
+
+  // Track reload signals to detect misses.
+  useEffect(() => {
+    return onReloadSignal(sig => { lastReloadAtRef.current = sig.timestamp })
+  }, [])
+
+  const handleClick = useCallback((idx: number) => {
+    if (idx === 0) return
+    const v = history[idx]
+    if (!v) return
+    ;(window as any).__shadowScrubVersion?.(v)
+    setActiveIdx(idx)
+  }, [history])
+
+  if (!sentinel) return null
+
+  // Use history if loaded; fall back to a single synthetic entry from the sentinel.
+  const display: Array<{ hash: string; timestamp: number }> = history.length > 0
+    ? history
+    : [{ hash: sentinel.commitHash, timestamp: sentinel.buildReadyAt }]
+
+  return (
+    <div
+      className="version-stamp"
+      onPointerDown={e => e.stopPropagation()}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
+      {display.map((v, i) => {
+        // Most recent entry: use buildReadyAt (when SVGs were published) not git commit time
+        const ts = i === 0 ? sentinel.buildReadyAt || v.timestamp : v.timestamp
+        const hash7 = v.hash.slice(0, 7)
+        const time = new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        const isActive = i === activeIdx
+        const baseOpacity = isActive ? 0.7 : Math.max(0.08, 0.35 - i * 0.07)
+        return (
+          <div
+            key={v.hash}
+            className={`version-stamp-entry${isActive ? ' active' : ''}`}
+            style={{ opacity: baseOpacity }}
+            onClick={() => handleClick(i)}
+            title={`${hash7} — ${new Date(ts).toLocaleString()}`}
+          >
+            {time}{hovering && i === 0 && <span className="version-stamp-hash"> · {hash7}</span>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 /** Slide navigation wrapper — uses SlidesNavigator for spatial canvas navigation */
 function SlideNavWrapper({ document }: { document: SvgDocument }) {
   const editor = useEditor()
@@ -217,6 +400,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const updateCameraBoundsRef = useRef<((bounds: any) => void) | null>(null)
   const ensurePagesAtBottomRef = useRef<(() => void) | null>(null)
   const focusChangeRef = useRef<((currentPage: number) => void) | null>(null)
+
+  // --- Screenshot capture state ---
+  const [screenshotCapture, setScreenshotCapture] = useState<import('./hooks/useYjsSignals').ScreenshotCaptureState | null>(null)
 
   // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
@@ -336,8 +522,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     editorRef, document, proofDataRef, proofDataReady,
   })
 
-  // --- Reload error state (page fetch failures → stale pill) ---
-  const [reloadErrors, setReloadErrors] = useState<ReloadResult | null>(null)
   // Remap warnings from reload (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
 
@@ -349,10 +533,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Shadow history scrubber
   const {
-    shadowVersions, shadowActiveIdx, shadowLoading, shadowVisible,
-    toggleShadowOverlay, hideShadowOverlay, handleShadowScrub,
+    shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
+    shadowColumnX, shadowYOffset, shadowChangelog,
+    toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
+  // Divider diff: draw on the gap between columns to trigger word-level diff
+  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
+
+  // Side-by-side version comparison — relay Yjs signal to window event
+  useEffect(() => {
+    const unsub = onCompareSignal((data) => {
+      window.dispatchEvent(new CustomEvent('tlda-compare', { detail: data }))
+    })
+    return unsub
+  }, [])
   // Sync theme from fleet dashboard (cross-origin SSE)
   useFleetTheme()
 
@@ -373,18 +568,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     hissEnabled,
   })
 
+  // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
+  usePanMode(editorRef)
+
   useYjsSignals({
     editorRef, document,
     diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
     setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+    setScreenshotCapture,
     onReloadResult: useCallback((result: ReloadResult | null) => {
       if (!result) {
-        setReloadErrors(null)
         setRemapWarnings([])
         return
       }
-      setReloadErrors(result.failedPages.length > 0 ? result : null)
       if (result.remapResult && result.remapResult.failed > 0) {
         const { failed, total } = result.remapResult
         setRemapWarnings([{
@@ -419,6 +616,22 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   }, [])
 
   const buildWarnings = useMemo(() => [...texWarnings, ...remapWarnings], [texWarnings, remapWarnings])
+
+  // File-backed notes: update shape text when the backing file changes on disk
+  useEffect(() => {
+    return onFileUpdatedSignal((signal) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const shapes = editor.getCurrentPageShapes() as any[]
+      for (const shape of shapes) {
+        if (shape.type !== 'math-note') continue
+        if (shape.props.backingFile !== signal.filePath) continue
+        if (shape.props.text === signal.content) continue  // no-op if identical
+        if (editor.getEditingShapeId() === shape.id) continue  // don't interrupt editing
+        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content } })
+      }
+    })
+  }, [])
 
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {
@@ -463,6 +676,24 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // Mark html.is-scrolling during active wheel scroll so CSS can suppress opacity transitions.
+  // wheel fires for all scroll input: mouse wheel, Magic Mouse, trackpad.
+  // Logitech Lift pan mode is handled in CSS via body.tlda-pan-mode (set by usePanMode).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>
+    const onWheel = () => {
+      globalThis.document.documentElement.classList.add('is-scrolling')
+      clearTimeout(timer)
+      timer = setTimeout(() => globalThis.document.documentElement.classList.remove('is-scrolling'), 400)
+    }
+    window.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      window.removeEventListener('wheel', onWheel)
+      clearTimeout(timer)
+      globalThis.document.documentElement.classList.remove('is-scrolling')
+    }
   }, [])
 
   // Track last-edited note across all entry methods (double-click, etc.)
@@ -578,7 +809,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /></>,
+      InFrontOfTheCanvas: () => <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
     }),
     [document, roomId]
   )
@@ -604,6 +835,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       shapeId: p.shapeId,
       tldrawPageId: p.tldrawPageId,
     })),
+    targets: document.targets,
   }), [docKey, document])
 
   // Volatile panel state — toggles, loading flags, history, etc.
@@ -646,8 +878,17 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onToggleTimeline: toggleTimeline,
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
-    shadowHistoryVersionCount: shadowVersions.length,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowVersions.length])
+    shadowActiveVersion,
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
+
+  // When the fleet HUD overlay is open, hide fleet shapes in the main editor
+  // from both rendering AND hit-testing. The overlay renders its own copies.
+  // Uses a stable ref (fleetHudOpenRef) so the callback identity never changes
+  // (changing it would recreate the entire editor).
+  const getShapeVisibility = useCallback((shape: any) => {
+    if (fleetHudOpenRef.current && FLEET_TYPES_FOR_VIS.has(shape.type)) return 'hidden' as const
+    return undefined
+  }, [])
 
   const shapeUtils = useMemo(() => {
     // Suppress the default hover/selection indicator on highlight shapes —
@@ -656,8 +897,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       override indicator() { return null as any }
     }
-    const utils = defaultShapeUtils.map(u => u === HighlightShapeUtil ? QuietHighlightShapeUtil : u)
-    return [...utils, MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const utils = defaultShapeUtils.map(u =>
+      u === HighlightShapeUtil ? QuietHighlightShapeUtil : u
+    )
+    // Wrap every custom shape util with an error boundary so a single broken shape
+    // renders an error placeholder instead of crashing the entire app.
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
+    (window as any).__tldraw_shape_utils__ = all
+    return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
@@ -837,7 +1085,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
     <div className="bottom-panels">
-      {panelsLocal && refViewerRefs && editorRef.current && (
+      {panelsLocal && refViewerRefs && editorRef.current &&
+        !editorRef.current.getCurrentPageShapes().some((s: any) => s.type === 'fleet-docview') && (
         <RefViewer
           mainEditor={editorRef.current}
           pages={docContextValue.pages}
@@ -856,14 +1105,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           canGoBack={canGoBack}
         />
       )}
-      {panelsLocal && proofDataReady && editorRef.current && proofDataRef.current && (
-        <ProofStatementOverlay
+      {screenshotCapture && editorRef.current && (
+        <ScreenshotCapture
           mainEditor={editorRef.current}
-          proofData={proofDataRef.current}
-          pages={docContextValue.pages}
+          capture={screenshotCapture}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={LICENSE_KEY}
+          onClose={() => setScreenshotCapture(null)}
+          onGoThere={(bounds) => {
+            editorRef.current?.centerOnPoint(
+              { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
+              { animation: { duration: 300 } }
+            )
+          }}
         />
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
@@ -889,31 +1144,30 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           licenseKey={LICENSE_KEY}
         />
       )}
-      {shadowVisible && (
+      {shadowVisible && shadowTimeBounds && (
         <ShadowHistoryOverlay
-          versions={shadowVersions}
-          activeIdx={shadowActiveIdx}
+          timeBounds={shadowTimeBounds}
+          activeVersion={shadowActiveVersion ?? null}
           loading={shadowLoading}
-          onScrub={handleShadowScrub}
+          onScrubTime={handleShadowScrubTime}
+          onStep={handleShadowStep}
           onClose={hideShadowOverlay}
+          onRealign={realignShadow}
+          changelog={shadowChangelog.commits.length > 0 ? shadowChangelog : undefined}
         />
       )}
       <div className="build-pills-row">
+        {storeWithStatus.status === 'synced-remote' && storeWithStatus.connectionStatus === 'offline' && (
+          <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
+        )}
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
-        <BuildWarningPill warnings={buildWarnings} />
-        {editorRef.current && (
-          <BuildErrorOverlay
-            mainEditor={editorRef.current}
-            errors={buildErrors}
-            reloadErrors={reloadErrors}
-            doc={docContextValue}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={LICENSE_KEY}
-          />
-        )}
+        <BuildWarningPill warnings={buildWarnings}>
+          <BuildProgressPill />
+        </BuildWarningPill>
+        {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
+        {/* Build errors handled by fleet-docview shapes with 'errors' source */}
       </div>
       {editorRef.current && (
         <FleetHUD
@@ -926,8 +1180,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </div>
   )
 
-  const agentPillContent = editorRef.current ? <AgentPill editor={editorRef.current} /> : null
+  // AgentPill replaced by FleetIconPill in build-pills-row
+  const agentPillContent = null
 
+  const versionStampContent = <VersionStamp docName={document.name} />
 
   return (
     <>
@@ -935,17 +1191,24 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
+    <VersionStampContext.Provider value={versionStampContent}>
     <Tldraw
         store={storeWithStatus}
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
         tools={tools}
         overrides={overrides}
+        getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
           setEditorMounted(v => v + 1)
+
+          const storedTheme = localStorage.getItem('tlda-theme')
+          if (storedTheme && THEME_FAMILY[storedTheme]) {
+            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
+          }
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
@@ -967,35 +1230,62 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           }
 
           // Set up hyperref link navigation: open target in RefViewer panel
+          // Load source map (labels index) for ref resolution.
+          // For multi-target docs, pass targets so per-target source-maps are merged
+          // with global page offsets — the bare alias only covers the primary target.
+          sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
+
           setNavigateToAnchor((anchorId: string, title: string) => {
-            const entry = anchorIndex.get(anchorId)
-            if (!entry) return
-
-            // Find which page this anchor is on
-            const pageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
-            if (pageIdx < 0) return
-
-            // Convert xlink:title (e.g. "equation.28") to display label
-            const { type, displayLabel } = anchorIdToLabel(title || anchorId)
-
-            // Convert viewBox to PDF coordinates
+            let page = -1
             let yTop = 0, yBottom = PDF_HEIGHT
-            const svgVB = getSvgViewBox(entry.pageShapeId)
-            if (svgVB && entry.viewBox) {
-              const parts = entry.viewBox.split(/\s+/).map(Number)
-              if (parts.length === 4) {
-                const [, svgY, , svgH] = parts
-                yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
-                yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
+            let labelForRegion = anchorId
+
+            // 1. Resolve page from source map (works for all labels, even unloaded pages)
+            const titleParts = (title || anchorId).split('.')
+            const thmNum = titleParts.slice(1).join('.')
+            const smMatch = sourceMap.resolveLabel(anchorId) || sourceMap.resolveLabel(thmNum)
+            if (smMatch && smMatch.page >= 1 && smMatch.page <= document.pages.length) {
+              page = smMatch.page
+              labelForRegion = smMatch.label
+              yBottom = PDF_HEIGHT * 0.3
+            }
+
+            // 2. Refine position from SVG anchor index if available (has precise viewBox)
+            const entry = anchorIndex.get(anchorId)
+            if (entry) {
+              const svgPageIdx = document.pages.findIndex(p => p.shapeId === entry.pageShapeId)
+              if (svgPageIdx >= 0) page = svgPageIdx + 1
+              const svgVB = getSvgViewBox(entry.pageShapeId)
+              if (svgVB && entry.viewBox) {
+                const parts = entry.viewBox.split(/\s+/).map(Number)
+                if (parts.length === 4) {
+                  const [, svgY, , svgH] = parts
+                  yTop = (svgY - svgVB.minY) / svgVB.height * PDF_HEIGHT
+                  yBottom = yTop + svgH / svgVB.height * PDF_HEIGHT
+                }
               }
             }
 
-            const region: LabelRegion = { page: pageIdx + 1, yTop, yBottom, type, displayLabel }
-            setRefViewerRefsLocal([{ label: anchorId, region }])
-          })
+            if (page < 1) return
 
-          // Register HUD layout mode side effects (container ↔ fleet shape sync)
-          registerLayoutSideEffects(editor)
+            const { type, displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
+
+            const region: LabelRegion = { page, yTop, yBottom, type, displayLabel }
+            setRefViewerRefsLocal([{ label: labelForRegion, region }])
+            const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
+            editor.getCurrentPageShapes()
+              .filter((s: any) => s.type === 'fleet-docview')
+              .filter((s: any) => {
+                try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
+              })
+              .forEach((dvShape: any) => {
+                if (dvShape.isLocked) editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false })
+                editor.updateShape({
+                  id: dvShape.id, type: dvShape.type,
+                  props: { ...dvShape.props, label: labelForRegion, page, yTop, yBottom, title: dvTitle },
+                })
+              })
+          })
 
           const editorSetup = setupSvgEditor(editor, document)
           shapeIdSetRef.current = editorSetup.shapeIdSet
@@ -1018,13 +1308,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
-          // For SVG documents: fetch page content in background (layout is already displayed)
-          if (!document.format || document.format === 'svg') {
-            const hasContent = document.pages.some(p => hasSvgText(p.shapeId))
-            if (!hasContent) {
-              fetchSvgPagesAsync(editor, document)
-            }
-          }
+          // SVG page content is fetched lazily by each SvgPageShape when it
+          // enters the viewport — no bulk fetch needed here.
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')
@@ -1049,20 +1334,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               shapeToPage.set(document.pages[i].shapeId, i + 1)
             }
 
-            buildReverseIndex(document.name).then((reverseLookup) => {
-              if (!reverseLookup) return
+            setOnSourceClick((shapeId: string, clickYFraction: number) => {
+              const page = shapeToPage.get(shapeId)
+              if (!page) return
 
-              setOnSourceClick((shapeId: string, clickYFraction: number) => {
-                const page = shapeToPage.get(shapeId)
-                if (!page) return
+              const pdfY = clickYFraction * PDF_HEIGHT
+              const match = sourceMap.pageToSource(page, pdfY)
+              if (!match) return
 
-                // Convert click fraction to PDF y coordinate
-                const pdfY = clickYFraction * PDF_HEIGHT
-                const match = reverseLookup(page, pdfY)
-                if (!match) return
-
-                openInEditor(document.name, match.file, match.line)
-              })
+              openInEditor(document.name, match.file, match.line)
             })
           }
 
@@ -1123,6 +1403,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
+              }
+              // Recompute HUD panOffset ONLY if no saved position exists.
+              // With a saved panOffset (from a previous session), restoring from
+              // localStorage is correct — don't nuke it. Without one (first visit),
+              // we need to recompute after camera restoration so pageToScreen()
+              // uses the correct camera (commit 4031e60).
+              if (localStorage.getItem('fleet-hud-panOffset') === null) {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                  })
+                })
               }
               if (isPhone) {
                 // Phone: fit text column width on load (unless URL camera was specified)
@@ -1288,14 +1580,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <NoteDropHandler />
       <MarkdownDropHandler />
       <TocDropTargetManager />
-      <HudLayoutOverlay />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
+    </VersionStampContext.Provider>
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
+    {new URLSearchParams(window.location.search).has('input') && (
+      <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
+    )}
     </>
   )
 }

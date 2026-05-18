@@ -14,6 +14,7 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { toolContentDetail } from './activity-render.mjs'
+import { setActiveMacros } from '../katexMacros'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -23,12 +24,13 @@ const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(
 let _agents = []
 let _tasks = []
 let _events = []          // chat + lifecycle (delegate, task_done) — capped at MAX_EVENTS
-const MAX_EVENTS = 500    // keep only the most recent N events in memory; older events fetched from DB on scroll
+const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
+let _humanName = null
+let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
-const _preambles = {}     // target → { macro: definition }
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -55,8 +57,9 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  // Terminal attention events (permission prompts) bypass filters — they're urgent
-  if (event._evType === 'terminal_attention' || event.type === 'terminal_attention') return true
+  // System notifications from fleet:tlda show in the agent's chat view (not bypassed globally)
+  // Terminal cards are filtered like regular chat — they show in chats
+  // whose filter matches the agent that triggered them.
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {
@@ -77,10 +80,12 @@ function agentMatchesLabel(agentId, label) {
   const agent = _agents.find(a => a.id === agentId)
   if (!agent) {
     // Check human
-    if (_humanId && agentId === _humanId) return ['skip', _humanId].includes(label)
+    if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
     return false
   }
-  const labels = [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean)
+  // Virtual labels derived from agent.status (mirrors server-side resolution).
+  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : []
+  const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
   return labels.includes(label)
 }
 
@@ -90,9 +95,10 @@ function resolveFilter(filter) {
   if (!filter) return new Set()
   const ids = new Set()
   const allAgents = [..._agents]
-  if (_humanId) allAgents.push({ id: _humanId, friendly_name: 'skip', labels: ['skip'] })
+  if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
   for (const a of allAgents) {
-    const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
+    const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+    const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
     const matches = filter.some(clause =>
       clause.every(term => {
         const label = Array.isArray(term) ? term[1] : term
@@ -112,7 +118,32 @@ export function getTasks() { return _tasks }
 export function getEvents() { return _events }
 export function getActivity(agentId) { return _events.filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
-export function getPreambleMacros(target = 'default') { return _preambles[target] || {} }
+export function getHumanName() { return _humanName }
+export function needsIdentity() { return !_humanId && _identifyPending }
+
+/** Log in as an existing agent. Used by returning users and ?name= auto-login. */
+export async function login(name) {
+  const res = await wsSend({ type: 'login', name })
+  _humanId = res.id
+  _humanName = res.name
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', res.name)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
+
+/** Register a new human agent. Used by the IdentityPicker for new users. */
+export async function registerHuman(name) {
+  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const humanId = `fleet:${sanitized}`
+  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  _humanId = res.agent?.id || humanId
+  _humanName = sanitized
+  _identifyPending = false
+  localStorage.setItem('tlda-identity', sanitized)
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  return res
+}
 
 // Returns { agentId: count } for unread messages from agents to the human
 export function getUnreadCountsForHuman() {
@@ -132,79 +163,88 @@ export function getAgent(id) {
 // --- Write API (all go through server) ---
 
 export async function sendMessage(to, text, opts = {}) {
-  const body = { message: text, to }
+  const body = { type: 'chat', message: text, to }
+  if (_humanId) body.from = _humanId
+  if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   const _t0 = performance.now()
-  const resp = fetch(`${FLEET}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  resp.then(r => r.json()).then(d => {
-    console.log(`[chat-send] to=${to} id=${d.event_id} fetch=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-  }).catch(() => {
-    console.log(`[chat-send] to=${to} FAILED fetch=${Math.round(performance.now()-_t0)}ms`)
-  })
-  return resp
+  try {
+    const d = await wsSend(body)
+    console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
+    return { ok: true, event_id: d.event_id }
+  } catch (e) {
+    console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
+    return { ok: false, event_id: null }
+  }
 }
 
-export async function respawnAgent(id) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, respawn: true }),
-  })
+/** Inject an optimistic (locally-authored) event into the event list immediately. */
+export function injectOptimisticEvent(event) {
+  _events.push(event)
+  if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
+  notify('messages', event)
 }
 
-export async function spawnAgent(model) {
-  return fetch(`${FLEET}/api/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model }),
-  })
+/** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
+export function updateOptimisticEvent(tempId, updates) {
+  const ev = _events.find(e => e._tempId === tempId)
+  if (ev) { Object.assign(ev, updates); notify('messages', null) }
 }
 
-export async function renameAgent(id, name) {
-  return fetch(`${FLEET}/api/rename`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, name }),
-  })
+/** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
+export function reconcileOptimistic(tempId, serverEventId, newTo) {
+  const ev = _events.find(e => e._tempId === tempId)
+  // SSE handler may have already reconciled — only act if _tempId still present
+  if (ev) {
+    ev._dbId = serverEventId
+    // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
+    // On reconcile we rewrite it to the first concrete recipient so the line transitions
+    // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
+    // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
+    if (newTo) ev.to = newTo
+    delete ev._tempId
+    notify('messages', null)
+  }
 }
 
-export async function setAgentLabels(id, labels) {
-  return fetch(`${FLEET}/api/label`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id, labels }),
-  })
+export function respawnAgent(id) {
+  return wsSend({ type: 'spawn', agent: id, respawn: true })
 }
 
-export async function kickAgent(id) {
-  return fetch(`${FLEET}/api/kick`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: id }),
-  })
+export function spawnAgent(model, doc) {
+  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}) })
 }
 
-export async function sendKey(session, key) {
-  return fetch(`${FLEET}/api/send-key`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, key }),
-  })
+export function renameAgent(id, name) {
+  return wsSend({ type: 'rename', agent: id, name })
 }
 
-export async function sendText(session, text) {
-  return fetch(`${FLEET}/api/send-text`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session, text }),
-  })
+export function setAgentLabels(id, labels) {
+  return wsSend({ type: 'label', agent: id, labels })
+}
+
+export function kickAgent(id) {
+  return wsSend({ type: 'kick', agent: id })
+}
+
+export function killSession(id) {
+  return wsSend({ type: 'kill-session', agent: id })
+}
+
+export function sendKey(agent, key) {
+  return wsSend({ type: 'send-key', agent, key })
+}
+
+export function sendText(agent, text) {
+  return wsSend({ type: 'send-text', agent, text })
+}
+
+/** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
+export function fleetWS(type, body = {}) {
+  return wsSend({ type, ...body })
 }
 
 // --- WebSocket connection ---
@@ -219,6 +259,20 @@ export function isConnected() { return _connected }
 /** Returns ms since disconnect, or 0 if connected */
 export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? Date.now() - _disconnectedAt : 0) }
 
+// WS request/response: pending callbacks keyed by message ID
+let _wsReqId = 0
+const _wsCallbacks = new Map()
+
+function wsSend(msg) {
+  if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
+  const id = ++_wsReqId
+  return new Promise((resolve, reject) => {
+    _wsCallbacks.set(id, { resolve, reject })
+    _ws.send(JSON.stringify({ ...msg, id }))
+    setTimeout(() => { _wsCallbacks.delete(id); reject(new Error('timeout')) }, 5000)
+  })
+}
+
 export function connect() {
   if (_ws) return
   const params = new URLSearchParams(location.search)
@@ -230,13 +284,25 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Always do a full state refresh on reconnect — not just catch-up.
-    // This ensures agents/tasks are populated even if the initial load failed
-    // or the server restarted and event IDs reset.
-    fetch(`${FLEET}/api/state`).then(r => r.json()).then(s => {
-      updateAgents(s.agents || [])
-      updateTasks(s.tasks || [])
-    }).catch(() => {})
+    // Log in if we have a stored identity
+    const storedName = localStorage.getItem('tlda-identity')
+    if (storedName) {
+      wsSend({ type: 'login', name: storedName }).then(res => {
+        _humanId = res.id
+        _humanName = res.name
+        _identifyPending = false
+        notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+      }).catch(() => {
+        // Login failed — agent may have been removed. Show picker.
+        _identifyPending = true
+        localStorage.removeItem('tlda-identity')
+        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      })
+    } else {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+    }
+    // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
@@ -244,7 +310,7 @@ export function connect() {
         .then(data => {
           const missed = (data.events || []).filter(e => {
             const t = e.type || e.event_type
-            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention'
+            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention' || t === 'terminal_card'
           })
           const newEvents = []
           for (const raw of missed) {
@@ -279,6 +345,28 @@ export function connect() {
     try {
       const msg = JSON.parse(e.data)
 
+      // Handle request/response messages (replies to wsSend)
+      if (msg.id && (msg.result !== undefined || msg.error !== undefined)) {
+        const cb = _wsCallbacks.get(msg.id)
+        if (cb) {
+          _wsCallbacks.delete(msg.id)
+          // Reconcile optimistic events SYNCHRONOUSLY before resolving —
+          // the next WS message may be the echo, and _dbId must be set
+          // before the echo's dedup check runs.
+          if (msg.result && msg.result._tempId && Array.isArray(msg.result.event_ids) && msg.result.event_ids.length > 0) {
+            // Server fans out chats over recipients (DNF resolution). Reconcile the optimistic event
+            // with the first event_id; broadcasts for the other event_ids arrive as new events
+            // (dedup is keyed on _dbId, so the first echo is silently absorbed).
+            const firstRecipient = Array.isArray(msg.result.recipients) && msg.result.recipients.length > 0
+              ? msg.result.recipients[0] : null
+            reconcileOptimistic(msg.result._tempId, msg.result.event_ids[0], firstRecipient)
+          }
+          if (msg.error) cb.reject(new Error(msg.error))
+          else cb.resolve(msg.result)
+        }
+        return
+      }
+
       // State updates (agents + tasks + ephemeral state) — no event field
       if (msg.agents && !msg.event) {
         updateAgents(msg.agents || [])
@@ -293,6 +381,10 @@ export function connect() {
         }
         for (const [agent, ts] of Object.entries(msg.compacting || {})) {
           notify('compacting', { agent, compacting: true, ts })
+        }
+        // Context percent state
+        for (const [agent, ctx] of Object.entries(msg.context || {})) {
+          notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
         }
         // Clear any agent NOT in the server's set
         notify('thinking-sync', serverThinking)
@@ -310,12 +402,17 @@ export function connect() {
           notify('open-doc', data)
           return
         }
-        // Preamble macros for KaTeX rendering
+        // Preamble macros for KaTeX rendering — set_preamble broadcasts these
         if (data.type === 'preamble' && data.macros) {
-          _preambles[data.target || 'default'] = data.macros
+          setActiveMacros(data.macros)
           return
         }
         const event = convertChatEvent(data)
+        // Dedup: skip if this event was already added (optimistic send or prior echo)
+        if (data.id && _events.some(e => e._dbId === data.id)) {
+          if (data.id > _lastEventId) _lastEventId = data.id
+          return
+        }
         _events.push(event)
         if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
@@ -323,6 +420,13 @@ export function connect() {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
         }
         notify('messages', event)
+      } else if (eventType === 'event-update') {
+        const ev = _events.find(e => e._dbId === data.id)
+        if (ev) {
+          ev.text = data.text
+          if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+          notify('messages', null)
+        }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
         for (const ev of _events) {
@@ -333,6 +437,8 @@ export function connect() {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {
         if (data.agent) notify('compacting', data)
+      } else if (eventType === 'agent-context') {
+        if (data.agent) notify('context', data)
       } else if (eventType === 'agent-status') {
         if (data.agent) notify('status', data)
       } else if (eventType === 'reload') {
@@ -346,23 +452,15 @@ export function connect() {
 
 // --- Initial load ---
 export async function init() {
-  // Fetch human identity
-  try {
-    const res = await fetch(`${FLEET}/api/human`)
-    if (res.ok) {
-      const data = await res.json()
-      _humanId = data.id || null
-    }
-  } catch {}
+  // Human identity is established via WS 'login' on connect.
+  // If localStorage has a stored name, login is sent automatically.
+  // If not, the UI shows a picker with login/register options.
 
-  // Fetch initial state + history + preambles in parallel
-  const [stateRes, historyRes, preambleRes] = await Promise.all([
+  // Fetch initial state + history in parallel
+  const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
-    fetch(`${FLEET}/api/chat/history?limit=500`).then(r => r.json()).catch(() => ({ events: [] })),
-    fetch(`${FLEET}/api/preamble`).then(r => r.json()).catch(() => ({})),
+    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(() => ({ events: [] })),
   ])
-  // Load preamble macros
-  Object.assign(_preambles, preambleRes)
 
   // Populate agents + tasks
   updateAgents(stateRes.agents || [])
@@ -372,7 +470,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
   _events = chatEvents
@@ -399,7 +497,7 @@ function updateTasks(tasks) {
 
 // --- Converters ---
 
-function convertChatEvent(e) {
+export function convertChatEvent(e) {
   // metadata may be a JSON string (from DB) or an object (from SSE)
   if (typeof e.metadata === 'string') {
     try { e.metadata = JSON.parse(e.metadata) } catch { e.metadata = null }
@@ -421,6 +519,7 @@ function convertChatEvent(e) {
     msg._fromLabel = e.metadata?.fromLabel || ''
     msg._toLabel = e.metadata?.toLabel || ''
     msg._criteria = e.metadata?.criteria || []
+    if (e.metadata?.message) msg._message = e.metadata.message
   } else if (type === 'task_done') {
     msg._evType = 'task_done'
     msg._description = e.text || ''
@@ -438,6 +537,10 @@ function convertChatEvent(e) {
     msg._planText = e.metadata?.planText || ''
     msg._tmuxSession = e.metadata?.tmux_session || ''
     msg._machineId = e.metadata?.machine_id || ''
+  } else if (type === 'terminal_card') {
+    msg._evType = 'terminal_card'
+    msg._reason = e.metadata?.reason || ''
+    msg._agentLabel = e.metadata?.agentLabel || ''
   } else if (type === 'terminal_user' || type === 'terminal_assistant') {
     msg._evType = type
     msg._source = e.source || 'terminal'
@@ -457,12 +560,13 @@ function convertChatEvent(e) {
   } else if (type === 'activity') {
     const tool = e.metadata?.tool || e.text
     msg._activity = true
-    msg._toolName = tool === '_text' ? null : tool
+    msg._toolName = tool === '_text' ? null : (tool === '_prettyResult' ? (e.metadata?.origTool || tool) : tool)
     msg._isText = tool === '_text'
     msg._text = tool === '_text' ? (e.metadata?.arg || e.text) : null
     msg._toolArg = e.metadata?.arg || ''
     msg._toolInput = e.metadata?.input || null
     msg._toolDetail = e.metadata?.input ? toolContentDetail(tool === '_text' ? null : tool, e.metadata.input) : null
+    msg._prettyResult = e.metadata?.prettyResult || null
     msg.agent = msg.from
     if (msg._isText) msg.text = e.metadata?.arg || e.text
   }
@@ -486,7 +590,7 @@ export async function fetchHistory(agentId, limit = 200) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
 
@@ -496,13 +600,20 @@ export async function fetchHistory(agentId, limit = 200) {
 }
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  // Use WebSocket for history to avoid racing with live events.
+  // Falls back to HTTP if WS is not connected.
+  let res
+  if (_ws && _ws.readyState === 1) {
+    res = await wsSend({ type: 'load-history', agent: agentId || null, before: beforeTs, limit: count })
+  } else {
+    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+  }
 
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'kill-session'
     })
     .map(convertChatEvent)
 

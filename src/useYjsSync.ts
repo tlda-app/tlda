@@ -58,8 +58,15 @@ export function dispatchSignalDirect(key: string, data: Record<string, unknown>)
 
 type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
-const reloadHandle = bus.register<ReloadSignal>({ key: 'signal:reload' })
+const reloadHandle = bus.register<ReloadSignal>({
+  key: 'signal:reload',
+  initBehavior: 'fire-if-recent',
+  recentMs: 1_800_000,  // replay last reload signal if < 30 min old (covers new-tab after build)
+})
 export const onReloadSignal = reloadHandle.on
+
+const sourceChangedHandle = bus.register<{ timestamp: number }>({ key: 'signal:source-changed' })
+export const onSourceChangedSignal = sourceChangedHandle.on
 
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
@@ -92,12 +99,33 @@ export function onForwardSync(cb: ForwardSyncCallback) {
   return () => { forwardSyncCallbacks.delete(cb) }
 }
 
-const screenshotHandle = bus.register<{ timestamp: number }>({
+export type ScreenshotRequest = {
+  timestamp: number
+  /** Optional canvas bounds — if provided, capture this region instead of the viewport */
+  bounds?: { x: number; y: number; w: number; h: number }
+  /** Optional page number — if provided (and no bounds), capture this page */
+  page?: number
+  /** Agent name requesting the screenshot */
+  agent?: string
+}
+const screenshotHandle = bus.register<ScreenshotRequest>({
   key: 'signal:screenshot-request',
   initBehavior: 'fire-if-recent',
   recentMs: 10000,
 })
 export const onScreenshotRequest = screenshotHandle.on
+
+export type ScreenshotBoundsSignal = {
+  bounds: { x: number; y: number; w: number; h: number }
+  agent?: string
+  timestamp: number
+}
+const screenshotBoundsHandle = bus.register<ScreenshotBoundsSignal>({
+  key: 'signal:screenshot-bounds',
+  initBehavior: 'fire-if-recent',
+  recentMs: 5000,
+})
+export const onScreenshotBounds = screenshotBoundsHandle.on
 
 export type CameraLinkSignal = { x: number; y: number; z: number; viewerId: string; timestamp: number }
 const cameraLinkHandle = bus.register<CameraLinkSignal>({
@@ -153,6 +181,17 @@ const viewPinHandle = bus.register<ViewPinSignal>({
 })
 export const onViewPinSignal = viewPinHandle.on
 
+// Compare: side-by-side version viewer signal. initBehavior: 'none' —
+// do NOT fire cached signal on reconnect. The compare shapes persist in
+// the Yjs store; re-firing would delete them (clearCompareShapes) and
+// try to recreate, which fails if the editor isn't ready yet.
+export type CompareSignal = { ref: string | null; hash7?: string; timestamp: number }
+const compareHandle = bus.register<CompareSignal>({
+  key: 'signal:compare',
+  initBehavior: 'discard',
+})
+export const onCompareSignal = compareHandle.on
+
 export type AgentAttentionSignal = { x: number; y: number; timestamp: number; agent?: string }
 const agentAttentionHandle = bus.register<AgentAttentionSignal>({ key: 'signal:agent-attention' })
 export const onAgentAttention = agentAttentionHandle.on
@@ -190,6 +229,27 @@ const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; ti
   recentMs: 86_400_000,  // 24h
 })
 export const onDiffSummaries = diffSummariesHandle.on
+
+// Shared doc — agent shared a markdown file, auto-display in doc viewer
+export type SharedDocSignal = {
+  shapeId: string    // ID of the math-note sticky holding the content
+  filePath: string   // original file path
+  timestamp: number
+}
+const sharedDocHandle = bus.register<SharedDocSignal>({
+  key: 'signal:shared-doc',
+  initBehavior: 'fire-if-recent',
+  recentMs: 86_400_000,
+})
+export const onSharedDocSignal = sharedDocHandle.on
+
+export type FileUpdatedSignal = {
+  filePath: string   // absolute path on the author's machine
+  content: string    // current file contents
+  timestamp: number
+}
+const fileUpdatedHandle = bus.register<FileUpdatedSignal>({ key: 'signal:file-updated' })
+export const onFileUpdatedSignal = fileUpdatedHandle.on
 
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.
@@ -239,6 +299,10 @@ export function broadcastCamera(x: number, y: number, z: number) {
 
 export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
   writeSignal('signal:ref-viewer', { refs, viewerId: localViewerId })
+}
+
+export function broadcastSharedDoc(shapeId: string, filePath: string) {
+  writeSignal('signal:shared-doc', { shapeId, filePath })
 }
 
 /**

@@ -34,9 +34,14 @@ jobs:
               --exclude='./dist' \
               --exclude='./.git' \
               --exclude='./.worktrees' \
+              --exclude='./.claude' \
+              --exclude='./scratch' \
               --exclude='./server/data' \
               --exclude='./server/projects' \
+              --exclude='./test-results' \
               -czf /tmp/tlda-${VERSION}.tar.gz .
+          # Print SHA256 for Homebrew formula
+          shasum -a 256 /tmp/tlda-${VERSION}.tar.gz
           echo "ARCHIVE=/tmp/tlda-${VERSION}.tar.gz" >> $GITHUB_ENV
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 

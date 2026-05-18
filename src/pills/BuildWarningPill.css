@@ -3,18 +3,23 @@
 .build-warning-container {
   position: relative;
   pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .build-warning-badge {
   font-size: 10px;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(0, 0, 0, 0.1);
+  color: var(--pill-icon-color, rgba(0, 0, 0, 1));
   cursor: pointer;
-  transition: color 0.3s;
+  opacity: 0.15;
+  transition: color 0.3s, opacity 0.3s;
 }
 
 .build-warning-badge:hover {
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--pill-icon-color-hover, rgba(0, 0, 0, 1));
+  opacity: 0.5;
 }
 
 /* Popup list */
@@ -57,13 +62,22 @@
   border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
 
+.build-warning-item.clean-rebuild {
+  color: #7ab8a0;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 /* Dark mode */
 html[data-theme="dark"] .build-warning-badge {
-  color: rgba(255, 255, 255, 0.1);
+  color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
 html[data-theme="dark"] .build-warning-badge:hover {
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--pill-icon-color-hover, rgba(255, 255, 255, 1));
 }
 
 html[data-theme="dark"] .build-warning-list {

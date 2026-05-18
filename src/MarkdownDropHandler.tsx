@@ -7,32 +7,6 @@
 import { useEffect } from 'react'
 import { useEditor } from 'tldraw'
 
-async function createInlineDoc(name: string, title: string, content: string): Promise<string> {
-  // Create project (409 = already exists, that's fine — continue)
-  const createRes = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, title, format: 'markdown', mainFile: 'index.md' }),
-  })
-  if (!createRes.ok && createRes.status !== 409) {
-    const text = await createRes.text().catch(() => '')
-    throw new Error(`Failed to create project: ${createRes.status} ${text}`)
-  }
-
-  // Push file content
-  const pushRes = await fetch(`/api/projects/${name}/push`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: [{ path: 'index.md', content }] }),
-  })
-  if (!pushRes.ok) {
-    const text = await pushRes.text().catch(() => '')
-    throw new Error(`Failed to push file: ${pushRes.status} ${text}`)
-  }
-
-  return name
-}
-
 function isMarkdownFile(file: File): boolean {
   return file.name.endsWith('.md') || file.name.endsWith('.markdown')
 }
@@ -86,26 +60,13 @@ export function MarkdownDropHandler() {
       e.preventDefault()
       e.stopPropagation()
 
-      const dropPoint = editor.screenToPage({ x: e.clientX, y: e.clientY })
-
       for (const file of mdFiles) {
-        const title = file.name.replace(/\.(md|markdown)$/i, '')
         const name = fileNameToProjectName(file.name)
 
         const reader = new FileReader()
         reader.onload = async () => {
-          const content = reader.result as string
-          try {
-            await createInlineDoc(name, title, content)
-            editor.createShape({
-              type: 'inline-doc',
-              x: dropPoint.x - 400,
-              y: dropPoint.y - 500,
-              props: { w: 800, h: 1000, url: `/docs/${name}/`, title },
-            } as any)
-          } catch (err) {
-            console.error('[MarkdownDropHandler] Failed to create inline doc:', err)
-          }
+          // inline-doc iframes are disabled — just log
+          console.log('[MarkdownDropHandler] Markdown drop ignored (inline-doc disabled):', name)
         }
         reader.readAsText(file)
       }

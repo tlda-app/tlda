@@ -2,7 +2,7 @@
 //
 // Right Shift: tap to toggle recording.
 // Transcription fills the active chat textarea — edit before sending.
-// Backend: Web Speech API.
+// Backend: local whisper.cpp server (preferred) or Web Speech API (fallback).
 //
 // Usage:
 //   import { initVoice, setVoiceTarget } from './voice.mjs'
@@ -11,7 +11,16 @@
 //   setVoiceTarget(textarea, sendTargets, agentNames)
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-const _isChrome = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent)
+const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
+
+// --- Backend selection ---
+const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
+let _backend = 'chrome'         // 'chrome' | 'whisper-stream'
+let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
+
+// --- Whisper-stream backend state ---
+let _whisperWs = null           // WebSocket connection to whisper-bridge
+let _whisperConnected = false   // true when WS is open
 
 // Math mode — when on, aggressive replacements for Greek letters
 // (replaces common English words that sound like Greek letters)
@@ -75,20 +84,46 @@ const VOCAB_REPLACEMENTS = [
   [/\bfee\b/gi, 'phi'],
   [/\bfi\b/gi, 'phi'],
 
-  // Notation modifiers
+  // App name: "tilde" (tlda) — Chrome almost never outputs "tilde",
+  // preferring common phrases like "till the", "kill the", etc.
+  [/\btill the\b/gi, 'tilde'],
+  [/\bkill the\b/gi, 'tilde'],
+  [/\bkilda\b/gi, 'tilde'],
+  [/\btilled? a\b/gi, 'tilde'],
+  [/\bkilled? a\b/gi, 'tilde'],
   [/\btilda\b/gi, 'tilde'],
+  [/\btill da\b/gi, 'tilde'],
+
+  // Notation modifiers
   [/\bsuper ?script star\b/gi, '*'],
 
   // Named methods / frameworks
   [/\bbreck ?man\b/gi, 'Bregman'],
   [/\bbreg ?man\b/gi, 'Bregman'],
   [/\bberkman\b/gi, 'Bregman'],
+  [/\bpregnant\b/gi, 'Bregman'],
   [/\breese\b/gi, 'Riesz'],
   [/\breeze\b/gi, 'Riesz'],
   [/\brees\b/gi, 'Riesz'],
   [/\bar ?k ?h ?s\b/gi, 'RKHS'],
+  [/\barchitis\b/gi, 'RKHS'],
+  [/\bark iss\b/gi, 'RKHS'],
+  [/\bdonohoe\b/gi, 'Donoho'],
+  [/\bemily\b/gi, 'AMLE'],
+  [/\bhershberg\b/gi, 'Hirshberg'],
+  [/\bvager\b/gi, 'Wager'],
   [/\bmatern\b/gi, 'Matérn'],
   [/\bsobo ?lev\b/gi, 'Sobolev'],
+  [/\bso will have\b/gi, 'Sobolev'],
+  [/\bsober of\b/gi, 'Sobolev'],
+  [/\bsobolef\b/gi, 'Sobolev'],
+  [/\bso bella?\b/gi, 'Sobolev'],
+  [/\bso below\b/gi, 'Sobolev'],
+
+  // Math terms
+  [/\blima\b/gi, 'lemma'],
+  [/\blemon\b/gi, 'lemma'],
+  [/\bdilemma\b/gi, 'the lemma'],
 
   // Statistical terms
   [/\bsemi ?norm\b/gi, 'seminorm'],
@@ -158,12 +193,7 @@ let _fadeTimer = null
 let _lastTapTime = 0
 let _singleTapTimer = null
 let _audioCaptureRetries = 0
-let _watchdogTimer = null
-let _sessionTimer = null
-let _sleepDetectInterval = null
-let _sleepDetectLast = 0
-let _deadRestarts = 0
-let _gotAudioThisSession = false
+let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -171,18 +201,17 @@ let _gotAudioThisSession = false
 // Prevents stale in-flight results from writing to the textarea after a send.
 let _generation = 0
 
-// Poisoning detection — ring buffer of the last few isFinal transcript
-// fragments. If the same fragment repeats POISON_THRESHOLD times in a row,
-// Chrome's recognition pipeline is stuck; we clear _left and restart.
-const POISON_THRESHOLD = 3
-let _lastFinals = []
-
 // Active chat target
 let _activeTextarea = null
 let _activeSendTargets = []
 let _activeAgentNames = {}
 let _activeAgentColor = null
 let _activeSendFn = null
+
+// Accumulator target — alternative to _activeTextarea for code editors etc.
+// When set, fillTextarea() calls onUpdate instead of writing to a DOM element.
+// { onUpdate(text), onSend(text)|null, onStop()|null, label } | null
+let _accumulator = null
 
 const DOUBLE_TAP_MS = 350
 
@@ -226,13 +255,115 @@ function ensureHud() {
   return _hud
 }
 
+// Health dot: green at 20% when audio is flowing, amber at 40% when no audio.
+// Both states are visible while recording — green = hearing you, amber = not hearing you.
+// Dot is hidden when not recording.
+const DOT_GREEN = '#7ab8a0'
+const DOT_AMBER = '#c8956a'
+const DOT_GREEN_OPACITY = '0.4'
+const DOT_AMBER_OPACITY = '0.4'
+const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
+let _healthDot = null
+let _healthDotTimer = null
+
+function ensureHealthDot() {
+  if (_healthDot) return _healthDot
+  _healthDot = document.createElement('span')
+  Object.assign(_healthDot.style, {
+    display: 'none',
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    marginRight: '6px',
+    flexShrink: '0',
+    transition: 'opacity 0.3s, background-color 0.3s',
+  })
+  return _healthDot
+}
+
+// --- Textarea glow — shows voice state on the input you're looking at ---
+const GLOW_GREEN = 'rgba(122, 184, 160, 0.5)'   // results flowing
+const GLOW_AMBER = 'rgba(200, 149, 106, 0.3)'   // recording, silence
+const GLOW_RED   = 'rgba(200, 112, 112, 0.5)'   // error
+let _glowTimer = null
+
+function setTextareaGlow(color) {
+  const ta = _activeTextarea
+  if (!ta) return
+  ta.style.boxShadow = color ? `0 0 0 2px ${color}` : ''
+  ta.style.transition = 'box-shadow 0.3s'
+}
+
+// Call when onresult fires — audio is flowing
+function dotAudioFlowing() {
+  if (!_recording) return
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_GREEN
+  requestAnimationFrame(() => { dot.style.opacity = DOT_GREEN_OPACITY })
+  setTextareaGlow(GLOW_GREEN)
+  // Schedule transition to amber after silence
+  clearTimeout(_healthDotTimer)
+  _healthDotTimer = setTimeout(dotAudioStale, AUDIO_FLOWING_MS)
+}
+
+// Audio went stale — no results for AUDIO_FLOWING_MS
+function dotAudioStale() {
+  if (!_recording) return
+  const dot = ensureHealthDot()
+  dot.style.backgroundColor = DOT_AMBER
+  dot.style.opacity = DOT_AMBER_OPACITY
+  setTextareaGlow(GLOW_AMBER)
+}
+
+// Show amber dot immediately (recording started, no audio yet)
+function dotRecordingStart() {
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_AMBER
+  requestAnimationFrame(() => { dot.style.opacity = DOT_AMBER_OPACITY })
+  setTextareaGlow(GLOW_AMBER)
+}
+
+function showErrorGlow() {
+  setTextareaGlow(GLOW_RED)
+}
+
+function hideHealthDot() {
+  clearTimeout(_healthDotTimer)
+  _healthDotTimer = null
+  clearTimeout(_glowTimer)
+  _glowTimer = null
+  setTextareaGlow(null)
+  if (_healthDot) {
+    _healthDot.style.opacity = '0'
+    setTimeout(() => { if (_healthDot) _healthDot.style.display = 'none' }, 300)
+  }
+}
+
 function showHud(text, stateColor) {
   const hud = ensureHud()
   clearTimeout(_fadeTimer)
-  hud.textContent = text
+  // Build HUD content with health dot + text
+  const dot = ensureHealthDot()
+  hud.textContent = ''
+  hud.style.display = 'flex'
+  hud.style.alignItems = 'center'
+  hud.appendChild(dot)
+  const span = document.createElement('span')
+  span.textContent = text
+  hud.appendChild(span)
   hud.style.color = _activeAgentColor || stateColor || 'rgba(255,255,255,0.7)'
-  hud.style.display = 'block'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
+}
+
+// Show recording status — text uses agent color, dot shows health separately
+function showRecordingHud() {
+  const who = targetLabel()
+  const mode = _mathMode ? ' [math]' : ''
+  const be = _backend === 'whisper-stream' ? ' [whisper]' : ''
+  const text = who ? `recording → ${who}${mode}${be}` : `recording${mode}${be}`
+  showHud(text, '#c87070')
 }
 
 function hideHud() {
@@ -253,9 +384,16 @@ function fadeHud(delayMs = 2000) {
 // Safe to call multiple times (idempotent after first call per editing session).
 function enterEdit() {
   if (_state === 'edit') return
+  // Whisper-stream: flush the bridge — drops old audio output for ~4s
+  // so text the user just edited doesn't get overwritten.
+  // Show amber glow so user knows voice is suppressed.
+  if (_backend === 'whisper-stream') {
+    whisperLog(`enterEdit — flushing, gen=${_generation}`)
+    flushWhisperBridge()
+    setTextareaGlow(GLOW_AMBER)
+  }
   _state = 'edit'
   _generation++
-  _lastFinals = []
   _left = _interim = _right = ''
   if (_recording && _recognition) {
     _editStopped = true
@@ -264,7 +402,14 @@ function enterEdit() {
 }
 
 export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentColor) {
+  let wasRecording = false
   if (textarea !== _activeTextarea) {
+    // Hard reset voice on chat switch — same as double-shift-right.
+    // Without this, the old recognition session keeps running with a stale
+    // generation and onresult discards everything, making voice appear dead.
+    wasRecording = _recording
+    if (_backend === 'whisper-stream') flushWhisperBridge()
+    hardResetVoice()
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -272,15 +417,22 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
       _inputListeners = null
     }
-    // Switching textareas always enters Edit on the new one
     _state = 'edit'
-    _generation++
-    _lastFinals = []
     _left = _interim = _right = ''
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
         if (_filling) return
+        // Plain Enter sends the message. The stop→onend→start restart path is
+        // unreliable in Safari (webkitSpeechRecognition silently fails to resume),
+        // so do the same thing double-tap-right-shift does: hardResetVoice + start.
+        // Suppress the textarea-clear input event that would otherwise call enterEdit().
+        if (e.key === 'Enter' && !e.shiftKey && _recording) {
+          _filling = true
+          afterSend()
+          setTimeout(() => { _filling = false }, 50)
+          return
+        }
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
           enterEdit()
         }
@@ -296,9 +448,11 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   _activeAgentNames = agentNames || {}
   _activeAgentColor = agentColor || null
   _activeSendFn = sendFn || null
-  if (_recording) {
-    const who = targetLabel()
-    showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+  // If voice was recording before the chat switch, restart it on the new target
+  if (wasRecording && textarea) {
+    startRecording()
+  } else if (_recording) {
+    showRecordingHud()
   }
 }
 
@@ -311,7 +465,61 @@ export function clearVoiceTarget(textarea) {
   }
 }
 
+// --- Accumulator target ---
+// An alternative to setVoiceTarget for non-textarea editors (CodeMirror etc).
+// onUpdate(text) receives the post-processed spoken text so far.
+// onSend(text)   called when the "send" voice keyword is detected (optional).
+// onStop()       called when recording stops, so caller can reset cursor anchor (optional).
+// label          shown in HUD, e.g. 'note'.
+export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
+  // If same accumulator is already registered, no-op — avoids interrupting an
+  // active recording session when focus re-fires (e.g. clicking within CodeMirror).
+  if (_accumulator && _accumulator.onUpdate === onUpdate) return
+  const wasRecording = _recording
+  // Sync teardown — no getUserMedia cycle needed (accumulator switch is cheap)
+  if (_recognition) {
+    try {
+      _recognition.onresult = null
+      _recognition.onend = null
+      _recognition.onerror = null
+      _recognition.onsoundstart = null
+      _recognition.abort()
+    } catch {}
+    _recognition = null
+  }
+  _recording = false
+  // Clear textarea target if one is set
+  if (_inputListeners && _activeTextarea) {
+    _activeTextarea.removeEventListener('input', _inputListeners.input)
+    _activeTextarea.removeEventListener('click', _inputListeners.click)
+    _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
+    _inputListeners = null
+  }
+  _activeTextarea = null
+  _state = 'edit'
+  _generation++
+  _left = _interim = _right = ''
+  _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
+  if (wasRecording) startRecording()
+}
+
+export function clearVoiceAccumulator(onUpdate) {
+  if (_accumulator && _accumulator.onUpdate === onUpdate) {
+    _accumulator = null
+    if (_recording) stopRecording()
+  }
+}
+
+// Called when the cursor is moved by the user while an accumulator is active.
+// Mirrors enterEdit() — interrupts the current speech session so the next
+// session will snapshot the new cursor position on first result.
+export function notifyAccumulatorCursorMoved() {
+  if (!_accumulator) return
+  enterEdit()
+}
+
 function targetLabel() {
+  if (_accumulator) return _accumulator.label || 'note'
   if (_activeSendTargets.length === 0) return null
   return _activeSendTargets
     .map(id => _activeAgentNames[id] || id.replace('fleet:', ''))
@@ -321,6 +529,12 @@ function targetLabel() {
 // --- Fill textarea with transcription ---
 
 function fillTextarea(text) {
+  if (_accumulator) {
+    // Accumulator mode: deliver post-processed spoken text to the callback.
+    // The caller (CodeMirror, etc.) manages cursor/insertion itself.
+    _accumulator.onUpdate(postProcessTranscript(_left + _interim))
+    return
+  }
   const ta = _activeTextarea
   if (!ta) return
   _filling = true
@@ -351,21 +565,12 @@ function _setupRecognition() {
   _recognition.interimResults = true
   _recognition.lang = 'en-US'
 
-  _recognition.onsoundstart = () => {
-    _gotAudioThisSession = true
-    _deadRestarts = 0
-    clearTimeout(_watchdogTimer)
-    _watchdogTimer = setTimeout(watchdogRestart, 8000)
-  }
-
   _recognition.onresult = (e) => {
     // Discard results from a stale session (generation bumped since setup).
     if (_generation !== myGeneration) return
 
-    _gotAudioThisSession = true
-    _deadRestarts = 0
-    clearTimeout(_watchdogTimer)
-    _watchdogTimer = setTimeout(watchdogRestart, 8000)
+    _lastResultTime = Date.now()
+    dotAudioFlowing()
 
     // Edit state: transition to Speech on first result (entering speech)
     // Exception: if stop() was called by enterEdit(), discard until onend fires
@@ -386,41 +591,13 @@ function _setupRecognition() {
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
-        const fragment = e.results[i][0].transcript
-        _left += fragment
-
-        // Poisoning detection: if Chrome keeps returning the same final
-        // fragment POISON_THRESHOLD times in a row, the recognition pipeline
-        // is stuck. Clear accumulated text and restart with a fresh session.
-        _lastFinals.push(fragment)
-        if (_lastFinals.length > POISON_THRESHOLD) _lastFinals.shift()
-        if (
-          _lastFinals.length === POISON_THRESHOLD &&
-          _lastFinals.every(f => f === fragment)
-        ) {
-          console.warn('voice: poisoning detected — restarting recognition')
-          _generation++
-          _lastFinals = []
-          _left = _interim = _right = ''
-          if (_activeTextarea) {
-            _filling = true
-            _activeTextarea.value = ''
-            _activeTextarea.style.height = 'auto'
-            _activeTextarea.dispatchEvent(new Event('input', { bubbles: true }))
-            _filling = false
-          }
-          showHud('voice reset — recognition was stuck', '#c8956a')
-          fadeHud(3000)
-          watchdogRestart()
-          return
-        }
+        _left += e.results[i][0].transcript
       } else {
         interim += e.results[i][0].transcript
       }
     }
     _interim = interim
 
-    const voiceText = (_left + interim).trim()
     if (e.results[e.results.length - 1]?.isFinal) {
       const leftTrimmed = _left.trim()
 
@@ -437,7 +614,6 @@ function _setupRecognition() {
           fadeHud(1500)
           _state = 'edit'
           _generation++
-          _lastFinals = []
           _left = _interim = _right = ''
           // Force a fresh session so cumulative results from the previous
           // chat can't leak into the new chat's textarea.
@@ -446,10 +622,7 @@ function _setupRecognition() {
             try { _recognition.stop() } catch {}
           }
           setTimeout(() => {
-            if (_recording) {
-              const w = targetLabel()
-              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
-            }
+            if (_recording) showRecordingHud()
           }, 1600)
           return
         }
@@ -459,13 +632,16 @@ function _setupRecognition() {
       const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
       if (sendMatch) {
         const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
+        if (cleanText && _accumulator && _accumulator.onSend) {
+          _accumulator.onSend(cleanText)
+          showHud('sent', '#7ab8a0')
+          fadeHud(2500)
+          afterSend()
+          return
+        }
         if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
           const who = targetLabel()
           const wordCount = cleanText.split(/\s+/).length
-          _state = 'edit'
-          _generation++
-          _lastFinals = []
-          _left = _interim = _right = ''
           _filling = true
           if (_activeTextarea) {
             _activeTextarea.value = ''
@@ -475,19 +651,7 @@ function _setupRecognition() {
           _activeSendFn(_activeSendTargets, cleanText)
           showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
           fadeHud(2500)
-          // Force a fresh SpeechRecognition session after send.
-          // Chrome's continuous mode keeps cumulative e.results; without
-          // resetting, stale finals can leak into the next message's _left.
-          if (_recording && _recognition) {
-            _editStopped = true
-            try { _recognition.stop() } catch {}
-          }
-          setTimeout(() => {
-            if (_recording) {
-              const w = targetLabel()
-              showHud(w ? `recording → ${w}` : 'recording', '#c87070')
-            }
-          }, 2600)
+          afterSend()
           return
         }
       }
@@ -500,6 +664,7 @@ function _setupRecognition() {
     if (e.error === 'no-speech') return
     if (e.error === 'aborted') return
     console.warn('voice: speech recognition error', e.error)
+    showErrorGlow()
     if (e.error === 'audio-capture') {
       if (_audioCaptureRetries < 3) {
         _audioCaptureRetries++
@@ -510,7 +675,6 @@ function _setupRecognition() {
           _setupRecognition()
           try {
             _recognition.start()
-            _watchdogTimer = setTimeout(watchdogRestart, 8000)
           } catch (err) {
             console.warn('voice: audio-capture retry failed', err)
             stopRecording()
@@ -533,9 +697,7 @@ function _setupRecognition() {
         _setupRecognition()
         try {
           _recognition.start()
-          _watchdogTimer = setTimeout(watchdogRestart, 8000)
-          const who = targetLabel()
-          showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+          showRecordingHud()
         } catch (err) {
           console.warn('voice: not-allowed retry failed', err)
           stopRecording()
@@ -556,11 +718,10 @@ function _setupRecognition() {
         _setupRecognition()
         try {
           _recognition.start()
-          const who = targetLabel()
-          showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+          showRecordingHud()
         } catch (err) {
           console.warn('voice: retry failed', err)
-          showHud('mic failed — tap to restart', '#c87070')
+          showHud('mic failed — tap shift', '#c87070')
           fadeHud(5000)
           _recording = false
         }
@@ -598,122 +759,196 @@ function _setupRecognition() {
   }
 }
 
-function watchdogRestart() {
-  if (!_recording) return
-  if (!_gotAudioThisSession) {
-    _deadRestarts++
-    if (_deadRestarts >= 3) {
-      showHud('voice dead — restart browser', '#c87070')
-      return
-    }
-  }
-  _gotAudioThisSession = false
-  // Preserve text: commit interim to left, freeze current state
-  if (_state === 'speech') {
-    _left += _interim
-    _interim = ''
-  }
-  const dying = _recognition
-  if (dying) {
-    dying.onresult = null
-    dying.onend = null
-    dying.onsoundstart = null
-    try { dying.abort() } catch {}
-  }
-  _recognition = null
-  clearTimeout(_watchdogTimer)
-  _watchdogTimer = null
-  clearTimeout(_sessionTimer)
-  _sessionTimer = null
-  if (!_recording) return
-  // Keep _state, _left, _right as-is — resume from where we were
-  _interim = ''
-  _lastFinals = []
-  _setupRecognition()
-  try {
-    _recognition.start()
-  } catch (err) {
-    if (err.name !== 'InvalidStateError') throw err
-    setTimeout(() => { if (_recording) _recognition.start() }, 100)
-  }
-  _watchdogTimer = setTimeout(watchdogRestart, 8000)
-  _sessionTimer = setTimeout(sessionRestart, 45000)
+// --- Whisper-stream backend ---
+// Connects to whisper-bridge WebSocket (ws://localhost:8179).
+// whisper-stream captures mic directly and transcribes in real-time.
+// Each message is a new chunk of text — append to _left.
+// No MediaRecorder, no WAV conversion, no browser mic needed.
+
+function cleanWhisperText(text) {
+  return text
+    .replace(/\[BLANK_AUDIO\]/gi, '')
+    .replace(/\[silence\]/gi, '')
+    .replace(/\([^)]{0,30}\)/g, '')  // strip parenthetical annotations
+    .replace(/\.{3,}/g, '')
+    .replace(/Thank you for watching[.!]?/gi, '')
+    .replace(/Thanks for watching[.!]?/gi, '')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-function sessionRestart() {
-  if (!_isChrome) return
-  if (!_recording) return
-  if (!_recognition) return
-  if (_state === 'speech') {
-    _left += _interim
-    _interim = ''
-  }
-  const dying = _recognition
-  if (dying) {
-    dying.onresult = null
-    dying.onend = null
-    dying.onsoundstart = null
-    try { dying.abort() } catch {}
-  }
-  _recognition = null
-  clearTimeout(_watchdogTimer)
-  _watchdogTimer = null
-  clearTimeout(_sessionTimer)
-  _sessionTimer = null
-  if (!_recording) return
-  _interim = ''
-  _lastFinals = []
-  _setupRecognition()
+function onWhisperMessage(event) {
+  if (!_recording || _backend !== 'whisper-stream') return
   try {
-    _recognition.start()
+    const msg = JSON.parse(event.data)
+    if (msg.type !== 'transcript' || !msg.text) return
+    const text = cleanWhisperText(msg.text)
+    if (!text) return
+
+    _lastResultTime = Date.now()
+    dotAudioFlowing()
+    whisperLog(`msg: state=${_state} text="${text.slice(0,40)}"`)
+
+    // Enter speech state on first result — snapshot cursor position
+    if (_state !== 'speech') {
+      _state = 'speech'
+      const ta = _activeTextarea
+      const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
+      _left = ta?.value?.slice(0, cursor) ?? ''
+      _right = ta?.value?.slice(cursor) ?? ''
+      _interim = ''
+    }
+
+    // Append new transcription chunk to _left — once committed, text doesn't change
+    const processed = postProcessTranscript(text)
+    _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
+    _interim = ''
+
+    const leftTrimmed = _left.trim()
+
+    // Voice-switch: "left chat"/"right chat"
+    const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+    if (switchMatch) {
+      const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
+        .filter(ta => ta.offsetHeight > 0)
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      const target = textareas.find(ta => ta !== _activeTextarea) || textareas[0]
+      if (target) {
+        target.focus()
+        showHud('→ other chat', '#9370db')
+        fadeHud(1500)
+        _state = 'edit'
+        _generation++
+        _left = _interim = _right = ''
+        flushWhisperBridge()
+        setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
+        return
+      }
+    }
+
+    // Voice-send: "send" / "send it" / "sent"
+    const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
+    if (sendMatch) {
+      const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
+      if (cleanText && _accumulator && _accumulator.onSend) {
+        _accumulator.onSend(cleanText)
+        showHud('sent', '#7ab8a0')
+        fadeHud(2500)
+        afterSend()
+        return
+      }
+      if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
+        const who = targetLabel()
+        const wordCount = cleanText.split(/\s+/).length
+        _filling = true
+        if (_activeTextarea) {
+          _activeTextarea.value = ''
+          _activeTextarea.style.height = 'auto'
+        }
+        _filling = false
+        _activeSendFn(_activeSendTargets, cleanText)
+        showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
+        fadeHud(2500)
+        afterSend()
+        return
+      }
+    }
+
+    fillTextarea(_left + _interim + _right)
   } catch (err) {
-    if (err.name !== 'InvalidStateError') throw err
-    setTimeout(() => { if (_recording) _recognition.start() }, 100)
+    console.warn('voice: whisper message error', err)
   }
-  _watchdogTimer = setTimeout(watchdogRestart, 8000)
-  _sessionTimer = setTimeout(sessionRestart, 45000)
 }
 
-function checkSleep() {
+function connectWhisperBridge() {
+  if (_whisperWs) return
+  try {
+    _whisperWs = new WebSocket(WHISPER_BRIDGE_URL)
+    _whisperWs.onopen = () => {
+      _whisperConnected = true
+      console.log('voice: connected to whisper bridge')
+    }
+    _whisperWs.onmessage = onWhisperMessage
+    _whisperWs.onclose = () => {
+      _whisperConnected = false
+      _whisperWs = null
+      // Don't auto-reconnect — Safari shows mic permission dialogs for
+      // each new WebSocket connection. Reconnect only on next recording start.
+    }
+    _whisperWs.onerror = () => {} // onclose handles reconnect
+  } catch {
+    _whisperWs = null
+  }
+}
+
+function flushWhisperBridge() {
+  if (_whisperWs && _whisperConnected) {
+    try { _whisperWs.send(JSON.stringify({ type: 'flush' })) } catch {}
+  }
+}
+
+function whisperLog(text) {
+  console.log('voice:', text)
+  if (_whisperWs && _whisperConnected) {
+    try { _whisperWs.send(JSON.stringify({ type: 'log', text })) } catch {}
+  }
+}
+
+function disconnectWhisperBridge() {
+  if (_whisperWs) {
+    _whisperWs.onclose = null // prevent reconnect
+    _whisperWs.close()
+    _whisperWs = null
+    _whisperConnected = false
+  }
+}
+
+// --- After-send state reset ---
+// Called after any send (Enter key or voice-send keyword) to prepare for the
+// next message. Resets text buffers and handles recognition restart.
+// One function, called from all send paths — no parallel implementations.
+function afterSend() {
+  _state = 'edit'
+  _left = _interim = _right = ''
+  if (_backend === 'whisper-stream') {
+    flushWhisperBridge()
+    return
+  }
   if (!_recording) return
-  if (!_recognition) return
-  const now = Date.now()
-  const gap = now - _sleepDetectLast
-  _sleepDetectLast = now
-  if (gap > 10000) {
-    clearTimeout(_sessionTimer)
-    _sessionTimer = null
-    const dying = _recognition
-    if (dying) {
-      dying.onresult = null
-      dying.onend = null
-      dying.onsoundstart = null
-      try { dying.abort() } catch {}
-    }
-    _recognition = null
-    clearTimeout(_watchdogTimer)
-    _watchdogTimer = null
-    if (!_recording) return
-    _sleepDetectLast = Date.now()
-    _setupRecognition()
-    try {
-      _recognition.start()
-    } catch (err) {
-      if (err.name !== 'InvalidStateError') throw err
-      setTimeout(() => { if (_recording) _recognition.start() }, 100)
-    }
-    _watchdogTimer = setTimeout(watchdogRestart, 8000)
-    _sessionTimer = setTimeout(sessionRestart, 45000)
+  if (_isSafari) {
+    // Safari: webkitSpeechRecognition is unreliable after stop/start; full reset needed.
+    hardResetVoice().then(() => startRecording())
+  } else {
+    // Chrome: keep recognition running — no restart gap, no warmup delay.
+    // _editStopped gates the next 100ms to drop any in-flight finals from the
+    // old message; after that the next word starts a fresh message naturally.
+    _editStopped = true
+    setTimeout(() => { _editStopped = false }, 100)
   }
 }
 
 // --- Recording ---
 
-function startRecording() {
-  if (_recording) return
-  if (!SpeechRecognition) return
+// Remote debug logging — sends voice logs to server so agent can read them
+const _voiceLogs = []
+function vlog(msg, data) {
+  const entry = data ? `${msg} ${JSON.stringify(data)}` : msg
+  console.log('voice:', entry)
+  _voiceLogs.push(`${new Date().toISOString().slice(11,19)} ${entry}`)
+  if (_voiceLogs.length > 50) _voiceLogs.shift()
+}
+// Expose logs for reading via fetch
+if (typeof window !== 'undefined') {
+  window.__voiceLogs = _voiceLogs
+}
 
-  if (!_activeTextarea) {
+function startRecording() {
+  vlog('startRecording', { backend: _backend, recording: _recording, hasTextarea: !!_activeTextarea, hasAccumulator: !!_accumulator })
+  if (_recording) return
+  if (_backend === 'chrome' && !SpeechRecognition) return
+
+  if (!_activeTextarea && !_accumulator) {
     showHud('no chat focused', '#c8956a')
     fadeHud(2000)
     return
@@ -724,37 +959,37 @@ function startRecording() {
   _recording = true
   _state = 'edit'
   _generation++
-  _lastFinals = []
   _left = _interim = _right = ''
+  _lastResultTime = 0
 
-  const who = targetLabel()
-  showHud(who ? `recording → ${who}` : 'recording', '#c87070')
+  showRecordingHud()
+  dotRecordingStart()
 
   _audioCaptureRetries = 0
-  _deadRestarts = 0
-  _gotAudioThisSession = false
 
-  const doStart = () => {
-    if (!_recording) return
-    _setupRecognition()
-    try {
-      _recognition.start()
-      _watchdogTimer = setTimeout(watchdogRestart, 8000)
-      _sessionTimer = setTimeout(sessionRestart, 45000)
-      _sleepDetectLast = Date.now()
-      _sleepDetectInterval = setInterval(checkSleep, 2000)
-    } catch (err) {
-      console.warn('voice: could not start recognition', err)
-      _recording = false
-      showHud('mic failed — tap to retry', '#c87070')
-      fadeHud(3000)
-    }
-  }
-
-  if (_micChannel) {
-    setTimeout(doStart, 300)
+  if (_backend === 'whisper-stream') {
+    // whisper-stream captures mic directly — no browser mic needed.
+    // Just ensure we're connected to the bridge WebSocket.
+    connectWhisperBridge()
   } else {
-    doStart()
+    const doStart = () => {
+      if (!_recording) return
+      _setupRecognition()
+      try {
+        _recognition.start()
+      } catch (err) {
+        console.warn('voice: could not start recognition', err)
+        _recording = false
+        showHud('mic failed — tap to retry', '#c87070')
+        fadeHud(3000)
+      }
+    }
+
+    if (_micChannel) {
+      setTimeout(doStart, 300)
+    } else {
+      doStart()
+    }
   }
 }
 
@@ -762,19 +997,20 @@ function stopRecording() {
   if (!_recording) return
   _recording = false
 
-  clearTimeout(_watchdogTimer)
-  _watchdogTimer = null
-  clearTimeout(_sessionTimer)
-  _sessionTimer = null
-  clearInterval(_sleepDetectInterval)
-  _sleepDetectInterval = null
+  hideHealthDot()
 
+  // Stop Chrome recognition if active
   if (_recognition) {
     _recognition.onresult = null
     _recognition.onend = null
     try { _recognition.stop() } catch {}
     _recognition = null
   }
+
+  // Whisper-stream: leave bridge connected (it auto-reconnects anyway)
+
+  // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
+  if (_accumulator?.onStop) _accumulator.onStop()
 
   const who = targetLabel()
   showHud(who ? `paused → ${who}` : 'paused', '#9370db')
@@ -784,12 +1020,9 @@ function stopRecording() {
 // Hard reset — the escape hatch for when Chrome's SpeechRecognition
 // pipeline is poisoned and normal stop/start won't un-stick it. Triggered
 // by double-tap on Right Shift. Aborts any live recognition, clears all
-// timers and state, and releases the browser's microphone lock by opening
-// and immediately closing a getUserMedia audio stream. After this fires,
-// the next single-tap of Right Shift should start a fresh clean session.
+// state, and releases the browser's microphone lock by opening and
+// immediately closing a getUserMedia audio stream.
 async function hardResetVoice() {
-  // Tear down recognition — abort (not stop) to force an immediate release
-  // without waiting for a clean onend from any in-flight audio.
   if (_recognition) {
     try {
       _recognition.onresult = null
@@ -800,33 +1033,29 @@ async function hardResetVoice() {
     } catch {}
     _recognition = null
   }
-  // Clear every timer.
-  clearTimeout(_watchdogTimer); _watchdogTimer = null
-  clearTimeout(_sessionTimer); _sessionTimer = null
-  clearInterval(_sleepDetectInterval); _sleepDetectInterval = null
-  // Reset every bit of state the speech state machine cares about.
+  disconnectWhisperBridge()
   _recording = false
   _state = 'edit'
+  _accumulator = null
   _left = _interim = _right = ''
   _editStopped = false
   _filling = false
   _audioCaptureRetries = 0
-  _deadRestarts = 0
-  _gotAudioThisSession = false
-  _sleepDetectLast = 0
+  _lastResultTime = 0
+  hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
-  // SpeechRecognition uses the same underlying audio plumbing as
-  // getUserMedia, so cycling a mic stream here jogs the internal state.
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    for (const track of stream.getTracks()) {
-      try { track.stop() } catch {}
+  // Skip this when using whisper-stream — it captures mic via SDL, not the browser.
+  // The getUserMedia cycle triggers Safari mic permission dialogs.
+  if (_backend !== 'whisper-stream') {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      for (const track of stream.getTracks()) {
+        try { track.stop() } catch {}
+      }
+    } catch (err) {
+      console.warn('voice: hard reset getUserMedia cycle failed', err)
     }
-  } catch (err) {
-    console.warn('voice: hard reset getUserMedia cycle failed', err)
   }
-  showHud('voice reset — tap shift to start', '#9370db')
-  fadeHud(3000)
 }
 
 function sendCurrentText() {
@@ -875,37 +1104,125 @@ let _initialized = false
 
 export async function initVoice() {
   if (_initialized) return true
+
   _initialized = true
 
-  if (!SpeechRecognition) {
-    console.warn('voice: Web Speech API not available')
+  // Chrome Web Speech is the default voice backend.
+  // Whisper is opt-in via &voice=whisper — and only then do we ask the
+  // server to lazy-start the whisper bridge (it stays off otherwise).
+  const urlVoice = new URLSearchParams(window.location.search).get('voice')
+  if (urlVoice === 'whisper') {
+    _backend = 'whisper-stream'
+    try {
+      await fetch('/api/voice/whisper/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: whisper lazy-start request failed', err)
+    }
+    try {
+      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+      testWs.onopen = () => {
+        testWs.close()
+        _whisperAvailable = true
+        console.log('voice: using whisper-stream backend (via URL param)')
+        connectWhisperBridge()
+        if (_recording) showRecordingHud()
+      }
+      testWs.onerror = () => {
+        testWs.close()
+        if (!_whisperAvailable) {
+          _backend = 'chrome'
+          console.log('voice: whisper bridge not available, falling back to Chrome')
+        }
+      }
+    } catch {
+      _backend = 'chrome'
+    }
+  }
+
+  if (!SpeechRecognition && _backend === 'chrome') {
+    console.warn('voice: no backend available')
     return false
   }
 
-  // Right Shift: single tap = toggle recording. Double tap (within 300ms)
-  // = hard voice reset — recovery pathway for when Chrome's SpeechRecognition
-  // pipeline gets poisoned and normal stop/start doesn't un-stick it.
-  let _lastShiftTapAt = 0
-  document.addEventListener('keydown', (e) => {
+  // Right Shift: tap counting within 300ms windows.
+  //   1 tap  → toggle recording
+  //   2 taps → soft reset (kill playwright, getUserMedia cycle, restart)
+  //   3 taps → kill Chrome and reopen (tlda://voice-reset)
+  //
+  // The handler is installed on document AND on any iframe contentDocuments
+  // (via MutationObserver) so shift works regardless of where focus is.
+  let _shiftTapCount = 0
+  let _shiftTapTimer = null
+  function shiftHandler(e) {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
 
-    const now = Date.now()
-    if (now - _lastShiftTapAt < 300) {
-      // Double tap: hard reset
-      _lastShiftTapAt = 0
-      hardResetVoice()
+    _shiftTapCount++
+    clearTimeout(_shiftTapTimer)
+
+    if (_shiftTapCount >= 3) {
+      // Triple tap: kill Chrome and reopen.
+      // Try iframe approach to trigger tlda:// URL scheme (bypasses Chrome's
+      // JS restrictions on custom protocols). Falls back to server endpoint.
+      _shiftTapCount = 0
+      showHud('restarting Chrome…', '#c87070')
+      const iframe = document.createElement('iframe')
+      iframe.style.display = 'none'
+      iframe.src = 'tlda://voice-reset'
+      document.body.appendChild(iframe)
+      setTimeout(() => iframe.remove(), 2000)
       return
     }
-    _lastShiftTapAt = now
 
-    if (_recording) {
-      stopRecording()
-    } else {
-      startRecording()
+    // Wait 300ms to see if more taps are coming
+    _shiftTapTimer = setTimeout(() => {
+      const taps = _shiftTapCount
+      _shiftTapCount = 0
+      if (taps === 1) {
+        // Single tap: toggle
+        if (_recording) {
+          stopRecording()
+        } else {
+          startRecording()
+        }
+      } else if (taps === 2) {
+        // Double tap: soft reset (getUserMedia cycle + restart)
+        showHud('voice reset', '#9370db')
+        hardResetVoice().then(() => startRecording())
+      }
+    }, 300)
+  }
+  document.addEventListener('keydown', shiftHandler, true)
+
+  // Watch for iframes and inject shift handler into their documents.
+  // Without this, shift is invisible when an iframe has focus.
+  const _hookedIframes = new WeakSet()
+  function hookIframe(iframe) {
+    if (_hookedIframes.has(iframe)) return
+    _hookedIframes.add(iframe)
+    const tryHook = () => {
+      try {
+        const doc = iframe.contentDocument
+        if (doc) doc.addEventListener('keydown', shiftHandler, true)
+      } catch {} // cross-origin iframes — can't hook, that's fine
     }
-  }, true)
+    tryHook()
+    iframe.addEventListener('load', tryHook)
+  }
+  // Hook existing iframes
+  for (const iframe of document.querySelectorAll('iframe')) hookIframe(iframe)
+  // Hook future iframes via MutationObserver
+  new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeName === 'IFRAME') hookIframe(node)
+        if (node.querySelectorAll) {
+          for (const iframe of node.querySelectorAll('iframe')) hookIframe(iframe)
+        }
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true })
 
   if (_micChannel) {
     _micChannel.onmessage = (e) => {
@@ -913,8 +1230,26 @@ export async function initVoice() {
     }
   }
 
+  // Abort recognition before page unload to prevent WebKit crash
+  // (SpeechRecognitionServer::messageSenderConnection segfault when
+  // the recognition callback fires into a destroyed IPC channel)
+  window.addEventListener('beforeunload', () => {
+    if (_recognition) {
+      try { _recognition.abort() } catch {}
+      _recognition = null
+    }
+  })
+
+  // Also abort when tab goes hidden — Safari suspends recognition but
+  // the callback can fire during the suspension transition.
   document.addEventListener('visibilitychange', () => {
+    if (document.hidden && _recognition && _recording) {
+      try { _recognition.abort() } catch {}
+      _recognition = null
+    }
     if (!document.hidden && _recording) {
+      // Tab became visible again — Chrome may have suspended recognition.
+      // Restart it cleanly.
       const dying = _recognition
       if (dying) {
         dying.onresult = null
@@ -923,8 +1258,6 @@ export async function initVoice() {
         try { dying.abort() } catch {}
       }
       _recognition = null
-      clearTimeout(_watchdogTimer)
-      _watchdogTimer = null
       if (!_recording) return
       _setupRecognition()
       try {
@@ -933,11 +1266,11 @@ export async function initVoice() {
         if (err.name !== 'InvalidStateError') throw err
         setTimeout(() => { if (_recording) _recognition.start() }, 100)
       }
-      _watchdogTimer = setTimeout(watchdogRestart, 8000)
     }
   })
 
-  console.log(`voice: initialized v6 — Web Speech API — BroadcastChannel: ${!!_micChannel}`)
+  const backend = _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
+  console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
   return true
 }
 
@@ -958,23 +1291,37 @@ export { sendCurrentText, stopRecording }
 // --- State queries ---
 
 export function isRecording() { return _recording }
-export function getTranscript() { return _activeTextarea ? _activeTextarea.value : '' }
+export function getTranscript() {
+  if (_accumulator) return postProcessTranscript(_left + _interim)
+  return _activeTextarea ? _activeTextarea.value : ''
+}
 export function addVocabReplacement(pattern, replacement) {
   VOCAB_REPLACEMENTS.push([pattern, replacement])
 }
 export function setMathMode(on) {
   _mathMode = on
-  if (_recording) {
-    const who = targetLabel()
-    const mode = on ? ' [math]' : ''
-    showHud(who ? `recording → ${who}${mode}` : `recording${mode}`, '#c87070')
-  }
+  if (_recording) showRecordingHud()
 }
 export function isMathMode() { return _mathMode }
 export function getGeneration() { return _generation }
+export function getBackend() { return _backend }
+export function isWhisperAvailable() { return _whisperAvailable }
+export function setBackend(be) {
+  if (be !== 'chrome' && be !== 'whisper-stream') return
+  if (be === 'whisper-stream' && !_whisperAvailable) return
+  if (be === _backend) return
+  const wasRecording = _recording
+  if (wasRecording) stopRecording()
+  _backend = be
+  if (wasRecording) startRecording()
+  showHud(`voice: ${be}`, '#9370db')
+  fadeHud(2000)
+}
 export function resetTranscript() {
   _state = 'edit'
+  _generation++
   _left = _interim = _right = ''
+  if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}
   }
