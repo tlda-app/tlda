@@ -29,6 +29,20 @@ export function detectAttachments(message, agentCwd) {
   // 2. Single-backtick inline spans (no newlines, non-empty interior)
   working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m))
   let attIdx = 0
+  // 3a. Markdown images with localhost file API URLs: ![...](http://localhost:.../api/file?path=...)
+  const mdImageRe = /!\[([^\]]*)\]\((https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/api\/file\?path=([^)]+))\)/g
+  working = working.replace(mdImageRe, (match, _alt, _url, encodedPath) => {
+    const filePath = decodeURIComponent(encodedPath)
+    if (fs.existsSync(filePath)) {
+      const id = attIdx++
+      inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath) })
+      return `{{att:${id}}}`
+    }
+    const id = attIdx++
+    inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath), broken: true })
+    return `{{att:${id}}}`
+  })
+  // 3b. Bare file paths
   working = working.replace(pathRe, (match, filePath) => {
     const expanded = filePath.replace(/^~\//, os.homedir() + '/')
     if (expanded.startsWith('/')) {
@@ -72,9 +86,11 @@ export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
 }
 
 // Full pipeline: detect paths, replace with {{att:N}}, upload files.
-// Returns { resolvedMessage, inlineAttachments } with att.url populated.
+// Returns { resolvedMessage, inlineAttachments, brokenPaths } with att.url populated.
+// brokenPaths lists files that were referenced but don't exist or failed upload.
 export async function processMessageText(message, agentCwd, serverBaseUrl) {
   const { resolvedMessage, inlineAttachments } = detectAttachments(message, agentCwd)
   await uploadAttachments(inlineAttachments, serverBaseUrl)
-  return { resolvedMessage, inlineAttachments }
+  const brokenPaths = inlineAttachments.filter(a => a.broken).map(a => a.path)
+  return { resolvedMessage, inlineAttachments, brokenPaths }
 }

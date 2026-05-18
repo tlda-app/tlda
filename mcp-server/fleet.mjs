@@ -1541,9 +1541,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Resolve file paths in message text → inline attachments.
     const agentCwd = getAgentCwd();
     const dashPortUpload = process.env.FLEET_DASH_PORT || 5176;
-    const { resolvedMessage, inlineAttachments } = await processMessageText(
+    const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
       message, agentCwd, `http://127.0.0.1:${dashPortUpload}`
     );
+
+    if (brokenPaths.length > 0) {
+      return { content: [{ type: 'text', text: `Message NOT sent — ${brokenPaths.length} broken file reference(s):\n${brokenPaths.map(p => `  • ${p}`).join('\n')}\nFix the paths and resend.` }], isError: true };
+    }
 
     // Auto-attach ref metadata for «...» tokens in the message
     const refAttachments = [];
