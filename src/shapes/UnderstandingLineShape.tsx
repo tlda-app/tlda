@@ -143,12 +143,8 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
         style={{
           width: '100%',
           height: '100%',
-          pointerEvents: 'all',
-          cursor: isOwn ? 'pointer' : 'default',
+          pointerEvents: 'none',
         }}
-        onPointerDown={isOwn ? handleClick : undefined}
-        onPointerEnter={() => setHovered(true)}
-        onPointerLeave={() => setHovered(false)}
       >
         <div
           style={{
