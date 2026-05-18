@@ -1101,7 +1101,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const textEsc = bulletText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const nameEsc = noteName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const authorEsc = authorId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        return `<div class="bullet-card" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}" style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}</span><button class="bullet-card-go" title="Go to bullet" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}">→</button></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
+        return `<div class="bullet-card" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}" style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}</span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}">→</span></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
       }
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
