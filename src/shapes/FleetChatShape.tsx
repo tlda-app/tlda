@@ -1698,6 +1698,59 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [])
 
+  // Hover events on bullet cards → dispatch to AnnotationViewer
+  const bulletHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const logEl = chatLogRef.current
+    if (!logEl) return
+
+    function onBulletOver(e: MouseEvent) {
+      const card = (e.target as HTMLElement).closest('.bullet-card') as HTMLElement | null
+      if (!card) return
+      if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
+      bulletHoverTimerRef.current = setTimeout(() => {
+        if (!card.matches(':hover')) return
+        const shapeId = card.dataset.shapeId
+        if (!shapeId) return
+        const mainEd = (window as any).__tldraw_editor__ || editor
+        const noteShape = mainEd.getShape(shapeId as any)
+        if (!noteShape) return
+        const bounds = mainEd.getShapePageBounds(noteShape.id)
+        if (!bounds) return
+        const chipRect = card.getBoundingClientRect()
+        const label = card.querySelector('.bullet-card-source')?.textContent?.trim() || 'Note'
+        const bulletIdx = parseInt(card.dataset.bulletIdx || '', 10)
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: {
+            bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+            shapeIds: [shapeId],
+            label,
+            chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
+            useFullBounds: true,
+            bulletIdx: isNaN(bulletIdx) ? undefined : bulletIdx,
+          }
+        }))
+      }, 500)
+    }
+
+    function onBulletOut(e: MouseEvent) {
+      const target = e.target as HTMLElement
+      if (!target.closest('.bullet-card')) return
+      const related = e.relatedTarget as HTMLElement | null
+      if (related?.closest('.annotation-viewer')) return
+      if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
+      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+    }
+
+    logEl.addEventListener('mouseover', onBulletOver)
+    logEl.addEventListener('mouseout', onBulletOut)
+    return () => {
+      logEl.removeEventListener('mouseover', onBulletOver)
+      logEl.removeEventListener('mouseout', onBulletOut)
+      if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
+    }
+  }, [editor])
+
   // Auto-scroll to bottom — event-driven, not every frame.
   // CanvasClipPanel already routes wheel events to .fleet-chat-log via
   // scrollable.scrollTop += e.deltaY, so we must NOT fight it with a
