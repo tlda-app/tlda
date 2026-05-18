@@ -530,10 +530,12 @@ onGlobalEvent((event) => {
     // Notify monitoring subscribers
     const subs = new Set(tldaFeedback.subscribers(docName))
 
-    // For mirror failures, also notify agents who used editor tools on the build files
-    // since the last successful mirror — those are the agents who could be responsible.
-    if (mirrorFailed && buildFiles?.length && lastMirrorSuccess) {
-      for (const id of fleetStore.recentDocAgents(buildFiles, lastMirrorSuccess)) subs.add(id)
+    // Also notify agents who recently edited the build files — they need build cards
+    // regardless of whether they remembered to subscribe via `tlda monitor`.
+    // Use lastMirrorSuccess as the cutoff when available; otherwise 2 hours ago.
+    if (buildFiles?.length) {
+      const since = lastMirrorSuccess ?? (Date.now() - 2 * 60 * 60 * 1000)
+      for (const id of fleetStore.recentDocAgents(buildFiles, since)) subs.add(id)
     }
 
     for (const agentId of subs) {
