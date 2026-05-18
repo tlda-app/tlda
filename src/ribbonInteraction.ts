@@ -326,7 +326,8 @@ export async function initRibbonBackground(
   // Ribbons are LaTeX-only — skip for diff/png formats
   if (!docName) return
 
-  const userId = getHumanId() || 'unknown'
+  const userId = getHumanId()
+  if (!userId) return
   const displayName = getHumanName() || userId
   const uid = userId.replace(/[^a-zA-Z0-9]/g, '')
 
@@ -422,7 +423,8 @@ export async function processRibbonHighlight(
 
   editor.deleteShape(shapeId)
 
-  const userId = getHumanId() || 'unknown'
+  const userId = getHumanId()
+  if (!userId) return
   const displayName = getHumanName() || userId
 
   const x = MARGIN_X
