@@ -260,7 +260,7 @@ const customShapeSchemas = {
       h: T.number,
       commitHash: T.string,
       timestamp: T.number,
-      buildReadyAt: T.number,
+      buildReadyAt: T.optional(T.number),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',
@@ -329,6 +329,26 @@ const schema = createTLSchema({
     ...customShapeSchemas,
   },
 })
+
+// Wrap every record type's validate() to log the actual error before TLDraw
+// swallows it into a generic INVALID_RECORD session rejection.
+for (const [typeName, recordType] of Object.entries(schema.types)) {
+  if (typeof recordType.validate === 'function') {
+    const originalValidate = recordType.validate.bind(recordType)
+    recordType.validate = function loggingValidate(record) {
+      try {
+        return originalValidate(record)
+      } catch (e) {
+        console.error(`[sync] SCHEMA VALIDATION FAILED for type "${typeName}":`, e.message)
+        console.error(`[sync] Record ID: ${record?.id}, typeName: ${record?.typeName}`)
+        if (record?.props) {
+          console.error(`[sync] Record props:`, JSON.stringify(record.props, null, 2))
+        }
+        throw e
+      }
+    }
+  }
+}
 
 // --- Room management ---
 
@@ -546,6 +566,13 @@ export async function getOrCreateRoom(docName) {
 
   const opts = {
     schema,
+    log: {
+      warn: (...args) => console.warn(`[sync:${docName}]`, ...args),
+      error: (...args) => console.error(`[sync:${docName}]`, ...args),
+    },
+    onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
+      console.log(`[sync] Session removed from "${docName}": ${sessionId} (${numSessionsRemaining} remaining)`)
+    },
     onDataChange: () => {
       scheduleSave(docName, room)
       const changes = recordChanges(docName, room)
@@ -555,6 +582,20 @@ export async function getOrCreateRoom(docName) {
 
   let room
   if (snapshot) {
+    // Pre-validate snapshot records to catch schema mismatches at load time
+    if (snapshot.documents) {
+      for (const doc of snapshot.documents) {
+        const record = doc.state
+        if (!record?.typeName) continue
+        const recordType = schema.types[record.typeName]
+        if (!recordType) continue
+        try {
+          recordType.validate(record)
+        } catch (e) {
+          console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${e.message}`)
+        }
+      }
+    }
     try {
       opts.initialSnapshot = snapshot
       room = new TLSocketRoom(opts)

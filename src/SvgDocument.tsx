@@ -939,7 +939,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   if (storeWithStatus.status === 'error') {
     const err = storeWithStatus.error
     const errMsg = err?.message || String(err) || 'Unknown sync error'
-    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation')
+    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
     return (
       <div className="App">
         <div className="ErrorScreen">
@@ -948,7 +948,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
           {isValidation && (
             <p className="error-message" style={{ marginTop: 8 }}>
-              This usually means the sync store contains shapes from an incompatible build.
+              Schema validation error — a shape prop type mismatch between client and server.
+              Check server logs for the specific field that failed validation.
             </p>
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>

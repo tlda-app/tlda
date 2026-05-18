@@ -1248,6 +1248,12 @@ server.on('upgrade', async (req, socket, head) => {
     syncWss.handleUpgrade(req, socket, head, (ws) => {
       trackWs(ws, { kind: 'sync', docName, sessionId, remoteAddr, remotePort })
       room.handleSocketConnect({ sessionId, socket: ws })
+      ws.addEventListener('close', (ev) => {
+        if (ev.code === 4099) {
+          console.error(`[sync] Client rejected from "${docName}" session=${sessionId}: code=4099 reason="${ev.reason}"`)
+          console.error(`[sync] Check server logs above for SCHEMA VALIDATION FAILED details.`)
+        }
+      })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
     })
