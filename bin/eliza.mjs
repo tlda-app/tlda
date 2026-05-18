@@ -591,6 +591,60 @@ function setCooldown(targetId, patternIdx) {
   cooldowns.get(targetId).set(patternIdx, Date.now())
 }
 
+// ---- Manager escalation ----
+// When Skip says "I want to talk to your manager" to an agent:
+// 1. Acknowledge to Skip
+// 2. Stand down the agent
+// 3. Find and notify the manager (whoever delegated the agent's current task)
+const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:your|the|a\s+)?manager\b/i
+const managerEscalationCooldowns = new Map()
+const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
+
+async function findAgentManager(agentId) {
+  try {
+    const url = `${SERVER}/api/store/tasks`
+    const mod = url.startsWith('https') ? https : http
+    const data = await new Promise((resolve, reject) => {
+      mod.get(url, res => {
+        let buf = ''
+        res.on('data', c => buf += c)
+        res.on('end', () => { try { resolve(JSON.parse(buf)) } catch (e) { reject(e) } })
+      }).on('error', reject)
+    })
+    const tasks = Array.isArray(data) ? data : (data.tasks || [])
+    const activeTask = tasks.find(t => t.agent === agentId && t.status === 'pending' && t.delegated_by)
+    return activeTask?.delegated_by || null
+  } catch (e) {
+    console.error(`[eliza] findAgentManager failed: ${e.message}`)
+    return null
+  }
+}
+
+async function handleManagerEscalation(agentId, triggerText) {
+  const now = Date.now()
+  const lastEscalation = managerEscalationCooldowns.get(agentId) || 0
+  if (now - lastEscalation < MANAGER_ESCALATION_COOLDOWN_MS) return
+  managerEscalationCooldowns.set(agentId, now)
+
+  console.log(`[eliza] manager escalation for ${agentId}`)
+
+  // Acknowledge to Skip
+  sendChat(OWNER_ID, `Got it — finding the manager for ${agentId}.`)
+
+  // Stand down the agent
+  sendChat(agentId, `⚠️ Skip has asked to talk to your manager. Reply with "understood" and stop. The manager will take over.`)
+
+  // Find and notify the manager
+  const managerId = await findAgentManager(agentId)
+  if (managerId && managerId !== OWNER_ID) {
+    sendChat(managerId, `⚠️ **Manager escalation**: Skip said "I want to talk to your manager" to ${agentId}.\n\nRead their recent thread (last hour), find what Skip was trying to get done, and take over. Don't ask Skip to repeat himself — the thread has the context.`)
+    logDecision(agentId, 'manager-escalation', 'talk-to-manager', { managerId }, triggerText)
+  } else {
+    sendChat(OWNER_ID, `⚠️ No manager found for ${agentId} — no pending task with a delegator. You'll need to handle this directly or spawn a manager.`)
+    logDecision(agentId, 'manager-escalation-no-manager', 'talk-to-manager', { managerId: null }, triggerText)
+  }
+}
+
 // ---- Education tracking ----
 // Query the activity store to see if an agent has invoked a skill since a given timestamp.
 // Uses the /api/store/events endpoint which stores Skill tool_uses as activity events.
@@ -696,6 +750,12 @@ function handleMessage(msg) {
 
     // Sequence detection watches both directions
     const seqHandled = handleSequence(from_id, to_id, text)
+
+    // Manager escalation — fires before other triggers, returns early
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
+      handleManagerEscalation(to_id, text).catch(e => console.error('[eliza] manager escalation error:', e.message))
+      return
+    }
 
     // Single-message triggers only fire on Skip's outgoing messages (and if sequence didn't already handle it)
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
