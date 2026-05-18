@@ -15,7 +15,7 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     commitHash: T.string,
     timestamp: T.number,
-    buildReadyAt: T.number,
+    buildReadyAt: T.optional(T.number),
   }
 
   getDefaultProps() {
