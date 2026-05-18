@@ -840,7 +840,7 @@ function readFileForUpload(fullPath) {
 function startPolling(state, rel) {
   const full = path.join(state.sourceDir, rel)
   if (!fs.existsSync(full)) return
-  fs.watchFile(full, { interval: 10000 }, (curr, prev) => {
+  fs.watchFile(full, { interval: 2000 }, (curr, prev) => {
     if (curr.mtimeMs === prev.mtimeMs) return
     state.onFileChange(rel, true)
   })
@@ -955,12 +955,21 @@ function pushWatchedFiles(projectName, sourceDir, watchSet) {
   sendMsg({ type: 'source-change', project: projectName, files })
 }
 
+const _pendingSourceProjects = new Set()
+
 function flushSourceChanges(projectName) {
   const state = sourceWatchers.get(projectName)
   if (!state) return
+  state.debounce = null
+
+  if (!ws || ws.readyState !== 1) {
+    _pendingSourceProjects.add(projectName)
+    return
+  }
+
   const filePaths = [...state.pending]
   state.pending.clear()
-  state.debounce = null
+  _pendingSourceProjects.delete(projectName)
 
   const files = []
   const deleted = []
@@ -978,6 +987,12 @@ function flushSourceChanges(projectName) {
     files,
     ...(deleted.length > 0 && { deletedFiles: deleted }),
   })
+}
+
+function flushPendingSourceChanges() {
+  for (const name of _pendingSourceProjects) {
+    flushSourceChanges(name)
+  }
 }
 
 // ---------- Backing file watchers ----------
@@ -1621,11 +1636,8 @@ function teardownWatchers() {
   for (const [, pw] of pathWatchers) { try { pw.watcher.close() } catch {} }
   pathWatchers.clear()
   agentPaths.clear()
-  for (const [, s] of sourceWatchers) {
-    try { s.watcher?.close() } catch {}
-    for (const rel of (s.watchSet || [])) stopPolling(s, rel)
-  }
-  sourceWatchers.clear()
+  // Source watchers survive WS disconnects — they detect file changes
+  // independently and queue them for the next connected window.
   for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
   terminalWatchTimers.clear()
   for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
@@ -1696,6 +1708,7 @@ function handleServerMessage(msg) {
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
+    flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
