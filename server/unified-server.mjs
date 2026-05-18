@@ -460,6 +460,34 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
+    // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
+    // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
+    // fleet-spawn.py pre-registers the agent before starting tmux, so findAgent() works
+    // immediately after the spawn RPC resolves — no register hook or name-pattern needed.
+    if (fleetStore) {
+      const docName = event.name
+      const qaName = `qa-${docName}`
+      const existing = fleetStore.findAgent(qaName)
+      if (!existing || existing.dead) {
+        const machineIds = [...daemonConnections.keys()]
+        if (machineIds.length > 0) {
+          const taskDesc = `Watch the ${docName} writing project. Read the qa-writing-watch skill for your full spec.`
+          sendRpc(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
+            .then(() => {
+              const agent = fleetStore.findAgent(qaName)
+              if (agent) {
+                const taskId = `qa-task-${docName}-${Date.now()}`
+                fleetStore.delegate('fleet:tlda', agent.id, taskId, taskDesc, { type: 'qa_watch', project: docName })
+                console.log(`[qa-watch] delegated task to ${qaName} (${agent.id}) for project ${docName}`)
+              } else {
+                console.warn(`[qa-watch] spawn succeeded but agent ${qaName} not found in store`)
+              }
+            })
+            .catch(e => console.warn(`[qa-watch] spawn failed for ${qaName}: ${e.message}`))
+          console.log(`[qa-watch] spawning ${qaName} for project ${docName}`)
+        }
+      }
+    }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
     const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, buildFiles } = event
@@ -479,20 +507,6 @@ onGlobalEvent((event) => {
 
     for (const agentId of subs) {
       fleetStore.chat('fleet:tlda', agentId, text, metadata)
-    }
-
-    // Auto-spawn a QA watcher agent for this project if none exists
-    if (!mirrorFailed) {
-      const qaName = `qa-${docName}`
-      const existing = fleetStore.findAgent(qaName)
-      if (!existing || existing.dead) {
-        const machineIds = [...daemonConnections.keys()]
-        if (machineIds.length > 0) {
-          sendRpc(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
-            .catch(e => console.warn(`[qa-watch] spawn failed for ${qaName}: ${e.message}`))
-          console.log(`[qa-watch] spawning ${qaName} for project ${docName}`)
-        }
-      }
     }
   }
   if (event?.type === 'scratch-build-failed' && fleetStore && event.agentId) {
@@ -1421,17 +1435,6 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertAgent(agent)
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
-    // Auto-delegate task to QA watcher agents on first registration
-    if (name?.startsWith('qa-') && !existing) {
-      const projectName = name.slice(3) // 'qa-bregman' → 'bregman'
-      const taskId = `qa-task-${projectName}-${Date.now()}`
-      fleetStore.delegate(
-        'fleet:tlda', agentId, taskId,
-        `Watch the ${projectName} writing project. Read the qa-writing-watch skill for your full spec.`,
-        { type: 'qa_watch', project: projectName }
-      )
-      console.log(`[qa-watch] delegated task to ${name} (${agentId}) for project ${projectName}`)
-    }
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
