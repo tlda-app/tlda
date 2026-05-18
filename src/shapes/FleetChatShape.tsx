@@ -529,9 +529,9 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * ThinkingStatus — shows "thinking…" / "compacting…" as a chat line.
- * When thinking stops, the text fades out but the space remains.
- * When the next message arrives (rawItemsLength changes), the space collapses.
+ * ThinkingStatus — one status line per agent (thinking / compacting).
+ * When all agents stop, the space persists (ghost) until rawItemsLength changes
+ * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
 function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength }: {
   thinkingAgents: Map<string, number>
@@ -540,32 +540,37 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
   ctx: any
   rawItemsLength: number
 }) {
-  const hasActive = thinkingAgents.size > 0 || compactingAgents.size > 0
-  // Track "recently stopped" — keep the space until rawItems changes
+  // Merge thinking + compacting into one map keyed by agentId
+  const statusAgents = useMemo(() => {
+    const merged = new Map<string, { status: 'thinking' | 'compacting', startTs: number }>()
+    for (const [id, ts] of thinkingAgents) {
+      merged.set(id, { status: 'thinking', startTs: ts })
+    }
+    for (const [id, ts] of compactingAgents) {
+      merged.set(id, { status: 'compacting', startTs: ts })
+    }
+    return merged
+  }, [thinkingAgents, compactingAgents])
+
+  const hasActive = statusAgents.size > 0
   const prevActiveRef = useRef(hasActive)
-  const [ghost, setGhost] = useState(false) // true = text hidden, space kept
+  const [ghost, setGhost] = useState(false)
   const ghostRawItemsRef = useRef(rawItemsLength)
 
-  // Transition: active → ghost (text fades, space stays)
   if (prevActiveRef.current && !hasActive && !ghost) {
     setGhost(true)
     ghostRawItemsRef.current = rawItemsLength
   }
+  if (hasActive && ghost) {
+    setGhost(false)
+  }
   prevActiveRef.current = hasActive
 
-  // Clear ghost when new messages arrive
   useEffect(() => {
     if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
       setGhost(false)
     }
   }, [ghost, rawItemsLength])
-
-  // Also clear ghost after a timeout in case no message comes
-  useEffect(() => {
-    if (!ghost) return
-    const t = setTimeout(() => setGhost(false), 3000)
-    return () => clearTimeout(t)
-  }, [ghost])
 
   if (!hasActive && !ghost) return null
 
@@ -577,21 +582,11 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...thinkingAgents.entries()].map(([agentId, startTs]) => (
+      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => (
         <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span>
             <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-            {' '}<span className="thinking-text">thinking…</span>
-            {' '}<ElapsedTime startMs={startTs} />
-          </span>
-          <ContextBadge percent={contextPercent.get(agentId)} />
-        </div>
-      ))}
-      {!ghost && [...compactingAgents.entries()].map(([agentId, startTs]) => (
-        <div key={`compact-${agentId}`} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span>
-            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-            {' '}<span className="thinking-text">compacting…</span>
+            {' '}<span className="thinking-text">{status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
             {' '}<ElapsedTime startMs={startTs} />
           </span>
           <ContextBadge percent={contextPercent.get(agentId)} />
