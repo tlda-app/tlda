@@ -13,7 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
-import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor, clearLineYIndexCache, remapUnderstandingLines, initRibbonBackground } from './ribbonInteraction'
+import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapUnderstandingLines, initRibbonBackground } from './ribbonInteraction'
 import { subscribe as fleetSubscribe, getHumanId } from './fleet/fleet-data.mjs'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
@@ -557,9 +557,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   }, { scope: 'document' })
 
-  // Eraser resets understanding-line shapes to 'unchecked' instead of deleting them
-  registerEraserInterceptor(editor)
-
   // Phase 2: initialize the full-document unchecked background ribbon shape
   const ribbonEnabled = document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
       document.format !== 'slides' && document.format !== 'markdown'
@@ -692,25 +689,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     if (tool === 'highlight' || tool === 'draw' || tool === 'eraser') {
       editor.cancel()
     }
-  })
-
-  // Ribbon hover: set hoveredShapeId for locked understanding-line shapes.
-  // Runs on every pointer_move regardless of active tool, so the transition
-  // tooltip works even when the highlight tool is active.
-  editor.on('event', (event: any) => {
-    if (event.name !== 'pointer_move' || event.type !== 'pointer') return
-    const point = editor.inputs.getCurrentPagePoint()
-    if (point.x >= 10) return
-    let best: { id: string; area: number } | null = null
-    for (const s of editor.getCurrentPageShapes()) {
-      if (s.type !== 'understanding-line') continue
-      const bounds = editor.getShapePageBounds(s.id)
-      if (!bounds) continue
-      if (point.y < bounds.minY || point.y > bounds.maxY) continue
-      const area = bounds.width * bounds.height
-      if (!best || area < best.area) best = { id: s.id as string, area }
-    }
-    if (best) editor.setHoveredShape(best.id as any)
   })
 
   // Re-saturate addressed highlights on tap/click.
