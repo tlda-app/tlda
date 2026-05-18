@@ -45,9 +45,9 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   token.attrSet('draggable', 'false')
   return self.renderToken(tokens, idx, options)
 }
-import { chatInsertBus } from './FleetPillShape'
+import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
-import { subscribeSearchFilter, getSearchFilter } from '../stores'
+import { subscribeSearchFilter, getSearchFilter, setBulletContext } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
 
@@ -793,6 +793,46 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
     }, [pageDoc, editor])
 
+    const handleBulletClick = useCallback((e: React.MouseEvent) => {
+      if (!backingFile) return
+      const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
+      if (!li) return
+      const list = li.parentElement
+      if (!list) return
+      const bulletIndex = Array.from(list.children).indexOf(li)
+      const text = li.textContent?.trim() || ''
+      if (!text) return
+      stopEventPropagation(e)
+      // Clear previous selection
+      const prev = list.querySelector('.bullet-selected') as HTMLElement | null
+      if (prev) prev.classList.remove('bullet-selected')
+      li.classList.add('bullet-selected')
+
+      const owner = (shape.meta?.authorId as string) || undefined
+      const ctx = {
+        text,
+        noteShapeId: shape.id,
+        owner,
+        backingFile,
+        bulletIndex,
+      }
+      setBulletContext(ctx)
+
+      // Target chat to the note's owner
+      if (owner) {
+        dispatchSignalDirect('signal:set-chat-target', {
+          agent: owner,
+          timestamp: Date.now(),
+        })
+      }
+
+    }, [backingFile, shape.id, shape.meta?.authorId])
+
+    const handleContentClick = useCallback((e: React.MouseEvent) => {
+      handleBulletClick(e)
+      handleDocLinkClick(e)
+    }, [handleBulletClick, handleDocLinkClick])
+
     // Hover handler for [->label] doc-link spans
     const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     useEffect(() => {
@@ -1043,9 +1083,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose .doc-link { color: #7c3aed; cursor: pointer; border-bottom: 1px dotted #7c3aed; transition: opacity 0.15s; }
               .math-note-prose .doc-link:hover { opacity: 0.7; }
               .math-note-prose .doc-link-unresolved { color: inherit; opacity: 0.45; border-bottom-style: dashed; cursor: default; }
+              .math-note-prose.tappable-bullets li { cursor: pointer; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; transition: background-color 0.15s; }
+              .math-note-prose.tappable-bullets li:hover { background-color: rgba(124, 58, 237, 0.08); }
+              .math-note-prose.tappable-bullets li:active { background-color: rgba(124, 58, 237, 0.15); }
+              .math-note-prose.tappable-bullets li.bullet-selected { background-color: rgba(124, 58, 237, 0.15); border-left: 3px solid rgba(124, 58, 237, 0.6); padding-left: 6px; }
             `}</style>
             <div
-              className="math-note-prose"
+              className={`math-note-prose${backingFile ? ' tappable-bullets' : ''}`}
               style={{ maxWidth: '72ch', margin: '0 auto' }}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
@@ -1071,7 +1115,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       content = (
         <div
           ref={contentRef}
-          onClick={handleDocLinkClick}
+          onClick={handleContentClick}
           onPointerUp={(e) => {
             // Trackpad click in pen mode: enter editing if shape is already selected
             if (!editor.getInstanceState().isPenMode) return

@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 // @ts-ignore — vanilla JS module
@@ -23,7 +23,7 @@ import { renderActivityGroup } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
@@ -41,6 +41,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import { getPageFilename } from '../stores/pageUrlStore'
+import { consumeBulletContext, subscribeBulletContext, getBulletContext } from '../stores/bulletContextStore'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -721,6 +722,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Track previous agent friendly names to detect renames (populated after agents is declared below)
   const prevAgentNamesRef = useRef<Record<string, string>>({})
+
+  const activeBullet = useSyncExternalStore(subscribeBulletContext, getBulletContext)
 
   // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
   const dnfFilter = filter.length > 0 ? filter : null
@@ -2848,6 +2851,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [shape.id])
 
+  // Auto-focus textarea + start voice when a bullet tap targets this chat
+  useEffect(() => {
+    if (!activeBullet) return
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta || ta.getBoundingClientRect().width === 0) return
+    ta.focus()
+    if (!isRecording()) toggleRecording()
+  }, [activeBullet])
+
   return (
     <HTMLContainer
       style={{
@@ -3079,6 +3091,27 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               </button>
             )}
+            {activeBullet && (
+              <div
+                onClick={() => consumeBulletContext()}
+                style={{
+                  fontSize: '10px',
+                  lineHeight: '16px',
+                  color: '#7c3aed',
+                  background: 'rgba(124, 58, 237, 0.08)',
+                  borderRadius: '4px',
+                  padding: '1px 6px',
+                  marginBottom: '2px',
+                  cursor: 'pointer',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                title="Click to dismiss"
+              >
+                {'• ' + activeBullet.text}
+              </div>
+            )}
             <textarea
               ref={inputRef as any}
               placeholder=""
@@ -3167,6 +3200,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
                     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                    const bulletCtx = consumeBulletContext()
+                    if (bulletCtx && context) {
+                      ;(context as any).bullet = bulletCtx
+                    }
 
                     // Plan mode verbal approval: detect approval/rejection phrases and
                     // forward them to the agent's terminal as plan-mode-respond calls.
@@ -3294,6 +3331,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   // Same optimistic send path as Enter key — one send path for everything
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  const bulletCtx = consumeBulletContext()
+                  if (bulletCtx && context) {
+                    ;(context as any).bullet = bulletCtx
+                  }
                   const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
                   injectOptimisticEvent({
                     _tempId: tempId,
@@ -3332,6 +3373,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  const bulletCtx = consumeBulletContext()
+                  if (bulletCtx && context) {
+                    ;(context as any).bullet = bulletCtx
+                  }
                   const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
                   injectOptimisticEvent({
                     _tempId: tempId,

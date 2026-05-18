@@ -22,7 +22,7 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 
 // Not in type declarations but exists at runtime
 const isAccelKey = (inputs: any): boolean =>
-  navigator.platform.toLowerCase().includes('mac') ? inputs.ctrlKey : inputs.metaKey
+  navigator.platform.toLowerCase().includes('mac') ? inputs.metaKey : inputs.ctrlKey
 
 class RibbonEraserIdle extends StateNode {
   static override id = 'idle'
