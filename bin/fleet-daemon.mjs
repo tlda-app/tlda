@@ -1262,6 +1262,9 @@ const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
 async function checkAgentLiveness() {
   if (!agents.length) return
+  // One tmux list-sessions call for the whole cycle — O(1) spawns regardless
+  // of agent count. Session existence is sufficient: fleet-spawn sessions die
+  // when claude exits (the session command IS claude; no persistent shell).
   let sessions
   try {
     const r = await rpcListSessions()
@@ -1273,8 +1276,7 @@ async function checkAgentLiveness() {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
 
-    const tmuxExists = sessions.has(agent.tmux_session)
-    if (!tmuxExists) {
+    if (!sessions.has(agent.tmux_session)) {
       if (!agent.hibernating) {
         console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
       }
@@ -1282,42 +1284,14 @@ async function checkAgentLiveness() {
       continue
     }
 
-    // Tmux exists — check if a claude process is running in it
-    let claudeAlive = false
-    try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
-        { timeout: 3000, encoding: 'utf8' })
-      const panePids = stdout.trim().split('\n').filter(Boolean)
-      for (const pid of panePids) {
-        try {
-          const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
-            { timeout: 2000, encoding: 'utf8' })
-          if (children.trim()) { claudeAlive = true; break }
-        } catch {}  // pgrep exits non-zero when no match
-      }
-    } catch {}
-
-    if (!claudeAlive) {
-      if (!agent.hibernating) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude process in ${agent.tmux_session})`)
-        try { await tmux('kill-session', '-t', agent.tmux_session) } catch {}
-      }
-      agent.hibernating = true
-      continue
-    }
-
-    // Process is live — clear hibernation if it was set (agent came back).
+    // Session exists → claude is running.
     if (agent.hibernating) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (claude process found in ${agent.tmux_session})`)
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (tmux session found: ${agent.tmux_session})`)
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
   }
 
-  // Report current alive set to the server. Server uses this (per machine_id)
-  // as ground truth for awake/hibernating status. Hibernating = registered
-  // and not dead, but no claude process — the agent went to sleep.
   sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
 }
 
@@ -1709,11 +1683,11 @@ function handleServerMessage(msg) {
     console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects)
-    // Periodic death detection DISABLED 2026-05-17 — was spawning
-    // tmux list-panes + pgrep per alive agent (~392) every 30s, flooding
-    // the process table on tlda start. Re-enable only after batching the
-    // tmux calls or driving liveness off a single `tmux list-sessions`.
-    console.log('[daemon] checkAgentLiveness disabled (process-table flood mitigation)')
+    // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
+    if (!_deathCheckInterval) {
+      _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
+      setTimeout(checkAgentLiveness, 5000)
+    }
     return
   }
   if (msg.type === 'agents-updated') {
