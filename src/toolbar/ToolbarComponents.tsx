@@ -7,6 +7,7 @@ import {
   useIsToolSelected,
 } from 'tldraw'
 import { getFormatConfig, homeTool, doubleTapTools } from '../formatConfig'
+import { THEME_FAMILY } from '../hooks/useFleetTheme'
 
 export function BrowseToolbarItem() {
   const tools = useTools()
@@ -151,7 +152,15 @@ export function DarkModeSync() {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   useEffect(() => {
+    const storedTheme = localStorage.getItem('tlda-theme')
+    if (storedTheme) {
+      const expected = THEME_FAMILY[storedTheme]
+      if (expected && (expected === 'dark') !== isDark) {
+        editor.user.updateUserPreferences({ colorScheme: expected })
+        return
+      }
+    }
     globalThis.document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
-  }, [isDark])
+  }, [isDark, editor])
   return null
 }

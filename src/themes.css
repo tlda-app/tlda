@@ -277,3 +277,10 @@ body.warm-mode {
   --pill-icon-color: rgba(40, 20, 0, 1);
   --pill-icon-color-hover: rgba(40, 20, 0, 1);
 }
+
+/* Warm — doc panel text needs higher contrast on cream background */
+body.warm-mode .doc-panel-content,
+body.warm-mode .doc-panel-tabs,
+body.warm-mode .search-input-wrap {
+  color: #3a2a10;
+}
