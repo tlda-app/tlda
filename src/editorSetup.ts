@@ -14,6 +14,7 @@ import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
 import { processRibbonHighlight, isInRibbonZone, registerEraserInterceptor, clearLineYIndexCache, remapUnderstandingLines, initRibbonBackground } from './ribbonInteraction'
+import { subscribe as fleetSubscribe, getHumanId } from './fleet/fleet-data.mjs'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
@@ -560,9 +561,15 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   registerEraserInterceptor(editor)
 
   // Phase 2: initialize the full-document unchecked background ribbon shape
-  if (document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
-      document.format !== 'slides' && document.format !== 'markdown') {
+  const ribbonEnabled = document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
+      document.format !== 'slides' && document.format !== 'markdown'
+  if (ribbonEnabled) {
     void initRibbonBackground(editor, document.name, document.pages)
+    if (!getHumanId()) {
+      fleetSubscribe('identity', null, () => {
+        if (getHumanId()) void initRibbonBackground(editor, document.name, document.pages)
+      })
+    }
   }
 
   // Make sure the shapes are below any of the other shapes
