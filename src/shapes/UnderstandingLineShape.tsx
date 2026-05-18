@@ -19,6 +19,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
+import { getHumanId } from '../fleet/fleet-data.mjs'
 
 export type LineStatus = 'approved' | 'presentation' | 'uncertain' | 'rejected' | 'unchecked'
 
@@ -112,7 +113,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
     const editor = useEditor()
     const status = (shape.props.status as LineStatus) || 'unchecked'
     const color = STATUS_COLORS[status] || STATUS_COLORS.unchecked
-    const isOwn = shape.props.userId === (window as any).__tlda_userId
+    const isOwn = shape.props.userId === getHumanId()
 
     const hovered = useValue('uline-hovered', () =>
       editor.getHoveredShapeId() === shape.id, [editor, shape.id])

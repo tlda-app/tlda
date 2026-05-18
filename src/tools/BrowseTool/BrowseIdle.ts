@@ -31,6 +31,7 @@ import {
 } from 'tldraw'
 import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
 import { getOnSourceClick } from '../../stores'
+import { getHumanId } from '../../fleet/fleet-data.mjs'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
@@ -309,7 +310,7 @@ export class BrowseIdle extends StateNode {
           // Understanding-line shapes: click cycles status (owner only)
           if ((hitShape.type as string) === 'understanding-line') {
             const props = hitShape.props as Record<string, unknown>
-            if (props.userId === (window as any).__tlda_userId) {
+            if (props.userId === getHumanId()) {
               const cycle = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
               const idx = cycle.indexOf((props.status as string) || 'unchecked')
               this.editor.store.update(hitShape.id, (s: any) => ({
