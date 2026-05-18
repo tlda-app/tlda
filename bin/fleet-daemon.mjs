@@ -1129,28 +1129,10 @@ async function rpcListSessions() {
 }
 
 async function rpcCheckAlive({ tmux_session }) {
+  // Read from the cache populated by checkAgentLiveness every 30s.
+  // Zero spawns per call — the periodic poll handles the expensive pgrep work.
   if (!tmux_session) return { alive: false }
-  const { sessions } = await rpcListSessions()
-  if (!new Set(sessions).has(tmux_session)) return { alive: false }
-  const { stdout } = await execFileP('tmux',
-    [...TMUX_ARGS, 'list-panes', '-t', tmux_session, '-F', '#{pane_pid}'],
-    { timeout: 3000, encoding: 'utf8' })
-  const panePids = stdout.trim().split('\n').filter(Boolean)
-  for (const pid of panePids) {
-    // The pane PID may itself be the claude process (no shell wrapper).
-    try {
-      const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
-        { timeout: 2000, encoding: 'utf8' })
-      if (self.includes('claude')) return { alive: true }
-    } catch {}
-    // Or claude may be a direct child of the pane's shell process.
-    try {
-      const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
-        { timeout: 2000, encoding: 'utf8' })
-      if (children.trim()) return { alive: true }
-    } catch {} // pgrep exits non-zero when no match — not an error
-  }
-  return { alive: false }
+  return { alive: _alivenessCache.get(tmux_session) ?? false }
 }
 
 async function rpcKick({ agent_id }) {
@@ -1258,11 +1240,13 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 
+// Cache populated by checkAgentLiveness every 30s.
+// rpcCheckAlive reads from here — zero spawns per call.
+const _alivenessCache = new Map()  // tmux_session → boolean
+
 async function checkAgentLiveness() {
   if (!agents.length) return
-  // One tmux list-sessions call for the whole cycle — O(1) spawns regardless
-  // of agent count. Session existence is sufficient: fleet-spawn sessions die
-  // when claude exits (the session command IS claude; no persistent shell).
+  // One list-sessions call to find candidate sessions cheaply.
   let sessions
   try {
     const r = await rpcListSessions()
@@ -1275,6 +1259,7 @@ async function checkAgentLiveness() {
     if (!agent.tmux_session) continue
 
     if (!sessions.has(agent.tmux_session)) {
+      _alivenessCache.set(agent.tmux_session, false)
       if (!agent.hibernating) {
         console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
       }
@@ -1282,9 +1267,39 @@ async function checkAgentLiveness() {
       continue
     }
 
-    // Session exists → claude is running.
+    // Session exists — verify a claude process is running inside it.
+    let claudeAlive = false
+    try {
+      const { stdout } = await execFileP('tmux',
+        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+        { timeout: 3000, encoding: 'utf8' })
+      const panePids = stdout.trim().split('\n').filter(Boolean)
+      for (const pid of panePids) {
+        try {
+          const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
+            { timeout: 2000, encoding: 'utf8' })
+          if (self.includes('claude')) { claudeAlive = true; break }
+        } catch {}
+        try {
+          const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
+            { timeout: 2000, encoding: 'utf8' })
+          if (children.trim()) { claudeAlive = true; break }
+        } catch {}
+      }
+    } catch {}
+
+    _alivenessCache.set(agent.tmux_session, claudeAlive)
+
+    if (!claudeAlive) {
+      if (!agent.hibernating) {
+        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
+      }
+      agent.hibernating = true
+      continue
+    }
+
     if (agent.hibernating) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake (tmux session found: ${agent.tmux_session})`)
+      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake`)
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
