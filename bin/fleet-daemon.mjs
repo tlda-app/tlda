@@ -1277,18 +1277,17 @@ const _alivenessCache = new Map()  // tmux_session → boolean
 
 async function checkAgentLiveness() {
   if (!agents.length) return
-  // One list-sessions call to find candidate sessions cheaply.
   let sessions
   try {
     const r = await rpcListSessions()
     sessions = new Set(r.sessions || [])
-  } catch { return }  // tmux not available
+  } catch { return }
 
-  const aliveAgentIds = []
+  // Collect all candidate sessions in one pass, then batch-query pane PIDs.
+  const candidateAgents = []
   for (const agent of agents) {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
-
     if (!sessions.has(agent.tmux_session)) {
       _alivenessCache.set(agent.tmux_session, false)
       if (!agent.hibernating) {
@@ -1297,27 +1296,48 @@ async function checkAgentLiveness() {
       agent.hibernating = true
       continue
     }
+    candidateAgents.push(agent)
+  }
 
-    // Session exists — verify a claude process is running inside it.
-    let claudeAlive = false
-    try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
-        { timeout: 3000, encoding: 'utf8' })
-      const panePids = stdout.trim().split('\n').filter(Boolean)
-      for (const pid of panePids) {
-        try {
-          const { stdout: self } = await execFileP('ps', ['-p', pid, '-o', 'args='],
-            { timeout: 2000, encoding: 'utf8' })
-          if (self.includes('claude')) { claudeAlive = true; break }
-        } catch {}
-        try {
-          const { stdout: children } = await execFileP('pgrep', ['-P', pid, '-f', 'claude'],
-            { timeout: 2000, encoding: 'utf8' })
-          if (children.trim()) { claudeAlive = true; break }
-        } catch {}
+  if (!candidateAgents.length) {
+    sendMsg({ type: 'agent-liveness', agent_ids: [] })
+    return
+  }
+
+  // One tmux call: get all pane PIDs across all sessions at once.
+  const sessionToPanes = new Map()
+  try {
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'],
+      { timeout: 5000, encoding: 'utf8' })
+    for (const line of stdout.trim().split('\n')) {
+      const sp = line.indexOf(' ')
+      if (sp < 0) continue
+      const sess = line.slice(0, sp), pid = line.slice(sp + 1)
+      if (!sessionToPanes.has(sess)) sessionToPanes.set(sess, [])
+      sessionToPanes.get(sess).push(pid)
+    }
+  } catch { /* tmux unavailable */ }
+
+  // One ps call: get all processes with their args and PPIDs.
+  const claudePids = new Set()
+  try {
+    const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
+      { timeout: 5000, encoding: 'utf8' })
+    for (const line of stdout.split('\n')) {
+      if (line.includes('claude')) {
+        const pid = line.trim().split(/\s+/)[0]
+        const ppid = line.trim().split(/\s+/)[1]
+        if (pid) claudePids.add(pid)
+        if (ppid) claudePids.add(ppid)
       }
-    } catch {}
+    }
+  } catch {}
+
+  const aliveAgentIds = []
+  for (const agent of candidateAgents) {
+    const panes = sessionToPanes.get(agent.tmux_session) || []
+    const claudeAlive = panes.some(pid => claudePids.has(pid))
 
     _alivenessCache.set(agent.tmux_session, claudeAlive)
 
