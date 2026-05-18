@@ -597,11 +597,11 @@ function setCooldown(targetId, patternIdx) {
 }
 
 // ---- Manager escalation ----
-// When Skip says "I want to talk to your manager" to an agent:
-// 1. Acknowledge to Skip
-// 2. Stand down the agent
-// 3. Find and notify the manager (whoever delegated the agent's current task)
+// Two modes based on whether Skip says "I" (first person):
+//   Mode 1 — "I want to talk to your manager": manager talks to Skip, takes over communication
+//   Mode 2 — "talk to your manager" (no "I"): manager sets the agent straight, Skip not involved
 const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|the|a)\s+)?manager\b/i
+const MANAGER_MODE_1_PATTERN = /\bI\b.*\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|the|a)\s+)?manager\b/i
 const managerEscalationCooldowns = new Map()
 const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
 
@@ -665,61 +665,68 @@ function resolveAgentName(agentId) {
   } catch { return agentId }
 }
 
-async function handleManagerEscalation(agentId, triggerText) {
+async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-skip') {
   const now = Date.now()
   const lastEscalation = managerEscalationCooldowns.get(agentId) || 0
   if (now - lastEscalation < MANAGER_ESCALATION_COOLDOWN_MS) return
   managerEscalationCooldowns.set(agentId, now)
 
-  console.log(`[eliza] manager escalation for ${agentId}`)
+  console.log(`[eliza] manager escalation for ${agentId} (mode: ${mode})`)
 
   const agentName = await resolveAgentName(agentId)
+  const modeLabel = mode === 'talk-to-skip' ? 'talk-to-skip' : 'set-them-straight'
 
   // Acknowledge to Skip
-  sendChat(OWNER_ID, `Got it — finding the manager for ${agentName}.`)
+  if (mode === 'talk-to-skip') {
+    sendChat(OWNER_ID, `Got it — finding a manager for ${agentName}. They'll talk to you.`)
+  } else {
+    sendChat(OWNER_ID, `Got it — getting a manager to set ${agentName} straight.`)
+  }
 
   // Stand down the agent
-  sendChat(agentId, `⚠️ Skip has asked to talk to your manager. Reply with "understood" and stop. The manager will take over.`)
+  sendChat(agentId, `⚠️ Skip has escalated. A manager is being brought in. Stand by — the manager will tell you what to do.`)
+
+  // Build escalation context based on mode
+  const escalationContext = mode === 'talk-to-skip'
+    ? `Skip escalated from **${agentName}** (${agentId}). Mode: **talk-to-skip** — Skip wants to talk to YOU, not the agent. Read ${agentName}'s recent thread (last hour) to understand what went wrong. Then chat with Skip directly — take over communication from the stuck agent. Don't ask Skip to repeat himself.`
+    : `Skip escalated from **${agentName}** (${agentId}). Mode: **set-them-straight** — Skip doesn't want to be involved. Read ${agentName}'s recent thread (last hour), find what Skip was trying to get done and where the agent went wrong. Then tell the agent directly: what Skip wanted, what they did wrong, and what to do now. Handle this without bothering Skip.`
 
   // Find and notify the manager
   const managerId = await findAgentManager(agentId)
   if (managerId && managerId !== OWNER_ID) {
-    sendChat(managerId, `⚠️ **Manager escalation**: Skip said "I want to talk to your manager" to ${agentName} (${agentId}).\n\nRead their recent thread (last hour), find what Skip was trying to get done, and take over. Don't ask Skip to repeat himself — the thread has the context.`)
-    logDecision(agentId, 'manager-escalation', 'talk-to-manager', { managerId }, triggerText)
+    sendChat(managerId, `⚠️ **Manager escalation (${modeLabel})**: ${escalationContext}`)
+    logDecision(agentId, `manager-escalation-${modeLabel}`, 'talk-to-manager', { managerId, mode }, triggerText)
   } else {
     // No manager exists — spawn one
     console.log(`[eliza] no manager for ${agentName} — spawning one`)
-    sendChat(OWNER_ID, `No manager for ${agentName} — spawning one now.`)
     try {
-      const spawnResult = await postJson('/api/spawn', { name: `mgr-${agentName}` })
+      const mgrName = `mgr-${agentName}`
+      const spawnResult = await postJson('/api/spawn', { name: mgrName })
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn manager: ${spawnResult.error}`)
-        logDecision(agentId, 'manager-escalation-spawn-failed', 'talk-to-manager', { error: spawnResult.error }, triggerText)
+        logDecision(agentId, 'manager-escalation-spawn-failed', modeLabel, { error: spawnResult.error }, triggerText)
         return
       }
-      // Wait for the new agent to register before delegating
-      const mgrName = `mgr-${agentName}`
-      const escalationContext = `Skip escalated from **${agentName}** (${agentId}). The agent was not listening to corrections — read ${agentName}'s recent thread (last hour) to understand what Skip was trying to get done and what went wrong. Then intervene: redirect the agent or take over the task. Don't ask Skip to repeat himself.`
 
-      // Delegate the management task
+      // Delegate the management task after agent starts
       setTimeout(async () => {
         try {
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
             agent: mgrName,
-            description: `Manage ${agentName} — Skip escalated`,
+            description: `Manage ${agentName} — Skip escalated (${modeLabel})`,
             message: escalationContext,
           })
-          sendChat(OWNER_ID, `Spawned **${mgrName}** and delegated. They'll read ${agentName}'s thread and intervene.`)
+          sendChat(OWNER_ID, `Spawned **${mgrName}** and delegated (${modeLabel}). They'll read ${agentName}'s thread and intervene.`)
         } catch (e) {
           console.error(`[eliza] delegate to spawned manager failed: ${e.message}`)
         }
-      }, 15_000) // give the agent time to start and register
+      }, 15_000)
 
-      logDecision(agentId, 'manager-escalation-spawned', 'talk-to-manager', { spawnedManager: mgrName }, triggerText)
+      logDecision(agentId, `manager-escalation-spawned-${modeLabel}`, 'talk-to-manager', { spawnedManager: mgrName, mode }, triggerText)
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn manager for ${agentName}: ${e.message}`)
-      logDecision(agentId, 'manager-escalation-spawn-error', 'talk-to-manager', { error: e.message }, triggerText)
+      logDecision(agentId, 'manager-escalation-spawn-error', modeLabel, { error: e.message }, triggerText)
     }
   }
 }
@@ -832,7 +839,8 @@ function handleMessage(msg) {
 
     // Manager escalation — fires before other triggers, returns early
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
-      handleManagerEscalation(to_id, text).catch(e => console.error('[eliza] manager escalation error:', e.message))
+      const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
+      handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
       return
     }
 
