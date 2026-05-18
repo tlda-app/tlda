@@ -886,7 +886,9 @@ function syncSourceWatchers(projectList, activeViewers) {
       } else if (state.watcher) {
         const seenAt = state.watchSeen.get(filename)
         if (!seenAt || Date.now() - seenAt > 3000) {
-          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — poll caught it`)
+          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — recreating`)
+          try { state.watcher.close() } catch {}
+          state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
         }
       }
       state.pending.add(filename)
