@@ -1384,9 +1384,9 @@ html[data-theme="dark"] .history-compare-btn.active {
   opacity: 0.45;
 }
 
-/* Dark mode overrides */
+/* Dark mode overrides — at-rest color must be solid; element opacity handles ghosting */
 html[data-theme="dark"] .doc-panel {
-  color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 html[data-theme="dark"] .doc-panel:hover,
@@ -1405,7 +1405,7 @@ html[data-theme="dark"] .doc-panel-open .doc-panel-tabs {
 }
 
 html[data-theme="dark"] .doc-panel-tab {
-  color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.4);
 }
 
 html[data-theme="dark"] .doc-panel:hover .doc-panel-tab,
@@ -1442,7 +1442,7 @@ html[data-theme="dark"] .doc-panel-open .notes-toolbar {
 }
 
 html[data-theme="dark"] .notes-sort-toggle {
-  color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.35);
 }
 
 html[data-theme="dark"] .doc-panel:hover .notes-sort-toggle,

@@ -61,6 +61,16 @@ body.fog-dark-mode {
   --pill-icon-color-hover: rgba(255, 255, 255, 1);
 }
 
+/* Fog dark — bottom-row buttons need higher opacity on dark canvas */
+body.fog-dark-mode .phone-hl-btn,
+body.fog-dark-mode .voice-note-btn {
+  opacity: 0.35;
+}
+body.fog-dark-mode .phone-hl-btn:hover,
+body.fog-dark-mode .voice-note-btn:hover {
+  opacity: 0.7;
+}
+
 /* Teal dark — toolbar/panel overrides */
 body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="actions"],
 body.fog-dark-mode .tl-theme__dark [class*="tlui-"][class*="extras"],
@@ -81,6 +91,11 @@ body.fog-dark-mode .doc-panel-open {
 }
 body.fog-dark-mode .doc-panel-tabs {
   border-bottom-color: rgba(46, 58, 62, 0.4);
+}
+body.fog-dark-mode .doc-panel-content,
+body.fog-dark-mode .doc-panel-tabs,
+body.fog-dark-mode .search-input-wrap {
+  color: #c8dade;
 }
 body.fog-dark-mode .doc-panel-tab.active {
   color: #c8dade;
@@ -204,6 +219,11 @@ body.fog-light-mode .doc-panel-open {
 }
 body.fog-light-mode .doc-panel-tabs {
   border-bottom-color: rgba(180, 200, 210, 0.4);
+}
+body.fog-light-mode .doc-panel-content,
+body.fog-light-mode .doc-panel-tabs,
+body.fog-light-mode .search-input-wrap {
+  color: #1a3540;
 }
 body.fog-light-mode .toc-item:hover,
 body.fog-light-mode .search-result:hover,
