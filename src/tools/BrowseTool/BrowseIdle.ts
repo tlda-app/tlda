@@ -306,6 +306,19 @@ export class BrowseIdle extends StateNode {
             this.editor.selectNone()
             return
           }
+          // Understanding-line shapes: click cycles status (owner only)
+          if ((hitShape.type as string) === 'understanding-line') {
+            const props = hitShape.props as Record<string, unknown>
+            if (props.userId === (window as any).__tlda_userId) {
+              const cycle = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
+              const idx = cycle.indexOf((props.status as string) || 'unchecked')
+              this.editor.store.update(hitShape.id, (s: any) => ({
+                ...s,
+                props: { ...s.props, status: cycle[(idx + 1) % cycle.length] },
+              }))
+            }
+            return
+          }
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
           // treat as empty canvas so drag-box select works over document backgrounds.
           // In the main canvas, keep passing through to DOM.
