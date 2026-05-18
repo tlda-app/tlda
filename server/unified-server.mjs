@@ -1457,7 +1457,7 @@ async function handleFleetWsMessage(ws, msg) {
       dead: false,
       human: !!msg.human,
       is_manager: !!manager,
-      metadata: metadata ? JSON.stringify(metadata) : existing?.metadata || null,
+      metadata: metadata || existing?.metadata || null,
       // machine_id: optional. The fleet MCP doesn't send it yet — once it
       // does, the server will know which fleet-daemon owns this agent and
       // can route RPCs (Phase 2). Until then, agents stay with NULL.
