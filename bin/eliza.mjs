@@ -605,6 +605,25 @@ const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|
 const managerEscalationCooldowns = new Map()
 const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
 
+function postJson(urlPath, body) {
+  const url = `${SERVER}${urlPath}`
+  const mod = url.startsWith('https') ? https : http
+  const payload = JSON.stringify(body)
+  return new Promise((resolve, reject) => {
+    const req = mod.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, res => {
+      let buf = ''
+      res.on('data', c => buf += c)
+      res.on('end', () => { try { resolve(JSON.parse(buf)) } catch (e) { resolve({ raw: buf }) } })
+    })
+    req.on('error', reject)
+    req.write(payload)
+    req.end()
+  })
+}
+
 async function findAgentManager(agentId) {
   try {
     const url = `${SERVER}/api/store/tasks`
@@ -625,6 +644,27 @@ async function findAgentManager(agentId) {
   }
 }
 
+function resolveAgentName(agentId) {
+  try {
+    const url = `${SERVER}/api/store/agents`
+    const mod = url.startsWith('https') ? https : http
+    return new Promise((resolve) => {
+      mod.get(url, res => {
+        let buf = ''
+        res.on('data', c => buf += c)
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(buf)
+            const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+              .find(a => a.id === agentId || a.friendly_name === agentId)
+            resolve(agent?.friendly_name || agentId)
+          } catch { resolve(agentId) }
+        })
+      }).on('error', () => resolve(agentId))
+    })
+  } catch { return agentId }
+}
+
 async function handleManagerEscalation(agentId, triggerText) {
   const now = Date.now()
   const lastEscalation = managerEscalationCooldowns.get(agentId) || 0
@@ -633,8 +673,10 @@ async function handleManagerEscalation(agentId, triggerText) {
 
   console.log(`[eliza] manager escalation for ${agentId}`)
 
+  const agentName = await resolveAgentName(agentId)
+
   // Acknowledge to Skip
-  sendChat(OWNER_ID, `Got it — finding the manager for ${agentId}.`)
+  sendChat(OWNER_ID, `Got it — finding the manager for ${agentName}.`)
 
   // Stand down the agent
   sendChat(agentId, `⚠️ Skip has asked to talk to your manager. Reply with "understood" and stop. The manager will take over.`)
@@ -642,11 +684,43 @@ async function handleManagerEscalation(agentId, triggerText) {
   // Find and notify the manager
   const managerId = await findAgentManager(agentId)
   if (managerId && managerId !== OWNER_ID) {
-    sendChat(managerId, `⚠️ **Manager escalation**: Skip said "I want to talk to your manager" to ${agentId}.\n\nRead their recent thread (last hour), find what Skip was trying to get done, and take over. Don't ask Skip to repeat himself — the thread has the context.`)
+    sendChat(managerId, `⚠️ **Manager escalation**: Skip said "I want to talk to your manager" to ${agentName} (${agentId}).\n\nRead their recent thread (last hour), find what Skip was trying to get done, and take over. Don't ask Skip to repeat himself — the thread has the context.`)
     logDecision(agentId, 'manager-escalation', 'talk-to-manager', { managerId }, triggerText)
   } else {
-    sendChat(OWNER_ID, `⚠️ No manager found for ${agentId} — no pending task with a delegator. You'll need to handle this directly or spawn a manager.`)
-    logDecision(agentId, 'manager-escalation-no-manager', 'talk-to-manager', { managerId: null }, triggerText)
+    // No manager exists — spawn one
+    console.log(`[eliza] no manager for ${agentName} — spawning one`)
+    sendChat(OWNER_ID, `No manager for ${agentName} — spawning one now.`)
+    try {
+      const spawnResult = await postJson('/api/spawn', { name: `mgr-${agentName}` })
+      if (spawnResult.error) {
+        sendChat(OWNER_ID, `⚠️ Failed to spawn manager: ${spawnResult.error}`)
+        logDecision(agentId, 'manager-escalation-spawn-failed', 'talk-to-manager', { error: spawnResult.error }, triggerText)
+        return
+      }
+      // Wait for the new agent to register before delegating
+      const mgrName = `mgr-${agentName}`
+      const escalationContext = `Skip escalated from **${agentName}** (${agentId}). The agent was not listening to corrections — read ${agentName}'s recent thread (last hour) to understand what Skip was trying to get done and what went wrong. Then intervene: redirect the agent or take over the task. Don't ask Skip to repeat himself.`
+
+      // Delegate the management task
+      setTimeout(async () => {
+        try {
+          await postJson('/api/tasks/delegate', {
+            from: AGENT_ID,
+            agent: mgrName,
+            description: `Manage ${agentName} — Skip escalated`,
+            message: escalationContext,
+          })
+          sendChat(OWNER_ID, `Spawned **${mgrName}** and delegated. They'll read ${agentName}'s thread and intervene.`)
+        } catch (e) {
+          console.error(`[eliza] delegate to spawned manager failed: ${e.message}`)
+        }
+      }, 15_000) // give the agent time to start and register
+
+      logDecision(agentId, 'manager-escalation-spawned', 'talk-to-manager', { spawnedManager: mgrName }, triggerText)
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Failed to spawn manager for ${agentName}: ${e.message}`)
+      logDecision(agentId, 'manager-escalation-spawn-error', 'talk-to-manager', { error: e.message }, triggerText)
+    }
   }
 }
 
