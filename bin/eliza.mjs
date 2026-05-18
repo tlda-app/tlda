@@ -39,10 +39,13 @@ const POSITIVE_REWARD_PATTERNS = [
 ]
 const NEGATIVE_REWARD_PATTERNS = [
   /\b(that sucked|still not|ugh|this is exhausting|not (right|what I wanted|correct))\b/i,
-  /\bfuck you\b/i,
   /^(bro|wtf)\s*$/i,
   /\bdismissive\b/i,
 ]
+// Note: "fuck you" removed from negative rewards — repeated "fuck you" during an
+// ongoing frustration episode was registering as negative feedback on the nudge,
+// when it's really the same episode continuing. The fuck-you-in-context detector
+// handles the escalation pattern separately.
 
 // Track pending reward observations: agentId → { nudgeTs, nudgeAction, positiveCount, negativeCount, windowDone }
 const pendingRewards = new Map()
@@ -279,7 +282,7 @@ Never say "try it out", "let me know if it works", "reload and check", or any va
 // Threshold: ack opener in first sentence + message body > 80 words.
 const THIRSTY_ACK_WORD_THRESHOLD = 80
 const thirstyAckCooldowns = new Map()
-const THIRSTY_ACK_COOLDOWN_MS = 5 * 60_000
+const THIRSTY_ACK_COOLDOWN_MS = 15 * 60_000
 
 const THIRSTY_ACK_MSG = `💭 Quick check-in: you said "Right —" (or similar) and then launched into a long response.
 
@@ -319,11 +322,11 @@ function isContradiction(text) {
 // Tracks when Skip sends a message that goes unacknowledged while the agent makes write tool calls
 const pendingSkipMessages = new Map()
 // agentId → { ts: number, ackSent: boolean, nudgeSent: boolean }
-const RUNNING_AWAY_GRACE_MS = 2 * 60_000  // 2 min before firing
+const RUNNING_AWAY_GRACE_MS = 5 * 60_000  // 5 min before firing (2 min had too many prompt-stuck false positives)
 const RUNNING_AWAY_COOLDOWN_MS = 10 * 60_000
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit'])
 
-const RUNNING_AWAY_MSG = `⚠️ **Skip sent you a message 2+ minutes ago and you haven't replied — you've been making tool calls instead.**
+const RUNNING_AWAY_MSG = `⚠️ **Skip sent you a message 5+ minutes ago and you haven't replied — you've been making tool calls instead.**
 
 Stop. Read his last message now. In one sentence, say what you think he's asking. Wait for his confirmation before doing anything.
 
@@ -428,14 +431,16 @@ function handleSequence(fromId, toId, text) {
         console.log(`[eliza] ack-opener detected from ${fromId}, phase → acked`)
       }
 
-      // Thirsty-ack: ack opener + long response = eager-but-shallow
+      // Thirsty-ack: only fire when already in a correction sequence
+      // Data shows 73% false positive rate without this gate — agents say "Right —"
+      // and then give substantive responses, which isn't hollow understanding.
       const wordCount = text.trim().split(/\s+/).length
-      if (wordCount > THIRSTY_ACK_WORD_THRESHOLD) {
+      if (wordCount > THIRSTY_ACK_WORD_THRESHOLD && state.phase === 'corrected') {
         const lastThirsty = thirstyAckCooldowns.get(fromId) || 0
         if (now - lastThirsty > THIRSTY_ACK_COOLDOWN_MS) {
-          console.log(`[eliza] thirsty-ack → ${fromId} (${wordCount} words)`)
+          console.log(`[eliza] thirsty-ack → ${fromId} (${wordCount} words, in correction sequence)`)
           sendChat(fromId, THIRSTY_ACK_MSG)
-          logDecision(fromId, 'thirsty-ack', `ack-opener+${wordCount}-words`, { wordCount }, text)
+          logDecision(fromId, 'thirsty-ack', `ack-opener+${wordCount}-words+corrected`, { wordCount, phase: state.phase }, text)
           startRewardWindow(fromId, 'thirsty-ack')
           thirstyAckCooldowns.set(fromId, now)
         }
@@ -596,7 +601,7 @@ function setCooldown(targetId, patternIdx) {
 // 1. Acknowledge to Skip
 // 2. Stand down the agent
 // 3. Find and notify the manager (whoever delegated the agent's current task)
-const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:your|the|a\s+)?manager\b/i
+const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|the|a)\s+)?manager\b/i
 const managerEscalationCooldowns = new Map()
 const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
 
