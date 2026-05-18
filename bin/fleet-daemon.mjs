@@ -872,9 +872,8 @@ function syncSourceWatchers(projectList) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, watchFired: new Set() }
 
-    // Reads state.watchSet dynamically so filtering stays current after updates.
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
       if (state.watchSet.size > 0) {
@@ -882,16 +881,26 @@ function syncSourceWatchers(projectList) {
       } else {
         if (!isSourceFile(filename)) return
       }
+      if (!fromPoll) {
+        state.watchFired.add(filename)
+      } else if (!state.watchFired.has(filename)) {
+        // Poll caught a change that fs.watch missed — recreate once
+        if (!state._recreatedRecently) {
+          state._recreatedRecently = true
+          setTimeout(() => { state._recreatedRecently = false }, 10000)
+          console.warn(`[daemon] fs.watch missed ${filename} in ${p.name} — recreating`)
+          try { state.watcher?.close() } catch {}
+          try {
+            state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
+          } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
+        }
+      }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
-      state.debounce = setTimeout(() => flushSourceChanges(p.name), 200)
-      if (fromPoll) {
-        console.warn(`[daemon] fs.watch stale for ${p.name} — recreating`)
-        try { state.watcher?.close() } catch {}
-        try {
-          state.watcher = fs.watch(p.sourceDir, { recursive: true }, (_ev, fn) => onFileChange(fn, false))
-        } catch (e) { console.error(`[daemon] fs.watch recreate failed for ${p.name}: ${e.message}`) }
-      }
+      state.debounce = setTimeout(() => {
+        state.watchFired.clear()
+        flushSourceChanges(p.name)
+      }, 200)
     }
     state.onFileChange = onFileChange
 
