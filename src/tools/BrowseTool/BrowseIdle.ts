@@ -44,8 +44,7 @@ function _updateHoveredShapeId(editor: Editor) {
     margin: editor.options.hitTestMargin / editor.getZoomLevel(),
     renderingOnly: true,
   })
-  // Document pages are locked and non-interactive — don't show hover indicator
-  if (!hitShape || (hitShape.type as string) === 'svg-page') return editor.setHoveredShape(null)
+  if (!hitShape) return editor.setHoveredShape(null)
   let shapeToHover: TLShape | undefined = undefined
   const outermostShape = editor.getOutermostSelectableShape(hitShape)
   if (outermostShape === hitShape) {
