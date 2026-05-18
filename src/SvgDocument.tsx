@@ -624,12 +624,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     return onFileUpdatedSignal((signal) => {
       const editor = editorRef.current
       if (!editor) return
-      const shapes = editor.getCurrentPageShapes() as any[]
-      for (const shape of shapes) {
+      for (const record of editor.store.allRecords()) {
+        if (record.typeName !== 'shape') continue
+        const shape = record as any
         if (shape.type !== 'math-note') continue
         if (shape.props.backingFile !== signal.filePath) continue
-        if (shape.props.text === signal.content) continue  // no-op if identical
-        if (editor.getEditingShapeId() === shape.id) continue  // don't interrupt editing
+        if (shape.props.text === signal.content) continue
+        if (editor.getEditingShapeId() === shape.id) continue
         editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content } })
       }
     })

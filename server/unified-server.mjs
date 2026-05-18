@@ -2769,8 +2769,10 @@ function handleDaemonWsMessage(ws, msg) {
     const { filePath, content } = msg
     if (!filePath) return
     const docNames = backingFileRegistry.get(filePath)
+    console.log(`[backing] file-content-changed: ${filePath}, registry size=${backingFileRegistry.size}, docNames=${docNames ? [...docNames].join(',') : 'NONE'}`)
     if (!docNames || docNames.size === 0) return
     for (const docName of docNames) {
+      console.log(`[backing] broadcasting signal:file-updated to room ${docName}`)
       broadcastSignal(docName, 'signal:file-updated', { filePath, content: content ?? '' })
     }
     return
