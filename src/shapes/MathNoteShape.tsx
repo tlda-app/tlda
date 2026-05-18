@@ -47,7 +47,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 }
 import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
-import { subscribeSearchFilter, getSearchFilter, setBulletContext } from '../stores'
+import { subscribeSearchFilter, getSearchFilter, setBulletContext, subscribeBulletContext, getBulletContext } from '../stores'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
 
@@ -340,6 +340,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
+    const activeBullet = useSyncExternalStore(subscribeBulletContext, getBulletContext)
 
     // Lazy image registration: fetch local images, store as tldraw assets + module cache
     useEffect(() => {
@@ -432,7 +433,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }, [isEditing])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
-    const renderedHtml = useMemo(
+    const renderedHtmlBase = useMemo(
       () => {
         const t = shape.props.text || ''
         if (!hasMath(t) && !hasMarkdown(t) && !t.includes('[->')) return null
@@ -445,6 +446,17 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [shape.props.text, imgVersion, labelRegions],
     )
+
+    // Inject bullet-selected class into the Nth <li> when this note has an active bullet
+    const renderedHtml = useMemo(() => {
+      if (!renderedHtmlBase || !activeBullet || activeBullet.noteShapeId !== shape.id) return renderedHtmlBase
+      const idx = activeBullet.bulletIndex
+      let count = 0
+      return renderedHtmlBase.replace(/<li>/g, (match) => {
+        if (count++ === idx) return '<li class="bullet-selected">'
+        return match
+      })
+    }, [renderedHtmlBase, activeBullet, shape.id])
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
@@ -793,20 +805,15 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
     }, [pageDoc, editor])
 
-    const handleBulletClick = useCallback((e: React.MouseEvent) => {
-      if (!backingFile) return
+    const handleBulletClick = useCallback((e: React.MouseEvent): boolean => {
+      if (!backingFile) return false
       const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
-      if (!li) return
+      if (!li) return false
       const list = li.parentElement
-      if (!list) return
+      if (!list) return false
       const bulletIndex = Array.from(list.children).indexOf(li)
       const text = li.textContent?.trim() || ''
-      if (!text) return
-      stopEventPropagation(e)
-      // Clear previous selection
-      const prev = list.querySelector('.bullet-selected') as HTMLElement | null
-      if (prev) prev.classList.remove('bullet-selected')
-      li.classList.add('bullet-selected')
+      if (!text) return false
 
       const owner = (shape.meta?.authorId as string) || undefined
       const ctx = {
@@ -818,20 +825,26 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
       setBulletContext(ctx)
 
-      // Target chat to the note's owner
       if (owner) {
         dispatchSignalDirect('signal:set-chat-target', {
           agent: owner,
           timestamp: Date.now(),
         })
       }
-
+      return true
     }, [backingFile, shape.id, shape.meta?.authorId])
 
+    // Bullet clicks must intercept on pointerDown — TLDraw's capture-phase
+    // listeners prevent onClick from ever firing on unselected shape content.
+    const handleContentPointerDown = useCallback((e: React.PointerEvent) => {
+      if (handleBulletClick(e)) {
+        stopEventPropagation(e)
+      }
+    }, [handleBulletClick])
+
     const handleContentClick = useCallback((e: React.MouseEvent) => {
-      handleBulletClick(e)
       handleDocLinkClick(e)
-    }, [handleBulletClick, handleDocLinkClick])
+    }, [handleDocLinkClick])
 
     // Hover handler for [->label] doc-link spans
     const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1115,6 +1128,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       content = (
         <div
           ref={contentRef}
+          onPointerDown={handleContentPointerDown}
           onClick={handleContentClick}
           onPointerUp={(e) => {
             // Trackpad click in pen mode: enter editing if shape is already selected
