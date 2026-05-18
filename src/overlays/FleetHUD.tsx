@@ -252,11 +252,10 @@ export function FleetHUD({ mainEditor, shapeUtils, tools, licenseKey }: FleetHUD
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.y !== lastCamY || cam.z !== lastCamZ) {
         if (anchorPageRef.current !== null && stableFrames >= 2) {
-          // Re-express same screen position under the new camera.
-          // TLDraw formula: screenX = (pageX + cam.x) * cam.z
-          const screenX = (anchorPageRef.current.x + lastCamX) * lastCamZ
+          // Re-express Y only: keep fleet shapes at a fixed screen Y as the camera scrolls.
+          // X is not re-expressed — it follows the canvas naturally (fleet shapes pan with the doc).
           const screenY = (anchorPageRef.current.y + lastCamY) * lastCamZ
-          anchorPageRef.current = { x: screenX / cam.z - cam.x, y: screenY / cam.z - cam.y }
+          anchorPageRef.current = { x: anchorPageRef.current.x, y: screenY / cam.z - cam.y }
           if (persistTimeout) clearTimeout(persistTimeout)
           persistTimeout = setTimeout(persistAnchor, 500)
         }
@@ -401,8 +400,11 @@ export function FleetHUD({ mainEditor, shapeUtils, tools, licenseKey }: FleetHUD
   // Anchor not yet initialized — wait for Yjs sync or camera settle
   if (!anchorPageRef.current) return null
 
-  // Derive overlay camera from anchor's current screen position.
-  // TLDraw formula: screenX = (pageX + cam.x) * cam.z
+  // Derive overlay camera: mixed anchoring.
+  // Y: fixed in screen space — anchorPageRef.y is re-expressed on scroll to maintain constant
+  //    screen Y, so anchorScreenY never changes with vertical camera movement.
+  // X: follows the canvas — anchorPageRef.x is NOT re-expressed, so the anchor's canvas X is
+  //    fixed. As cam.x changes, anchorScreenX changes by the same amount → panel pans with doc.
   const cam = mainEditor.getCamera()
   const anchorScreenX = (anchorPageRef.current.x + cam.x) * cam.z
   const anchorScreenY = (anchorPageRef.current.y + cam.y) * cam.z
