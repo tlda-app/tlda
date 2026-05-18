@@ -125,11 +125,10 @@ class RibbonEraserPointing extends StateNode {
         const shape = this.editor.getShape(id)
         if (!shape) continue
         const p = shape.props as Record<string, unknown>
-        this.editor.updateShape({
-          id: shape.id,
-          type: 'understanding-line' as any,
-          props: { ...p, status: 'unchecked' },
-        })
+        this.editor.store.update(shape.id, (s: any) => ({
+          ...s,
+          props: { ...s.props, status: 'unchecked' },
+        }))
       }
       tool._ribbonShapesToReset.clear()
     }
@@ -290,11 +289,10 @@ class RibbonErasing extends StateNode {
         const shape = editor.getShape(id)
         if (!shape) continue
         const p = shape.props as Record<string, unknown>
-        editor.updateShape({
-          id: shape.id,
-          type: 'understanding-line' as any,
-          props: { ...p, status: 'unchecked' },
-        })
+        editor.store.update(shape.id, (s: any) => ({
+          ...s,
+          props: { ...s.props, status: 'unchecked' },
+        }))
       }
       tool._ribbonShapesToReset.clear()
     }
