@@ -26,7 +26,7 @@ import { spawn } from 'child_process'
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { existsSync, readdirSync, readFileSync, mkdirSync, openSync, statSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } from 'fs'
 import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
@@ -791,11 +791,20 @@ app.get('/api/local-image', requireRead, (req, res) => {
 
 /** @type {Map<string, Set<string>>} filePath → Set<docName> */
 const backingFileRegistry = new Map()
+function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'backing-registry.json') }
+loadBackingRegistry()
 
 function backingFileRegister(filePath, docName) {
   if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())
   backingFileRegistry.get(filePath).add(docName)
   sendWatchBackingFiles()
+  persistBackingRegistry()
+}
+
+function backingFileUnregister(filePath) {
+  backingFileRegistry.delete(filePath)
+  sendWatchBackingFiles()
+  persistBackingRegistry()
 }
 
 function sendWatchBackingFiles() {
@@ -809,19 +818,43 @@ function sendWatchBackingFiles() {
   }
 }
 
-// Rebuild registry from room shapes when daemon connects.
+function persistBackingRegistry() {
+  try {
+    const data = [...backingFileRegistry.entries()].map(([filePath, docNames]) => ({
+      filePath, docNames: [...docNames],
+    }))
+    writeFileSync(backingRegistryPath(), JSON.stringify(data, null, 2), 'utf8')
+  } catch {}
+}
+
+function loadBackingRegistry() {
+  try {
+    const raw = readFileSync(backingRegistryPath(), 'utf8')
+    const entries = JSON.parse(raw)
+    backingFileRegistry.clear()
+    for (const { filePath, docNames } of entries) {
+      backingFileRegistry.set(filePath, new Set(docNames))
+    }
+    console.log(`[backing] loaded ${backingFileRegistry.size} file(s) from registry`)
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error(`[backing] load registry failed: ${e.message}`)
+  }
+}
+
+// Rebuild from active rooms (supplement persisted registry).
 async function rebuildBackingFileRegistry() {
-  backingFileRegistry.clear()
   for (const docName of listActiveRooms()) {
     try {
       const shapes = await getRoomRecords(docName, 'math-note')
       for (const shape of shapes) {
         if (shape.props?.backingFile) {
-          backingFileRegister(shape.props.backingFile, docName)
+          if (!backingFileRegistry.has(shape.props.backingFile)) backingFileRegistry.set(shape.props.backingFile, new Set())
+          backingFileRegistry.get(shape.props.backingFile).add(docName)
         }
       }
     } catch {}
   }
+  persistBackingRegistry()
 }
 
 // POST /api/backing-file-register — client registers a backing file watch
@@ -2504,8 +2537,8 @@ function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
     }
-    // Rebuild backing file registry from current rooms and push watch list to daemon.
-    rebuildBackingFileRegistry().then(() => sendWatchBackingFiles()).catch(() => {})
+    // Send persisted backing file watch list to daemon.
+    sendWatchBackingFiles()
     return
   }
 
@@ -2730,7 +2763,7 @@ function handleDaemonWsMessage(ws, msg) {
     const { filePath, content } = msg
     if (!filePath) return
     const docNames = backingFileRegistry.get(filePath)
-if (!docNames || docNames.size === 0) return
+    if (!docNames || docNames.size === 0) return
     for (const docName of docNames) {
       broadcastSignal(docName, 'signal:file-updated', { filePath, content: content ?? '' })
     }
