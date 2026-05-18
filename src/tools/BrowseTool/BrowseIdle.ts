@@ -306,13 +306,14 @@ export class BrowseIdle extends StateNode {
     const userId = getHumanId()
     if (!userId) return
 
-    // Find the smallest (most specific) understanding-line shape at this point.
-    // Segments are smaller than the bg shape, so prefer them.
+    // Find the smallest (most specific) understanding-line segment at this point.
+    // Skip bg shapes (startLine=0, endLine=999999) — only segments cycle.
     let best: { shape: any; area: number } | null = null
     for (const s of this.editor.getCurrentPageShapes()) {
       if (s.type !== 'understanding-line') continue
       const p = s.props as Record<string, unknown>
       if (p.userId !== userId) continue
+      if ((p.startLine as number) === 0 && (p.endLine as number) >= 999999) continue
       const bounds = this.editor.getShapePageBounds(s.id)
       if (!bounds) continue
       if (point.y < bounds.minY || point.y > bounds.maxY) continue

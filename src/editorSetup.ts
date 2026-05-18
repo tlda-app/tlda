@@ -694,6 +694,25 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   })
 
+  // Ribbon hover: set hoveredShapeId for locked understanding-line shapes.
+  // Runs on every pointer_move regardless of active tool, so the transition
+  // tooltip works even when the highlight tool is active.
+  editor.on('event', (event: any) => {
+    if (event.name !== 'pointer_move' || event.type !== 'pointer') return
+    const point = editor.inputs.getCurrentPagePoint()
+    if (point.x >= 10) return
+    let best: { id: string; area: number } | null = null
+    for (const s of editor.getCurrentPageShapes()) {
+      if (s.type !== 'understanding-line') continue
+      const bounds = editor.getShapePageBounds(s.id)
+      if (!bounds) continue
+      if (point.y < bounds.minY || point.y > bounds.maxY) continue
+      const area = bounds.width * bounds.height
+      if (!best || area < best.area) best = { id: s.id as string, area }
+    }
+    if (best) editor.setHoveredShape(best.id as any)
+  })
+
   // Re-saturate addressed highlights on tap/click.
   // When a highlight has meta.addressed = true, clicking it re-activates it
   // (sets addressed = false, restores opacity) so the agent retries.
