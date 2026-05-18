@@ -169,8 +169,9 @@ export function renderChatLine(m, ctx) {
     const actionBtns = isPermission
       ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" title="Deny (n)">\u2717</button></span>`
       : ''
+    const cardCls = isPermission ? 'lc-permission-card' : 'lc-terminal-card'
     return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention lc-terminal-card" data-lc-type="attention" data-agent-id="${esc(m.from)}">
+      <div class="lifecycle-card lc-attention ${cardCls}" data-lc-type="attention" data-agent-id="${esc(m.from)}">
         <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>
       </div></div>`
   }
