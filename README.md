@@ -82,17 +82,15 @@ tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
 
 Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off.
 
-**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them.
-
-**Spawning from the panel:** The agents panel shows all your agents — who's awake, who's hibernating, context remaining, current task. To spawn a new agent, use the input at the bottom: the folder button selects a project (which sets the working directory), and you type a name. The syntax is `project:name` — e.g. `--draft:jerry`. If you don't provide a name, one is auto-generated.
-
-<img src="docs/images/tlda-agents-panel-projects.png" alt="Agents panel showing awake and hibernating agents" width="32%"> <img src="docs/images/tlda-agents-panel-spawn.png" alt="Project selector dropdown" width="32%"> <img src="docs/images/tlda-agents-panel-spawn-input.png" alt="Spawn input with project:name syntax" width="32%">
+**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
 
 **Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in fleet chat. You can authorize work without switching to the terminal.
 
 Agents coordinate using fleet MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
 
 The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
+
+<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
@@ -108,8 +106,6 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 **Unquote:** Agents naturally put file paths, URLs, and LaTeX labels in backticks — that's just how code tools work. Double-click any inline code span in a chat message to expand it: a path like `` `scratch/fig.png` `` becomes an inline image, a `` `https://...` `` becomes a link, and a LaTeX label becomes a navigable doc-link. You're retroactively editing their message — as if you were them.
 
 **Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
-
-<img src="docs/images/tlda-terminal-peek.png" alt="Pinned terminal pane showing agent tool calls alongside chat" width="100%">
 
 **Scroll modes:** Smart scroll (default) tries to keep the view at the bottom when messages arrive but backs off when you've scrolled up to read. Hard-lock mode (click the magnet icon to the left of the chat input) scrolls to the bottom unconditionally on every update. Two modes, two tradeoffs — use smart scroll when reading back, hard-lock when you want guaranteed live tracking.
 
