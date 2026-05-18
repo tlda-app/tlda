@@ -55,6 +55,11 @@ body.fog-dark-mode .scrolly-figure-wrap {
   background: #1a2024;
 }
 
+/* Fog dark — ribbon lane: white-transparent on dark canvas */
+body.fog-dark-mode .ribbon-lane {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* Bottom-row icon color — fog-dark canvas needs light icons */
 body.fog-dark-mode {
   --pill-icon-color: rgba(255, 255, 255, 1);
@@ -183,6 +188,11 @@ body.fog-light-mode .identity-picker input {
 
 body.fog-light-mode .scrolly-figure-wrap {
   background: #d2dfe3;
+}
+
+/* Fog light — ribbon lane: dark-transparent on light canvas */
+body.fog-light-mode .ribbon-lane {
+  background: rgba(0, 40, 55, 0.12);
 }
 
 /* Bottom-row icon color — fog-light canvas needs deep-teal icons */

@@ -141,7 +141,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             height: '100%',
             backgroundColor: color,
             borderRadius: 1,
-            opacity: status === 'unchecked' ? 0.15 : (isOwn ? 0.4 : 0.25),
+            opacity: status === 'unchecked' ? 0 : (isOwn ? 0.6 : 0.35),
             transition: 'opacity 0.2s',
           }}
         />

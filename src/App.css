@@ -17,6 +17,14 @@ body.tlda-pan-mode * {
   background-color: #0f0f1a !important;
 }
 
+/* Ribbon lane — subtle base strip, theme-adaptive */
+.ribbon-lane {
+  background: rgba(0, 0, 0, 0.12);
+}
+.tl-theme__dark .ribbon-lane {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* Raise tlui-layout above the fleet HUD (z-index 999, position: fixed).
    tlui-layout's contain:strict means internal z-indexes are local to its stacking
    context — setting z-index on __bottom alone never helped against the HUD. */

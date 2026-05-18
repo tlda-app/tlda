@@ -1,18 +1,15 @@
-/**
- * RibbonLane — thin gray line in the left margin spanning the full document height.
- *
- * This is the "unchecked" default — the visual base that understanding-line shapes
- * render on top of. Its width matches understanding-line segments so the whole
- * thing reads as one continuous ribbon that changes color where status is set.
- */
-
 import { useEditor, useValue } from 'tldraw'
+import { useState, useCallback } from 'react'
+import { STATUS_COLORS, HIGHLIGHT_TO_STATUS } from './UnderstandingLineShape'
+import type { LineStatus } from './UnderstandingLineShape'
 
 const LANE_X = 0
 const LANE_WIDTH = 3
+const HIT_WIDTH = 14
 
 export function RibbonLane() {
   const editor = useEditor()
+  const [tooltipY, setTooltipY] = useState<number | null>(null)
 
   const style = useValue('ribbon-lane-style', () => {
     const pageShapes = editor.getCurrentPageShapes().filter((s: any) => s.type === 'svg-page')
@@ -42,21 +39,111 @@ export function RibbonLane() {
     }
   }, [editor])
 
+  const activeHighlightColor = useValue('lane-hl-color', () => {
+    const tool = editor.getCurrentToolId()
+    if (tool !== 'highlight') return null
+    return (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || null
+  }, [editor])
+
+  const targetStatus = activeHighlightColor ? HIGHLIGHT_TO_STATUS[activeHighlightColor] : undefined
+
+  const isOverUnderstandingLine = useCallback((screenY: number) => {
+    const pagePoint = editor.screenToPage({ x: 1, y: screenY })
+    const margin = 5
+    for (const s of editor.getCurrentPageShapes()) {
+      if ((s.type as string) !== 'understanding-line') continue
+      const bounds = editor.getShapePageBounds(s.id)
+      if (!bounds) continue
+      if (pagePoint.y >= bounds.minY - margin && pagePoint.y <= bounds.maxY + margin) return true
+    }
+    return false
+  }, [editor])
+
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isOverUnderstandingLine(e.clientY)) {
+      setTooltipY(null)
+    } else {
+      setTooltipY(e.clientY)
+    }
+  }, [isOverUnderstandingLine])
+
+  const onMouseLeave = useCallback(() => setTooltipY(null), [])
+
   if (!style) return null
 
+  const showTooltip = tooltipY !== null && targetStatus && targetStatus !== 'unchecked'
+
   return (
-    <div
-      style={{
-        position: 'fixed',
-        left: style.left,
-        top: style.top,
-        width: style.width,
-        height: style.height,
-        background: 'rgba(150,150,150,0.3)',
-        borderRadius: 1,
-        pointerEvents: 'none',
-        zIndex: 0,
-      }}
-    />
+    <>
+      <div
+        className="ribbon-lane"
+        style={{
+          position: 'fixed',
+          left: style.left,
+          top: style.top,
+          width: style.width,
+          height: style.height,
+          borderRadius: 1,
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}
+      />
+      {/* Wider invisible hit area for hover detection */}
+      <div
+        style={{
+          position: 'fixed',
+          left: style.left,
+          top: style.top,
+          width: HIT_WIDTH,
+          height: style.height,
+          pointerEvents: 'auto',
+          zIndex: 0,
+          cursor: 'default',
+        }}
+        onMouseMove={onMouseMove}
+        onMouseLeave={onMouseLeave}
+      />
+      {showTooltip && (
+        <div
+          style={{
+            position: 'fixed',
+            left: (style.left ?? 0) + 8,
+            top: tooltipY,
+            transform: 'translateY(-50%)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            background: 'rgba(30,30,30,0.9)',
+            padding: '3px 6px',
+            borderRadius: 4,
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            zIndex: 100,
+          }}
+        >
+          <StatusBadge status={targetStatus!} />
+        </div>
+      )}
+    </>
+  )
+}
+
+function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      {arrow && <span style={{ color: '#999', fontSize: 10 }}>→</span>}
+      <span style={{
+        background: STATUS_COLORS[status],
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '1px 5px',
+        borderRadius: 3,
+        lineHeight: '14px',
+        whiteSpace: 'nowrap',
+      }}>
+        {status}
+      </span>
+    </span>
   )
 }
