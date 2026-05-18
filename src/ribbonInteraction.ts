@@ -244,7 +244,7 @@ export async function remapUnderstandingLines(
               x: shape.x,
               y: midY,
               rotation: 0,
-              isLocked: false,
+              isLocked: true,
               opacity: 1,
               props: { ...props, h: Math.max(20, midEndY - midY), startLine: midStart, endLine: midEnd, status: 'unchecked' },
             })
@@ -263,7 +263,7 @@ export async function remapUnderstandingLines(
             x: shape.x,
             y: endY,
             rotation: 0,
-            isLocked: false,
+            isLocked: true,
             opacity: 1,
             props: { ...props, h: 20, startLine: endLine, endLine: endLine, status: 'approved' },
           })
@@ -349,13 +349,14 @@ export async function initRibbonBackground(
     const yOk = Math.abs(existing.y - docTop) <= 0.5
     const hOk = Math.abs(props.h - docHeight) <= 0.5
     const wOk = props.w === BAR_WIDTH
-    if (!xOk || !yOk || !hOk || !wOk) {
+    const lockOk = existing.isLocked === true
+    if (!xOk || !yOk || !hOk || !wOk || !lockOk) {
       editor.updateShape({
         id: bgId,
         type: 'understanding-line' as any,
         x: MARGIN_X,
         y: docTop,
-        isLocked: false,
+        isLocked: true,
         props: { ...props, w: BAR_WIDTH, h: docHeight },
       })
     }
@@ -366,7 +367,7 @@ export async function initRibbonBackground(
       x: MARGIN_X,
       y: docTop,
       rotation: 0,
-      isLocked: false,
+      isLocked: true,
       opacity: 1,
       props: {
         w: BAR_WIDTH,
@@ -388,11 +389,11 @@ export async function initRibbonBackground(
     if (s.id === bgId) continue
     const p = s.props as any
     if (p.userId !== userId) continue
-    if (s.isLocked || p.w !== BAR_WIDTH) {
+    if (!s.isLocked || p.w !== BAR_WIDTH) {
       editor.updateShape({
         id: s.id,
         type: 'understanding-line' as any,
-        isLocked: false,
+        isLocked: true,
         props: { ...p, w: BAR_WIDTH },
       })
     }
@@ -451,7 +452,7 @@ export async function processRibbonHighlight(
       x,
       y: bounds.minY,
       rotation: 0,
-      isLocked: false,
+      isLocked: true,
       opacity: 1,
       props: { w: BAR_WIDTH, h, userId, displayName, startLine, endLine, status, userIndex: 0 },
     })
@@ -540,22 +541,44 @@ export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
  * Call once from editorSetup.
  */
 export function registerEraserInterceptor(editor: Editor): void {
-  editor.sideEffects.registerAfterDeleteHandler('shape', (shape) => {
-    if ((shape.type as string) !== 'understanding-line') return
-    if (editor.getCurrentToolId() !== 'eraser') return
+  // Locked shapes are invisible to TLDraw's eraser. Instead, detect when the
+  // eraser tool completes a stroke, find understanding-line shapes that overlap
+  // the erased region, and reset them to 'unchecked'.
+  let eraserActive = false
 
-    // Re-create as unchecked after the deletion transaction completes
-    setTimeout(() => {
-      editor.createShape({
-        id: shape.id as TLShapeId,
-        type: 'understanding-line' as any,
-        x: shape.x,
-        y: shape.y,
-        rotation: shape.rotation ?? 0,
-        isLocked: false,
-        opacity: 1,
-        props: { ...(shape.props as any), status: 'unchecked' },
-      })
-    }, 0)
+  editor.on('event', (event: any) => {
+    if (editor.getCurrentToolId() !== 'eraser') {
+      eraserActive = false
+      return
+    }
+
+    if (event.name === 'pointer_down') {
+      eraserActive = true
+      return
+    }
+
+    if (event.name === 'pointer_up' && eraserActive) {
+      eraserActive = false
+      const point = editor.inputs.getCurrentPagePoint()
+      if (point.x > 10) return
+
+      const allShapes = editor.getCurrentPageShapes()
+      const userId = getHumanId()
+      for (const s of allShapes) {
+        if (s.type !== 'understanding-line') continue
+        const p = s.props as any
+        if (p.userId !== userId) continue
+        if (p.status === 'unchecked') continue
+        const bounds = editor.getShapePageBounds(s.id)
+        if (!bounds) continue
+        if (point.y >= bounds.minY && point.y <= bounds.maxY) {
+          editor.updateShape({
+            id: s.id,
+            type: 'understanding-line' as any,
+            props: { ...p, status: 'unchecked' },
+          })
+        }
+      }
+    }
   })
 }

@@ -39,12 +39,29 @@ const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'flee
 // --- Inlined helpers (not exported from tldraw) ---
 
 function _updateHoveredShapeId(editor: Editor) {
-  const hitShape = editor.getShapeAtPoint(editor.inputs.getCurrentPagePoint(), {
+  const point = editor.inputs.getCurrentPagePoint()
+  const hitShape = editor.getShapeAtPoint(point, {
     hitInside: false,
     hitLabels: false,
     margin: editor.options.hitTestMargin / editor.getZoomLevel(),
     renderingOnly: true,
   })
+
+  // Ribbon zone: check locked understanding-line shapes (invisible to getShapeAtPoint)
+  if (point.x < 10) {
+    let best: { shape: TLShape; area: number } | null = null
+    for (const s of editor.getCurrentPageShapes()) {
+      if (s.type !== 'understanding-line') continue
+      const bounds = editor.getShapePageBounds(s.id)
+      if (!bounds) continue
+      if (point.y < bounds.minY || point.y > bounds.maxY) continue
+      if (point.x < bounds.minX - 5 || point.x > bounds.maxX + 5) continue
+      const area = bounds.width * bounds.height
+      if (!best || area < best.area) best = { shape: s, area }
+    }
+    if (best) return editor.setHoveredShape(best.shape.id)
+  }
+
   if (!hitShape) return editor.setHoveredShape(null)
   let shapeToHover: TLShape | undefined = undefined
   const outermostShape = editor.getOutermostSelectableShape(hitShape)
@@ -284,6 +301,38 @@ export class BrowseIdle extends StateNode {
     this._selectedFleetIds.clear()
   }
 
+  private _cycleRibbonAtPoint() {
+    const point = this.editor.inputs.getCurrentPagePoint()
+    const userId = getHumanId()
+    if (!userId) return
+
+    // Find the smallest (most specific) understanding-line shape at this point.
+    // Segments are smaller than the bg shape, so prefer them.
+    let best: { shape: any; area: number } | null = null
+    for (const s of this.editor.getCurrentPageShapes()) {
+      if (s.type !== 'understanding-line') continue
+      const p = s.props as Record<string, unknown>
+      if (p.userId !== userId) continue
+      const bounds = this.editor.getShapePageBounds(s.id)
+      if (!bounds) continue
+      if (point.y < bounds.minY || point.y > bounds.maxY) continue
+      if (point.x < bounds.minX - 5 || point.x > bounds.maxX + 5) continue
+      const area = bounds.width * bounds.height
+      if (!best || area < best.area) {
+        best = { shape: s, area }
+      }
+    }
+
+    if (!best) return
+    const props = best.shape.props as Record<string, unknown>
+    const cycle = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
+    const idx = cycle.indexOf((props.status as string) || 'unchecked')
+    this.editor.store.update(best.shape.id, (s: any) => ({
+      ...s,
+      props: { ...s.props, status: cycle[(idx + 1) % cycle.length] },
+    }))
+  }
+
   override onPointerMove() {
     updateHoveredShapeId(this.editor)
   }
@@ -291,12 +340,20 @@ export class BrowseIdle extends StateNode {
   override onPointerDown(info: TLPointerEventInfo) {
     switch (info.target) {
       case 'canvas': {
+        // Ribbon zone: click in the left margin cycles understanding-line shapes.
+        // Locked shapes are invisible to getHitShapeOnCanvasPointerDown, so check separately.
+        const pagePoint = this.editor.inputs.getCurrentPagePoint()
+        if (pagePoint.x < 10) {
+          this._cycleRibbonAtPoint()
+          return
+        }
+
         const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
         // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
         // Fleet shapes and locked HTML pages get DOM passthrough when NOT selected.
         // When selected (via ⊞ button), fall through so the shape can be dragged/resized.
-        if (hitShape && (FLEET_TYPES.has(hitShape.type as string) || hitShape.isLocked || (hitShape.type as string) === 'understanding-line')) {
+        if (hitShape && (FLEET_TYPES.has(hitShape.type as string) || hitShape.isLocked)) {
           if (this.editor.getSelectedShapeIds().includes(hitShape.id)) {
             // Shape is selected — treat as pointing_selection for drag
             this.onPointerDown({ ...info, target: 'selection' })
@@ -309,15 +366,7 @@ export class BrowseIdle extends StateNode {
           }
           // Understanding-line shapes: click cycles status (owner only)
           if ((hitShape.type as string) === 'understanding-line') {
-            const props = hitShape.props as Record<string, unknown>
-            if (props.userId === getHumanId()) {
-              const cycle = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
-              const idx = cycle.indexOf((props.status as string) || 'unchecked')
-              this.editor.store.update(hitShape.id, (s: any) => ({
-                ...s,
-                props: { ...s.props, status: cycle[(idx + 1) % cycle.length] },
-              }))
-            }
+            this._cycleRibbonAtPoint()
             return
           }
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
