@@ -139,6 +139,26 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
+  // --- Plan mode approval card ---
+  if (m._evType === 'plan_approval') {
+    const ts = timeShort(m.timestamp)
+    const label = esc(m._agentLabel || agentLabel(m.from))
+    const agentCls = getNickClass(m.from)
+    const agentId = esc(m._agentId || m.from || '')
+    const planText = (m._planText || '').trim()
+    const planSnippet = planText.length > 800 ? '\u2026' + planText.slice(-800) : planText
+    const planHtml = planSnippet
+      ? `<pre class="plan-approval-plan">${esc(planSnippet)}</pre>`
+      : ''
+    return `<div class="chat-line plan-approval-card" data-agent-id="${agentId}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}">
+      <span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-plan-approval">
+        <div class="lc-header"><span class="lc-icon">\uD83D\uDCCB</span> <span class="lc-title">Ready to proceed</span> <span class="lc-routing"><span class="${agentCls}">${label}</span> wants to start implementation</span></div>
+        ${planHtml}
+        <div class="plan-approval-hint">Reply <strong>yes</strong> / <strong>no</strong> to approve or reject</div>
+      </div></div>`
+  }
+
   // --- Terminal attention card (permission prompt auto-pop) ---
   if (m._evType === 'terminal_attention') {
     const ts = timeShort(m.timestamp)

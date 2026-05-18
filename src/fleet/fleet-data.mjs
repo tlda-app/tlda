@@ -530,6 +530,13 @@ export function convertChatEvent(e) {
     msg._reason = e.metadata?.reason || ''
     msg._agentLabel = e.metadata?.agentLabel || ''
     msg._snippet = e.metadata?.snippet || ''
+  } else if (type === 'plan_approval') {
+    msg._evType = 'plan_approval'
+    msg._agentId = e.metadata?.agentId || ''
+    msg._agentLabel = e.metadata?.agentLabel || ''
+    msg._planText = e.metadata?.planText || ''
+    msg._tmuxSession = e.metadata?.tmux_session || ''
+    msg._machineId = e.metadata?.machine_id || ''
   } else if (type === 'terminal_card') {
     msg._evType = 'terminal_card'
     msg._reason = e.metadata?.reason || ''
