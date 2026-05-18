@@ -34,13 +34,6 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-  // Clear HUD position override so the wrap reverts to auto-layout. Without
-  // this the HUD might still render at a wedged position even after the
-  // shapes are recreated.
-  try { localStorage.removeItem('fleet-hud-override') } catch {}
-  // Force a global reload of the FleetHUD's hudOverride state. The simplest
-  // signal: dispatch a custom event the FleetHUD listens for. We also nuke
-  // any leftover proxy shape from a half-finished layout-mode entry.
   try {
     const proxy = editor.getCurrentPageShapes().find(s => s.id === 'shape:fleet-hud-proxy')
     if (proxy) editor.deleteShape(proxy.id)
@@ -271,7 +264,32 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   }
   editor.createShapes(shapes)
 
-  // Don't center the main canvas on fleet shapes — that disrupts the user's
-  // document position. The HUD overlay handles fleet shape visibility
-  // independently via its own camera.
+  // Create/update anchor shape at the doc's left edge. The HUD derives its
+  // overlay camera x from this shape's screen position each frame.
+  const anchorPageX = pageShapes.length > 0
+    ? anchorX + totalW + 40  // = minLeft (doc left edge)
+    : anchorX + totalW / 2
+  const existingAnchor = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+  if (existingAnchor) {
+    if (existingAnchor.isLocked) {
+      editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+    }
+    editor.updateShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      x: anchorPageX,
+      y: anchorY,
+      isLocked: true,
+    })
+  } else {
+    editor.createShape({
+      id: FLEET_HUD_ANCHOR_ID as any,
+      type: 'geo',
+      x: anchorPageX,
+      y: anchorY,
+      opacity: 0,
+      isLocked: true,
+      props: { w: 1, h: 1, geo: 'rectangle' },
+    })
+  }
 }
