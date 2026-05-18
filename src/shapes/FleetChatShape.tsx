@@ -953,7 +953,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'terminal_attention' || t === 'terminal_card'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -1963,7 +1963,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcApproveBtn) {
         const agentId = lcApproveBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: 'y', enter: true }) })
+          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
           return
         }
       }
@@ -1971,7 +1971,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcDenyBtn) {
         const agentId = lcDenyBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: 'n', enter: true }) })
+          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
           return
         }
       }
@@ -2299,35 +2299,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     lastAttentionTsRef.current = null
   }, [hoverTargetAgentId])
 
-  // Auto-pin terminal peek when the target agent hits a permission prompt
-  useEffect(() => {
-    if (!hoverTargetAgentId) return
-    const attentionEvt = [...liveEvents].reverse().find((e: any) =>
-      e._evType === 'terminal_attention' && e.from === hoverTargetAgentId
-    )
-    if (!attentionEvt?.timestamp) return
-    if (lastAttentionTsRef.current === attentionEvt.timestamp) return
-    lastAttentionTsRef.current = attentionEvt.timestamp
-    termAutoPinnedRef.current = true
-    setTermHoverPinned(true)
-    setTermHoverVisible(true)
-  }, [liveEvents, hoverTargetAgentId])
-
-  // Auto-unpin when the agent resumes (new activity after the attention event)
-  useEffect(() => {
-    if (!termAutoPinnedRef.current || !hoverTargetAgentId || !lastAttentionTsRef.current) return
-    const attn = lastAttentionTsRef.current
-    const hasResumed = liveEvents.some((e: any) =>
-      e.from === hoverTargetAgentId &&
-      (e._activity === true || ((e._evType === 'chat' || e.type === 'chat') && e.from === hoverTargetAgentId)) &&
-      e.timestamp > attn
-    )
-    if (hasResumed) {
-      termAutoPinnedRef.current = false
-      setTermHoverPinned(false)
-      setTermHoverVisible(false)
-    }
-  }, [liveEvents, hoverTargetAgentId])
+  // (Terminal auto-pin on permission prompts removed — chat cards handle this now)
 
   // Detect impossible filter: filter is set but no AND group can match any known agent
   const isImpossibleFilter = useMemo(() => {

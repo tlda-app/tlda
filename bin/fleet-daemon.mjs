@@ -414,6 +414,92 @@ function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
 }
 
+// ---------- prompt detection + auto-accept ----------
+//
+// The sweep captures panes every 5s and classifies permission prompts:
+//   - Memory file writes → auto-accept (option 1)
+//   - Other permission prompts → surface as terminal_attention card
+
+const MEMORY_PATH_RE = /\.claude\/projects\/[^/]+\/memory\//
+
+// Detect the TUI radio-button prompt pattern (❯ 1. Yes / 2. ... / 3. No)
+const RADIO_PROMPT_RE = /[❯>]\s*1\.\s*Yes/
+// Detect y/n permission prompts (Allow this command? (y/n))
+const YN_PROMPT_RE = /Allow this (?:command|action)\?\s*\(y\/n\)/i
+
+function detectPrompt(paneText) {
+  const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
+
+  // Radio-button TUI prompt (Create/Edit file, self-edit)
+  if ((stripped.includes('Do you want to') || stripped.includes('Allow this')) && RADIO_PROMPT_RE.test(stripped)) {
+    if (MEMORY_PATH_RE.test(stripped)) {
+      return { type: 'auto-accept', reason: 'memory file write' }
+    }
+    const doMatch = stripped.match(/Do you want to (\w+) (.+?)\?/)
+    const reason = doMatch ? `permission prompt: ${doMatch[1]} ${doMatch[2]}` : 'permission prompt'
+    return { type: 'surface', reason }
+  }
+
+  // y/n permission prompt
+  if (YN_PROMPT_RE.test(stripped)) {
+    const cmdMatch = stripped.match(/(?:Run|Execute|Allow)[^?]*?\?/i)
+    const reason = cmdMatch ? `permission prompt: ${cmdMatch[0]}` : 'permission prompt (y/n)'
+    return { type: 'surface', reason }
+  }
+
+  return { type: 'none' }
+}
+
+async function autoAcceptPrompt(tmuxSession, reason) {
+  try {
+    await tmux('send-keys', '-t', tmuxSession, '1')
+    await new Promise(r => setTimeout(r, 100))
+    await tmux('send-keys', '-t', tmuxSession, 'Enter')
+    console.log(`[daemon] auto-accepted prompt (${reason}) in ${tmuxSession}`)
+    return true
+  } catch (e) {
+    console.error(`[daemon] auto-accept failed in ${tmuxSession}: ${e.message}`)
+    return false
+  }
+}
+
+const AUTO_ACCEPT_INTERVAL_MS = 5000
+const promptCooldowns = new Map()
+const surfacedPrompts = new Map()
+
+function startAutoAcceptSweep() {
+  setInterval(async () => {
+    for (const agent of agents) {
+      if (!agent.tmux_session) continue
+      try {
+        const { stdout } = await execFileP('tmux',
+          [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
+          { timeout: 2000, encoding: 'utf8', maxBuffer: 512 * 1024 })
+        const result = detectPrompt(stdout)
+        if (result.type === 'auto-accept') {
+          const lastAccept = promptCooldowns.get(agent.tmux_session)
+          if (lastAccept && Date.now() - lastAccept < 10_000) continue
+          promptCooldowns.set(agent.tmux_session, Date.now())
+          surfacedPrompts.delete(agent.tmux_session)
+          await autoAcceptPrompt(agent.tmux_session, result.reason)
+          sendMsg({ type: 'prompt-auto-accepted', agent_id: agent.id, reason: result.reason, ts: new Date().toISOString() })
+        } else if (result.type === 'surface') {
+          if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
+          surfacedPrompts.set(agent.tmux_session, result.reason)
+          console.log(`[daemon] surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
+          sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason })
+        } else {
+          surfacedPrompts.delete(agent.tmux_session)
+        }
+      } catch {
+        // Session gone or capture failed — skip silently
+      }
+    }
+  }, AUTO_ACCEPT_INTERVAL_MS)
+}
+
+let _autoAcceptStarted = false
+
 async function checkForPlanModePrompt(agentId) {
   pendingPlanChecks.delete(agentId)
   const agent = agents.find(a => a.id === agentId)
@@ -1028,30 +1114,24 @@ function syncBackingWatchers(files) {
   // files = [{filePath: string, docNames: string[]}]
   const incoming = new Map(files.map(f => [expandHome(f.filePath), f.docNames]))
 
-  // Remove watchers for files no longer in the list
-  for (const [fp, entry] of [...backingWatchers]) {
-    if (!incoming.has(fp)) {
-      try { entry.watcher.close() } catch {}
-      backingWatchers.delete(fp)
-    }
+  // Close all existing watchers and rebuild from scratch.
+  for (const [, entry] of backingWatchers) {
+    try { entry.watcher.close() } catch {}
   }
+  backingWatchers.clear()
 
-  // Add watchers for new files
   for (const [fp, docNames] of incoming) {
-    if (backingWatchers.has(fp)) {
-      backingWatchers.get(fp).docNames = docNames
-      continue
-    }
     try {
       let debounce = null
-      const watcher = fs.watch(fp, { persistent: false }, () => {
+      const watcher = fs.watch(fp, () => {
         const entry = backingWatchers.get(fp)
         if (!entry) return
-        if (Date.now() - entry.lastWriteAt < 2000) return  // suppress echo from own write
+        if (Date.now() - entry.lastWriteAt < 2000) return
         if (debounce) clearTimeout(debounce)
         debounce = setTimeout(() => {
           try {
             const content = fs.readFileSync(fp, 'utf8')
+            console.log(`[daemon] backing file changed: ${fp} (${content.length} bytes)`)
             sendMsg({ type: 'file-content-changed', filePath: fp, content })
           } catch (e) {
             console.warn(`[daemon] read backing file ${fp}: ${e.message}`)
@@ -1059,10 +1139,12 @@ function syncBackingWatchers(files) {
         }, 200)
       })
       backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
+      console.log(`[daemon] watching backing file: ${fp}`)
     } catch (e) {
       console.warn(`[daemon] watch backing file ${fp}: ${e.message}`)
     }
   }
+  if (incoming.size > 0) console.log(`[daemon] backing watchers: ${backingWatchers.size} active`)
 }
 
 async function rpcWriteBackingFile({ filePath, content }) {
@@ -1113,12 +1195,28 @@ async function rpcSendText({ tmux_session, text, enter }) {
   return { ok: true }
 }
 
-async function rpcCapturePane({ tmux_session, lines }) {
+async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   checkSession(tmux_session)
   const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
   const { stdout } = await execFileP('tmux',
     [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
     { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+  const prompt = detectPrompt(stdout)
+  if (prompt.type === 'auto-accept') {
+    const lastAction = promptCooldowns.get(tmux_session)
+    if (!lastAction || Date.now() - lastAction >= 10_000) {
+      promptCooldowns.set(tmux_session, Date.now())
+      autoAcceptPrompt(tmux_session, prompt.reason)
+      if (agent_id) sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
+    }
+  } else if (prompt.type === 'surface' && agent_id) {
+    if (surfacedPrompts.get(tmux_session) !== prompt.reason) {
+      surfacedPrompts.set(tmux_session, prompt.reason)
+      sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason })
+    }
+  } else {
+    surfacedPrompts.delete(tmux_session)
+  }
   return { ok: true, pane: stdout }
 }
 
@@ -1214,6 +1312,22 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
       if (hash === state.lastHash) return
       state.lastHash = hash
       sendMsg({ type: 'terminal-frame', agent_id, tmux_session, pane: stdout, ts: new Date().toISOString() })
+      const prompt = detectPrompt(stripped)
+      if (prompt.type === 'auto-accept') {
+        const lastAction = promptCooldowns.get(tmux_session)
+        if (!lastAction || Date.now() - lastAction >= 10_000) {
+          promptCooldowns.set(tmux_session, Date.now())
+          autoAcceptPrompt(tmux_session, prompt.reason)
+          sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
+        }
+      } else if (prompt.type === 'surface') {
+        if (surfacedPrompts.get(tmux_session) !== prompt.reason) {
+          surfacedPrompts.set(tmux_session, prompt.reason)
+          sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason })
+        }
+      } else {
+        surfacedPrompts.delete(tmux_session)
+      }
     } catch (e) {
       // Session vanished — push a one-shot dead-pane signal and stop polling.
       if (/session not found|can't find session/i.test(e.message)) {
@@ -1749,6 +1863,10 @@ function handleServerMessage(msg) {
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
       setTimeout(checkAgentLiveness, 5000)
+    }
+    if (!_autoAcceptStarted) {
+      _autoAcceptStarted = true
+      startAutoAcceptSweep()
     }
     return
   }
