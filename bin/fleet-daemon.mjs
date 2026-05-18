@@ -718,12 +718,10 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       }
     }
 
-    // If Claude just emitted an assistant text block, schedule a terminal
-    // capture to check for a plan-mode approval prompt.
-    const hasAssistantText = parsedEvents.some(ev =>
-      ev.type === 'assistant' && ev.blocks?.some(b => b.type === 'text' && b.text?.length > 0)
-    )
-    if (hasAssistantText) scheduleCheckForPlanModePrompt(agentId)
+    // Plan-mode capture DISABLED 2026-05-18 — was spawning tmux capture-pane
+    // per active agent on every JSONL write, flooding the process table under
+    // load. Re-enable only after replacing with a tmux-free detection path
+    // (e.g. regex scan of the JSONL text itself for the plan-mode sentinel).
 
     // Check for tool approval prompts — these appear when Claude wants to
     // use a tool that requires permission.
