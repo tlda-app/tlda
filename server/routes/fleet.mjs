@@ -771,13 +771,24 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return res.status(502).json({ ok: false, error: e.message })
     }
 
-    const { resolvedMessage, inlineAttachments } = result
+    let { resolvedMessage, inlineAttachments } = result
 
     // Patch the stored event: replace `rawText` (with or without backticks) in the text,
     // and merge new inline_attachments into the event's metadata.
     const evId = parseInt(eventId, 10)
     const event = fleetStore.getEventById?.(evId)
     if (event && event.text) {
+      // Offset new attachment indices so they don't collide with existing ones
+      const existingMeta = event.metadata || {}
+      const existingAtts = existingMeta.inline_attachments || []
+      const offset = existingAtts.length
+      if (offset > 0 && inlineAttachments?.length) {
+        for (const att of inlineAttachments) att.id += offset
+        resolvedMessage = resolvedMessage.replace(
+          /\{\{att:(\d+)\}\}/g, (_, idx) => `{{att:${+idx + offset}}}`
+        )
+      }
+
       const backtickForms = [`\`${rawText}\``, rawText]
       let newText = event.text
       for (const form of backtickForms) {
@@ -787,9 +798,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         }
       }
       if (newText !== event.text || inlineAttachments?.length) {
-        // Merge new attachments into existing metadata
-        const existingMeta = event.metadata || {}
-        const existingAtts = existingMeta.inline_attachments || []
         const mergedAtts = [...existingAtts, ...(inlineAttachments || [])]
         const newMeta = { ...existingMeta, inline_attachments: mergedAtts }
         fleetStore.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
