@@ -22,13 +22,6 @@ import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
-import blocked from 'blocked-at'
-
-// Runtime guard: log event loop blocks with stack traces
-blocked((ms, stack) => {
-  process.stderr.write(`[blocked] ${ms}ms\n${stack.join('\n')}\n`)
-}, { threshold: 200 })
-
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import { dirname, join, resolve } from 'path'
@@ -1554,23 +1547,38 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   // Interacting with a hibernating (non-dead, no live process) agent wakes
-  // it. `dead` means explicitly killed — never auto-respawns. Hibernation
-  // is behavioral, not stored: it's "no process + you tried to interact."
-  // Non-blocking — message is already in DB, agent picks it up via my_task() on wake.
-  async function respawnIfNotDead(agentId) {
+  // Idempotent waker: chat/delegate adds agent IDs to a Set.
+  // A serial loop drains it — one spawn at a time, naturally deduped.
+  const _wakeQueue = new Set()
+  let _wakeDraining = false
+
+  function requestWake(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) return
-    // Ask the daemon — on the agent's machine — whether the Claude process is running.
-    // The daemon checks tmux session existence + pgrep for a claude process inside it.
-    const { alive } = await sendRpc(machineIds[0], 'check-alive', { tmux_session: agent.tmux_session })
-      .catch(() => ({ alive: false }))
-    if (alive) return
-    // Pass fleet ID directly — fleet-spawn accepts "fleet:xxx" and skips name→ID lookup
-    sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
-      .catch(e => console.warn(`[respawn] failed for ${agentId}: ${e.message}`))
-    console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
+    _wakeQueue.add(agentId)
+    if (!_wakeDraining) drainWakeQueue()
+  }
+
+  async function drainWakeQueue() {
+    _wakeDraining = true
+    while (_wakeQueue.size > 0) {
+      const agentId = _wakeQueue.values().next().value
+      _wakeQueue.delete(agentId)
+      const agent = fleetStore.getAgent?.(agentId)
+      if (!agent || agent.dead || agent.human) continue
+      const machineIds = [...daemonConnections.keys()]
+      if (machineIds.length === 0) continue
+      try {
+        const { alive } = await sendRpc(machineIds[0], 'check-alive', { tmux_session: agent.tmux_session })
+          .catch(() => ({ alive: false }))
+        if (alive) continue
+        console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
+        await sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
+      } catch (e) {
+        console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
+      }
+    }
+    _wakeDraining = false
   }
 
   if (type === 'chat') {
@@ -1666,7 +1674,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
     reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
-    for (const to of recipients) respawnIfNotDead(to)
+    for (const to of recipients) requestWake(to)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -1762,7 +1770,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    respawnIfNotDead(resolved.id)
+    requestWake(resolved.id)
     return
   }
 

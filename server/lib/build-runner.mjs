@@ -156,6 +156,11 @@ function loadPageHashes(outDir) {
 // Active builds tracked in memory
 const activeBuilds = new Map()
 
+// Per-project build lock: prevents concurrent runBuild for the same project.
+// When a build is running and a new one is requested, the new one waits for
+// the current one to finish (after killing it), ensuring no orphaned processes.
+const _buildLocks = new Map()  // name → Promise
+
 // Monotonic version counter per doc. Incremented when a build starts.
 // The mirror callback captures its version and skips if superseded.
 const buildVersion = new Map()
@@ -1357,9 +1362,10 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   // blank initShadowRepo seeds an "init" commit with .gitignore).
   if (existsSync(join(shadowDir, '.git'))) {
     try {
-      const cnt = execSync('git rev-list --count HEAD 2>/dev/null', {
-        cwd: shadowDir, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, encoding: 'utf8',
-      }).trim()
+      const { stdout: cntOut } = await _execAsync('git rev-list --count HEAD 2>/dev/null', {
+        cwd: shadowDir, timeout: 5000,
+      })
+      const cnt = cntOut.trim()
       if (parseInt(cnt, 10) > 1) return
     } catch { /* missing HEAD or empty repo — proceed with bootstrap */ }
   }
@@ -1387,10 +1393,11 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   // working copy — they pointed at the old history and would cause `git fetch --tags`
   // to fail on the next build (git refuses to overwrite tags without --force).
   try {
-    const stale = execSync(`git tag -l "shadow/*"`, { cwd: sourceDir, encoding: 'utf8', timeout: 5000 }).trim()
+    const { stdout: staleOut } = await _execAsync(`git tag -l "shadow/*"`, { cwd: sourceDir, timeout: 5000 })
+    const stale = staleOut.trim()
     if (stale) {
       const tagList = stale.split('\n').filter(Boolean)
-      execSync(`git tag -d ${tagList.map(t => `"${t}"`).join(' ')}`, { cwd: sourceDir, stdio: 'pipe', timeout: 5000 })
+      await _execAsync(`git tag -d ${tagList.map(t => `"${t}"`).join(' ')}`, { cwd: sourceDir, timeout: 5000 })
       console.log(`[build:${name}] cleared ${tagList.length} stale shadow/* tags from working copy after bootstrap`)
     }
   } catch (e) {
@@ -1415,7 +1422,26 @@ export function emitDocArrived(name) {
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
-  // If no priority pages specified, try the signal cache (what the viewer last reported)
+  // Serialize builds per project: wait for any in-flight build to finish before starting.
+  while (_buildLocks.has(name)) {
+    // Kill the running build so we don't wait for it to complete naturally.
+    const existing = activeBuilds.get(name)
+    if (existing?.building) {
+      console.log(`[build:${name}] Killing in-progress build, restarting`)
+      killBuildProcesses(existing.buildId)
+      existing.building = false
+      existing.phase = 'cancelled'
+    }
+    await _buildLocks.get(name).catch(() => {})
+  }
+  let releaseLock
+  _buildLocks.set(name, new Promise(r => { releaseLock = r }))
+
+  try { return await _runBuildInner(name, { priorityPages: explicitPriority }) }
+  finally { _buildLocks.delete(name); releaseLock() }
+}
+
+async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   let priorityPages = explicitPriority
   if (!priorityPages) {
     try {
@@ -1426,18 +1452,8 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       }
     } catch {}
   }
-  // Fallback: at least page 1
   if (!priorityPages || priorityPages.length === 0) {
     priorityPages = [1]
-  }
-  // If a build is already running, kill it and restart
-  const existing = activeBuilds.get(name)
-  if (existing?.building) {
-    console.log(`[build:${name}] Killing in-progress build, restarting`)
-    killBuildProcesses(existing.buildId)
-    await new Promise(r => setTimeout(r, 1000))
-    existing.building = false
-    existing.phase = 'cancelled'
   }
 
   // Increment version so any in-flight mirror callbacks from previous builds
@@ -1709,31 +1725,23 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
             const shadowDir = join(projDir, 'shadow-repo')
             // Tag the shadow commit so shadow/<hash> resolves to it.
             const tag = `shadow/${result.hash.slice(0, 7)}`
-            execSync(`git tag -f "${tag}"`, { cwd: shadowDir, stdio: 'pipe', timeout: 5000 })
-            // Ensure the working copy has the shadow as a remote.
+            await _execAsync(`git tag -f "${tag}"`, { cwd: shadowDir, timeout: 5000 })
             try {
-              execSync(`git remote get-url tlda-shadow`, { cwd, stdio: 'pipe', timeout: 5000 })
+              await _execAsync(`git remote get-url tlda-shadow`, { cwd, timeout: 5000 })
             } catch {
-              execSync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, stdio: 'pipe', timeout: 5000 })
+              await _execAsync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, timeout: 5000 })
             }
-            // Fetch shadow's history into the working copy, then move the
-            // working copy's current branch to shadow's HEAD. --mixed updates
-            // the index but leaves the working tree untouched (preserves any
-            // uncommitted edits). Uses result.hash directly (not FETCH_HEAD) so
-            // the reset targets the exact commit we just committed.
             try {
-              execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+              await _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 })
             } catch (fetchErr) {
-              // Stale remote ref lock (concurrent builds or prior failed fetch).
-              // Prune and retry once; if it fails again, rethrow.
               if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
-                execSync(`git remote prune tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
-                execSync(`git fetch --tags tlda-shadow`, { cwd, stdio: 'pipe', timeout: 10000 })
+                await _execAsync(`git remote prune tlda-shadow`, { cwd, timeout: 10000 })
+                await _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 })
               } else {
                 throw fetchErr
               }
             }
-            execSync(`git reset --mixed ${result.hash}`, { cwd, stdio: 'pipe', timeout: 10000 })
+            await _execAsync(`git reset --mixed ${result.hash}`, { cwd, timeout: 10000 })
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
         } catch (mirrorErr) {
@@ -1760,7 +1768,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
         // Build change summary: diff against previous shadow commit
         try {
           const shadowDir = join(projDir, 'shadow-repo')
-          const diffOutput = execSync(
+          const { stdout: diffOutput } = await _execAsync(
             `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
             { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
           )
