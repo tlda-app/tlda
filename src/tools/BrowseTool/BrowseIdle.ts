@@ -62,7 +62,7 @@ function _updateHoveredShapeId(editor: Editor) {
     if (best) return editor.setHoveredShape(best.shape.id)
   }
 
-  if (!hitShape) return editor.setHoveredShape(null)
+  if (!hitShape || (hitShape.type as string) === 'svg-page') return editor.setHoveredShape(null)
   let shapeToHover: TLShape | undefined = undefined
   const outermostShape = editor.getOutermostSelectableShape(hitShape)
   if (outermostShape === hitShape) {
@@ -254,6 +254,7 @@ export class BrowseIdle extends StateNode {
 
   override onExit() {
     updateHoveredShapeId.cancel()
+    this.editor.setHoveredShape(null)
     if (this._deselHandler) {
       const container = this.editor.getContainer()
       container.removeEventListener('pointerdown', this._deselHandler, { capture: true })
@@ -301,10 +302,10 @@ export class BrowseIdle extends StateNode {
     this._selectedFleetIds.clear()
   }
 
-  private _cycleRibbonAtPoint() {
+  private _cycleRibbonAtPoint(): boolean {
     const point = this.editor.inputs.getCurrentPagePoint()
     const userId = getHumanId()
-    if (!userId) return
+    if (!userId) return false
 
     // Find the smallest (most specific) understanding-line segment at this point.
     // Skip bg shapes (startLine=0, endLine=999999) — only segments cycle.
@@ -324,7 +325,7 @@ export class BrowseIdle extends StateNode {
       }
     }
 
-    if (!best) return
+    if (!best) return false
     const props = best.shape.props as Record<string, unknown>
     const cycle = ['approved', 'presentation', 'uncertain', 'rejected', 'unchecked']
     const idx = cycle.indexOf((props.status as string) || 'unchecked')
@@ -332,6 +333,7 @@ export class BrowseIdle extends StateNode {
       ...s,
       props: { ...s.props, status: cycle[(idx + 1) % cycle.length] },
     }))
+    return true
   }
 
   override onPointerMove() {
@@ -341,15 +343,23 @@ export class BrowseIdle extends StateNode {
   override onPointerDown(info: TLPointerEventInfo) {
     switch (info.target) {
       case 'canvas': {
-        // Ribbon zone: click in the left margin cycles understanding-line shapes.
-        // Locked shapes are invisible to getHitShapeOnCanvasPointerDown, so check separately.
-        const pagePoint = this.editor.inputs.getCurrentPagePoint()
-        if (pagePoint.x < 10) {
-          this._cycleRibbonAtPoint()
+        const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
+
+        // svg-page shapes are document backgrounds — treat clicks on them as empty canvas
+        if (hitShape && (hitShape.type as string) === 'svg-page') {
+          if (info.accelKey) {
+            const onSourceClick = getOnSourceClick()
+            if (onSourceClick) {
+              const pagePoint2 = this.editor.inputs.getCurrentPagePoint()
+              const h = (hitShape.props as Record<string, number>).h ?? 1035
+              const yFraction = (pagePoint2.y - hitShape.y) / h
+              onSourceClick(hitShape.id, yFraction)
+            }
+            return
+          }
+          this.parent.transition('pointing_canvas', info)
           return
         }
-
-        const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
         // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
         // Fleet shapes and locked HTML pages get DOM passthrough when NOT selected.
@@ -367,25 +377,13 @@ export class BrowseIdle extends StateNode {
           }
           // Understanding-line shapes: click cycles status (owner only)
           if ((hitShape.type as string) === 'understanding-line') {
-            this._cycleRibbonAtPoint()
-            return
+            if (this._cycleRibbonAtPoint()) return
           }
           // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
           // treat as empty canvas so drag-box select works over document backgrounds.
           // In the main canvas, keep passing through to DOM.
           if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
             this.parent.transition('pointing_canvas', info)
-            return
-          }
-          // Cmd-click on svg-page: open source in editor
-          if ((hitShape.type as string) === 'svg-page' && info.accelKey) {
-            const onSourceClick = getOnSourceClick()
-            if (onSourceClick) {
-              const pagePoint = this.editor.inputs.getCurrentPagePoint()
-              const h = (hitShape.props as Record<string, number>).h ?? 1035
-              const yFraction = (pagePoint.y - hitShape.y) / h
-              onSourceClick(hitShape.id, yFraction)
-            }
             return
           }
           this.editor.selectNone()

@@ -40,9 +40,17 @@ class RibbonHighlightIdle extends StateNode {
     this.editor.setCurrentTool('select')
   }
 
+  private _lastRibbonHover = false
+
   private _updateRibbonHover() {
     const point = this.editor.inputs.getCurrentPagePoint()
-    if (point.x >= 10) return
+    if (point.x >= 10) {
+      if (this._lastRibbonHover) {
+        this.editor.setHoveredShape(null)
+        this._lastRibbonHover = false
+      }
+      return
+    }
 
     let best: { shape: TLShape; area: number } | null = null
     for (const s of this.editor.getCurrentPageShapes()) {
@@ -54,7 +62,13 @@ class RibbonHighlightIdle extends StateNode {
       const area = bounds.width * bounds.height
       if (!best || area < best.area) best = { shape: s, area }
     }
-    if (best) this.editor.setHoveredShape(best.shape.id)
+    if (best) {
+      this.editor.setHoveredShape(best.shape.id)
+      this._lastRibbonHover = true
+    } else if (this._lastRibbonHover) {
+      this.editor.setHoveredShape(null)
+      this._lastRibbonHover = false
+    }
   }
 }
 
@@ -69,6 +83,7 @@ export class RibbonHighlightTool extends StateNode {
   override shapeType = 'highlight'
 
   override onExit() {
+    this.editor.setHoveredShape(null)
     const drawingState = this.children!['drawing'] as any
     drawingState.initialShape = undefined
   }

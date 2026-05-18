@@ -6,7 +6,7 @@
  * When the user highlights in this zone, the highlight is consumed and a
  * corresponding understanding-line shape is created/updated.
  *
- * Eraser in the ribbon zone resets segments to 'unchecked' instead of deleting.
+ * Eraser in the ribbon zone deletes segments (bare lane = unchecked).
  *
  * Phase 2: Edit resilience — after a document rebuild, understanding-line shapes
  * are repositioned to match the new synctex data (clearLineYIndexCache +
@@ -536,51 +536,3 @@ export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   return bounds.minX < 5
 }
 
-/**
- * Register an after-delete handler that re-creates understanding-line shapes
- * as 'unchecked' when the eraser tool deletes them.
- * Call once from editorSetup.
- */
-export function registerEraserInterceptor(editor: Editor): void {
-  // Locked shapes are invisible to TLDraw's eraser. Instead, detect when the
-  // eraser tool completes a stroke, find understanding-line shapes that overlap
-  // the erased region, and reset them to 'unchecked'.
-  let eraserActive = false
-
-  editor.on('event', (event: any) => {
-    if (editor.getCurrentToolId() !== 'eraser') {
-      eraserActive = false
-      return
-    }
-
-    if (event.name === 'pointer_down') {
-      eraserActive = true
-      return
-    }
-
-    if (event.name === 'pointer_up' && eraserActive) {
-      eraserActive = false
-      const point = editor.inputs.getCurrentPagePoint()
-      if (point.x > 10) return
-
-      const allShapes = editor.getCurrentPageShapes()
-      const userId = getHumanId()
-      for (const s of allShapes) {
-        if ((s.type as string) !== 'understanding-line') continue
-        const ul2 = s as any
-        const p = ul2.props as any
-        if (p.userId !== userId) continue
-        if (p.status === 'unchecked') continue
-        const bounds = editor.getShapePageBounds(ul2.id)
-        if (!bounds) continue
-        if (point.y >= bounds.minY && point.y <= bounds.maxY) {
-          editor.updateShape({
-            id: ul2.id,
-            type: 'understanding-line' as any,
-            props: { ...p, status: 'unchecked' },
-          })
-        }
-      }
-    }
-  })
-}

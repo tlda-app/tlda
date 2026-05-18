@@ -3,11 +3,11 @@
  *
  * TLDraw's built-in eraser excludes locked shapes from hit testing entirely.
  * Understanding-line shapes are locked (to prevent selection/move interference),
- * but the eraser should reset them to 'unchecked' status instead of ignoring them.
+ * but the eraser should delete them (bare lane = unchecked).
  *
  * Approach: extend TLDraw's Erasing/Pointing child states to additionally track
  * understanding-line shapes the scribble passes over. On complete, those shapes
- * get their status reset to 'unchecked' (not deleted).
+ * are deleted via store.remove() (deleteShapes silently skips locked shapes).
  */
 import {
   StateNode,
@@ -71,19 +71,18 @@ class RibbonEraserPointing extends StateNode {
 
     this.editor.setErasingShapes([...erasing])
 
-    // Point-erase understanding-line shapes in the ribbon zone
-    if (currentPagePoint.x < 10) {
-      const userId = getHumanId()
-      if (userId) {
-        for (const shape of this.editor.getCurrentPageShapes()) {
-          if ((shape.type as string) !== 'understanding-line') continue
-          const p = shape.props as Record<string, unknown>
-          if (p.userId !== userId || p.status === 'unchecked') continue
-          const bounds = this.editor.getShapePageBounds(shape.id)
-          if (!bounds) continue
-          if (currentPagePoint.y >= bounds.minY && currentPagePoint.y <= bounds.maxY) {
-            ;(this.parent as RibbonEraserTool)._ribbonShapesToReset.add(shape.id)
-          }
+    // Point-erase understanding-line shapes (locked, so invisible to normal eraser)
+    const userId = getHumanId()
+    if (userId) {
+      for (const shape of this.editor.getCurrentPageShapes()) {
+        if ((shape.type as string) !== 'understanding-line') continue
+        const p = shape.props as Record<string, unknown>
+        if (p.userId !== userId || p.status === 'unchecked') continue
+        const bounds = this.editor.getShapePageBounds(shape.id)
+        if (!bounds) continue
+        if (currentPagePoint.x <= bounds.maxX + 10 &&
+            currentPagePoint.y >= bounds.minY && currentPagePoint.y <= bounds.maxY) {
+          ;(this.parent as RibbonEraserTool)._ribbonShapesToReset.add(shape.id)
         }
       }
     }
@@ -121,17 +120,10 @@ class RibbonEraserPointing extends StateNode {
       this.editor.deleteShapes(erasingShapeIds)
     }
 
-    // Reset ribbon shapes to unchecked
+    // Delete ribbon shapes (locked, so use store.remove directly)
     const tool = this.parent as RibbonEraserTool
     if (tool._ribbonShapesToReset.size > 0) {
-      for (const id of tool._ribbonShapesToReset) {
-        const shape = this.editor.getShape(id)
-        if (!shape) continue
-        this.editor.store.update(shape.id, (s: any) => ({
-          ...s,
-          props: { ...s.props, status: 'unchecked' },
-        }))
-      }
+      this.editor.store.remove([...tool._ribbonShapesToReset])
       tool._ribbonShapesToReset.clear()
     }
 
@@ -260,21 +252,19 @@ class RibbonErasing extends StateNode {
 
     this.editor.setErasingShapes(this._erasingShapeIds.filter((id) => !excludedShapeIds.has(id)))
 
-    // Track understanding-line shapes the scribble passes over in the ribbon zone
-    if (currentPagePoint.x < 10) {
-      const userId = getHumanId()
-      if (userId) {
-        const tool = this.parent as RibbonEraserTool
-        for (const shape of this.editor.getCurrentPageShapes()) {
-          if ((shape.type as string) !== 'understanding-line') continue
-          const p = shape.props as Record<string, unknown>
-          if (p.userId !== userId || p.status === 'unchecked') continue
-          const bounds = this.editor.getShapePageBounds(shape.id)
-          if (!bounds) continue
-          if (currentPagePoint.y >= bounds.minY && currentPagePoint.y <= bounds.maxY &&
-              currentPagePoint.x <= bounds.maxX + 5) {
-            tool._ribbonShapesToReset.add(shape.id)
-          }
+    // Track understanding-line shapes the scribble passes over (locked, invisible to normal eraser)
+    const userId = getHumanId()
+    if (userId) {
+      const tool = this.parent as RibbonEraserTool
+      for (const shape of this.editor.getCurrentPageShapes()) {
+        if ((shape.type as string) !== 'understanding-line') continue
+        const p = shape.props as Record<string, unknown>
+        if (p.userId !== userId || p.status === 'unchecked') continue
+        const bounds = this.editor.getShapePageBounds(shape.id)
+        if (!bounds) continue
+        if (currentPagePoint.x <= bounds.maxX + 10 &&
+            currentPagePoint.y >= bounds.minY && currentPagePoint.y <= bounds.maxY) {
+          tool._ribbonShapesToReset.add(shape.id)
         }
       }
     }
@@ -284,17 +274,10 @@ class RibbonErasing extends StateNode {
     const { editor } = this
     editor.deleteShapes(editor.getCurrentPageState().erasingShapeIds)
 
-    // Reset ribbon shapes to unchecked
+    // Delete ribbon shapes (bare lane = unchecked)
     const tool = this.parent as RibbonEraserTool
     if (tool._ribbonShapesToReset.size > 0) {
-      for (const id of tool._ribbonShapesToReset) {
-        const shape = editor.getShape(id)
-        if (!shape) continue
-        editor.store.update(shape.id, (s: any) => ({
-          ...s,
-          props: { ...s.props, status: 'unchecked' },
-        }))
-      }
+      editor.store.remove([...tool._ribbonShapesToReset])
       tool._ribbonShapesToReset.clear()
     }
 
