@@ -834,13 +834,17 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return true
     }, [backingFile, shape.id, shape.meta?.authorId])
 
-    const handleContentClick = useCallback((e: React.MouseEvent) => {
+    // Bullet clicks must intercept on pointerDown — TLDraw's capture-phase
+    // listeners prevent onClick from ever firing on unselected shape content.
+    const handleContentPointerDown = useCallback((e: React.PointerEvent) => {
       if (handleBulletClick(e)) {
         stopEventPropagation(e)
-        return
       }
+    }, [handleBulletClick])
+
+    const handleContentClick = useCallback((e: React.MouseEvent) => {
       handleDocLinkClick(e)
-    }, [handleBulletClick, handleDocLinkClick])
+    }, [handleDocLinkClick])
 
     // Hover handler for [->label] doc-link spans
     const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1124,6 +1128,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       content = (
         <div
           ref={contentRef}
+          onPointerDown={handleContentPointerDown}
           onClick={handleContentClick}
           onPointerUp={(e) => {
             // Trackpad click in pen mode: enter editing if shape is already selected
