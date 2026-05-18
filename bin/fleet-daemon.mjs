@@ -842,7 +842,7 @@ function startPolling(state, rel) {
   if (!fs.existsSync(full)) return
   fs.watchFile(full, { interval: 2000 }, (curr, prev) => {
     if (curr.mtimeMs === prev.mtimeMs) return
-    state.onFileChange(rel)
+    state.onFileChange(rel, true)
   })
 }
 
@@ -872,14 +872,22 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, watchSeen: new Map() }
 
-    const onFileChange = (filename) => {
+    const onFileChange = (filename, fromPoll) => {
       if (!filename) return
       if (state.watchSet.size > 0) {
         if (!state.watchSet.has(filename)) return
       } else {
         if (!isSourceFile(filename)) return
+      }
+      if (!fromPoll) {
+        state.watchSeen.set(filename, Date.now())
+      } else if (state.watcher) {
+        const seenAt = state.watchSeen.get(filename)
+        if (!seenAt || Date.now() - seenAt > 3000) {
+          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — poll caught it`)
+        }
       }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
