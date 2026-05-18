@@ -379,6 +379,23 @@ export async function initRibbonBackground(
       },
     })
   }
+
+  // Self-heal stale segment shapes (unlock + fix width)
+  const allShapes = editor.getCurrentPageShapes()
+  for (const s of allShapes) {
+    if (s.type !== 'understanding-line') continue
+    if (s.id === bgId) continue
+    const p = s.props as any
+    if (p.userId !== userId) continue
+    if (s.isLocked || p.w !== BAR_WIDTH) {
+      editor.updateShape({
+        id: s.id,
+        type: 'understanding-line' as any,
+        isLocked: false,
+        props: { ...p, w: BAR_WIDTH },
+      })
+    }
+  }
 }
 
 /**
