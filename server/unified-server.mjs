@@ -24,9 +24,11 @@ import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
-import { dirname, join, resolve } from 'path'
+import path from 'path'
+const { dirname, join, resolve } = path
 import { fileURLToPath } from 'url'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } from 'fs'
+import fs from 'fs'
+const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } = fs
 import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
