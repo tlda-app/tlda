@@ -358,7 +358,19 @@ function tldaRenderMarkdown(input: string, macros?: Record<string, string>): str
   // can un-escape and process normally.
   const looksEscaped = input.includes('&amp;') || input.includes('&lt;') || input.includes('&gt;')
   const escapedInput = looksEscaped ? input : esc(input)
-  return renderMarkdownUtil(escapedInput, macros)
+  // Extract «...» chip tokens before KaTeX rendering — math inside tokens
+  // (e.g. «highlight:text $x^2$#shape:ID») would otherwise be converted to
+  // HTML spans, breaking the postProcess regex.
+  const chipSlots: string[] = []
+  const safeInput = escapedInput.replace(/«[^»]+»/g, (tok) => {
+    chipSlots.push(tok)
+    return `\x00CHIP${chipSlots.length - 1}\x00`
+  })
+  let rendered = renderMarkdownUtil(safeInput, macros)
+  for (let i = 0; i < chipSlots.length; i++) {
+    rendered = rendered.replace(`\x00CHIP${i}\x00`, chipSlots[i])
+  }
+  return rendered
 }
 
 // --- Viewer context helper ---
