@@ -3074,3 +3074,23 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   line-height: 1.4;
 }
 
+.fleet-chat-shape .fleet-dead-agent-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+.fleet-chat-shape .fleet-dead-resurrect {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.fleet-chat-shape .fleet-dead-resurrect:hover {
+  opacity: 1;
+  color: var(--text-bright);
+}
+
