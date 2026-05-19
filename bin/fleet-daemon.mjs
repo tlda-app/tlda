@@ -543,9 +543,8 @@ async function checkForPlanModePrompt(agentId) {
   }
   if (!planText) return  // divider extraction failed — don't send garbage
 
-  const fingerprint = `${planText.length}:${planText.slice(0, 200)}`
-  if (planModeHashes.get(agentId) === fingerprint) return
-  planModeHashes.set(agentId, fingerprint)
+  if (planModeHashes.has(agentId)) return
+  planModeHashes.set(agentId, true)
 
   sendMsg({
     type: 'plan-mode-prompt',
@@ -1596,36 +1595,83 @@ async function rpcKillOrphanChromium({ port }) {
   return { killed: false, reason: 'no playwright owner among port holders' }
 }
 
+// ─── Memory pressure ────────────────────────────────────────────────
+
+function getMemoryPressure() {
+  const total = os.totalmem()
+  const free = os.freemem()
+  return 1 - free / total  // 0 = empty, 1 = full
+}
+
+function pressureScaledTimeout(baseMs) {
+  const p = getMemoryPressure()
+  if (p < 0.5) return baseMs
+  const scale = Math.max(0.1, 1 - (p - 0.5) / 0.4)  // linear 1→0.1 over 50%→90%
+  return Math.round(baseMs * scale)
+}
+
+// ─── Process → agent attribution ───────────────────────────────────
+// Walk up the ppid chain to find a `claude` process. Extract --resume
+// session ID or tmux session name, match against the agent list.
+
+async function getProcessInfo(pid) {
+  try {
+    const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'pid=,ppid=,args='],
+      { timeout: 2000, encoding: 'utf8' })
+    const m = stdout.trim().match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) return null
+    return { pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), args: m[3] }
+  } catch { return null }
+}
+
+async function attributeToAgent(pid) {
+  let cur = pid
+  const visited = new Set()
+  for (let depth = 0; depth < 10; depth++) {
+    if (visited.has(cur) || cur <= 1) break
+    visited.add(cur)
+    const info = await getProcessInfo(cur)
+    if (!info) break
+    if (info.args.includes('claude') && !info.args.includes('playwright')) {
+      const resumeMatch = info.args.match(/--resume\s+([a-f0-9-]+)/)
+      if (resumeMatch) {
+        const sessionId = resumeMatch[1]
+        const agent = agents.find(a => a.session_id === sessionId)
+        if (agent) return { id: agent.id, name: agent.name || agent.id.slice(0, 8) }
+      }
+      const agentByTmux = agents.find(a => a.tmux_session && info.args.includes(a.tmux_session))
+      if (agentByTmux) return { id: agentByTmux.id, name: agentByTmux.name || agentByTmux.id.slice(0, 8) }
+    }
+    cur = info.ppid
+  }
+  return null
+}
+
+async function attributeViteByCwd(pid) {
+  try {
+    const { stdout } = await execFileP('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
+      { timeout: 2000, encoding: 'utf8' })
+    const cwdLine = stdout.split('\n').find(l => l.startsWith('n/'))
+    if (!cwdLine) return null
+    const cwd = cwdLine.slice(1)
+    const wtMatch = cwd.match(/\.worktrees\/([^/]+)/)
+    if (wtMatch) return wtMatch[1]
+  } catch {}
+  return null
+}
+
 // ─── Vite reaper — kill dev servers nobody's using ──────────────────
-//
-// Agents start `npx vite` for HMR-based UI testing and leave the process
-// running after their browser is closed/killed. This is a pure-daemon
-// concern: vites listen on local ports the server never sees. We watch
-// for `node .../vite ...` processes, find their listening port, and check
-// (via lsof) whether any browser-like process has an established TCP
-// connection. If no browser client appears for VITE_IDLE_THRESHOLD_MS,
-// the vite is killed.
-//
-// Skip's own vite stays alive as long as Chrome is attached (HMR WS keeps
-// the TCP connection open even when the tab is minimized). It only dies
-// after Skip closes the tab entirely AND doesn't reopen for 10 min.
 const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
 const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
-const _viteLastClient = new Map()  // vite_pid -> ms timestamp last seen with a browser client
+const _viteLastClient = new Map()
 const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
 
 function isViteArgs(args) {
-  // Matches `node .../vite ...` or `node .../vite.js ...`. Avoids matching
-  // random scripts that happen to mention "vite" elsewhere on the command
-  // line by requiring it to be the script path right after `node`.
   if (!args.startsWith('node ')) return false
   return /[\/\\]vite(\.js)?(\s|$)/.test(args)
 }
 
 async function findListeningPorts(pid) {
-  // CRITICAL: `-a` ANDs the selectors. Without it lsof OR-combines `-p` and
-  // `-iTCP` and returns every LISTEN port on the machine, which would make
-  // viteHasBrowserClient check the wrong port.
   try {
     const { stdout } = await execFileP('lsof',
       ['-a', '-nP', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-F', 'n'],
@@ -1677,11 +1723,9 @@ async function viteHasBrowserClient(port) {
     else if (k === 'n' && cur) cur.names.push(v)
   }
   if (cur) records.push(cur)
-  // Client rows have `<client_addr>:<client_port>-><vite_addr>:<vite_port>`
-  // — i.e. the connection name ends with the vite's port.
   const remoteTag = ':' + port
   for (const r of records) {
-    if (!r.names.some(n => n.endsWith(remoteTag))) continue  // not a client of this vite
+    if (!r.names.some(n => n.endsWith(remoteTag))) continue
     if (BROWSER_NAME_RE.test(r.command || '')) return true
   }
   return false
@@ -1690,10 +1734,8 @@ async function viteHasBrowserClient(port) {
 async function reapVites() {
   const vites = await listVites()
   const now = Date.now()
+  const killed = []
   for (const v of vites) {
-    // Browser is "connected" if it has a client on ANY of the vite's
-    // listening ports (vite typically binds an HTTP port and a separate
-    // HMR WebSocket port; either alive = vite in use).
     let hasClient = false
     for (const port of v.ports) {
       if (await viteHasBrowserClient(port)) { hasClient = true; break }
@@ -1704,10 +1746,11 @@ async function reapVites() {
     }
     if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
     const idleMs = now - _viteLastClient.get(v.pid)
-    if (idleMs > VITE_IDLE_THRESHOLD_MS) {
+    if (idleMs > pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS)) {
       try {
         process.kill(v.pid, 'SIGKILL')
-        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m`)
+        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
+        killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m` })
       } catch (e) {
         console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
       }
@@ -1718,21 +1761,166 @@ async function reapVites() {
   for (const pid of [..._viteLastClient.keys()]) {
     if (!liveVites.has(pid)) _viteLastClient.delete(pid)
   }
+  return { vites, killed }
 }
 
-let _viteReaperTimer = null
-function startViteReaper() {
-  if (_viteReaperTimer) return
-  // First sweep after a short delay so the daemon doesn't compete with
-  // its own startup work. Subsequent sweeps every VITE_SWEEP_INTERVAL_MS.
+// ─── Playwright reaper — kill orphan chromium browsers ──────────────
+const PW_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_PW_MS, 10) || 5 * 60 * 1000
+const _pwLastSeen = new Map()
+
+async function listPlaywrightBrowsers() {
+  let psOut = ''
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,args='], { timeout: 5000, encoding: 'utf8' })
+    psOut = stdout
+  } catch { return [] }
+  const browsers = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const pid = parseInt(m[1], 10)
+    const ppid = parseInt(m[2], 10)
+    const args = m[3]
+    if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
+    if (args.includes('--type=')) continue
+    browsers.push({ pid, ppid, args })
+  }
+  return browsers
+}
+
+async function isPlaywrightControllerAlive(ppid) {
+  if (!ppid || ppid <= 1) return false
+  try {
+    const { stdout } = await execFileP('ps', ['-p', String(ppid), '-o', 'args='],
+      { timeout: 2000, encoding: 'utf8' })
+    const args = stdout.trim()
+    return args.includes('playwright') || args.includes('node')
+  } catch { return false }
+}
+
+async function reapPlaywright() {
+  const browsers = await listPlaywrightBrowsers()
+  if (browsers.length === 0) return { browsers: [], killed: [] }
+  const now = Date.now()
+  const threshold = pressureScaledTimeout(PW_IDLE_THRESHOLD_MS)
+  const killed = []
+  const enriched = []
+  for (const b of browsers) {
+    const controllerAlive = await isPlaywrightControllerAlive(b.ppid)
+    const idleMs = controllerAlive ? 0 : (now - (_pwLastSeen.get(b.pid) || now))
+    enriched.push({ pid: b.pid, ppid: b.ppid, controllerAlive, idleMs })
+    if (controllerAlive) {
+      _pwLastSeen.set(b.pid, now)
+      continue
+    }
+    if (!_pwLastSeen.has(b.pid)) _pwLastSeen.set(b.pid, now)
+    const orphanMs = now - _pwLastSeen.get(b.pid)
+    if (orphanMs > threshold) {
+      try {
+        process.kill(b.pid, 'SIGKILL')
+        try { await execFileP('pkill', ['-9', '-P', String(b.pid)], { timeout: 2000 }) } catch {}
+        console.log(`[pw-reaper] killed pid=${b.pid} orphan=${Math.round(orphanMs / 1000)}s threshold=${Math.round(threshold / 1000)}s pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
+        killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s` })
+      } catch (e) {
+        console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
+      }
+      _pwLastSeen.delete(b.pid)
+    }
+  }
+  const livePids = new Set(browsers.map(b => b.pid))
+  for (const pid of [..._pwLastSeen.keys()]) {
+    if (!livePids.has(pid)) _pwLastSeen.delete(pid)
+  }
+  return { browsers: enriched, killed }
+}
+
+// ─── Combined reaper sweep with status broadcast ──────────────────
+let _reaperTimer = null
+let _sweepCount = 0
+const _recentKills = []  // last 10 kills across sweeps
+const MAX_RECENT_KILLS = 10
+
+async function reaperSweep() {
+  const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
+  const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
+  _sweepCount++
+
+  const allKills = [...(viteResult.killed || []), ...(pwResult.killed || [])]
+  _recentKills.push(...allKills)
+  while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
+
+  const now = Date.now()
+  const pressure = getMemoryPressure()
+
+  // Attribute processes to agents (in parallel for speed)
+  const viteAttrs = await Promise.all((viteResult.vites || []).map(async v => {
+    const worktree = await attributeViteByCwd(v.pid)
+    const agentMatch = await attributeToAgent(v.pid)
+    return { pid: v.pid, agent: agentMatch?.name || worktree || null, agentId: agentMatch?.id || null }
+  }))
+  const browserAttrs = await Promise.all((pwResult.browsers || []).map(async b => {
+    const agentMatch = await attributeToAgent(b.pid)
+    return { pid: b.pid, agent: agentMatch?.name || null, agentId: agentMatch?.id || null }
+  }))
+  const viteAgentMap = Object.fromEntries(viteAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
+  const browserAgentMap = Object.fromEntries(browserAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
+
+  const viteSnap = (viteResult.vites || []).map(v => ({
+    pid: v.pid,
+    ports: v.ports,
+    hasClient: _viteLastClient.has(v.pid) && (now - _viteLastClient.get(v.pid)) < 1000,
+    idleMs: _viteLastClient.has(v.pid) ? now - _viteLastClient.get(v.pid) : 0,
+    agent: viteAgentMap[v.pid]?.agent || null,
+    agentId: viteAgentMap[v.pid]?.agentId || null,
+  }))
+
+  sendMsg({
+    type: 'reaper-status',
+    data: {
+      pressure,
+      totalMem: os.totalmem(),
+      freeMem: os.freemem(),
+      vites: viteSnap,
+      browsers: (pwResult.browsers || []).map(b => ({
+        ...b,
+        agent: browserAgentMap[b.pid]?.agent || null,
+        agentId: browserAgentMap[b.pid]?.agentId || null,
+      })),
+      lastKills: _recentKills.slice(),
+      thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS },
+      scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS) },
+      sweepCount: _sweepCount,
+      lastSweep: now,
+    },
+  })
+}
+
+function startReapers() {
+  if (_reaperTimer) return
   setTimeout(() => {
-    reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message))
-    _viteReaperTimer = setInterval(
-      () => reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message)),
-      VITE_SWEEP_INTERVAL_MS,
-    )
-    _viteReaperTimer.unref?.()
+    reaperSweep()
+    _reaperTimer = setInterval(reaperSweep, VITE_SWEEP_INTERVAL_MS)
+    _reaperTimer.unref?.()
   }, 10_000)
+}
+
+// ─── Reaper RPC handlers ──────────────────────────────────────────
+async function rpcReaperKill({ pid }) {
+  if (!pid) throw new Error('missing pid')
+  try {
+    process.kill(pid, 'SIGKILL')
+    try { await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 }) } catch {}
+    _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill' })
+    while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
+    return { killed: true, pid }
+  } catch (e) {
+    return { killed: false, error: e.message }
+  }
+}
+
+async function rpcReaperSweep() {
+  await reaperSweep()
+  return { ok: true, sweepCount: _sweepCount }
 }
 
 const RPC_HANDLERS = {
@@ -1752,6 +1940,8 @@ const RPC_HANDLERS = {
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,
   'write-backing-file': rpcWriteBackingFile,
+  'reaper-kill': rpcReaperKill,
+  'reaper-sweep': rpcReaperSweep,
 }
 
 async function handleRpc(msg) {
@@ -2049,5 +2239,5 @@ console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-startViteReaper()
+startReapers()
 connect()

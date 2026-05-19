@@ -452,6 +452,7 @@ function broadcastEvent(type, data) {
 const _thinkingState = new Map()   // agentId → timestamp (ms)
 const _compactingState = new Map() // agentId → timestamp (ms)
 const _contextState = new Map()    // agentId → { percent, inputTokens }
+let _lastReaperStatus = null       // latest reaper snapshot from daemon
 
 function broadcastState() {
   if (!fleetStore) return
@@ -756,6 +757,34 @@ app.get('/api/auth/me', (req, res) => {
 
 // ---------- Fleet user prefs ----------
 // Per-user key-value store backed by fleet_prefs table. User is identified by fleet ID.
+
+// --- Reaper API ---
+
+app.get('/api/reaper/status', requireRead, (req, res) => {
+  res.json(_lastReaperStatus || { error: 'no data yet' })
+})
+
+app.post('/api/reaper/kill', requireRead, async (req, res) => {
+  const { pid } = req.body
+  if (!pid) return res.status(400).json({ error: 'missing pid' })
+  const machineId = LOCAL_MACHINE_ID
+  try {
+    const result = await sendRpc(machineId, 'reaper-kill', { pid })
+    res.json(result || { ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/reaper/sweep', requireRead, async (req, res) => {
+  const machineId = LOCAL_MACHINE_ID
+  try {
+    const result = await sendRpc(machineId, 'reaper-sweep', {})
+    res.json(result || { ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
 
 app.get('/api/fleet/prefs', requireRead, (req, res) => {
   const userId = req.query.user
@@ -2689,6 +2718,12 @@ function handleDaemonWsMessage(ws, msg) {
       _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
       broadcastEvent('agent-context', { agent: msg.agentId, percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })
     }
+    return
+  }
+
+  if (type === 'reaper-status') {
+    _lastReaperStatus = msg.data || msg
+    broadcastEvent('reaper-status', _lastReaperStatus)
     return
   }
 

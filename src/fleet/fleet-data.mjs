@@ -27,6 +27,7 @@ let _events = []          // chat + lifecycle (delegate, task_done) — capped a
 const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
+let _reaperStatus = null     // latest reaper-status from daemon
 let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
@@ -113,6 +114,7 @@ function resolveFilter(filter) {
 export { resolveFilter }
 
 // --- Read API ---
+export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
 export function getEvents() { return _events }
@@ -443,6 +445,9 @@ export function connect() {
           if (ids.has(ev._dbId)) ev.read = true
         }
         if (ids.size) notify('messages', null)
+      } else if (eventType === 'reaper-status') {
+        _reaperStatus = data
+        notify('reaper', data)
       } else if (eventType === 'agent-thinking') {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {

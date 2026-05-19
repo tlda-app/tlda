@@ -310,6 +310,16 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-reaper': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-reaper',
+      sequence: [],
+    }),
+  },
   'shadow-handle': {
     props: {
       w: T.number,

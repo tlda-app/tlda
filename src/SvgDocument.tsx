@@ -32,6 +32,7 @@ import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { FLEET_HUD_ANCHOR_ID } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
+import { ReaperShapeUtil } from './shapes/ReaperShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
@@ -47,6 +48,7 @@ import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { ClusterTool } from './tools/ClusterTool'
+import { ReaperTool } from './tools/ReaperTool'
 import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
@@ -907,7 +909,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -915,7 +917,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, ReaperTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -1072,6 +1074,23 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         </svg>) as any,
         label: 'Cluster Monitor',
         onSelect: () => _editor.setCurrentTool('cluster'),
+      }
+      // Register reaper tool — scythe/process icon
+      tools['fleet-reaper'] = {
+        id: 'fleet-reaper',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          {/* Skull outline */}
+          <circle cx="9" cy="8" r="5.5" />
+          {/* Eyes */}
+          <circle cx="7" cy="7" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="11" cy="7" r="1.2" fill="currentColor" stroke="none" />
+          {/* Teeth */}
+          <line x1="7.5" y1="11" x2="7.5" y2="13" strokeWidth="1" />
+          <line x1="9" y1="11" x2="9" y2="13.5" strokeWidth="1" />
+          <line x1="10.5" y1="11" x2="10.5" y2="13" strokeWidth="1" />
+        </svg>) as any,
+        label: 'Reaper',
+        onSelect: () => _editor.setCurrentTool('fleet-reaper'),
       }
       // Register playback-frame tool (kbd 'p')
       tools['playback-frame'] = {
