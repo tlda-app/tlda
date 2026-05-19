@@ -528,11 +528,12 @@ export async function processRibbonHighlight(
 }
 
 /** Returns true if a highlight shape is in the ribbon zone (left margin).
- * Uses minX rather than maxX: highlights have ~20-unit width from stroke thickness,
- * so a stroke drawn at x=0 has maxX≈12 but minX≈-8. */
+ * Checks the stroke's horizontal center against the line center (x=3)
+ * with a 6px tolerance — forgiving of wobbly strokes. */
 export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   const bounds = editor.getShapePageBounds(shapeId)
   if (!bounds) return false
-  return bounds.minX < 5
+  const centerX = (bounds.minX + bounds.maxX) / 2
+  return centerX < MARGIN_X + BAR_WIDTH + 6
 }
 
