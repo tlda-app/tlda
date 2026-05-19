@@ -912,6 +912,59 @@ function backfillAllPriorSessions(agentId, fleetId) {
 // helper does more, but the daemon stays standalone).
 const SOURCE_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.qmd', '.html', '.css', '.js', '.svg', '.png', '.jpg', '.jpeg', '.pdf', '.json', '.yml', '.yaml'])
 const JUNK_PATTERNS = [/^\.#/, /\.swp$/, /~$/, /\.tmp$/, /\.lock$/]
+
+// Bootstrap input scanner — regex-scan .tex files for \input-like commands
+// to discover dependencies before the first successful build produces a .fls.
+const DEFAULT_INPUT_COMMANDS = ['input', 'include', 'inputscratch', 'addbibresource', 'bibliography', 'usepackage']
+
+function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
+  const commands = [...DEFAULT_INPUT_COMMANDS, ...extraCommands]
+  const pattern = new RegExp(`\\\\(?:${commands.join('|')})\\{([^}]+)\\}`, 'g')
+  const seen = new Set()
+  const result = new Set()
+
+  function scan(relPath) {
+    if (seen.has(relPath)) return
+    seen.add(relPath)
+    const full = path.join(sourceDir, relPath)
+    if (!fs.existsSync(full)) return
+    let stat
+    try { stat = fs.statSync(full) } catch { return }
+    if (!stat.isFile()) return
+    result.add(relPath)
+
+    const ext = path.extname(relPath).toLowerCase()
+    if (ext !== '.tex' && ext !== '.sty' && ext !== '.cls') return
+
+    let content
+    try { content = fs.readFileSync(full, 'utf8') } catch { return }
+    for (const m of content.matchAll(pattern)) {
+      const raw = m[1].trim()
+      if (!raw) continue
+      const cmd = m[0].split('{')[0]
+      // \usepackage and \bibliography accept comma-separated lists
+      const refs = (cmd === '\\usepackage' || cmd === '\\bibliography')
+        ? raw.split(',').map(s => s.trim()).filter(Boolean)
+        : [raw]
+      for (let ref of refs) {
+        if (cmd === '\\usepackage') {
+          if (!ref.endsWith('.sty')) ref += '.sty'
+        } else if (cmd === '\\bibliography' || cmd === '\\addbibresource') {
+          if (!ref.endsWith('.bib')) ref += '.bib'
+        } else if (!path.extname(ref)) {
+          ref += '.tex'
+        }
+        const dir = path.dirname(relPath)
+        const resolved = path.normalize(path.join(dir, ref))
+        if (resolved.startsWith('..')) continue
+        scan(resolved)
+      }
+    }
+  }
+
+  scan(mainFile)
+  return result
+}
 function isSourceFile(name) {
   if (JUNK_PATTERNS.some(r => r.test(name))) return false
   if (name.includes('node_modules') || name.includes('.git/')) return false
@@ -951,8 +1004,9 @@ function syncSourceWatchers(projectList, activeViewers) {
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
 
+    const hasFlsWatchList = p.watchFiles?.length > 0
     const watchSet = new Set(
-      p.watchFiles?.length ? p.watchFiles : p.mainFile ? [p.mainFile] : []
+      hasFlsWatchList ? p.watchFiles : p.mainFile ? [p.mainFile] : []
     )
 
     if (sourceWatchers.has(p.name)) {
@@ -963,7 +1017,7 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, watchSeen: new Map() }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map() }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
@@ -991,8 +1045,8 @@ function syncSourceWatchers(projectList, activeViewers) {
     try {
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files)`)
-      pushWatchedFiles(p.name, p.sourceDir, watchSet)
+      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
+      pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands)
     } catch (e) {
       console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
     }
@@ -1028,34 +1082,29 @@ function syncFsWatchers() {
  * catching any edits that occurred while the daemon was disconnected.
  */
 /**
- * Push only the watched files (from .fls) to the server on connect.
- * If watchSet is empty (no prior build), push just .tex and .bib in the
- * top-level directory to bootstrap the first build.
+ * Push source files to the server on connect.
+ * When mainFile is set (no .fls yet), scan it recursively for \input-like
+ * commands and push all discovered dependencies — the bootstrap path.
+ * Otherwise push the .fls-derived watchSet.
  */
-function pushWatchedFiles(projectName, sourceDir, watchSet) {
+function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands) {
   const files = []
-  if (watchSet.size > 0) {
+  if (mainFile) {
+    // Bootstrap mode: no .fls yet, scan main .tex for \input-like commands
+    const deps = scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
+    console.log(`[daemon] bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
+    for (const rel of deps) {
+      const full = path.join(sourceDir, rel)
+      try { files.push({ path: rel, ...readFileForUpload(full) }) }
+      catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+    }
+  } else if (watchSet.size > 0) {
     for (const rel of watchSet) {
       const full = path.join(sourceDir, rel)
       if (!fs.existsSync(full)) continue
       try { files.push({ path: rel, ...readFileForUpload(full) }) }
       catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
     }
-  } else {
-    // Bootstrap: top-level .tex and .bib only
-    try {
-      for (const entry of fs.readdirSync(sourceDir)) {
-        const ext = path.extname(entry).toLowerCase()
-        if (ext !== '.tex' && ext !== '.bib') continue
-        const full = path.join(sourceDir, entry)
-        try {
-          const st = fs.statSync(full)
-          if (!st.isFile()) continue
-        } catch { continue }
-        try { files.push({ path: entry, ...readFileForUpload(full) }) }
-        catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
-      }
-    } catch {}
   }
   if (files.length === 0) return
   console.log(`[daemon] connect push: ${files.length} files for ${projectName}`)
@@ -1086,6 +1135,25 @@ function flushSourceChanges(projectName) {
     try { files.push({ path: rel, ...readFileForUpload(full) }) }
     catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
   }
+
+  // When a .tex file changes, rescan for new \input deps not yet on the server.
+  // This catches newly-added \input{} or \inputscratch{} lines before the build
+  // fails with "file not found".
+  const changedTexFiles = filePaths.filter(f => f.endsWith('.tex'))
+  if (changedTexFiles.length > 0 && state.mainFile) {
+    const alreadyPushed = new Set(filePaths)
+    const deps = scanTexInputs(state.sourceDir, state.mainFile, state.extraInputCommands)
+    for (const rel of deps) {
+      if (alreadyPushed.has(rel) || state.watchSet.has(rel)) continue
+      const full = path.join(state.sourceDir, rel)
+      if (!fs.existsSync(full)) continue
+      try {
+        files.push({ path: rel, ...readFileForUpload(full) })
+        console.log(`[daemon] rescan discovered new dep: ${rel}`)
+      } catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+    }
+  }
+
   if (files.length === 0 && deleted.length === 0) return
 
   sendMsg({

@@ -2513,6 +2513,7 @@ function projectsForDaemon() {
         format: p.format || 'svg',
         watchFiles,  // null = no .fls yet, watch main file only
         mainFile: p.mainFile || null,
+        extraInputCommands: p.extraInputCommands || null,
       }
     })
 }
