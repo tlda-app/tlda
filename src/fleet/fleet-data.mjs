@@ -428,6 +428,8 @@ export function connect() {
           if (data.text !== undefined) ev.text = data.text
           if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
           if (data.metadata_patch) {
+            if (!ev.metadata) ev.metadata = {}
+            Object.assign(ev.metadata, data.metadata_patch)
             if (data.metadata_patch.approvedAt) {
               ev._planResponse = 'approved'
               ev._promptResponse = 'approved'

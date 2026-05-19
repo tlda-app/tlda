@@ -2214,6 +2214,17 @@ async function handleFleetWsMessage(ws, msg) {
         result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'no', enter: true })
       }
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
+      // Persist response on the plan_approval event
+      const pending = pendingPlanApprovals.get(agent.id)
+      if (pending?.eventId) {
+        const now = new Date().toISOString()
+        const patch = response === 'approve' ? { approvedAt: now } : { rejectedAt: now }
+        try {
+          fleetStore.updateEventMetadata(pending.eventId, patch)
+          broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
+        } catch {}
+        pendingPlanApprovals.delete(agent.id)
+      }
       broadcastState()
       reply(result)
     } catch (e) { error(e.message) }
