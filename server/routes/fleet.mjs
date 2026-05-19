@@ -639,6 +639,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text, enter: true })
     if (r1 !== null) {
       fleetStore?.updateAgentMeta(agent.id, { permission_mode: null, inPlanMode: false })
+      // Persist response on the plan_approval event so the UI survives re-renders
       const now = new Date().toISOString()
       try {
         const planEvent = fleetStore?.db.prepare(
@@ -655,6 +656,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
+  // --- POST /api/prompt-respond ---
+  // Persists approval/rejection state on any event (permission cards, etc.)
+  // body: { eventId: number, response: 'approved' | 'rejected' }
   router.post('/api/prompt-respond', (req, res) => {
     const { eventId, response } = req.body || {}
     if (!eventId || (response !== 'approved' && response !== 'rejected')) {

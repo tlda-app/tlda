@@ -1603,6 +1603,8 @@ function getMemoryPressure() {
   return 1 - free / total  // 0 = empty, 1 = full
 }
 
+// Scale an idle timeout by memory pressure. At ≥90% usage the timeout
+// drops to 1/10 of the base; below 50% usage it stays at the full base.
 function pressureScaledTimeout(baseMs) {
   const p = getMemoryPressure()
   if (p < 0.5) return baseMs
@@ -1813,6 +1815,7 @@ async function reapPlaywright() {
       _pwLastSeen.set(b.pid, now)
       continue
     }
+    orphanCount++
     if (!_pwLastSeen.has(b.pid)) _pwLastSeen.set(b.pid, now)
     const orphanMs = now - _pwLastSeen.get(b.pid)
     if (orphanMs > threshold) {
@@ -1825,6 +1828,8 @@ async function reapPlaywright() {
         console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
       }
       _pwLastSeen.delete(b.pid)
+    } else {
+      console.log(`[pw-reaper] orphan pid=${b.pid} age=${Math.round(orphanMs / 1000)}s waiting (threshold=${Math.round(threshold / 1000)}s)`)
     }
   }
   const livePids = new Set(browsers.map(b => b.pid))

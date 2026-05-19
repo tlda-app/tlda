@@ -76,12 +76,7 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      userId: T.string,
-      displayName: T.string,
-      startLine: T.number,
-      endLine: T.number,
-      status: T.string,
-      userIndex: T.number,
+      segments: T.string,
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.understanding-line',

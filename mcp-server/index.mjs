@@ -3027,28 +3027,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_understanding') {
-    const { doc, startLine, endLine, status, userId, displayName } = args;
+    const { doc, startLine, endLine, status } = args;
     if (!doc || startLine == null || endLine == null || !status) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
     }
     try {
-      const uid = userId || process.env.FLEET_ID || 'unknown';
-      const uname = displayName || process.env.FLEET_NAME || uid;
-      const uidSafe = uid.replace(/[^a-zA-Z0-9]/g, '');
-
-      // If status is 'unchecked', delete existing understanding-line shapes for this range
-      if (status === 'unchecked') {
-        const allShapes = await fetchShapes(doc, 'understanding-line');
-        const toDelete = allShapes.filter(s =>
-          s.props?.userId === uid &&
-          s.props?.startLine >= startLine &&
-          s.props?.endLine <= endLine
-        );
-        for (const s of toDelete) {
-          await deleteShapeRest(doc, s.id);
-        }
-        return { content: [{ type: 'text', text: `Understanding: cleared lines ${startLine}–${endLine} for ${uname}` }] };
-      }
+      const RIBBON_ID = 'shape:understanding-ribbon';
 
       // Look up canvas positions for start and end lines
       const startPos = lookupLine(doc, startLine);
@@ -3059,58 +3043,56 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
       const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
 
-      // Determine user index (how many other users already have understanding lines)
-      let userIndex = 0;
+      // Find or create the ribbon shape
+      let ribbon;
       try {
-        const existing = await fetchShapes(doc, 'understanding-line');
-        const otherUsers = new Set(existing.filter(s => s.props?.userId !== uid).map(s => s.props?.userId));
-        userIndex = otherUsers.size;
+        const shapes = await fetchShapes(doc, 'understanding-line');
+        ribbon = shapes.find(s => s.id === RIBBON_ID);
       } catch {}
 
-      // Position in left margin, stacked per user
-      const MARGIN_X = -12;
-      const USER_GAP = 4;
-      const BAR_WIDTH = 3;
-      const x = MARGIN_X - (userIndex * USER_GAP);
-      const y = Math.min(startCanvas.y, endCanvas.y) - 5;
-      const h = Math.max(20, Math.abs(endCanvas.y - startCanvas.y) + 10);
-
-      // Deterministic shape ID for upsert
-      const shapeId = `shape:umap-${uidSafe}-${startLine}-${endLine}`;
-      const shapeIndex = await getNextShapeIndex(doc);
-
-      const shape = {
-        id: shapeId,
-        type: 'understanding-line',
-        typeName: 'shape',
-        x, y,
-        rotation: 0,
-        isLocked: true,
-        opacity: 1,
-        index: shapeIndex,
-        props: {
-          w: BAR_WIDTH,
-          h,
-          userId: uid,
-          displayName: uname,
-          startLine,
-          endLine,
-          status,
-          userIndex,
-        },
-        meta: { createdAt: Date.now() },
-        parentId: 'page:page',
-      };
-
-      // Try update first, fall back to create
-      try {
-        await updateShapeRest(doc, shapeId, { props: shape.props, y: shape.y });
-      } catch {
-        await createShapeRest(doc, shape);
+      if (!ribbon) {
+        // Create the ribbon shape — the viewer will resize it on load
+        const shapeIndex = await getNextShapeIndex(doc);
+        ribbon = {
+          id: RIBBON_ID,
+          type: 'understanding-line',
+          typeName: 'shape',
+          x: 0,
+          y: Math.min(startCanvas.y, endCanvas.y),
+          rotation: 0,
+          isLocked: true,
+          opacity: 1,
+          index: shapeIndex,
+          props: { w: 6, h: Math.abs(endCanvas.y - startCanvas.y) + 100, segments: '[]' },
+          meta: { createdAt: Date.now() },
+          parentId: 'page:page',
+        };
+        await createShapeRest(doc, ribbon);
       }
 
+      const ribbonY = ribbon.y;
+      const segments = JSON.parse(ribbon.props?.segments || '[]');
+      const y1 = Math.min(startCanvas.y, endCanvas.y) - ribbonY;
+      const y2 = Math.max(startCanvas.y, endCanvas.y) - ribbonY;
+      const newSeg = { startLine, endLine, status, y1, y2 };
+
+      // Merge: remove overlapping portions, insert new segment
+      const merged = [];
+      for (const seg of segments) {
+        if (seg.y2 <= newSeg.y1 || seg.y1 >= newSeg.y2) {
+          merged.push(seg);
+          continue;
+        }
+        if (seg.y1 < newSeg.y1) merged.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine });
+        if (seg.y2 > newSeg.y2) merged.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine });
+      }
+      if (status !== 'unchecked') merged.push(newSeg);
+      merged.sort((a, b) => a.y1 - b.y1);
+
+      await updateShapeRest(doc, RIBBON_ID, { props: { ...ribbon.props, segments: JSON.stringify(merged) } });
+
       const lineCount = endLine - startLine + 1;
-      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}" for ${uname} (${shapeId})` }] };
+      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3120,25 +3102,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { doc } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
+      const RIBBON_ID = 'shape:understanding-ribbon';
       const shapes = await fetchShapes(doc, 'understanding-line');
-      if (shapes.length === 0) {
+      const ribbon = shapes.find(s => s.id === RIBBON_ID);
+      if (!ribbon) {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
-      // Group by user
-      const byUser = {};
-      for (const s of shapes) {
-        const uid = s.props?.userId || 'unknown';
-        if (!byUser[uid]) byUser[uid] = { displayName: s.props?.displayName || uid, ranges: [] };
-        byUser[uid].ranges.push({ start: s.props?.startLine, end: s.props?.endLine, status: s.props?.status });
+      const segments = JSON.parse(ribbon.props?.segments || '[]');
+      if (segments.length === 0) {
+        return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
-      let summary = '';
-      for (const [uid, data] of Object.entries(byUser)) {
-        const approved = data.ranges.filter(r => r.status === 'approved').length;
-        const understood = data.ranges.filter(r => r.status === 'understood').length;
-        summary += `${data.displayName}: ${approved} approved range(s), ${understood} understood-not-satisfied range(s)\n`;
-        for (const r of data.ranges.sort((a, b) => a.start - b.start)) {
-          summary += `  lines ${r.start}–${r.end}: ${r.status}\n`;
-        }
+      let summary = `${segments.length} segment(s):\n`;
+      for (const seg of segments.sort((a, b) => a.startLine - b.startLine)) {
+        summary += `  lines ${seg.startLine}–${seg.endLine}: ${seg.status}\n`;
       }
       return { content: [{ type: 'text', text: summary }] };
     } catch (e) {
