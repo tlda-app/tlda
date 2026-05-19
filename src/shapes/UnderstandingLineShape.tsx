@@ -15,6 +15,7 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
+  Rectangle2d,
   T,
   useEditor,
   useValue,
@@ -92,7 +93,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
   getDefaultProps() {
     return {
-      w: 2, h: 20,
+      w: 6, h: 20,
       userId: '', displayName: '',
       startLine: 0, endLine: 0,
       status: 'unchecked',
@@ -108,6 +109,11 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
   override hideResizeHandles = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
+
+  override getGeometry(shape: any) {
+    const w = Math.max(shape.props.w, 6)
+    return new Rectangle2d({ width: w, height: shape.props.h, isFilled: true })
+  }
 
   component(shape: any) {
     const editor = useEditor()
@@ -141,7 +147,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             height: '100%',
             backgroundColor: color,
             borderRadius: 1,
-            opacity: status === 'unchecked' ? 0 : (isOwn ? 0.6 : 0.35),
+            opacity: 0.1,
             transition: 'opacity 0.2s',
           }}
         />

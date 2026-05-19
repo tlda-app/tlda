@@ -28,7 +28,7 @@ import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
 
 const MARGIN_X = 0
-const BAR_WIDTH = 2
+const BAR_WIDTH = 6
 
 // Cache: docName → sorted [{line, canvasY}] for reverse lookup.
 // Cleared via clearLineYIndexCache() after every document rebuild.

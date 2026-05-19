@@ -39,6 +39,11 @@ export function RibbonLane() {
     }
   }, [editor])
 
+  const isDrawingTool = useValue('lane-drawing', () => {
+    const tool = editor.getCurrentToolId()
+    return tool === 'highlight' || tool === 'draw' || tool === 'eraser'
+  }, [editor])
+
   const activeHighlightColor = useValue('lane-hl-color', () => {
     const tool = editor.getCurrentToolId()
     if (tool !== 'highlight') return null
@@ -88,21 +93,23 @@ export function RibbonLane() {
           zIndex: 0,
         }}
       />
-      {/* Wider invisible hit area for hover detection */}
-      <div
-        style={{
-          position: 'fixed',
-          left: style.left,
-          top: style.top,
-          width: HIT_WIDTH,
-          height: style.height,
-          pointerEvents: 'auto',
-          zIndex: 0,
-          cursor: 'default',
-        }}
-        onMouseMove={onMouseMove}
-        onMouseLeave={onMouseLeave}
-      />
+      {/* Wider invisible hit area for hover detection — disabled while drawing */}
+      {!isDrawingTool && (
+        <div
+          style={{
+            position: 'fixed',
+            left: style.left,
+            top: style.top,
+            width: HIT_WIDTH,
+            height: style.height,
+            pointerEvents: 'auto',
+            zIndex: 0,
+            cursor: 'default',
+          }}
+          onMouseMove={onMouseMove}
+          onMouseLeave={onMouseLeave}
+        />
+      )}
       {showTooltip && (
         <div
           style={{
