@@ -168,8 +168,9 @@ export function renderChatLine(m, ctx) {
     const isPermission = (m._reason || '').includes('permission')
     const promptResponse = m._promptResponse || ''
     const responseCls = promptResponse === 'approved' ? ' lc-responded lc-approved' : promptResponse === 'rejected' ? ' lc-responded lc-rejected' : ''
+    const evId = esc(String(m._dbId || ''))
     const actionBtns = isPermission
-      ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" title="Deny (n)">\u2717</button></span>`
+      ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" data-event-id="${evId}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" data-event-id="${evId}" title="Deny (n)">\u2717</button></span>`
       : ''
     const cardCls = isPermission ? 'lc-permission-card' : 'lc-terminal-card'
     return `<div class="chat-line" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span>

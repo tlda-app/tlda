@@ -95,7 +95,6 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
         white: '#d4d4d4', brightWhite: '#ffffff',
       },
       scrollback: 100,
-      convertEol: true,
       cursorBlink: false,
       disableStdin: true,
     })
@@ -133,10 +132,12 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
       try {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'output' && msg.data && termRef.current) {
-          // Peek mode: reset each time so we always show the current screen bottom.
-          // Pinned mode: don't reset so user can scroll through accumulated output.
-          if (!pinnedRef.current) termRef.current.reset()
-          termRef.current.write(msg.data)
+          if (msg.encoding === 'base64') {
+            const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
+            termRef.current.write(bytes)
+          } else {
+            termRef.current.write(msg.data)
+          }
         } else if (msg.type === 'error') {
           setStatus('error')
         }
@@ -2023,8 +2024,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcApproveBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
-          const card = lcApproveBtn.closest('.lifecycle-card') as HTMLElement
-          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          const eventId = lcApproveBtn.dataset.eventId || lcApproveBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
             fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) }).catch(() => {})
           }
@@ -2036,8 +2036,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcDenyBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
-          const card = lcDenyBtn.closest('.lifecycle-card') as HTMLElement
-          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          const eventId = lcDenyBtn.dataset.eventId || lcDenyBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
             fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) }).catch(() => {})
           }

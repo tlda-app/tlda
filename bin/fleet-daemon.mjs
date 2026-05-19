@@ -452,9 +452,14 @@ function detectPrompt(paneText) {
 
 async function autoAcceptPrompt(tmuxSession, reason) {
   try {
-    await tmux('send-keys', '-t', tmuxSession, '1')
-    await new Promise(r => setTimeout(r, 100))
-    await tmux('send-keys', '-t', tmuxSession, 'Enter')
+    const ptyState = terminalWatchPtys.get(tmuxSession)
+    if (ptyState?.alive) {
+      ptyState.pty.write('1\r')
+    } else {
+      await tmux('send-keys', '-t', tmuxSession, '1')
+      await new Promise(r => setTimeout(r, 100))
+      await tmux('send-keys', '-t', tmuxSession, 'Enter')
+    }
     console.log(`[daemon] auto-accepted prompt (${reason}) in ${tmuxSession}`)
     return true
   } catch (e) {
@@ -471,6 +476,8 @@ function startAutoAcceptSweep() {
   setInterval(async () => {
     for (const agent of agents) {
       if (!agent.tmux_session) continue
+      // Skip agents with active PTY watchers — they get real-time detection
+      if (terminalWatchPtys.get(agent.tmux_session)?.alive) continue
       try {
         const { stdout } = await execFileP('tmux',
           [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
@@ -1263,9 +1270,15 @@ async function rpcSendKey({ tmux_session, key }) {
 
 async function rpcSendText({ tmux_session, text, enter }) {
   checkSession(tmux_session)
+  const ptyState = terminalWatchPtys.get(tmux_session)
+  if (ptyState?.alive) {
+    if (text) ptyState.pty.write(text)
+    if (enter !== false) ptyState.pty.write('\r')
+    return { ok: true, via: 'pty' }
+  }
   if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
   if (enter !== false) await tmux('send-keys', '-t', tmux_session, 'Enter')
-  return { ok: true }
+  return { ok: true, via: 'tmux' }
 }
 
 async function rpcCapturePane({ tmux_session, lines, agent_id }) {
@@ -1376,6 +1389,36 @@ async function getPty() {
   return ptyModule
 }
 
+function detectPromptFromPty(agentId, tmuxSession, state) {
+  const result = detectPrompt(state.recentOutput)
+  if (result.type === 'auto-accept') {
+    const lastAccept = promptCooldowns.get(tmuxSession)
+    if (lastAccept && Date.now() - lastAccept < 10_000) return
+    promptCooldowns.set(tmuxSession, Date.now())
+    state.lastPromptSurfaced = ''
+    if (state.alive) {
+      state.pty.write('1\r')
+      console.log(`[daemon] pty auto-accepted prompt (${result.reason}) in ${tmuxSession}`)
+      sendMsg({ type: 'prompt-auto-accepted', agent_id: agentId, reason: result.reason, ts: new Date().toISOString() })
+    }
+  } else if (result.type === 'surface') {
+    if (state.lastPromptSurfaced === result.reason) return
+    state.lastPromptSurfaced = result.reason
+    console.log(`[daemon] pty surfacing prompt for ${agentId}: ${result.reason}`)
+    sendMsg({ type: 'terminal_attention', agent_id: agentId, tmux_session: tmuxSession, text: result.reason, reason: result.reason })
+  } else {
+    state.lastPromptSurfaced = ''
+  }
+  // Plan mode detection
+  if (state.recentOutput.includes("Here is Claude's plan") && state.recentOutput.includes('Would you like to')) {
+    if (!planModeHashes.has(agentId)) {
+      scheduleCheckForPlanModePrompt(agentId)
+    }
+  } else {
+    planModeHashes.delete(agentId)
+  }
+}
+
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
   if (terminalWatchPtys.has(tmux_session)) return { ok: true, already: true }
@@ -1388,7 +1431,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     env: { ...process.env, TERM: 'xterm-256color' },
   })
 
-  const state = { pty, alive: true }
+  const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '' }
   terminalWatchPtys.set(tmux_session, state)
 
   pty.onData((data) => {
@@ -1399,6 +1442,10 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
       tmux_session,
       data: Buffer.from(data).toString('base64'),
     })
+    // Rolling buffer for prompt detection — keep last ~4KB of stripped text
+    state.recentOutput += stripAnsi(data)
+    if (state.recentOutput.length > 8000) state.recentOutput = state.recentOutput.slice(-4000)
+    detectPromptFromPty(agent_id, tmux_session, state)
   })
 
   pty.onExit(({ exitCode }) => {
