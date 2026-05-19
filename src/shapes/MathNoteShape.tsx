@@ -88,11 +88,17 @@ function renderMarkdownMath(text: string, showErrors = false): string {
     return `MATHPLACEHOLDERZZZ${idx}ZZZ`
   }
 
-  // Replace display math first ($$...$$), then inline ($...$). Surround
-  // display tokens with blank lines so markdown-it treats them as their own
-  // paragraph rather than wrapping them inside an existing block.
-  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content) => {
-    return `\n\n${makeToken(renderMath(content, true))}\n\n`
+  // Replace display math first ($$...$$), then inline ($...$).
+  // Standalone display math (on its own line) gets blank-line padding so
+  // markdown-it treats it as its own paragraph. Inline display math (inside
+  // a bullet or sentence) stays inline to avoid breaking list structure.
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content, offset) => {
+    const token = makeToken(renderMath(content, true))
+    const before = text.slice(Math.max(0, offset - 1), offset)
+    const afterEnd = offset + _m.length
+    const after = text.slice(afterEnd, afterEnd + 1)
+    const standalone = (offset === 0 || before === '\n') && (afterEnd >= text.length || after === '\n')
+    return standalone ? `\n\n${token}\n\n` : token
   })
   processed = processed.replace(/\$([^$\n]+)\$/g, (_m, content) => {
     return makeToken(renderMath(content, false))

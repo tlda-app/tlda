@@ -291,11 +291,11 @@ export function renderChatLine(m, ctx) {
       const b = m._bullets.find(x => x.id === id)
       if (!b) return _match
       const btext = (b.text || '').replace(/^\s*[-*]\s+/, '').trim()
-      const textE = esc(btext)
+      const bodyHtml = renderMarkdown(esc(btext))
       const tupleStr = JSON.stringify(b.tuplePath || [])
       const shapeId = esc(b.noteShapeId || '')
       const tupleE = esc(tupleStr)
-      return `<span class="bullet-card" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}"><span class="bullet-card-header"><span class="bullet-card-source">•<span class="bullet-card-depth">${tupleE}</span></span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}">→</span></span><span class="bullet-card-body">• ${textE}</span></span>`
+      return `<span class="bullet-card" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}"><span class="bullet-card-header"><span class="bullet-card-source">•<span class="bullet-card-depth">${tupleE}</span></span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}">→</span></span><span class="bullet-card-body">${bodyHtml}</span></span>`
     })
   }
   if (taskNotification) {
