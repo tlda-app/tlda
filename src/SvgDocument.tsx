@@ -29,6 +29,7 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
+import { FLEET_HUD_ANCHOR_ID } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
@@ -1410,11 +1411,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                 editor.setCamera(session.camera)
               }
               // Recompute HUD panOffset ONLY if no saved position exists.
-              // With a saved panOffset (from a previous session), restoring from
-              // localStorage is correct — don't nuke it. Without one (first visit),
-              // we need to recompute after camera restoration so pageToScreen()
-              // uses the correct camera (commit 4031e60).
-              if (localStorage.getItem('fleet-hud-panOffset') === null) {
+              // With a saved panOffset (anchor shape from a previous session),
+              // don't nuke it. Without one (first visit), recompute after camera
+              // restoration so pageToScreen() uses the correct camera.
+              if (!editor.getShape(FLEET_HUD_ANCHOR_ID as any)) {
                 requestAnimationFrame(() => {
                   requestAnimationFrame(() => {
                     window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
