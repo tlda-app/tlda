@@ -287,7 +287,7 @@ export function renderChatLine(m, ctx) {
   let text = m._raw ? esc(processedText) : linkifyCodeUrls(renderMarkdown(esc(processedText)))
   // Replace «bullet:ID» tokens with card HTML using metadata
   if (m._bullets?.length) {
-    text = text.replace(/«bullet:(\w+)»/g, (_match, id) => {
+    text = text.replace(/«bullet:([\w-]+)»/g, (_match, id) => {
       const b = m._bullets.find(x => x.id === id)
       if (!b) return _match
       const btext = (b.text || '').replace(/^\s*[-*]\s+/, '').trim()

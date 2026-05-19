@@ -24,10 +24,7 @@ export function addBulletContext(ctx: BulletContext) {
 }
 
 export function genBulletId(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let id = ''
-  for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)]
-  return id
+  return crypto.randomUUID()
 }
 
 export function removeBulletContext(noteShapeId: string, bulletIndex: number) {
