@@ -1022,7 +1022,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
         const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
         const planBodyHtml = renderCtx.renderMarkdown(esc(m.text || ''))
-        const html = `<div class="plan-card" data-agent-id="${esc(agentId)}">` +
+        const planResponseCls = m._planResponse === 'approved' ? ' plan-card-approved' : m._planResponse === 'rejected' ? ' plan-card-rejected' : ''
+        const html = `<div class="plan-card${planResponseCls}" data-agent-id="${esc(agentId)}">` +
           `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
           `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
           `<div class="plan-card-body">${planBodyHtml}</div>` +
@@ -1064,17 +1065,37 @@ function FleetChatInner({ shape }: { shape: any }) {
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
       if (typePrefix === 'bullet') {
-        const lastColon = display.lastIndexOf(':')
-        const shapeId = lastColon > 0 ? display.slice(0, lastColon) : ''
-        const bulletIdx = lastColon > 0 ? parseInt(display.slice(lastColon + 1), 10) : -1
-        let bulletText = display
+        // New format: «bullet:shapeId:[tuple]|snapshot text»
+        // Legacy format: «bullet:shapeId:flatIndex»
+        let shapeId = ''
+        let tuplePath = ''
+        let snapshotText = ''
+        let bulletIdx = -1
+        const pipeIdx = display.indexOf('|')
+        if (pipeIdx > 0 && display.includes('[')) {
+          // New format with tuple + snapshot
+          const locPart = display.slice(0, pipeIdx)
+          snapshotText = display.slice(pipeIdx + 1)
+          const bracketIdx = locPart.indexOf(':[')
+          if (bracketIdx > 0) {
+            shapeId = locPart.slice(0, bracketIdx)
+            tuplePath = locPart.slice(bracketIdx + 1)
+          }
+        } else {
+          // Legacy flat index format
+          const lastColon = display.lastIndexOf(':')
+          shapeId = lastColon > 0 ? display.slice(0, lastColon) : ''
+          bulletIdx = lastColon > 0 ? parseInt(display.slice(lastColon + 1), 10) : -1
+        }
+        let bulletText = snapshotText || display
         let accentColor = '#7c3aed'
         let noteName = ''
         let authorId = ''
-        if (shapeId && bulletIdx >= 0) {
+        if (shapeId) {
           const mainEditor = (window as any).__tldraw_editor__ || editor
           const noteShape = (editor.getShape(shapeId as any) || mainEditor.getShape(shapeId as any)) as any
-          if (noteShape?.props?.text) {
+          // For legacy tokens without snapshot text, resolve from shape
+          if (!snapshotText && noteShape?.props?.text && bulletIdx >= 0) {
             const raw = noteShape.props.text as string
             const bullets = raw.split('\n').filter((l: string) => /^\s*[-*]\s/.test(l))
             if (bullets[bulletIdx]) {
@@ -1098,10 +1119,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             accentColor = DOT_COLORS[noteShape.props.color] || accentColor
           }
         }
+        // Show tuple path as subtle depth indicator
+        const depthLabel = tuplePath || (bulletIdx >= 0 ? String(bulletIdx) : '')
         const textEsc = bulletText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const nameEsc = noteName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         const authorEsc = authorId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        return `<div class="bullet-card" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}" style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}</span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}">→</span></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
+        const navData = tuplePath ? `data-bullet-tuple="${tuplePath.replace(/"/g, '&quot;')}"` : `data-bullet-idx="${bulletIdx}"`
+        return `<div class="bullet-card" data-shape-id="${shapeId}" ${navData} style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}<span class="bullet-card-depth">${depthLabel}</span></span><span class="bullet-card-go" data-shape-id="${shapeId}" ${navData}>→</span></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
       }
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
@@ -2006,14 +2030,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = approveBtn.dataset.agentId
         if (agentId) {
-          const card = approveBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'approve' }),
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .then(() => { if (card) card.classList.add('plan-card-approved') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
         }
         return
@@ -2023,14 +2045,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = rejectBtn.dataset.agentId
         if (agentId) {
-          const card = rejectBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'reject' }),
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .then(() => { if (card) card.classList.add('plan-card-rejected') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
         }
         return
@@ -2047,6 +2067,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcApproveBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
+          const card = lcApproveBtn.closest('.lifecycle-card') as HTMLElement
+          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          if (eventId) {
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) }).catch(() => {})
+          }
           return
         }
       }
@@ -2055,6 +2080,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcDenyBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
+          const card = lcDenyBtn.closest('.lifecycle-card') as HTMLElement
+          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          if (eventId) {
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) }).catch(() => {})
+          }
           return
         }
       }
@@ -2063,6 +2093,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (bulletGoBtn) {
         e.stopPropagation()
         const sid = bulletGoBtn.dataset.shapeId
+        const tupleStr = bulletGoBtn.dataset.bulletTuple
         const idx = parseInt(bulletGoBtn.dataset.bulletIdx || '', 10)
         if (sid) {
           const mainEd = (window as any).__tldraw_editor__ || editor
@@ -2072,17 +2103,35 @@ function FleetChatInner({ shape }: { shape: any }) {
             if (bounds) {
               mainEd.centerOnPoint({ x: bounds.midX, y: bounds.midY }, { animation: { duration: 300 } })
               mainEd.select(noteShape.id)
-              if (!isNaN(idx) && idx >= 0) {
-                setTimeout(() => {
-                  const el = document.querySelector(`[data-shape-id="${sid}"]`)
-                  if (!el) return
+              setTimeout(() => {
+                const el = document.querySelector(`[data-shape-id="${sid}"]`)
+                if (!el) return
+                let targetLi: Element | null = null
+                if (tupleStr) {
+                  // Follow tuple path: [i, j, k] → root list → i-th li → nested list → j-th li → ...
+                  try {
+                    const tuple = JSON.parse(tupleStr) as number[]
+                    let scope: Element = el.querySelector('.math-note-prose') || el
+                    for (const idx of tuple) {
+                      const list = scope.tagName === 'LI' ? scope.querySelector('ul, ol') : scope.querySelector('ul, ol')
+                      if (!list) break
+                      const lis = Array.from(list.children).filter(c => c.tagName === 'LI')
+                      if (idx < lis.length) {
+                        targetLi = lis[idx]
+                        scope = lis[idx]
+                      } else break
+                    }
+                  } catch {}
+                } else if (!isNaN(idx) && idx >= 0) {
+                  // Legacy flat index
                   const lis = el.querySelectorAll('.math-note-prose li')
-                  if (lis[idx]) {
-                    lis[idx].classList.add('bullet-flash')
-                    setTimeout(() => lis[idx].classList.remove('bullet-flash'), 1500)
-                  }
-                }, 400)
-              }
+                  targetLi = lis[idx] || null
+                }
+                if (targetLi) {
+                  targetLi.classList.add('bullet-flash')
+                  setTimeout(() => targetLi!.classList.remove('bullet-flash'), 1500)
+                }
+              }, 400)
             }
           }
         }
@@ -3360,9 +3409,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ agent: agentId, response: planResponse }),
                           }).catch(() => {})
-                          // Mark the card visually
-                          const cards = chatLog?.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`)
-                          cards?.forEach((el) => el.classList.add(planResponse === 'approve' ? 'plan-card-approved' : 'plan-card-rejected'))
                         }
                       }
                     }

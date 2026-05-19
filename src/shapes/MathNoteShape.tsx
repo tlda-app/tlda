@@ -814,6 +814,18 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       if (!li) return false
       const container = contentRef.current
       if (!container) return false
+      // Compute tuple path: [i, j, k, ...] where each element is the index within its parent <ul>/<ol>
+      const tuplePath: number[] = []
+      let el: HTMLElement | null = li
+      while (el && el !== container) {
+        const parent = el.parentElement
+        if (!parent) break
+        if (el.tagName === 'LI') {
+          tuplePath.unshift(Array.from(parent.children).filter(c => c.tagName === 'LI').indexOf(el))
+        }
+        el = parent
+      }
+      // Also compute flat index for backward compat with bullet-selected highlighting
       const allLis = Array.from(container.querySelectorAll('li'))
       const bulletIndex = allLis.indexOf(li)
       if (bulletIndex < 0) return false
@@ -837,7 +849,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         })
       }
 
-      const token = `«bullet:${shape.id}:${bulletIndex}»`
+      // Token format: «bullet:shapeId:[tuple]|snapshot text»
+      // Tuple for structural navigation, text for permanent record
+      const tupleStr = `[${tuplePath.join(',')}]`
+      const snapshotText = text.length > 120 ? text.slice(0, 120) + '…' : text
+      const token = `«bullet:${shape.id}:${tupleStr}|${snapshotText}»`
       // Defer insert so set-chat-target signal can update the chat's sendTargets
       // before the insert handler checks them (React state update is async)
       setTimeout(() => {
