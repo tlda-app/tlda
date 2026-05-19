@@ -1022,7 +1022,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
         const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
         const planBodyHtml = renderCtx.renderMarkdown(esc(m.text || ''))
-        const html = `<div class="plan-card" data-agent-id="${esc(agentId)}">` +
+        const planResponseCls = m._planResponse === 'approved' ? ' plan-card-approved' : m._planResponse === 'rejected' ? ' plan-card-rejected' : ''
+        const html = `<div class="plan-card${planResponseCls}" data-agent-id="${esc(agentId)}">` +
           `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
           `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
           `<div class="plan-card-body">${planBodyHtml}</div>` +
@@ -1064,44 +1065,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
       if (typePrefix === 'bullet') {
-        const lastColon = display.lastIndexOf(':')
-        const shapeId = lastColon > 0 ? display.slice(0, lastColon) : ''
-        const bulletIdx = lastColon > 0 ? parseInt(display.slice(lastColon + 1), 10) : -1
-        let bulletText = display
-        let accentColor = '#7c3aed'
-        let noteName = ''
-        let authorId = ''
-        if (shapeId && bulletIdx >= 0) {
-          const mainEditor = (window as any).__tldraw_editor__ || editor
-          const noteShape = (editor.getShape(shapeId as any) || mainEditor.getShape(shapeId as any)) as any
-          if (noteShape?.props?.text) {
-            const raw = noteShape.props.text as string
-            const bullets = raw.split('\n').filter((l: string) => /^\s*[-*]\s/.test(l))
-            if (bullets[bulletIdx]) {
-              bulletText = bullets[bulletIdx].replace(/^\s*[-*]\s+/, '').trim()
-            }
-          }
-          if (noteShape?.props?.backingFile) {
-            const bf = noteShape.props.backingFile as string
-            noteName = bf.split('/').pop()?.replace(/\.md$/i, '') || bf
-          }
-          if (noteShape?.meta?.authorId) {
-            authorId = noteShape.meta.authorId as string
-          }
-          if (noteShape?.props?.color) {
-            const DOT_COLORS: Record<string, string> = {
-              yellow: '#eab308', red: '#ef4444', green: '#22c55e', blue: '#3b82f6',
-              violet: '#8b5cf6', orange: '#f97316', grey: '#9ca3af',
-              'light-red': '#ef4444', 'light-green': '#22c55e', 'light-blue': '#3b82f6',
-              'light-violet': '#8b5cf6', black: '#6b7280', white: '#d4d4d4',
-            }
-            accentColor = DOT_COLORS[noteShape.props.color] || accentColor
-          }
-        }
-        const textEsc = bulletText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const nameEsc = noteName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const authorEsc = authorId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        return `<div class="bullet-card" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}" style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}</span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-idx="${bulletIdx}">→</span></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
+        // Bullet cards are rendered server-side in chat-render.mjs using metadata.
+        // If a «bullet:ID» token reaches here, the metadata was missing — show as plain text.
+        return `<span class="bullet-card-fallback">[bullet ref]</span>`
       }
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
@@ -2006,14 +1972,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = approveBtn.dataset.agentId
         if (agentId) {
-          const card = approveBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'approve' }),
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .then(() => { if (card) card.classList.add('plan-card-approved') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
         }
         return
@@ -2023,14 +1987,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = rejectBtn.dataset.agentId
         if (agentId) {
-          const card = rejectBtn.closest('.plan-card') as HTMLElement
           fetch(`${FLEET_API}/api/plan-mode-respond`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agentId, response: 'reject' }),
           })
             .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .then(() => { if (card) card.classList.add('plan-card-rejected') })
             .catch(err => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
         }
         return
@@ -2047,6 +2009,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcApproveBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
+          const card = lcApproveBtn.closest('.lifecycle-card') as HTMLElement
+          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          if (eventId) {
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) }).catch(() => {})
+          }
           return
         }
       }
@@ -2055,6 +2022,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = lcDenyBtn.dataset.agentId
         if (agentId) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
+          const card = lcDenyBtn.closest('.lifecycle-card') as HTMLElement
+          const eventId = card?.closest('[data-msg-id]')?.getAttribute('data-msg-id')
+          if (eventId) {
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) }).catch(() => {})
+          }
           return
         }
       }
@@ -2063,6 +2035,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (bulletGoBtn) {
         e.stopPropagation()
         const sid = bulletGoBtn.dataset.shapeId
+        const tupleStr = bulletGoBtn.dataset.bulletTuple
         const idx = parseInt(bulletGoBtn.dataset.bulletIdx || '', 10)
         if (sid) {
           const mainEd = (window as any).__tldraw_editor__ || editor
@@ -2072,17 +2045,35 @@ function FleetChatInner({ shape }: { shape: any }) {
             if (bounds) {
               mainEd.centerOnPoint({ x: bounds.midX, y: bounds.midY }, { animation: { duration: 300 } })
               mainEd.select(noteShape.id)
-              if (!isNaN(idx) && idx >= 0) {
-                setTimeout(() => {
-                  const el = document.querySelector(`[data-shape-id="${sid}"]`)
-                  if (!el) return
+              setTimeout(() => {
+                const el = document.querySelector(`[data-shape-id="${sid}"]`)
+                if (!el) return
+                let targetLi: Element | null = null
+                if (tupleStr) {
+                  // Follow tuple path: [i, j, k] → root list → i-th li → nested list → j-th li → ...
+                  try {
+                    const tuple = JSON.parse(tupleStr) as number[]
+                    let scope: Element = el.querySelector('.math-note-prose') || el
+                    for (const idx of tuple) {
+                      const list = scope.tagName === 'LI' ? scope.querySelector('ul, ol') : scope.querySelector('ul, ol')
+                      if (!list) break
+                      const lis = Array.from(list.children).filter(c => c.tagName === 'LI')
+                      if (idx < lis.length) {
+                        targetLi = lis[idx]
+                        scope = lis[idx]
+                      } else break
+                    }
+                  } catch {}
+                } else if (!isNaN(idx) && idx >= 0) {
+                  // Legacy flat index
                   const lis = el.querySelectorAll('.math-note-prose li')
-                  if (lis[idx]) {
-                    lis[idx].classList.add('bullet-flash')
-                    setTimeout(() => lis[idx].classList.remove('bullet-flash'), 1500)
-                  }
-                }, 400)
-              }
+                  targetLi = lis[idx] || null
+                }
+                if (targetLi) {
+                  targetLi.classList.add('bullet-flash')
+                  setTimeout(() => targetLi!.classList.remove('bullet-flash'), 1500)
+                }
+              }, 400)
             }
           }
         }
@@ -3360,9 +3351,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ agent: agentId, response: planResponse }),
                           }).catch(() => {})
-                          // Mark the card visually
-                          const cards = chatLog?.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`)
-                          cards?.forEach((el) => el.classList.add(planResponse === 'approve' ? 'plan-card-approved' : 'plan-card-rejected'))
                         }
                       }
                     }

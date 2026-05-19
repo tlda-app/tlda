@@ -1,6 +1,8 @@
 export type BulletContext = {
+  id: string
   text: string
   noteShapeId: string
+  tuplePath: number[]
   owner?: string
   backingFile?: string
   bulletIndex: number
@@ -19,6 +21,10 @@ export function addBulletContext(ctx: BulletContext) {
     _current = [..._current, ctx]
   }
   notify()
+}
+
+export function genBulletId(): string {
+  return crypto.randomUUID()
 }
 
 export function removeBulletContext(noteShapeId: string, bulletIndex: number) {

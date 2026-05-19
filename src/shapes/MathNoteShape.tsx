@@ -47,7 +47,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 }
 import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
-import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts } from '../stores'
+import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -88,11 +88,17 @@ function renderMarkdownMath(text: string, showErrors = false): string {
     return `MATHPLACEHOLDERZZZ${idx}ZZZ`
   }
 
-  // Replace display math first ($$...$$), then inline ($...$). Surround
-  // display tokens with blank lines so markdown-it treats them as their own
-  // paragraph rather than wrapping them inside an existing block.
-  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content) => {
-    return `\n\n${makeToken(renderMath(content, true))}\n\n`
+  // Replace display math first ($$...$$), then inline ($...$).
+  // Standalone display math (on its own line) gets blank-line padding so
+  // markdown-it treats it as its own paragraph. Inline display math (inside
+  // a bullet or sentence) stays inline to avoid breaking list structure.
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, content, offset) => {
+    const token = makeToken(renderMath(content, true))
+    const before = text.slice(Math.max(0, offset - 1), offset)
+    const afterEnd = offset + _m.length
+    const after = text.slice(afterEnd, afterEnd + 1)
+    const standalone = (offset === 0 || before === '\n') && (afterEnd >= text.length || after === '\n')
+    return standalone ? `\n\n${token}\n\n` : token
   })
   processed = processed.replace(/\$([^$\n]+)\$/g, (_m, content) => {
     return makeToken(renderMath(content, false))
@@ -812,16 +818,33 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       if (!backingFile) return false
       const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
       if (!li) return false
-      const list = li.parentElement
-      if (!list) return false
-      const bulletIndex = Array.from(list.children).indexOf(li)
+      const container = contentRef.current
+      if (!container) return false
+      // Compute tuple path: [i, j, k, ...] where each element is the index within its parent <ul>/<ol>
+      const tuplePath: number[] = []
+      let el: HTMLElement | null = li
+      while (el && el !== container) {
+        const parent = el.parentElement
+        if (!parent) break
+        if (el.tagName === 'LI') {
+          tuplePath.unshift(Array.from(parent.children).filter(c => c.tagName === 'LI').indexOf(el))
+        }
+        el = parent
+      }
+      // Flat index for bullet-selected highlighting
+      const allLis = Array.from(container.querySelectorAll('li'))
+      const bulletIndex = allLis.indexOf(li)
+      if (bulletIndex < 0) return false
       const text = li.textContent?.trim() || ''
       if (!text) return false
 
+      const id = genBulletId()
       const owner = (shape.meta?.authorId as string) || undefined
       const ctx = {
+        id,
         text,
         noteShapeId: shape.id,
+        tuplePath,
         owner,
         backingFile,
         bulletIndex,
@@ -835,9 +858,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         })
       }
 
-      const token = `«bullet:${shape.id}:${bulletIndex}»`
-      // Defer insert so set-chat-target signal can update the chat's sendTargets
-      // before the insert handler checks them (React state update is async)
+      const token = `«bullet:${id}»`
       setTimeout(() => {
         chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token, owner } }))
       }, 50)

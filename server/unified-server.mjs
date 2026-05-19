@@ -199,7 +199,17 @@ async function reapZombies() {
     }
   }
   if (zombies.length === 0) {
-    console.log(`[reaper] sweep: ${activeCount} active WS, 0 zombies`)
+    const byKind = {}
+    for (const ws of _trackedWs) {
+      if (ws.readyState !== 1) continue
+      const idleMs = now - ws._wsLastInputAt
+      const k = ws._wsKind || 'unknown'
+      if (!byKind[k]) byKind[k] = { count: 0, maxIdleS: 0 }
+      byKind[k].count++
+      byKind[k].maxIdleS = Math.max(byKind[k].maxIdleS, Math.round(idleMs / 1000))
+    }
+    const summary = Object.entries(byKind).map(([k, v]) => `${k}:${v.count}(max-idle=${v.maxIdleS}s)`).join(' ')
+    console.log(`[reaper] sweep: ${activeCount} active, 0 zombies — ${summary}`)
     return
   }
   console.log(`[reaper] sweep: ${activeCount} active WS, ${zombies.length} zombie WS`)
@@ -351,6 +361,15 @@ const RPC_TIMEOUT_MS = 10_000
 //
 // keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
 const pendingPlanApprovals = new Map()
+
+// Chat idempotency cache: _tempId → { eventIds, recipients, ts }
+// Prevents duplicate DB rows when the browser retries a timed-out send.
+const _chatTempIds = new Map()
+const CHAT_TEMPID_TTL_MS = 60_000
+setInterval(() => {
+  const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
+  for (const [k, v] of _chatTempIds) { if (v.ts < cutoff) _chatTempIds.delete(k) }
+}, 30_000).unref?.()
 
 // detectPlanApproval removed — plan detection is handled by the daemon
 
@@ -1614,6 +1633,13 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
+    // Idempotency: if the client retries with the same _tempId, return the
+    // previously inserted event IDs instead of creating duplicates.
+    if (msg._tempId && _chatTempIds.has(msg._tempId)) {
+      const prev = _chatTempIds.get(msg._tempId)
+      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, _tempId: msg._tempId })
+      return
+    }
     const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = fleetStore?.findAgent(id); return a ? a.id : null
@@ -1701,6 +1727,8 @@ async function handleFleetWsMessage(ws, msg) {
       eventIds.push(eventId)
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null })
     }
+    // Cache _tempId for idempotent retries
+    if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
     reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
@@ -1728,6 +1756,32 @@ async function handleFleetWsMessage(ws, msg) {
           }).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
         }
       }
+    }
+    // "let's outline/plan" keyword: force plan mode on recipient agents
+    const planKeywordMatch = from === SERVER_OWNER_ID && text.match(/\blet'?s\s+(\w+\s+){0,2}(outline|plan)\b/i)
+    if (planKeywordMatch) {
+      const keyword = planKeywordMatch[2].toLowerCase()
+      for (const r of recipients) {
+        const agent = fleetStore.findAgent(r)
+        if (!agent?.tmux_session || !agent.machine_id) continue
+        sendRpc(agent.machine_id, 'send-text', {
+          tmux_session: agent.tmux_session,
+          text: '/plan',
+          enter: true,
+        }).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
+        if (keyword === 'outline') {
+          setTimeout(() => {
+            sendRpc(agent.machine_id, 'send-text', {
+              tmux_session: agent.tmux_session,
+              text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
+              enter: true,
+            }).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
+          }, 2000)
+        }
+        fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
+        console.log(`[outline-keyword] forced plan mode on ${agent.friendly_name || r} (keyword: ${keyword})`)
+      }
+      broadcastState()
     }
     return
   }
@@ -2107,7 +2161,7 @@ async function handleFleetWsMessage(ws, msg) {
       } else {
         result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'no', enter: true })
       }
-      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null })
+      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       broadcastState()
       reply(result)
     } catch (e) { error(e.message) }
@@ -2659,6 +2713,10 @@ function handleDaemonWsMessage(ws, msg) {
         machine_id,
         eventId: event?.id,
       })
+      const existing = fleetStore.getAgent(agent_id)
+      const planModeType = existing?.metadata?.planModeType || 'plan'
+      fleetStore.updateAgentMeta?.(agent_id, { inPlanMode: true, planModeType })
+      broadcastState()
     } catch (e) {
       console.error(`[fleet-daemon] plan-mode-prompt write: ${e.message}`)
     }
