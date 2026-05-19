@@ -543,9 +543,8 @@ async function checkForPlanModePrompt(agentId) {
   }
   if (!planText) return  // divider extraction failed — don't send garbage
 
-  const fingerprint = `${planText.length}:${planText.slice(0, 200)}`
-  if (planModeHashes.get(agentId) === fingerprint) return
-  planModeHashes.set(agentId, fingerprint)
+  if (planModeHashes.has(agentId)) return
+  planModeHashes.set(agentId, true)
 
   sendMsg({
     type: 'plan-mode-prompt',
@@ -1596,6 +1595,23 @@ async function rpcKillOrphanChromium({ port }) {
   return { killed: false, reason: 'no playwright owner among port holders' }
 }
 
+// ─── Memory pressure ────────────────────────────────────────────────
+
+function getMemoryPressure() {
+  const total = os.totalmem()
+  const free = os.freemem()
+  return 1 - free / total  // 0 = empty, 1 = full
+}
+
+// Scale an idle timeout by memory pressure. At ≥90% usage the timeout
+// drops to 1/10 of the base; below 50% usage it stays at the full base.
+function pressureScaledTimeout(baseMs) {
+  const p = getMemoryPressure()
+  if (p < 0.5) return baseMs
+  const scale = Math.max(0.1, 1 - (p - 0.5) / 0.4)  // linear 1→0.1 over 50%→90%
+  return Math.round(baseMs * scale)
+}
+
 // ─── Vite reaper — kill dev servers nobody's using ──────────────────
 //
 // Agents start `npx vite` for HMR-based UI testing and leave the process
@@ -1704,10 +1720,10 @@ async function reapVites() {
     }
     if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
     const idleMs = now - _viteLastClient.get(v.pid)
-    if (idleMs > VITE_IDLE_THRESHOLD_MS) {
+    if (idleMs > pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS)) {
       try {
         process.kill(v.pid, 'SIGKILL')
-        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m`)
+        console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
       } catch (e) {
         console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
       }
@@ -1720,18 +1736,95 @@ async function reapVites() {
   }
 }
 
-let _viteReaperTimer = null
-function startViteReaper() {
-  if (_viteReaperTimer) return
-  // First sweep after a short delay so the daemon doesn't compete with
-  // its own startup work. Subsequent sweeps every VITE_SWEEP_INTERVAL_MS.
+// ─── Playwright reaper — kill orphan chromium browsers ──────────────
+//
+// Agents launch playwright chromium browsers for testing and leave them
+// running after the playwright-mcp node process exits. The zombie WS
+// reaper in the server can't see these because their WS connections die
+// when the server restarts. This reaper works at the process level:
+// find all chromium processes with playwright_chromiumdev_profile in
+// their args, check if their parent playwright-mcp node is alive, and
+// kill orphans.
+const PW_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_PW_MS, 10) || 5 * 60 * 1000
+const _pwLastSeen = new Map()  // pw_main_pid -> ms timestamp last seen with a live controller
+
+async function listPlaywrightBrowsers() {
+  let psOut = ''
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,args='], { timeout: 5000, encoding: 'utf8' })
+    psOut = stdout
+  } catch { return [] }
+  const browsers = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const pid = parseInt(m[1], 10)
+    const ppid = parseInt(m[2], 10)
+    const args = m[3]
+    if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
+    if (args.includes('--type=')) continue  // skip helper/renderer/gpu child processes
+    browsers.push({ pid, ppid, args })
+  }
+  return browsers
+}
+
+async function isPlaywrightControllerAlive(ppid) {
+  if (!ppid || ppid <= 1) return false
+  try {
+    const { stdout } = await execFileP('ps', ['-p', String(ppid), '-o', 'args='],
+      { timeout: 2000, encoding: 'utf8' })
+    const args = stdout.trim()
+    return args.includes('playwright') || args.includes('node')
+  } catch { return false }
+}
+
+async function reapPlaywright() {
+  const browsers = await listPlaywrightBrowsers()
+  if (browsers.length === 0) return
+  const now = Date.now()
+  const threshold = pressureScaledTimeout(PW_IDLE_THRESHOLD_MS)
+  let orphanCount = 0
+  for (const b of browsers) {
+    const controllerAlive = await isPlaywrightControllerAlive(b.ppid)
+    if (controllerAlive) {
+      _pwLastSeen.set(b.pid, now)
+      continue
+    }
+    orphanCount++
+    if (!_pwLastSeen.has(b.pid)) _pwLastSeen.set(b.pid, now)
+    const orphanMs = now - _pwLastSeen.get(b.pid)
+    if (orphanMs > threshold) {
+      try {
+        process.kill(b.pid, 'SIGKILL')
+        try { await execFileP('pkill', ['-9', '-P', String(b.pid)], { timeout: 2000 }) } catch {}
+        console.log(`[pw-reaper] killed pid=${b.pid} orphan=${Math.round(orphanMs / 1000)}s threshold=${Math.round(threshold / 1000)}s pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
+      } catch (e) {
+        console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
+      }
+      _pwLastSeen.delete(b.pid)
+    } else {
+      console.log(`[pw-reaper] orphan pid=${b.pid} age=${Math.round(orphanMs / 1000)}s waiting (threshold=${Math.round(threshold / 1000)}s)`)
+    }
+  }
+  const livePids = new Set(browsers.map(b => b.pid))
+  for (const pid of [..._pwLastSeen.keys()]) {
+    if (!livePids.has(pid)) _pwLastSeen.delete(pid)
+  }
+  console.log(`[pw-reaper] sweep: ${browsers.length} browsers, ${orphanCount} orphans, pressure=${(getMemoryPressure() * 100).toFixed(0)}% threshold=${Math.round(threshold / 1000)}s`)
+}
+
+// ─── Combined reaper sweep ─────────────────────────────────────────
+let _reaperTimer = null
+function startReapers() {
+  if (_reaperTimer) return
+  async function sweep() {
+    await reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message))
+    await reapPlaywright().catch(e => console.error('[pw-reaper] sweep failed:', e.message))
+  }
   setTimeout(() => {
-    reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message))
-    _viteReaperTimer = setInterval(
-      () => reapVites().catch(e => console.error('[vite-reaper] sweep failed:', e.message)),
-      VITE_SWEEP_INTERVAL_MS,
-    )
-    _viteReaperTimer.unref?.()
+    sweep()
+    _reaperTimer = setInterval(sweep, VITE_SWEEP_INTERVAL_MS)
+    _reaperTimer.unref?.()
   }, 10_000)
 }
 
@@ -2049,5 +2142,5 @@ console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
 console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
 console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-startViteReaper()
+startReapers()
 connect()

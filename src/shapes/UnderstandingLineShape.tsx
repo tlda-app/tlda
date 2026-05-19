@@ -112,7 +112,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
   override getGeometry(shape: any) {
     const w = Math.max(shape.props.w, 6)
-    return new Rectangle2d({ width: w, height: shape.props.h, isFilled: false })
+    return new Rectangle2d({ width: w, height: shape.props.h, isFilled: true })
   }
 
   component(shape: any) {

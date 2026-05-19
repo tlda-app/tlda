@@ -1,8 +1,5 @@
 /* Fog Dark — desaturated cool gray, teal undertone */
 
-body.fog-dark-mode .tl-container {
-  background: #1a2024 !important;
-}
 body.fog-dark-mode .tl-background {
   background-color: #1a2024 !important;
 }
@@ -88,21 +85,27 @@ body.fog-dark-mode .tl-theme__dark .tlui-toolbar {
 
 /* Teal dark — doc panel */
 body.fog-dark-mode .doc-panel {
-  background: rgba(26, 32, 36, 0.5);
+  background: transparent;
+  color: rgba(200, 218, 222, 0.1);
 }
 body.fog-dark-mode .doc-panel:hover,
 body.fog-dark-mode .doc-panel-open {
   background: rgba(34, 42, 46, 0.92);
+  color: rgba(200, 218, 222, 0.6);
 }
 body.fog-dark-mode .doc-panel-tabs {
   border-bottom-color: rgba(46, 58, 62, 0.4);
 }
-body.fog-dark-mode .doc-panel-content,
-body.fog-dark-mode .doc-panel-tabs,
-body.fog-dark-mode .search-input-wrap {
+body.fog-dark-mode .doc-panel:hover .doc-panel-content,
+body.fog-dark-mode .doc-panel:hover .doc-panel-tabs,
+body.fog-dark-mode .doc-panel:hover .search-input-wrap,
+body.fog-dark-mode .doc-panel-open .doc-panel-content,
+body.fog-dark-mode .doc-panel-open .doc-panel-tabs,
+body.fog-dark-mode .doc-panel-open .search-input-wrap {
   color: #c8dade;
 }
-body.fog-dark-mode .doc-panel-tab.active {
+body.fog-dark-mode .doc-panel:hover .doc-panel-tab.active,
+body.fog-dark-mode .doc-panel-open .doc-panel-tab.active {
   color: #c8dade;
 }
 body.fog-dark-mode .toc-item:hover,
@@ -134,9 +137,6 @@ body.fog-dark-mode .book-tab--active {
 /* Fog Light — blue-teal mist, unified surfaces                      */
 /* ------------------------------------------------------------------ */
 
-body.fog-light-mode .tl-container {
-  background: #d2dfe3 !important;
-}
 body.fog-light-mode .tl-background {
   background-color: #d2dfe3 !important;
 }
@@ -221,18 +221,23 @@ body.fog-light-mode .tlui-toolbar {
 
 /* Teal light — doc panel (override white backgrounds) */
 body.fog-light-mode .doc-panel {
-  background: rgba(232, 238, 240, 0.5);
+  background: transparent;
+  color: rgba(26, 53, 64, 0.1);
 }
 body.fog-light-mode .doc-panel:hover,
 body.fog-light-mode .doc-panel-open {
   background: rgba(235, 240, 242, 0.92);
+  color: rgba(26, 53, 64, 0.6);
 }
 body.fog-light-mode .doc-panel-tabs {
   border-bottom-color: rgba(180, 200, 210, 0.4);
 }
-body.fog-light-mode .doc-panel-content,
-body.fog-light-mode .doc-panel-tabs,
-body.fog-light-mode .search-input-wrap {
+body.fog-light-mode .doc-panel:hover .doc-panel-content,
+body.fog-light-mode .doc-panel:hover .doc-panel-tabs,
+body.fog-light-mode .doc-panel:hover .search-input-wrap,
+body.fog-light-mode .doc-panel-open .doc-panel-content,
+body.fog-light-mode .doc-panel-open .doc-panel-tabs,
+body.fog-light-mode .doc-panel-open .search-input-wrap {
   color: #1a3540;
 }
 body.fog-light-mode .toc-item:hover,
@@ -288,9 +293,19 @@ body.warm-mode {
   --pill-icon-color-hover: rgba(40, 20, 0, 1);
 }
 
-/* Warm — doc panel text needs higher contrast on cream background */
-body.warm-mode .doc-panel-content,
-body.warm-mode .doc-panel-tabs,
-body.warm-mode .search-input-wrap {
+/* Warm — doc panel: invisible idle, readable on hover */
+body.warm-mode .doc-panel {
+  color: rgba(58, 42, 16, 0.1);
+}
+body.warm-mode .doc-panel:hover,
+body.warm-mode .doc-panel-open {
+  color: rgba(58, 42, 16, 0.6);
+}
+body.warm-mode .doc-panel:hover .doc-panel-content,
+body.warm-mode .doc-panel:hover .doc-panel-tabs,
+body.warm-mode .doc-panel:hover .search-input-wrap,
+body.warm-mode .doc-panel-open .doc-panel-content,
+body.warm-mode .doc-panel-open .doc-panel-tabs,
+body.warm-mode .doc-panel-open .search-input-wrap {
   color: #3a2a10;
 }
