@@ -475,6 +475,7 @@ function startAutoAcceptSweep() {
         const { stdout } = await execFileP('tmux',
           [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
           { timeout: 2000, encoding: 'utf8', maxBuffer: 512 * 1024 })
+        const stripped = stripAnsi(stdout)
         const result = detectPrompt(stdout)
         if (result.type === 'auto-accept') {
           const lastAccept = promptCooldowns.get(agent.tmux_session)
@@ -490,6 +491,11 @@ function startAutoAcceptSweep() {
           sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason })
         } else {
           surfacedPrompts.delete(agent.tmux_session)
+        }
+        if (stripped.includes("Here is Claude's plan") && stripped.includes('Would you like to')) {
+          scheduleCheckForPlanModePrompt(agent.id)
+        } else {
+          planModeHashes.delete(agent.id)
         }
       } catch {
         // Session gone or capture failed — skip silently
@@ -516,7 +522,7 @@ async function checkForPlanModePrompt(agentId) {
     return
   }
 
-  if (!pane.includes("Here is Claude's plan")) return
+  if (!pane.includes("Here is Claude's plan") || !pane.includes('Would you like to')) return
 
   // Extract plan text between the two ╌╌╌ divider lines.
   const lines = pane.split('\n')
@@ -535,10 +541,10 @@ async function checkForPlanModePrompt(agentId) {
       break
     }
   }
-  if (!planText) planText = pane  // fallback: send full pane
+  if (!planText) return  // divider extraction failed — don't send garbage
 
-  const fingerprint = `${planText.length}:${planText.slice(0, 120)}`
-  if (planModeHashes.get(agentId) === fingerprint) return  // already sent this plan
+  const fingerprint = `${planText.length}:${planText.slice(0, 200)}`
+  if (planModeHashes.get(agentId) === fingerprint) return
   planModeHashes.set(agentId, fingerprint)
 
   sendMsg({

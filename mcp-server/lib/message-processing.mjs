@@ -7,7 +7,7 @@ import { uploadFileToServer } from './chat-file-processing.mjs'
 
 const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd'
 const pathRe = new RegExp(
-  `(?<![\\/\\w])(~?\\/[\\w.\\-\\/]+\\.(?:${PATH_EXT})|[\\w][\\w.\\-\\/]*\\.(?:${PATH_EXT}))(?!\\w)`,
+  `(?<![\\/\\w])((?:~?\\/|\\.\\.?\\/|\\.[\\w\\-]+\\/|[\\w])[\\w.\\-\\/]*\\.(?:${PATH_EXT}))(?!\\w)`,
   'g'
 )
 
@@ -42,24 +42,17 @@ export function detectAttachments(message, agentCwd) {
     inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath), broken: true })
     return `{{att:${id}}}`
   })
-  // 3b. Bare file paths
+  // 3b. Bare file paths — any match enters the pipeline; missing files are marked broken.
   working = working.replace(pathRe, (match, filePath) => {
     const expanded = filePath.replace(/^~\//, os.homedir() + '/')
-    if (expanded.startsWith('/')) {
-      if (fs.existsSync(expanded)) {
-        const id = attIdx++
-        inlineAttachments.push({ type: 'file', id, path: expanded, name: path.basename(expanded) })
-        return `{{att:${id}}}`
-      }
-      return match
+    const resolved = expanded.startsWith('/') ? expanded : path.resolve(agentCwd, expanded)
+    const id = attIdx++
+    if (fs.existsSync(resolved)) {
+      inlineAttachments.push({ type: 'file', id, path: resolved, name: path.basename(resolved) })
+    } else {
+      inlineAttachments.push({ type: 'file', id, path: resolved, name: path.basename(resolved), broken: true })
     }
-    const abs = path.resolve(agentCwd, expanded)
-    if (fs.existsSync(abs)) {
-      const id = attIdx++
-      inlineAttachments.push({ type: 'file', id, path: abs, name: path.basename(abs) })
-      return `{{att:${id}}}`
-    }
-    return match
+    return `{{att:${id}}}`
   })
   // Restore masked regions (inline spans first, then fences — reverse of masking order)
   working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i])

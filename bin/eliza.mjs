@@ -687,9 +687,28 @@ async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-ski
   sendChat(agentId, `⚠️ Skip has escalated. A manager is being brought in. Stand by — the manager will tell you what to do.`)
 
   // Build escalation context based on mode
+  const sharedPreamble = `Skip escalated from **${agentName}** (${agentId}).
+
+**Before you do ANYTHING, read these skills:** \`manager-team-stewardship\` and \`partner-not-soloist\`. They contain the exact rules for this situation.
+
+**Your first move:** \`mcp__fleet__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
+
+**DO NOT:**
+- Send Skip a summary of the thread
+- Ask Skip to explain what happened
+- Ask Skip what he wants you to do
+- Ask for permission before acting
+- "Check in" or "debrief"
+
+Skip already told the agent what he wanted — repeatedly. He's exhausted from repeating himself. Your job is to extract his intent from the thread and ACT on it.`
+
   const escalationContext = mode === 'talk-to-skip'
-    ? `Skip escalated from **${agentName}** (${agentId}). Mode: **talk-to-skip** — Skip wants to talk to YOU, not the agent. Read ${agentName}'s recent thread (last hour) to understand what went wrong. Then chat with Skip directly — take over communication from the stuck agent. Don't ask Skip to repeat himself.`
-    : `Skip escalated from **${agentName}** (${agentId}). Mode: **set-them-straight** — Skip doesn't want to be involved. Read ${agentName}'s recent thread (last hour), find what Skip was trying to get done and where the agent went wrong. Then tell the agent directly: what Skip wanted, what they did wrong, and what to do now. Handle this without bothering Skip.`
+    ? `${sharedPreamble}
+
+**Mode: talk-to-skip.** Skip is done dealing with ${agentName}. You own the communication channel now — "talk-to-skip" means YOU talk TO Skip, not that Skip talks to you. One message to Skip: what ${agentName} was failing at, what you're going to do about it. Then do it. If you need a fresh agent, spawn one and brief them from the thread. Skip decides nothing here except whether to redirect you.`
+    : `${sharedPreamble}
+
+**Mode: set-them-straight.** Skip doesn't want to be involved at all. Read the thread, find exactly what Skip wanted, then tell ${agentName} directly: "Skip told you to do X. You did Y instead. Do X now." Be blunt. Watch for the unwinding pattern — the agent says "understood" then produces its original plan anyway. If they can't hold the correction after two attempts, spawn a replacement. Report to Skip only when it's resolved.`
 
   // Find and notify the manager
   const managerId = await findAgentManager(agentId)

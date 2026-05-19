@@ -534,7 +534,7 @@ export function convertChatEvent(e) {
     msg._evType = 'plan_approval'
     msg._agentId = e.metadata?.agentId || ''
     msg._agentLabel = e.metadata?.agentLabel || ''
-    msg._planText = e.metadata?.planText || ''
+    msg._planText = e.text || e.metadata?.planText || ''
     msg._tmuxSession = e.metadata?.tmux_session || ''
     msg._machineId = e.metadata?.machine_id || ''
   } else if (type === 'terminal_card') {
