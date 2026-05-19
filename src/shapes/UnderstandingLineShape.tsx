@@ -4,6 +4,7 @@ import {
   HTMLContainer,
   Rectangle2d,
   T,
+  createMigrationSequence,
   useEditor,
   useValue,
 } from 'tldraw'
@@ -96,6 +97,20 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     segments: T.string,
   }
+  static override migrations = createMigrationSequence({
+    sequenceId: 'com.tldraw.shape.understanding-line',
+    sequence: [
+      {
+        id: 'com.tldraw.shape.understanding-line/1',
+        scope: 'record' as const,
+        up(record: any) {
+          if (record.props && record.props.segments === undefined) {
+            record.props.segments = '[]'
+          }
+        },
+      },
+    ],
+  })
 
   getDefaultProps() {
     return { w: 6, h: 20, segments: '[]' }

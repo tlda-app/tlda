@@ -2,7 +2,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
-import { myTldaUrl, isTldaUrl } from './tldaUrl.mjs'
+import { myTldaUrl } from './tldaUrl.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -477,25 +477,6 @@ export function renderMarkdown(html, extraMacros) {
       return `<span class="${cls}" data-path="${relPath}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
     })
     return segment
-  })
-
-  // tlda doc cards (localhost URLs with ?doc=)
-  let _inCode = 0
-  result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) {
-      if (/^<(code|pre)\b/i.test(segment)) _inCode++
-      else if (/^<\/(code|pre)>/i.test(segment)) _inCode = Math.max(0, _inCode - 1)
-      return segment
-    }
-    if (_inCode) return segment
-    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]*\?(?:[^\s<>"')\]]*&)?doc=[^\s<>"')\]]+/g, url => {
-      try {
-        if (!isTldaUrl(url)) return url
-        const u = new URL(url)
-        const docName = u.searchParams.get('doc') || 'doc'
-        return `<span class="md-file-card" data-doc="${esc(docName)}" draggable="true"><span class="md-file-chip">${esc(docName)}</span></span>`
-      } catch { return url }
-    })
   })
 
   // File:line references (skip inside tags)

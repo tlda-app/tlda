@@ -1073,12 +1073,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       const embeddedShapeId = shapeIdMatch?.[1]
       let ref: any = undefined
       if (embeddedShapeId) {
-        const srcShape = editor.getShape(embeddedShapeId as any) as any
+        const mainEditor = (window as any).__tldraw_editor__
+        const srcShape = (editor.getShape(embeddedShapeId as any) || mainEditor?.getShape(embeddedShapeId as any)) as any
         if (srcShape) {
           const highlightId = srcShape.props?.highlightId
-          const highlight = highlightId ? editor.getShape(highlightId as any) as any : null
+          const highlight = highlightId ? (editor.getShape(highlightId as any) || mainEditor?.getShape(highlightId as any)) as any : null
           const refShape = highlight || srcShape
-          const refBounds = editor.getShapePageBounds(refShape.id)
+          const shapeEditor = mainEditor?.getShape(refShape.id) ? mainEditor : editor
+          const refBounds = shapeEditor.getShapePageBounds(refShape.id)
           const meta = (highlight?.meta || srcShape.meta) as any
           const srcLineArr: any[] = meta?.sourceLines || []
           const hlSrcLines = srcLineArr.filter((sl: any) => sl.highlighted)
@@ -1101,7 +1103,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const displayEsc = display.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const content = ref?.content || chipContentStore.get(token) || ''
       const contentEsc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const isAnnotation = ref?.type === 'annotation'
+      const isAnnotation = ref?.type === 'annotation' || ref?.type === 'highlight'
       const isImage = typePrefix === 'img'
       if (isImage) {
         const uid = inner.split('#')[1] || ''
@@ -2978,6 +2980,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Auto-focus textarea + start voice when a bullet tap targets this chat
   useEffect(() => {
     if (activeBullets.length === 0) return
+    const myTargets = sendTargetsRef.current
+    const relevant = activeBullets.some(b => b.owner && myTargets.includes(b.owner))
+    if (!relevant) return
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta || ta.getBoundingClientRect().width === 0) return
     ta.focus()

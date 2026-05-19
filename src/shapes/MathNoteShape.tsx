@@ -45,9 +45,9 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
   token.attrSet('draggable', 'false')
   return self.renderToken(tokens, idx, options)
 }
-import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
+import { onFileUpdatedSignal } from '../useYjsSync'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -331,6 +331,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const showDoc = !!(shape.props.docName && shape.props.docView)
     // True while this note is pushing content to the doc — prevents echo-back on next poll
     const pushingToDocRef = useRef(false)
+    // Track text at edit start so backing-file write-back only fires on actual edits
+    const textAtEditStartRef = useRef<string | null>(null)
 
     // Label regions from the current document (for [->label] links)
     const pageDoc = useContext(DocContext)
@@ -427,17 +429,56 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => clearInterval(interval)
     }, [docName, shape.id, editor])
 
-    // Backing file: write to file when exiting editing
+    // Backing file: write to file only when the user actually changed the text
     const backingFile = shape.props.backingFile as string | undefined
     useEffect(() => {
-      if (isEditing || !backingFile) return
+      if (!backingFile) return
+      if (isEditing) {
+        textAtEditStartRef.current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+        return
+      }
       const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+      if (textAtEditStartRef.current === null || content === textAtEditStartRef.current) return
+      textAtEditStartRef.current = null
       fetch('/api/backing-file-write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath: backingFile, content }),
       }).catch(() => {})
     }, [isEditing])
+
+    // Backing file conflict: when the file changes externally while the note
+    // has different content, split into two notes (file version + canvas version).
+    useEffect(() => {
+      if (!backingFile) return
+      return onFileUpdatedSignal((signal) => {
+        if (signal.filePath !== backingFile) return
+        const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
+        if (signal.content === current) return
+        // Divergence detected — split: update this note with the file version,
+        // create a sibling with the canvas version.
+        const bounds = editor.getShapePageBounds(shape.id)
+        const x = bounds ? bounds.x + bounds.w + 20 : 0
+        const y = bounds ? bounds.y : 0
+        editor.createShape({
+          type: 'math-note' as any,
+          x,
+          y,
+          props: {
+            text: current,
+            color: shape.props.color || 'yellow',
+            w: (shape.props as any).w || 450,
+            h: (shape.props as any).h || 200,
+          },
+          meta: { ...shape.meta, splitFrom: shape.id, splitAt: Date.now() },
+        })
+        editor.updateShape({
+          id: shape.id,
+          type: 'math-note' as any,
+          props: { text: signal.content },
+        })
+      })
+    }, [backingFile, shape.id, editor])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtmlBase = useMemo(
@@ -850,13 +891,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         bulletIndex,
       }
       addBulletContext(ctx)
-
-      if (owner) {
-        dispatchSignalDirect('signal:set-chat-target', {
-          agent: owner,
-          timestamp: Date.now(),
-        })
-      }
 
       const token = `«bullet:${id}»`
       setTimeout(() => {

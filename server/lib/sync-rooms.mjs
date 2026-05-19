@@ -80,7 +80,17 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.understanding-line',
-      sequence: [],
+      sequence: [
+        {
+          id: 'com.tldraw.shape.understanding-line/1',
+          scope: 'record',
+          up(record) {
+            if (record.props && record.props.segments === undefined) {
+              record.props.segments = '[]'
+            }
+          },
+        },
+      ],
     }),
   },
   'reading-assist-bar': {
