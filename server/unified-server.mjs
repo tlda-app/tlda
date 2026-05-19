@@ -352,16 +352,7 @@ const RPC_TIMEOUT_MS = 10_000
 // keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
 const pendingPlanApprovals = new Map()
 
-const ANSI_RE = /\u001b\[[0-9;?]*[a-zA-Z]/g
-
-// Returns the stripped pane text if it contains a plan mode approval prompt,
-// or null otherwise.
-function detectPlanApproval(pane) {
-  if (!pane) return null
-  const stripped = pane.replace(ANSI_RE, '')
-  if (stripped.includes('Would you like to proceed')) return stripped
-  return null
-}
+// detectPlanApproval removed — plan detection is handled by the daemon
 
 // Fuzzy match Skip's reply to an affirmative or negative.
 // Returns 'y', 'n', or null.
@@ -2112,9 +2103,9 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       let result
       if (response === 'approve') {
-        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
+        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'yes', enter: true })
       } else {
-        result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'no', enter: true })
       }
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null })
       broadcastState()
@@ -2636,52 +2627,6 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal-frame') {
     if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
-    // Plan mode approval detection — fire once per unique prompt appearance.
-    if (fleetStore && msg.agent_id && !msg.dead) {
-      const stripped = detectPlanApproval(msg.pane)
-      if (stripped) {
-        const hash = stripped.slice(-300) // fingerprint: tail of stripped pane
-        const existing = pendingPlanApprovals.get(msg.agent_id)
-        if (!existing || existing.lastHash !== hash) {
-          // Extract plan text: everything before "Would you like to proceed"
-          const proceedIdx = stripped.indexOf('Would you like to proceed')
-          const planText = proceedIdx > 0
-            ? stripped.slice(0, proceedIdx).replace(/^\s+|\s+$/g, '').slice(-2000)
-            : ''
-          const agent = fleetStore.findAgent(msg.agent_id)
-          const agentLabel = agent?.friendly_name || msg.agent_id.replace('fleet:', '')
-          const text = `${agentLabel}: ready to proceed with implementation`
-          const event = fleetStore.share({
-            type: 'plan_approval',
-            from: msg.agent_id,
-            to: 'fleet:skip',
-            text,
-            // Pass as object — share() JSON-stringifies for DB;
-            // onEvent listener receives it as-is (no double-encode).
-            metadata: {
-              agentId: msg.agent_id,
-              agentLabel,
-              planText,
-              tmux_session: msg.tmux_session || agent?.tmux_session,
-              machine_id: agent?.machine_id,
-            },
-          })
-          // Add to unread (share() only auto-tracks unread for type='chat')
-          fleetStore.addUnread?.(event?.id, 'fleet:skip')
-          // No manual broadcastEvent — share() fires onEvent → broadcastEvent automatically
-          pendingPlanApprovals.set(msg.agent_id, {
-            tmux_session: msg.tmux_session || agent?.tmux_session,
-            machine_id: agent?.machine_id,
-            planText,
-            lastHash: hash,
-            eventId: event?.id,
-          })
-        }
-      } else if (pendingPlanApprovals.has(msg.agent_id)) {
-        // Prompt gone — agent moved on (approval given or rejected externally)
-        pendingPlanApprovals.delete(msg.agent_id)
-      }
-    }
     return
   }
 
@@ -2698,14 +2643,21 @@ function handleDaemonWsMessage(ws, msg) {
     const { agent_id, plan_text, tmux_session } = msg
     if (!agent_id || !plan_text) return
     try {
-      fleetStore.share({
-        type: 'chat',
+      const agent = fleetStore.findAgent(agent_id)
+      const machine_id = agent?.machine_id
+      const event = fleetStore.share({
+        type: 'plan_approval',
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { type: 'plan_approval', tmux_session: tmux_session || null },
+        metadata: { tmux_session: tmux_session || null, machine_id },
         unread: true,
         timestamp: new Date().toISOString(),
+      })
+      pendingPlanApprovals.set(agent_id, {
+        tmux_session: tmux_session || agent?.tmux_session,
+        machine_id,
+        eventId: event?.id,
       })
     } catch (e) {
       console.error(`[fleet-daemon] plan-mode-prompt write: ${e.message}`)

@@ -184,6 +184,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // --- POST /api/agents/:id/resurrect ---
+  router.post('/api/agents/:id/resurrect', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    try {
+      fleetStore.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?').run(req.params.id)
+      broadcastState()
+      res.json({ ok: true })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // --- GET /api/store/agents ---
   router.get('/api/store/agents', (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
@@ -616,8 +626,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- POST /api/plan-mode-respond ---
   // Responds to a plan-mode approval prompt for an agent.
   // body: { agent: <id|name>, response: 'approve' | 'reject' }
-  // 'approve' sends key '1' + Enter (Yes, auto-accept edits)
-  // 'reject' sends Escape (dismiss / let user decide later)
+  // 'approve' sends 'yes' + Enter; 'reject' sends 'no' + Enter
   router.post('/api/plan-mode-respond', async (req, res) => {
     const { agent: agentQuery, response } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
@@ -626,22 +635,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (response !== 'approve' && response !== 'reject') {
       res.status(400).json({ error: 'response must be approve or reject' }); return
     }
-    // For approve: send '1' then Enter (selects "Yes, auto-accept edits")
-    // For reject: send Escape (dismiss the prompt)
-    if (response === 'approve') {
-      const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text: '1', enter: true })
-      if (r1 !== null) {
-        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
-        broadcastState()
-        res.json(r1)
-      }
-    } else {
-      const r1 = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
-      if (r1 !== null) {
-        fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
-        broadcastState()
-        res.json(r1)
-      }
+    const text = response === 'approve' ? 'yes' : 'no'
+    const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text, enter: true })
+    if (r1 !== null) {
+      fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+      broadcastState()
+      res.json(r1)
     }
   })
 

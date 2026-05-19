@@ -956,7 +956,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'terminal_attention' || t === 'terminal_card'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -1015,7 +1015,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             : '') +
           `</div>`
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:build`, html })
-      } else if (m.metadata?.type === 'plan_approval') {
+      } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
         const agentObjs: any[] = renderCtx.getAgents()
@@ -2406,6 +2406,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     return null
   }, [sendTargets, agents])
 
+  const deadTargetAgent = useMemo(() => {
+    for (const label of sendTargets) {
+      const fleetId = label.startsWith('fleet:') ? label
+        : agents.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))?.id || label
+      const agent = agents.find((a: any) => a.id === fleetId)
+      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || fleetId.replace('fleet:', '') }
+    }
+    return null
+  }, [sendTargets, agents])
+
   // Reset auto-pin tracking when the target agent changes
   useEffect(() => {
     termAutoPinnedRef.current = false
@@ -3153,6 +3163,21 @@ function FleetChatInner({ shape }: { shape: any }) {
             agentNames={agentNames}
             inputRef={inputRef}
           />
+          {deadTargetAgent && (
+            <div
+              className="fleet-dead-agent-notice"
+              onPointerDown={stopEventPropagation}
+            >
+              <span>{deadTargetAgent.name} is dead</span>
+              <span
+                className="fleet-dead-resurrect"
+                onClick={(e) => {
+                  stopEventPropagation(e as any)
+                  fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
+                }}
+              >resurrect?</span>
+            </div>
+          )}
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
