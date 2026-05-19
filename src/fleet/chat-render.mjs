@@ -166,12 +166,14 @@ export function renderChatLine(m, ctx) {
     const reason = esc(m._reason || 'needs attention')
     const agentCls = getNickClass(m.from)
     const isPermission = (m._reason || '').includes('permission')
+    const promptResponse = m._promptResponse || ''
+    const responseCls = promptResponse === 'approved' ? ' lc-responded lc-approved' : promptResponse === 'rejected' ? ' lc-responded lc-rejected' : ''
     const actionBtns = isPermission
       ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" title="Deny (n)">\u2717</button></span>`
       : ''
     const cardCls = isPermission ? 'lc-permission-card' : 'lc-terminal-card'
-    return `<div class="chat-line"><span class="chat-ts">${ts}</span>
-      <div class="lifecycle-card lc-attention ${cardCls}" data-lc-type="attention" data-agent-id="${esc(m.from)}">
+    return `<div class="chat-line" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span>
+      <div class="lifecycle-card lc-attention ${cardCls}${responseCls}" data-lc-type="attention" data-agent-id="${esc(m.from)}">
         <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>
       </div></div>`
   }
@@ -436,8 +438,11 @@ export function renderChatLine(m, ctx) {
   const isDelegator = activeTasks.some(t => t.delegated_by === m.from && t.agent === m.to)
   const isDelegatee = activeTasks.some(t => t.delegated_by === m.to && t.agent === m.from)
   const arrowHtml = isDelegator ? '&#8600;' : isDelegatee ? '&#8599;' : '&rarr;'
-  const planMode = sender?.metadata?.permission_mode === 'plan'
-  const planBadge = planMode ? '<span class="plan-mode-badge" title="plan mode">P</span>' : ''
+  const planMode = sender?.metadata?.inPlanMode || sender?.metadata?.permission_mode === 'plan'
+  const planModeType = sender?.metadata?.planModeType
+  const planEmoji = planModeType === 'outline' ? '📝' : '📅'
+  const planTitle = planModeType === 'outline' ? 'outline mode' : 'plan mode'
+  const planBadge = planMode ? `<span class="plan-mode-badge" title="${planTitle}">${planEmoji}</span>` : ''
   const nickHtml = isAmbient
     ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}:</span>`
