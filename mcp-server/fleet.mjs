@@ -2721,7 +2721,25 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;
 
-    return { content: [{ type: 'text', text: `${header}\n\n${formatted.map(r => r.text).join('\n\n')}` }] };
+    // Apply byte budget so Claude Code never truncates to a JSON file
+    const SEARCH_MAX_BYTES = 25_000;
+    const searchLines = [];
+    let searchBytes = 0;
+    let searchTruncated = false;
+    for (const r of formatted) {
+      const entryBytes = Buffer.byteLength(r.text + '\n\n', 'utf8');
+      if (searchBytes + entryBytes > SEARCH_MAX_BYTES && searchLines.length > 0) {
+        searchTruncated = true;
+        break;
+      }
+      searchLines.push(r.text);
+      searchBytes += entryBytes;
+    }
+    if (searchTruncated) {
+      header += `\n⚠️ Output truncated to fit context (showing ${searchLines.length} of ${formatted.length} results). Narrow your query or time range.`;
+    }
+
+    return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}` }] };
   }
 
   // ---- get_thread ----
@@ -2821,9 +2839,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
 
     let header;
+    const totalKnown = serverTotal ?? filtered.length;
     if (serverTotal !== null && filtered.length < serverTotal) {
       const hidden = serverTotal - filtered.length;
-      header = `Showing ${filtered.length} of ${serverTotal} total messages${rangeStr}\n` +
+      header = `Showing messages 1–${filtered.length} of ${serverTotal}${rangeStr}\n` +
         `⚠️ ${hidden} more message(s) not shown — call again with \`since: "${newest}"\` to get the next page`;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
@@ -2853,8 +2872,15 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return null;
     };
 
-    // Format as readable thread
-    const lines = filtered.map(m => {
+    // Format as readable thread, stopping at a byte budget so Claude Code
+    // never truncates the result to an unreadable JSON file.
+    const MAX_BYTES = 25_000;
+    const SEP = '\n\n---\n\n';
+    const lines = [];
+    let totalBytes = 0;
+    let truncatedAt = null; // timestamp where we stopped
+
+    for (const m of filtered) {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
       const fromAgent = getAgent(state, m.from);
       const from = fromAgent?.friendly_name || m.from?.slice?.(0, 8) || m.from;
@@ -2862,10 +2888,31 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const to = toAgent?.friendly_name || m.to?.slice?.(0, 8) || m.to;
       const ver = args.doc ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
-      return `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
-    });
+      const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
+      const lineBytes = Buffer.byteLength(line + SEP, 'utf8');
 
-    return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n\n---\n\n')}` }] };
+      if (totalBytes + lineBytes > MAX_BYTES && lines.length > 0) {
+        truncatedAt = m.timestamp;
+        break;
+      }
+      lines.push(line);
+      totalBytes += lineBytes;
+    }
+
+    // Rewrite header if we hit the byte limit
+    if (truncatedAt) {
+      const shown = lines.length;
+      const remaining = totalKnown - shown;
+      const lastShownTs = filtered[shown - 1]?.timestamp;
+      const nextPageArg = args.task_id
+        ? `task_id: "${args.task_id}"`
+        : `agent: "${args.agent || ''}"`;
+      header = `Showing messages 1–${shown} of ${totalKnown}${rangeStr}\n` +
+        `⚠️ ${remaining}+ more — get the next page:\n` +
+        `\`get_thread(${nextPageArg}, since: "${lastShownTs}")\``;
+    }
+
+    return { content: [{ type: 'text', text: `${header}\n\n${lines.join(SEP)}` }] };
   }
 
   // ==== Labels & Interrupts ====
