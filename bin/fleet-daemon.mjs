@@ -1293,68 +1293,80 @@ async function rpcRestartMcp({ tmux_session, skipPreflight }) {
   return { ok: true, tmux_session, noop: true }
 }
 
-// Live terminal-card watching. The server tracks per-browser interest
-// and tells the daemon to start polling when the first watcher attaches
-// and stop when the last one drops. State is server-held so we just
-// keep a local Map of poll timers keyed by tmux_session.
-const terminalWatchTimers = new Map() // tmux_session -> { timer, lastHash }
-const TERMINAL_POLL_MS = 500
-const ANSI_RE = /\u001b\[[0-9;?]*[a-zA-Z]/g
+// Live terminal-card watching via PTY streaming.
+// Instead of polling `tmux capture-pane`, we spawn a PTY running
+// `tmux attach -t SESSION` and stream the raw terminal output over WS.
+const terminalWatchPtys = new Map() // tmux_session -> { pty, alive }
+let ptyModule = null
+async function getPty() {
+  if (!ptyModule) {
+    try {
+      const mod = await import('node-pty')
+      ptyModule = mod.default || mod
+    } catch (e) { throw new Error('node-pty not available: ' + e.message) }
+  }
+  return ptyModule
+}
 
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
-  if (terminalWatchTimers.has(tmux_session)) return { ok: true, already: true }
-  const interval = Math.max(200, Math.min(parseInt(poll_ms, 10) || TERMINAL_POLL_MS, 5000))
-  const state = { lastHash: null, lastFrame: '' }
-  const tick = async () => {
-    try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-200'],
-        { timeout: 2000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
-      // Strip ANSI for hashing so cursor-position deltas don't churn.
-      const stripped = stdout.replace(ANSI_RE, '')
-      const hash = stripped.length + ':' + stripped.slice(-200) // cheap fingerprint
-      if (hash === state.lastHash) return
-      state.lastHash = hash
-      sendMsg({ type: 'terminal-frame', agent_id, tmux_session, pane: stdout, ts: new Date().toISOString() })
-      const prompt = detectPrompt(stripped)
-      if (prompt.type === 'auto-accept') {
-        const lastAction = promptCooldowns.get(tmux_session)
-        if (!lastAction || Date.now() - lastAction >= 10_000) {
-          promptCooldowns.set(tmux_session, Date.now())
-          autoAcceptPrompt(tmux_session, prompt.reason)
-          sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
-        }
-      } else if (prompt.type === 'surface') {
-        if (surfacedPrompts.get(tmux_session) !== prompt.reason) {
-          surfacedPrompts.set(tmux_session, prompt.reason)
-          sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason })
-        }
-      } else {
-        surfacedPrompts.delete(tmux_session)
-      }
-    } catch (e) {
-      // Session vanished — push a one-shot dead-pane signal and stop polling.
-      if (/session not found|can't find session/i.test(e.message)) {
-        sendMsg({ type: 'terminal-frame', agent_id, tmux_session, pane: null, dead: true })
-        rpcStopTerminalWatch({ tmux_session })
-      }
-    }
-  }
-  state.timer = setInterval(tick, interval)
-  terminalWatchTimers.set(tmux_session, state)
-  // Kick off first frame immediately.
-  tick()
-  return { ok: true, poll_ms: interval }
+  if (terminalWatchPtys.has(tmux_session)) return { ok: true, already: true }
+
+  const nodePty = await getPty()
+  const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 40,
+    env: { ...process.env, TERM: 'xterm-256color' },
+  })
+
+  const state = { pty, alive: true }
+  terminalWatchPtys.set(tmux_session, state)
+
+  pty.onData((data) => {
+    if (!state.alive) return
+    sendMsg({
+      type: 'terminal-data',
+      agent_id,
+      tmux_session,
+      data: Buffer.from(data).toString('base64'),
+    })
+  })
+
+  pty.onExit(({ exitCode }) => {
+    state.alive = false
+    terminalWatchPtys.delete(tmux_session)
+    sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+  })
+
+  return { ok: true, streaming: true }
 }
 
 function rpcStopTerminalWatch({ tmux_session }) {
-  const state = terminalWatchTimers.get(tmux_session)
+  const state = terminalWatchPtys.get(tmux_session)
   if (!state) return { ok: true, already: true }
-  try { clearInterval(state.timer) } catch {}
-  terminalWatchTimers.delete(tmux_session)
+  state.alive = false
+  try { state.pty.kill() } catch {}
+  terminalWatchPtys.delete(tmux_session)
   return { ok: true }
 }
+
+function rpcTerminalResize({ tmux_session, cols, rows }) {
+  checkSession(tmux_session)
+  const state = terminalWatchPtys.get(tmux_session)
+  if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
+  try { state.pty.resize(Math.max(1, cols), Math.max(1, rows)) } catch {}
+  return { ok: true }
+}
+
+function rpcTerminalInput({ tmux_session, data }) {
+  checkSession(tmux_session)
+  const state = terminalWatchPtys.get(tmux_session)
+  if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
+  state.pty.write(data)
+  return { ok: true }
+}
+
 
 async function rpcSpawn({ name, model, cwd, doc, respawn }) {
   // Generate a temp name if none provided
@@ -1940,6 +1952,8 @@ const RPC_HANDLERS = {
   'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
+  'terminal-resize': rpcTerminalResize,
+  'terminal-input': rpcTerminalInput,
   'spawn': rpcSpawn,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
@@ -1989,8 +2003,8 @@ function teardownWatchers() {
   agentPaths.clear()
   // Source watchers survive WS disconnects — they detect file changes
   // independently and queue them for the next connected window.
-  for (const [, t] of terminalWatchTimers) { try { clearInterval(t.timer) } catch {} }
-  terminalWatchTimers.clear()
+  for (const [, s] of terminalWatchPtys) { s.alive = false; try { s.pty.kill() } catch {} }
+  terminalWatchPtys.clear()
   for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
   backingWatchers.clear()
 }

@@ -1291,10 +1291,19 @@ const terminalWss = new WebSocketServer({ noServer: true })
 // is server-held so the daemon can resume cleanly after a reconnect.
 const terminalWatchers = new Map() // agentId -> Set<ws>
 
-function fanOutTerminalFrame(agentId, frame) {
+function fanOutTerminalData(agentId, base64Data) {
   const set = terminalWatchers.get(agentId)
   if (!set) return
-  const payload = JSON.stringify({ type: 'output', data: frame.pane || '' })
+  const payload = JSON.stringify({ type: 'output', data: base64Data, encoding: 'base64' })
+  for (const w of set) {
+    if (w.readyState === 1) { try { w.send(payload) } catch {} }
+  }
+}
+
+function fanOutTerminalDead(agentId) {
+  const set = terminalWatchers.get(agentId)
+  if (!set) return
+  const payload = JSON.stringify({ type: 'error', message: 'session ended' })
   for (const w of set) {
     if (w.readyState === 1) { try { w.send(payload) } catch {} }
   }
@@ -1393,17 +1402,20 @@ server.on('upgrade', async (req, socket, head) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
         if (msg.type === 'input' && typeof msg.data === 'string') {
-          // Forward raw input as send-text RPC. send-text supports
-          // arbitrary bytes via tmux send-keys -- "<text>".
           try {
-            await sendRpc(agent.machine_id, 'send-text', {
-              tmux_session: agent.tmux_session, text: msg.data, enter: false,
+            await sendRpc(agent.machine_id, 'terminal-input', {
+              tmux_session: agent.tmux_session, data: msg.data,
             })
           } catch (e) {
             try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
           }
+        } else if (msg.type === 'resize' && msg.cols && msg.rows) {
+          try {
+            await sendRpc(agent.machine_id, 'terminal-resize', {
+              tmux_session: agent.tmux_session, cols: msg.cols, rows: msg.rows,
+            })
+          } catch {}
         }
-        // resize messages: ignored — tmux send-keys doesn't change pane size.
       })
 
       const cleanup = async () => {
@@ -2719,8 +2731,13 @@ function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'terminal-frame') {
-    if (msg.agent_id) fanOutTerminalFrame(msg.agent_id, msg)
+  if (type === 'terminal-data') {
+    if (msg.agent_id && msg.data) fanOutTerminalData(msg.agent_id, msg.data)
+    return
+  }
+
+  if (type === 'terminal-dead') {
+    if (msg.agent_id) fanOutTerminalDead(msg.agent_id)
     return
   }
 

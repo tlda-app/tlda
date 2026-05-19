@@ -71,9 +71,8 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
         brightWhite: '#ffffff',
       },
       scrollback: 500,
-      convertEol: true,
       cursorBlink: false,
-      disableStdin: true,  // input goes via the input bar, not xterm directly
+      disableStdin: true,
     })
 
     const fit = new FitAddon()
@@ -120,8 +119,12 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       try {
         const msg = JSON.parse(evt.data)
         if (msg.type === 'output' && msg.data && termRef.current) {
-          termRef.current.reset()
-          termRef.current.write(msg.data)
+          if (msg.encoding === 'base64') {
+            const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
+            termRef.current.write(bytes)
+          } else {
+            termRef.current.write(msg.data)
+          }
         } else if (msg.type === 'error') {
           setStatus('error')
           setStatusMsg(msg.message || 'server error')
