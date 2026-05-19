@@ -1767,14 +1767,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     isAtBottomRef.current = true
   }, [])
 
-  // Track whether user is at bottom (within 30px threshold).
-  // Also detect container resizes (e.g. textarea growing via field-sizing: content)
-  // which shrink the chat log without the user scrolling.
+  // Sticky-bottom scroll tracking.
+  // Only un-pin (isAtBottomRef = false) when scrollTop actually decreases,
+  // meaning the user scrolled up. Content growth increases scrollHeight
+  // without changing scrollTop, so it can't falsely un-pin us.
   const prevClientHeightRef = useRef(0)
+  const prevScrollTopRef = useRef(0)
   useEffect(() => {
     const el = chatLogRef.current
     if (!el) return
     prevClientHeightRef.current = el.clientHeight
+    prevScrollTopRef.current = el.scrollTop
     const onScroll = () => {
       if (Date.now() < scrollSuppressUntilRef.current) return
       const ch = el.clientHeight
@@ -1782,12 +1785,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       prevClientHeightRef.current = ch
       const dist = el.scrollHeight - el.scrollTop - ch
       const atBottom = dist < 30
+      const scrolledUp = el.scrollTop < prevScrollTopRef.current - 3
+      prevScrollTopRef.current = el.scrollTop
       if (resized && isAtBottomRef.current && !atBottom) {
         scrollToBottom()
         return
       }
-      isAtBottomRef.current = atBottom
-      setShowScrollBtn(!atBottom)
+      if (scrolledUp && !atBottom) {
+        isAtBottomRef.current = false
+      } else if (atBottom) {
+        isAtBottomRef.current = true
+      }
+      setShowScrollBtn(!isAtBottomRef.current)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
