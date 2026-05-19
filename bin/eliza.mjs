@@ -720,7 +720,11 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
     console.log(`[eliza] no manager for ${agentName} — spawning one`)
     try {
       const mgrName = `mgr-${agentName}`
-      const spawnResult = await postJson('/api/spawn', { name: mgrName })
+      let spawnResult = await postJson('/api/spawn', { name: mgrName })
+      if (spawnResult.error && spawnResult.error.includes('already exists')) {
+        console.log(`[eliza] manager ${mgrName} already exists — respawning`)
+        spawnResult = await postJson('/api/spawn', { agent: mgrName, respawn: true })
+      }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn manager: ${spawnResult.error}`)
         logDecision(agentId, 'manager-escalation-spawn-failed', modeLabel, { error: spawnResult.error }, triggerText)

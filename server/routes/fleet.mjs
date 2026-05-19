@@ -638,9 +638,36 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const text = response === 'approve' ? 'yes' : 'no'
     const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text, enter: true })
     if (r1 !== null) {
-      fleetStore?.updateAgentMeta(agent.id, { permission_mode: null })
+      fleetStore?.updateAgentMeta(agent.id, { permission_mode: null, inPlanMode: false })
+      const now = new Date().toISOString()
+      try {
+        const planEvent = fleetStore?.db.prepare(
+          `SELECT id FROM events WHERE type = 'plan_approval' AND from_id = ? ORDER BY id DESC LIMIT 1`
+        ).get(agent.id)
+        if (planEvent) {
+          const patch = response === 'approve' ? { approvedAt: now } : { rejectedAt: now }
+          fleetStore.updateEventMetadata(planEvent.id, patch)
+          broadcastEvent('event-update', { id: planEvent.id, metadata_patch: patch })
+        }
+      } catch {}
       broadcastState()
       res.json(r1)
+    }
+  })
+
+  router.post('/api/prompt-respond', (req, res) => {
+    const { eventId, response } = req.body || {}
+    if (!eventId || (response !== 'approved' && response !== 'rejected')) {
+      return res.status(400).json({ error: 'eventId and response (approved|rejected) required' })
+    }
+    try {
+      const now = new Date().toISOString()
+      const patch = response === 'approved' ? { approvedAt: now } : { rejectedAt: now }
+      fleetStore.updateEventMetadata(eventId, patch)
+      broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
     }
   })
 
