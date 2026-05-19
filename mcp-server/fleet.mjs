@@ -2839,9 +2839,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
 
     let header;
+    const totalKnown = serverTotal ?? filtered.length;
     if (serverTotal !== null && filtered.length < serverTotal) {
       const hidden = serverTotal - filtered.length;
-      header = `Showing ${filtered.length} of ${serverTotal} total messages${rangeStr}\n` +
+      header = `Showing messages 1–${filtered.length} of ${serverTotal}${rangeStr}\n` +
         `⚠️ ${hidden} more message(s) not shown — call again with \`since: "${newest}"\` to get the next page`;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
@@ -2901,14 +2902,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // Rewrite header if we hit the byte limit
     if (truncatedAt) {
       const shown = lines.length;
-      const remaining = filtered.length - shown;
-      const totalKnown = serverTotal ?? filtered.length;
+      const remaining = totalKnown - shown;
       const lastShownTs = filtered[shown - 1]?.timestamp;
       const nextPageArg = args.task_id
         ? `task_id: "${args.task_id}"`
         : `agent: "${args.agent || ''}"`;
-      header = `Showing ${shown} of ${totalKnown} messages${rangeStr} (truncated to fit context)\n` +
-        `⚠️ ${remaining}+ more message(s) — get the next page:\n` +
+      header = `Showing messages 1–${shown} of ${totalKnown}${rangeStr}\n` +
+        `⚠️ ${remaining}+ more — get the next page:\n` +
         `\`get_thread(${nextPageArg}, since: "${lastShownTs}")\``;
     }
 
