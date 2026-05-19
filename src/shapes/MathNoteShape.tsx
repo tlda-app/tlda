@@ -812,9 +812,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       if (!backingFile) return false
       const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
       if (!li) return false
-      const list = li.parentElement
-      if (!list) return false
-      const bulletIndex = Array.from(list.children).indexOf(li)
+      const container = contentRef.current
+      if (!container) return false
+      const allLis = Array.from(container.querySelectorAll('li'))
+      const bulletIndex = allLis.indexOf(li)
+      if (bulletIndex < 0) return false
       const text = li.textContent?.trim() || ''
       if (!text) return false
 
