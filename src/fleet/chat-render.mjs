@@ -285,6 +285,19 @@ export function renderChatLine(m, ctx) {
     })
   }
   let text = m._raw ? esc(processedText) : linkifyCodeUrls(renderMarkdown(esc(processedText)))
+  // Replace «bullet:ID» tokens with card HTML using metadata
+  if (m._bullets?.length) {
+    text = text.replace(/«bullet:(\w+)»/g, (_match, id) => {
+      const b = m._bullets.find(x => x.id === id)
+      if (!b) return _match
+      const btext = (b.text || '').replace(/^\s*[-*]\s+/, '').trim()
+      const textE = esc(btext)
+      const tupleStr = JSON.stringify(b.tuplePath || [])
+      const shapeId = esc(b.noteShapeId || '')
+      const tupleE = esc(tupleStr)
+      return `<span class="bullet-card" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}"><span class="bullet-card-header"><span class="bullet-card-source">•<span class="bullet-card-depth">${tupleE}</span></span><span class="bullet-card-go" data-shape-id="${shapeId}" data-bullet-tuple="${tupleE}">→</span></span><span class="bullet-card-body">• ${textE}</span></span>`
+    })
+  }
   if (taskNotification) {
     text = `<div class="task-notification">
       <div class="task-notification-header">Task Notification</div>

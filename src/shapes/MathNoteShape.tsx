@@ -47,7 +47,7 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 }
 import { dispatchSignalDirect } from '../useYjsSync'
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
-import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts } from '../stores'
+import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -825,17 +825,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }
         el = parent
       }
-      // Also compute flat index for backward compat with bullet-selected highlighting
+      // Flat index for bullet-selected highlighting
       const allLis = Array.from(container.querySelectorAll('li'))
       const bulletIndex = allLis.indexOf(li)
       if (bulletIndex < 0) return false
       const text = li.textContent?.trim() || ''
       if (!text) return false
 
+      const id = genBulletId()
       const owner = (shape.meta?.authorId as string) || undefined
       const ctx = {
+        id,
         text,
         noteShapeId: shape.id,
+        tuplePath,
         owner,
         backingFile,
         bulletIndex,
@@ -849,13 +852,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         })
       }
 
-      // Token format: «bullet:shapeId:[tuple]|snapshot text»
-      // Tuple for structural navigation, text for permanent record
-      const tupleStr = `[${tuplePath.join(',')}]`
-      const snapshotText = text.length > 120 ? text.slice(0, 120) + '…' : text
-      const token = `«bullet:${shape.id}:${tupleStr}|${snapshotText}»`
-      // Defer insert so set-chat-target signal can update the chat's sendTargets
-      // before the insert handler checks them (React state update is async)
+      const token = `«bullet:${id}»`
       setTimeout(() => {
         chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token, owner } }))
       }, 50)

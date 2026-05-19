@@ -423,8 +423,18 @@ export function connect() {
       } else if (eventType === 'event-update') {
         const ev = _events.find(e => e._dbId === data.id)
         if (ev) {
-          ev.text = data.text
+          if (data.text !== undefined) ev.text = data.text
           if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+          if (data.metadata_patch) {
+            if (data.metadata_patch.approvedAt) {
+              ev._planResponse = 'approved'
+              ev._promptResponse = 'approved'
+            }
+            if (data.metadata_patch.rejectedAt) {
+              ev._planResponse = 'rejected'
+              ev._promptResponse = 'rejected'
+            }
+          }
           notify('messages', null)
         }
       } else if (eventType === 'read-receipt') {
@@ -530,6 +540,7 @@ export function convertChatEvent(e) {
     msg._reason = e.metadata?.reason || ''
     msg._agentLabel = e.metadata?.agentLabel || ''
     msg._snippet = e.metadata?.snippet || ''
+    msg._promptResponse = e.metadata?.approvedAt ? 'approved' : e.metadata?.rejectedAt ? 'rejected' : ''
   } else if (type === 'plan_approval') {
     msg._evType = 'plan_approval'
     msg._agentId = e.metadata?.agentId || ''
@@ -537,6 +548,7 @@ export function convertChatEvent(e) {
     msg._planText = e.text || e.metadata?.planText || ''
     msg._tmuxSession = e.metadata?.tmux_session || ''
     msg._machineId = e.metadata?.machine_id || ''
+    msg._planResponse = e.metadata?.approvedAt ? 'approved' : e.metadata?.rejectedAt ? 'rejected' : ''
   } else if (type === 'terminal_card') {
     msg._evType = 'terminal_card'
     msg._reason = e.metadata?.reason || ''
@@ -575,6 +587,9 @@ export function convertChatEvent(e) {
   }
   if (e.metadata?.attachments) {
     msg.attachments = e.metadata.attachments
+  }
+  if (e.metadata?.context?.bullets) {
+    msg._bullets = e.metadata.context.bullets
   }
   return msg
 }

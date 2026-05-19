@@ -1065,67 +1065,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
       if (typePrefix === 'bullet') {
-        // New format: «bullet:shapeId:[tuple]|snapshot text»
-        // Legacy format: «bullet:shapeId:flatIndex»
-        let shapeId = ''
-        let tuplePath = ''
-        let snapshotText = ''
-        let bulletIdx = -1
-        const pipeIdx = display.indexOf('|')
-        if (pipeIdx > 0 && display.includes('[')) {
-          // New format with tuple + snapshot
-          const locPart = display.slice(0, pipeIdx)
-          snapshotText = display.slice(pipeIdx + 1)
-          const bracketIdx = locPart.indexOf(':[')
-          if (bracketIdx > 0) {
-            shapeId = locPart.slice(0, bracketIdx)
-            tuplePath = locPart.slice(bracketIdx + 1)
-          }
-        } else {
-          // Legacy flat index format
-          const lastColon = display.lastIndexOf(':')
-          shapeId = lastColon > 0 ? display.slice(0, lastColon) : ''
-          bulletIdx = lastColon > 0 ? parseInt(display.slice(lastColon + 1), 10) : -1
-        }
-        let bulletText = snapshotText || display
-        let accentColor = '#7c3aed'
-        let noteName = ''
-        let authorId = ''
-        if (shapeId) {
-          const mainEditor = (window as any).__tldraw_editor__ || editor
-          const noteShape = (editor.getShape(shapeId as any) || mainEditor.getShape(shapeId as any)) as any
-          // For legacy tokens without snapshot text, resolve from shape
-          if (!snapshotText && noteShape?.props?.text && bulletIdx >= 0) {
-            const raw = noteShape.props.text as string
-            const bullets = raw.split('\n').filter((l: string) => /^\s*[-*]\s/.test(l))
-            if (bullets[bulletIdx]) {
-              bulletText = bullets[bulletIdx].replace(/^\s*[-*]\s+/, '').trim()
-            }
-          }
-          if (noteShape?.props?.backingFile) {
-            const bf = noteShape.props.backingFile as string
-            noteName = bf.split('/').pop()?.replace(/\.md$/i, '') || bf
-          }
-          if (noteShape?.meta?.authorId) {
-            authorId = noteShape.meta.authorId as string
-          }
-          if (noteShape?.props?.color) {
-            const DOT_COLORS: Record<string, string> = {
-              yellow: '#eab308', red: '#ef4444', green: '#22c55e', blue: '#3b82f6',
-              violet: '#8b5cf6', orange: '#f97316', grey: '#9ca3af',
-              'light-red': '#ef4444', 'light-green': '#22c55e', 'light-blue': '#3b82f6',
-              'light-violet': '#8b5cf6', black: '#6b7280', white: '#d4d4d4',
-            }
-            accentColor = DOT_COLORS[noteShape.props.color] || accentColor
-          }
-        }
-        // Show tuple path as subtle depth indicator
-        const depthLabel = tuplePath || (bulletIdx >= 0 ? String(bulletIdx) : '')
-        const textEsc = bulletText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const nameEsc = noteName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const authorEsc = authorId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        const navData = tuplePath ? `data-bullet-tuple="${tuplePath.replace(/"/g, '&quot;')}"` : `data-bullet-idx="${bulletIdx}"`
-        return `<div class="bullet-card" data-shape-id="${shapeId}" ${navData} style="border-left-color:${accentColor}"><div class="bullet-card-header" style="background:${accentColor}0d"><span class="bullet-card-source">${nameEsc ? `⇄ ${nameEsc}` : '•'}${authorEsc ? ` <span class="bullet-card-author">— ${authorEsc}</span>` : ''}<span class="bullet-card-depth">${depthLabel}</span></span><span class="bullet-card-go" data-shape-id="${shapeId}" ${navData}>→</span></div><div class="bullet-card-body" style="color:${accentColor}">• ${textEsc}</div></div>`
+        // Bullet cards are rendered server-side in chat-render.mjs using metadata.
+        // If a «bullet:ID» token reaches here, the metadata was missing — show as plain text.
+        return `<span class="bullet-card-fallback">[bullet ref]</span>`
       }
       const shapeIdMatch = inner.match(/#(shape:[^»]+)$/)
       const embeddedShapeId = shapeIdMatch?.[1]
