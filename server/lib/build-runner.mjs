@@ -743,7 +743,8 @@ async function computeProofPairing(ctx) {
   try {
     await run(
       `node "${join(SCRIPTS_DIR, 'compute-proof-pairing.mjs')}" "${texPath}" ` +
-      `"${join(buildDir, 'lookup.json')}" "${join(buildDir, 'proof-info.json')}"`,
+      `"${join(buildDir, 'lookup.json')}" "${join(buildDir, 'proof-info.json')}" ` +
+      `"${join(buildDir, `${texBase}.aux`)}"`,
       { cwd: PROJECT_ROOT, timeout: 120000 },
     )
     publishFile(join(buildDir, 'proof-info.json'), join(outDir, `${texBase}-proof-info.json`))
