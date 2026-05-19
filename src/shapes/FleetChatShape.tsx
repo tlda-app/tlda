@@ -1780,7 +1780,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     prevClientHeightRef.current = el.clientHeight
     prevScrollTopRef.current = el.scrollTop
     const onScroll = () => {
-      if (Date.now() < scrollSuppressUntilRef.current) return
+      if (Date.now() < scrollSuppressUntilRef.current) {
+        prevScrollTopRef.current = el.scrollTop
+        return
+      }
       const ch = el.clientHeight
       const resized = ch !== prevClientHeightRef.current
       prevClientHeightRef.current = ch
