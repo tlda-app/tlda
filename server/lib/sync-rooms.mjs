@@ -16,6 +16,14 @@ import { emitShapeChangedDebounced } from './webhooks.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
 
+// Default values for required custom shape props. Used by the snapshot
+// auto-repair loop to fill in missing props on stale shapes.
+const shapeUtilDefaults = {
+  'understanding-line': { w: 6, h: 20, segments: '[]' },
+  'math-note': { w: 320, h: 200, text: '', autoSize: true },
+  'reading-assist-bar': { w: 200, h: 40, highlightId: '', responseId: '', color: 'black' },
+}
+
 const customShapeSchemas = {
   'math-note': {
     props: {
@@ -80,17 +88,7 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.understanding-line',
-      sequence: [
-        {
-          id: 'com.tldraw.shape.understanding-line/1',
-          scope: 'record',
-          up(record) {
-            if (record.props && record.props.segments === undefined) {
-              record.props.segments = '[]'
-            }
-          },
-        },
-      ],
+      sequence: [],
     }),
   },
   'reading-assist-bar': {
@@ -597,17 +595,56 @@ export async function getOrCreateRoom(docName) {
 
   let room
   if (snapshot) {
-    // Pre-validate snapshot records to catch schema mismatches at load time
+    // Pre-validate and auto-repair snapshot records before room creation.
+    // Shapes with missing required props get defaults patched in — this
+    // prevents a single stale shape from breaking sync for ALL shapes in
+    // the room (the TLSyncClient resets the entire connection on any
+    // validation error during applyDiff).
     if (snapshot.documents) {
       for (const doc of snapshot.documents) {
         const record = doc.state
         if (!record?.typeName) continue
+        if (record.typeName === 'shape' && record.type && customShapeSchemas[record.type]) {
+          const schemaDef = customShapeSchemas[record.type]
+          if (schemaDef.props && record.props) {
+            const schemaKeys = new Set(Object.keys(schemaDef.props))
+            for (const [key, validator] of Object.entries(schemaDef.props)) {
+              if (record.props[key] === undefined) {
+                const util = shapeUtilDefaults[record.type]
+                const defaultVal = util?.[key]
+                if (defaultVal !== undefined) {
+                  record.props[key] = defaultVal
+                  console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: added missing prop "${key}" = ${JSON.stringify(defaultVal)}`)
+                }
+              }
+            }
+            for (const key of Object.keys(record.props)) {
+              if (!schemaKeys.has(key)) {
+                delete record.props[key]
+                console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: stripped unexpected prop "${key}"`)
+              }
+            }
+          }
+        }
         const recordType = schema.types[record.typeName]
         if (!recordType) continue
         try {
           recordType.validate(record)
         } catch (e) {
-          console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${e.message}`)
+          const msg = e.message || ''
+          const unexpectedMatch = msg.match(/\.props\.(\w+): Unexpected property/)
+          if (unexpectedMatch && record.props) {
+            const badProp = unexpectedMatch[1]
+            delete record.props[badProp]
+            console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: stripped unexpected prop "${badProp}" (${record.type})`)
+            try { recordType.validate(record) } catch (e2) {
+              console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${e2.message}`)
+              emitGlobalEvent('sync-error', { docName, shapeId: record.id, shapeType: record.type, error: e2.message })
+            }
+          } else {
+            console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${msg}`)
+            emitGlobalEvent('sync-error', { docName, shapeId: record.id, shapeType: record.type, error: msg })
+          }
         }
       }
     }

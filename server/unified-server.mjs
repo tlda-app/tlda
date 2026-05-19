@@ -569,6 +569,15 @@ onGlobalEvent((event) => {
     const text = `**Scratch build failed** — \`${label}\` in ${doc}\n\n${errorList}`
     fleetStore.chat('fleet:tlda', agentId, text, { type: 'scratch_build_failed', doc, label })
   }
+  if (event?.type === 'sync-error') {
+    const { docName, shapeId, shapeType, error } = event
+    const text = `**Sync validation error** in \`${docName}\`\n\`${shapeType}\` shape \`${shapeId}\`: ${error}`
+    if (process.env.TLDA_DEBUG) {
+      console.error(`[TLDA_DEBUG] FATAL sync error — crashing:\n  ${text}`)
+      process.exit(1)
+    }
+    deliverTldaFeedbackChat({ from: 'fleet:tlda', to: 'fleet:skip', text, metadata: { type: 'sync_error', docName, shapeId, shapeType } })
+  }
 })
 
 // ---------- RPC routing ----------
