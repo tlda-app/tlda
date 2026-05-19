@@ -13,7 +13,7 @@ import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShape
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { processHighlightFeedback } from './highlightFeedback'
-import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapUnderstandingLines, initRibbonBackground } from './ribbonInteraction'
+import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapRibbonSegments, initRibbon, setupRibbonEraser } from './ribbonInteraction'
 import { subscribe as fleetSubscribe, getHumanId } from './fleet/fleet-data.mjs'
 import { showTranscriptionToast } from './transcriptionToast'
 import { captureSnapshot } from './snapshotStore'
@@ -457,8 +457,8 @@ export async function reloadPages(
     // Phase 2: clear stale synctex cache and reposition understanding-line shapes.
     // (diff/png formats already returned early above, so no format check needed)
     clearLineYIndexCache(document.name)
-    await remapUnderstandingLines(editor, document.name, document.pages)
-    await initRibbonBackground(editor, document.name, document.pages)
+    await remapRibbonSegments(editor, document.name, document.pages)
+    await initRibbon(editor, document.name, document.pages)
   }
 
   console.log(`[Reload] Done — ${indices.length} page(s) updated`)
@@ -557,16 +557,12 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     }
   }, { scope: 'document' })
 
-  // Phase 2: initialize the full-document unchecked background ribbon shape
+  // Initialize the single ribbon shape + eraser support
   const ribbonEnabled = document.format !== 'diff' && document.format !== 'png' && document.format !== 'html' &&
       document.format !== 'slides' && document.format !== 'markdown'
   if (ribbonEnabled) {
-    void initRibbonBackground(editor, document.name, document.pages)
-    if (!getHumanId()) {
-      fleetSubscribe('identity', null, () => {
-        if (getHumanId()) void initRibbonBackground(editor, document.name, document.pages)
-      })
-    }
+    void initRibbon(editor, document.name, document.pages)
+    setupRibbonEraser(editor, document.name, document.pages)
   }
 
   // Make sure the shapes are below any of the other shapes
