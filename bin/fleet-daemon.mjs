@@ -1268,12 +1268,62 @@ async function rpcSendKey({ tmux_session, key }) {
   return { ok: true }
 }
 
+// Ephemeral PTY connections for reliable keystroke delivery.
+// Spawned on demand when no long-lived watcher exists, torn down after idle.
+const ephemeralPtys = new Map() // tmux_session -> { pty, alive, teardownTimer }
+const EPHEMERAL_TTL_MS = 5000
+
+async function getOrSpawnEphemeralPty(tmuxSession) {
+  const existing = ephemeralPtys.get(tmuxSession)
+  if (existing?.alive) {
+    clearTimeout(existing.teardownTimer)
+    existing.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
+    return existing.pty
+  }
+  const nodePty = await getPty()
+  const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmuxSession], {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 40,
+    env: { ...process.env, TERM: 'xterm-256color' },
+  })
+  const state = { pty, alive: true, teardownTimer: null }
+  state.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
+  ephemeralPtys.set(tmuxSession, state)
+  pty.onExit(() => {
+    state.alive = false
+    clearTimeout(state.teardownTimer)
+    ephemeralPtys.delete(tmuxSession)
+  })
+  // Discard output — ephemeral PTYs are write-only
+  pty.onData(() => {})
+  return pty
+}
+
+function teardownEphemeral(tmuxSession) {
+  const state = ephemeralPtys.get(tmuxSession)
+  if (!state) return
+  state.alive = false
+  ephemeralPtys.delete(tmuxSession)
+  try { state.pty.kill() } catch {}
+}
+
 async function rpcSendText({ tmux_session, text, enter }) {
   checkSession(tmux_session)
-  const ptyState = terminalWatchPtys.get(tmux_session)
-  if (ptyState?.alive) {
-    if (text) ptyState.pty.write(text)
-    if (enter !== false) ptyState.pty.write('\r')
+  // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
+  let pty = terminalWatchPtys.get(tmux_session)?.alive
+    ? terminalWatchPtys.get(tmux_session).pty
+    : null
+  if (!pty) {
+    try {
+      pty = await getOrSpawnEphemeralPty(tmux_session)
+    } catch (e) {
+      console.error(`[daemon] ephemeral PTY failed for ${tmux_session}: ${e.message}, falling back to tmux`)
+    }
+  }
+  if (pty) {
+    if (text) pty.write(text)
+    if (enter !== false) pty.write('\r')
     return { ok: true, via: 'pty' }
   }
   if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
@@ -2120,6 +2170,8 @@ function teardownWatchers() {
   // independently and queue them for the next connected window.
   for (const [, s] of terminalWatchPtys) { s.alive = false; try { s.pty.kill() } catch {} }
   terminalWatchPtys.clear()
+  for (const [, s] of ephemeralPtys) { s.alive = false; clearTimeout(s.teardownTimer); try { s.pty.kill() } catch {} }
+  ephemeralPtys.clear()
   for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
   backingWatchers.clear()
 }
